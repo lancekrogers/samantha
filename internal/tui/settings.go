@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -189,7 +190,7 @@ func (m *settingsModel) previewVoice() tea.Cmd {
 		}
 
 		player := audio.NewPlayer()
-		done := player.PlayAsync(nil, samples, sampleRate)
+		done := player.PlayAsync(context.Background(), samples, sampleRate)
 		<-done
 
 		return voicePreviewDoneMsg{message: fmt.Sprintf("Previewed %s", voice.Name)}
