@@ -25,18 +25,8 @@ type ModelArchive struct {
 	CheckFiles []string // paths relative to ModelsDir to verify extraction
 }
 
-// requiredFiles returns individual model files to download.
+// requiredFiles are individual model files to download.
 var requiredFiles = []ModelFile{
-	{
-		Name: "kokoro-v1.0.onnx",
-		URL:  "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx",
-		Size: 325322752,
-	},
-	{
-		Name: "voices-v1.0.bin",
-		URL:  "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin",
-		Size: 28221440,
-	},
 	{
 		Name: "silero_vad.onnx",
 		URL:  "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",

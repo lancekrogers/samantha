@@ -34,8 +34,8 @@ func NewKokoroTTS(cfg *config.Config) (*KokoroTTS, error) {
 	modelsDir := config.ModelsDir()
 
 	kokoroConfig := sherpa.OfflineTtsKokoroModelConfig{
-		Model:   filepath.Join(modelsDir, "kokoro-v1.0.onnx"),
-		Voices:  filepath.Join(modelsDir, "voices-v1.0.bin"),
+		Model:   filepath.Join(modelsDir, "model.onnx"),
+		Voices:  filepath.Join(modelsDir, "voices.bin"),
 		Tokens:  filepath.Join(modelsDir, "tokens.txt"),
 		DataDir: filepath.Join(modelsDir, "espeak-ng-data"),
 	}
