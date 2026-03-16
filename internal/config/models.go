@@ -25,28 +25,45 @@ type ModelArchive struct {
 	CheckFiles []string // paths relative to ModelsDir to verify extraction
 }
 
-// requiredFiles are individual model files to download.
-var requiredFiles = []ModelFile{
-	{
-		Name: "silero_vad.onnx",
-		URL:  "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
-		Size: 0,
-	},
+// AssetRequest describes which runtime assets are needed for a command.
+type AssetRequest struct {
+	NeedSTT bool
+	NeedTTS bool
+	NeedVAD bool
 }
 
-// requiredArchives returns tar.bz2 archives parameterized by config.
-func requiredArchives(cfg *Config) []ModelArchive {
-	model := cfg.WhisperModel
-	return []ModelArchive{
+// runtimeFiles returns the required individual downloads for the given run.
+func runtimeFiles(req AssetRequest) []ModelFile {
+	if !req.NeedVAD {
+		return nil
+	}
+	return []ModelFile{
 		{
+			Name: "silero_vad.onnx",
+			URL:  "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+			Size: 0,
+		},
+	}
+}
+
+// runtimeArchives returns tar.bz2 archives parameterized by config and request.
+func runtimeArchives(cfg *Config, req AssetRequest) []ModelArchive {
+	var archives []ModelArchive
+
+	if req.NeedSTT && strings.EqualFold(cfg.STTProvider, "sherpa") {
+		model := cfg.WhisperModel
+		archives = append(archives, ModelArchive{
 			Name: fmt.Sprintf("whisper-%s", model),
 			URL:  fmt.Sprintf("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-%s.tar.bz2", model),
 			CheckFiles: []string{
 				fmt.Sprintf("%s-encoder.onnx", model),
 				fmt.Sprintf("%s-decoder.onnx", model),
 			},
-		},
-		{
+		})
+	}
+
+	if req.NeedTTS && strings.EqualFold(cfg.TTSProvider, "kokoro") {
+		archives = append(archives, ModelArchive{
 			Name: "kokoro-tts",
 			URL:  "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2",
 			CheckFiles: []string{
@@ -55,19 +72,21 @@ func requiredArchives(cfg *Config) []ModelArchive {
 				"tokens.txt",
 				"espeak-ng-data",
 			},
-		},
+		})
 	}
+
+	return archives
 }
 
-// EnsureModels downloads any missing model files and archives.
-func EnsureModels(cfg *Config, onProgress func(name string, pct float64)) error {
+// EnsureRuntimeAssets downloads any missing model files and archives needed for this run.
+func EnsureRuntimeAssets(cfg *Config, req AssetRequest, onProgress func(name string, pct float64)) error {
 	dir := ModelsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create models dir: %w", err)
 	}
 
 	// Individual file downloads.
-	for _, m := range requiredFiles {
+	for _, m := range runtimeFiles(req) {
 		path := filepath.Join(dir, m.Name)
 		if fileExists(path, m.Size) {
 			continue
@@ -87,7 +106,7 @@ func EnsureModels(cfg *Config, onProgress func(name string, pct float64)) error 
 	}
 
 	// Archive downloads with extraction.
-	for _, a := range requiredArchives(cfg) {
+	for _, a := range runtimeArchives(cfg, req) {
 		if archiveExtracted(dir, a.CheckFiles) {
 			continue
 		}
@@ -106,6 +125,15 @@ func EnsureModels(cfg *Config, onProgress func(name string, pct float64)) error 
 	}
 
 	return nil
+}
+
+// EnsureModels preserves the old behavior for callers that still need the default asset set.
+func EnsureModels(cfg *Config, onProgress func(name string, pct float64)) error {
+	return EnsureRuntimeAssets(cfg, AssetRequest{
+		NeedSTT: strings.EqualFold(cfg.STTProvider, "sherpa"),
+		NeedTTS: strings.EqualFold(cfg.TTSProvider, "kokoro"),
+		NeedVAD: cfg.VADEnabled,
+	}, onProgress)
 }
 
 // archiveExtracted checks if all expected files/dirs exist.

@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/Obedience-Corp/samantha/internal/brain"
 	"github.com/Obedience-Corp/samantha/internal/config"
 	"github.com/Obedience-Corp/samantha/internal/session"
+	"github.com/Obedience-Corp/samantha/internal/stt"
 	"github.com/Obedience-Corp/samantha/internal/tts"
 )
 
@@ -30,11 +33,20 @@ var testCmd = &cobra.Command{
 
 		// TTS test
 		fmt.Println("  1. Testing speaker (TTS)...")
-		kokoroTTS, err := tts.NewKokoroTTS(cfg)
+		if err := config.EnsureRuntimeAssets(cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
+			fmt.Printf("  FAIL: %v\n\n", err)
+			return nil
+		}
+
+		ttsProvider, cleanup, err := tts.NewProvider(cfg)
 		if err != nil {
 			fmt.Printf("  FAIL: %v\n\n", err)
 		} else {
-			samples, sr, err := kokoroTTS.Generate("Hello! I'm Samantha. Your speaker is working.")
+			if cleanup != nil {
+				defer cleanup()
+			}
+
+			samples, sr, err := ttsProvider.Generate("Hello! I'm Samantha. Your speaker is working.")
 			if err != nil {
 				fmt.Printf("  FAIL: %v\n\n", err)
 			} else {
@@ -64,13 +76,19 @@ var voicesCmd = &cobra.Command{
 
 		fmt.Printf("\n  Voices for: %s\n\n", cfg.TTSProvider)
 
-		kokoroTTS, err := tts.NewKokoroTTS(cfg)
+		if err := config.EnsureRuntimeAssets(cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
+			return err
+		}
+
+		ttsProvider, cleanup, err := tts.NewProvider(cfg)
 		if err != nil {
 			return fmt.Errorf("init TTS: %w", err)
 		}
-		defer kokoroTTS.Delete()
+		if cleanup != nil {
+			defer cleanup()
+		}
 
-		voices := kokoroTTS.ListVoices(voiceLocale, voiceGender)
+		voices := ttsProvider.ListVoices(voiceLocale, voiceGender)
 		if len(voices) == 0 {
 			fmt.Println("  No voices found.")
 			return nil
@@ -95,17 +113,43 @@ var providersCmd = &cobra.Command{
 
 		fmt.Println()
 		fmt.Println("  Providers")
+		fmt.Println("  Brain:")
+		brainActive := strings.TrimSpace(cfg.BrainProvider)
+		if brainActive == "" {
+			brainActive = "claude"
+		}
+		for _, spec := range brain.Providers() {
+			fmt.Printf("    [%s] %s — %s\n", activeTag(brainActive == spec.Name), spec.Name, spec.Description)
+		}
+		if !brainImplemented(brainActive) {
+			fmt.Printf("    [config] %s — configured but not implemented in this build\n", brainActive)
+		}
+
+		fmt.Println()
 		fmt.Println("  TTS (text-to-speech):")
 		ttsActive := cfg.TTSProvider
-		fmt.Printf("    [%s] kokoro — Local, high quality, no API key\n", activeTag(ttsActive == "kokoro"))
-		fmt.Printf("    [%s] edge — Free cloud, no API key\n", activeTag(ttsActive == "edge"))
-		fmt.Printf("    [%s] fish — Paid cloud, custom voice clones\n", activeTag(ttsActive == "fish"))
+		if ttsActive == "" {
+			ttsActive = "kokoro"
+		}
+		for _, spec := range tts.Providers() {
+			fmt.Printf("    [%s] %s — %s\n", activeTag(ttsActive == spec.Name), spec.Name, spec.Description)
+		}
+		if !ttsImplemented(ttsActive) {
+			fmt.Printf("    [config] %s — configured but not implemented in this build\n", ttsActive)
+		}
 
 		fmt.Println()
 		fmt.Println("  STT (speech-to-text):")
 		sttActive := cfg.STTProvider
-		fmt.Printf("    [%s] sherpa — Local whisper, no internet\n", activeTag(sttActive == "sherpa"))
-		fmt.Printf("    [%s] google — Free cloud\n", activeTag(sttActive == "google"))
+		if sttActive == "" {
+			sttActive = "sherpa"
+		}
+		for _, spec := range stt.Providers() {
+			fmt.Printf("    [%s] %s — %s\n", activeTag(sttActive == spec.Name), spec.Name, spec.Description)
+		}
+		if !sttImplemented(sttActive) {
+			fmt.Printf("    [config] %s — configured but not implemented in this build\n", sttActive)
+		}
 		fmt.Println()
 		return nil
 	},
@@ -158,8 +202,8 @@ var resumeCmd = &cobra.Command{
 }
 
 var continueCmd = &cobra.Command{
-	Use:   "continue",
-	Short: "Continue the most recent conversation",
+	Use:     "continue",
+	Short:   "Continue the most recent conversation",
 	Aliases: []string{"c"},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
@@ -196,6 +240,33 @@ func activeTag(active bool) string {
 		return "active"
 	}
 	return "      "
+}
+
+func brainImplemented(name string) bool {
+	for _, spec := range brain.Providers() {
+		if spec.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func sttImplemented(name string) bool {
+	for _, spec := range stt.Providers() {
+		if spec.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func ttsImplemented(name string) bool {
+	for _, spec := range tts.Providers() {
+		if spec.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func init() {

@@ -74,11 +74,19 @@ func (m *settingsModel) buildModelItems() {
 }
 
 func (m *settingsModel) buildVoiceItems() {
-	// Use the static voice list — TTS init is expensive.
 	m.voiceItems = nil
-	for _, name := range tts.VoiceNames() {
-		m.voiceItems = append(m.voiceItems, tts.VoiceInfo(name))
+	voices, err := tts.StaticVoices(m.cfg.TTSProvider, "", "")
+	if err != nil {
+		return
 	}
+	m.voiceItems = append(m.voiceItems, voices...)
+}
+
+func (m settingsModel) activeModel() string {
+	if m.cfg.BrainProvider == "ollama" && m.cfg.OllamaModel != "" {
+		return m.cfg.OllamaModel
+	}
+	return "default"
 }
 
 func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
@@ -178,13 +186,19 @@ func (m *settingsModel) previewVoice() tea.Cmd {
 		cfg := *m.cfg
 		cfg.TTSVoice = voice.Name
 
-		kokoroTTS, err := tts.NewKokoroTTS(&cfg)
+		if err := config.EnsureRuntimeAssets(&cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
+			return voicePreviewDoneMsg{message: fmt.Sprintf("Asset error: %v", err)}
+		}
+
+		ttsProvider, cleanup, err := tts.NewProvider(&cfg)
 		if err != nil {
 			return voicePreviewDoneMsg{message: fmt.Sprintf("TTS error: %v", err)}
 		}
-		defer kokoroTTS.Delete()
+		if cleanup != nil {
+			defer cleanup()
+		}
 
-		samples, sampleRate, err := kokoroTTS.Generate("Hi, I'm Samantha. This is how I sound.")
+		samples, sampleRate, err := ttsProvider.Generate("Hi, I'm Samantha. This is how I sound.")
 		if err != nil {
 			return voicePreviewDoneMsg{message: fmt.Sprintf("Generate error: %v", err)}
 		}
@@ -234,13 +248,18 @@ func (m settingsModel) View() string {
 	case sectionModel:
 		for i, item := range m.modelItems {
 			active := ""
-			if m.cfg.BrainProvider == "ollama" && item == m.cfg.OllamaModel {
+			if item == m.activeModel() {
 				active = " ✓"
 			}
 			m.renderItem(&b, i, item+active)
 		}
 
 	case sectionVoice:
+		if len(m.voiceItems) == 0 {
+			b.WriteString(dimStyle.Render("  No browsable voices for the active TTS provider."))
+			b.WriteString("\n")
+			break
+		}
 		for i, v := range m.voiceItems {
 			active := ""
 			if v.Name == m.cfg.TTSVoice {
