@@ -7,4 +7,6 @@ type Provider interface {
 	ThinkStream(ctx context.Context, input string) (<-chan string, error)
 	ThinkFull(ctx context.Context, input string) (string, error)
 	ClearHistory()
+	History() []Turn
+	LoadHistory(turns []Turn)
 }

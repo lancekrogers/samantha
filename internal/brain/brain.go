@@ -186,6 +186,11 @@ func (b *Brain) ClearHistory() {
 	b.history = nil
 }
 
+// LoadHistory restores conversation history from a saved session.
+func (b *Brain) LoadHistory(turns []Turn) {
+	b.history = turns
+}
+
 func cleanForVoice(s string) string {
 	r := strings.NewReplacer(
 		// Strip markdown formatting.

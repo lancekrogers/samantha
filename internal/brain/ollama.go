@@ -201,6 +201,23 @@ func (o *OllamaBrain) ClearHistory() {
 	o.history = nil
 }
 
+// History returns conversation history as Turn slices for session persistence.
+func (o *OllamaBrain) History() []Turn {
+	turns := make([]Turn, len(o.history))
+	for i, m := range o.history {
+		turns[i] = Turn{Role: m.Role, Content: m.Content}
+	}
+	return turns
+}
+
+// LoadHistory restores conversation history from a saved session.
+func (o *OllamaBrain) LoadHistory(turns []Turn) {
+	o.history = make([]api.Message, len(turns))
+	for i, t := range turns {
+		o.history[i] = api.Message{Role: t.Role, Content: t.Content}
+	}
+}
+
 func (o *OllamaBrain) buildMessages() []api.Message {
 	systemPrompt := GetSystemPrompt(o.cfg.AgentName) + "\n" + EnvironmentContext(o.workDir)
 

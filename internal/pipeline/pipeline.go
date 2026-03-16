@@ -14,11 +14,12 @@ import (
 
 // Pipeline orchestrates the voice conversation loop.
 type Pipeline struct {
-	STT    stt.Provider
-	Brain  brain.Provider
-	TTS    tts.Provider
-	Player *audio.Player
-	Events *events.Bus
+	STT     stt.Provider
+	Brain   brain.Provider
+	TTS     tts.Provider
+	Player  *audio.Player
+	Events  *events.Bus
+	OnTurn  func() // called after each completed turn for session auto-save
 }
 
 // RunTurn executes one conversational turn with streaming TTS.
@@ -93,6 +94,10 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 
 	p.Events.Emit(events.ResponseReady{Response: fullResponse})
 
+	if p.OnTurn != nil {
+		p.OnTurn()
+	}
+
 	return text, nil
 }
 
@@ -136,5 +141,10 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	}
 
 	p.Events.Emit(events.ResponseReady{Response: response})
+
+	if p.OnTurn != nil {
+		p.OnTurn()
+	}
+
 	return nil
 }
