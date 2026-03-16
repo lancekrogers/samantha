@@ -20,16 +20,20 @@ const (
 // Capture handles microphone input using miniaudio.
 type Capture struct {
 	mu      sync.Mutex
+	subsMu  sync.RWMutex
 	ctx     *malgo.AllocatedContext
 	device  *malgo.Device
 	buf     *RingBuffer
 	running bool
+	subs    map[int]chan []float32
+	nextSub int
 }
 
 // NewCapture creates a new mic capture instance.
 func NewCapture() *Capture {
 	return &Capture{
-		buf: NewRingBuffer(SampleRate * 30), // 30 seconds buffer
+		buf:  NewRingBuffer(SampleRate * 30), // 30 seconds buffer
+		subs: make(map[int]chan []float32),
 	}
 }
 
@@ -56,6 +60,7 @@ func (c *Capture) Start(ctx context.Context) error {
 	onData := func(outputSamples, inputSamples []byte, frameCount uint32) {
 		samples := bytesToFloat32(inputSamples)
 		c.buf.Write(samples)
+		c.publish(samples)
 	}
 
 	device, err := malgo.InitDevice(mctx.Context, deviceConfig, malgo.DeviceCallbacks{
@@ -113,11 +118,62 @@ func (c *Capture) Reset() {
 	}
 }
 
+// Subscribe registers a non-blocking listener for live capture chunks.
+func (c *Capture) Subscribe(buffer int) (int, <-chan []float32) {
+	if buffer <= 0 {
+		buffer = 1
+	}
+
+	c.subsMu.Lock()
+	defer c.subsMu.Unlock()
+
+	id := c.nextSub
+	c.nextSub++
+	ch := make(chan []float32, buffer)
+	c.subs[id] = ch
+	return id, ch
+}
+
+// Unsubscribe removes a capture listener.
+func (c *Capture) Unsubscribe(id int) {
+	c.subsMu.Lock()
+	ch, ok := c.subs[id]
+	if ok {
+		delete(c.subs, id)
+	}
+	c.subsMu.Unlock()
+
+	if ok {
+		close(ch)
+	}
+}
+
 // IsRunning returns whether capture is active.
 func (c *Capture) IsRunning() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.running
+}
+
+func (c *Capture) publish(samples []float32) {
+	c.subsMu.RLock()
+	if len(c.subs) == 0 {
+		c.subsMu.RUnlock()
+		return
+	}
+
+	subs := make([]chan []float32, 0, len(c.subs))
+	for _, ch := range c.subs {
+		subs = append(subs, ch)
+	}
+	c.subsMu.RUnlock()
+
+	for _, ch := range subs {
+		select {
+		case ch <- samples:
+		default:
+		}
+	}
 }
 
 // bytesToFloat32 converts S16LE audio bytes to float32 samples in [-1.0, 1.0].

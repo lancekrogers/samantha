@@ -21,10 +21,13 @@ func New(bus *events.Bus, agentName string) *UI {
 	events.Subscribe(bus, u.onUserInput)
 	events.Subscribe(bus, u.onThinkingStarted)
 	events.Subscribe(bus, u.onThinkingComplete)
+	events.Subscribe(bus, u.onResponseStreamingStarted)
+	events.Subscribe(bus, u.onSpeechSegmentReady)
 	events.Subscribe(bus, u.onGeneratingVoice)
 	events.Subscribe(bus, u.onVoiceGenerated)
 	events.Subscribe(bus, u.onSpeakingStarted)
 	events.Subscribe(bus, u.onSpeakingComplete)
+	events.Subscribe(bus, u.onSpeakingInterrupted)
 	events.Subscribe(bus, u.onResponseReady)
 	events.Subscribe(bus, u.onCleared)
 	events.Subscribe(bus, u.onError)
@@ -90,12 +93,20 @@ func (u *UI) onThinkingComplete(e events.ThinkingComplete) {
 	fmt.Printf("\033[2K    thinking (%.1fs)\n", e.Elapsed.Seconds())
 }
 
+func (u *UI) onResponseStreamingStarted(e events.ResponseStreamingStarted) {
+	fmt.Printf("\033[2K    first response chunk (%.1fs)\n", e.Elapsed.Seconds())
+}
+
+func (u *UI) onSpeechSegmentReady(_ events.SpeechSegmentReady) {
+	fmt.Print("  ● Queuing speech...\r")
+}
+
 func (u *UI) onGeneratingVoice(_ events.GeneratingVoice) {
-	fmt.Print("  ● Generating voice...\r")
+	fmt.Print("  ● Synthesizing voice...\r")
 }
 
 func (u *UI) onVoiceGenerated(e events.VoiceGenerated) {
-	fmt.Printf("\033[2K    voice generation (%.1fs)\n", e.Elapsed.Seconds())
+	fmt.Printf("\033[2K    voice ready (%.1fs)\n", e.Elapsed.Seconds())
 }
 
 func (u *UI) onSpeakingStarted(_ events.SpeakingStarted) {
@@ -103,7 +114,15 @@ func (u *UI) onSpeakingStarted(_ events.SpeakingStarted) {
 }
 
 func (u *UI) onSpeakingComplete(e events.SpeakingComplete) {
-	fmt.Printf("\033[2K    playback (%.1fs)\n", e.Elapsed.Seconds())
+	label := "playback"
+	if e.Interrupted {
+		label = "playback interrupted"
+	}
+	fmt.Printf("\033[2K    %s (%.1fs)\n", label, e.Elapsed.Seconds())
+}
+
+func (u *UI) onSpeakingInterrupted(e events.SpeakingInterrupted) {
+	fmt.Printf("\033[2K    speech interrupted (%s)\n", e.Reason)
 }
 
 func (u *UI) onResponseReady(e events.ResponseReady) {
