@@ -19,10 +19,10 @@ func NewVAD(cfg *config.Config) (*VAD, error) {
 	modelPath := filepath.Join(config.ModelsDir(), "silero_vad.onnx")
 
 	sileroConfig := sherpa.SileroVadModelConfig{
-		Model:             modelPath,
-		MinSpeechDuration: 0.25,
+		Model:              modelPath,
+		MinSpeechDuration:  0.25,
 		MinSilenceDuration: float32(cfg.VADSilenceDuration),
-		Threshold:         0.5,
+		Threshold:          0.5,
 	}
 
 	vadConfig := sherpa.VadModelConfig{

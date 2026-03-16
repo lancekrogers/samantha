@@ -12,31 +12,31 @@ import (
 // Config holds all application configuration.
 type Config struct {
 	// TTS
-	TTSProvider    string  `mapstructure:"tts_provider"`
-	TTSVoice       string  `mapstructure:"tts_voice"`
-	SpeechSpeed    float64 `mapstructure:"speech_speed"`
+	TTSProvider string  `mapstructure:"tts_provider"`
+	TTSVoice    string  `mapstructure:"tts_voice"`
+	SpeechSpeed float64 `mapstructure:"speech_speed"`
 
 	// STT
 	STTProvider  string `mapstructure:"stt_provider"`
 	WhisperModel string `mapstructure:"whisper_model"`
 
 	// VAD
-	VADEnabled          bool    `mapstructure:"vad_enabled"`
-	VADSilenceDuration  float64 `mapstructure:"vad_silence_duration"`
+	VADEnabled         bool    `mapstructure:"vad_enabled"`
+	VADSilenceDuration float64 `mapstructure:"vad_silence_duration"`
 
 	// Claude
 	ClaudeModel        string `mapstructure:"claude_model"`
 	ClaudeModelComplex string `mapstructure:"claude_model_complex"`
 
 	// Fish Audio (optional)
-	FishAPIKey      string `mapstructure:"fish_api_key"`
-	FishVoiceModel  string `mapstructure:"fish_voice_model_id"`
+	FishAPIKey     string `mapstructure:"fish_api_key"`
+	FishVoiceModel string `mapstructure:"fish_voice_model_id"`
 
 	// General
-	Language         string `mapstructure:"language"`
-	MaxHistory       int    `mapstructure:"max_history"`
-	ListenTimeout    int    `mapstructure:"listen_timeout"`
-	PhraseTimeLimit  int    `mapstructure:"phrase_time_limit"`
+	Language        string `mapstructure:"language"`
+	MaxHistory      int    `mapstructure:"max_history"`
+	ListenTimeout   int    `mapstructure:"listen_timeout"`
+	PhraseTimeLimit int    `mapstructure:"phrase_time_limit"`
 }
 
 var (

@@ -114,4 +114,3 @@ func (u *UI) onError(e events.Error) {
 func (u *UI) onInfo(e events.Info) {
 	fmt.Printf("  %s\n", e.Message)
 }
-

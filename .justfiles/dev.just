@@ -1,17 +1,15 @@
-# Development recipes
-binary_name := "samantha"
-bin_dir := "bin"
+# Development utilities (imported flat into root)
 
-[private]
-default:
-    @just --list --unsorted --justfile {{source_file()}}
+# Lint and format
+lint:
+    go fmt ./...
+    go vet ./...
 
-# Run with go run (no build step)
-[no-cd]
-run *ARGS:
-    go run ./cmd/samantha {{ARGS}}
+# Update and tidy dependencies
+deps:
+    go get -u ./...
+    go mod tidy
 
-# Watch for changes and rebuild (requires entr)
-[no-cd]
+# Watch for changes and rerun (requires entr)
 watch:
     find . -name '*.go' | entr -r go run ./cmd/samantha

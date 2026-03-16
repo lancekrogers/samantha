@@ -9,10 +9,10 @@ bin_dir := "bin"
 main_path := "cmd/samantha/main.go"
 
 # Modules
-[doc('Build variants (dev, release, cross-platform)')]
+[doc('Build variants (release, cross-platform)')]
 mod build '.justfiles/build.just'
 
-[doc('Testing (unit, coverage)')]
+[doc('Testing (unit, race, coverage)')]
 mod test '.justfiles/test.just'
 
 [doc('Voice & audio setup')]
@@ -21,6 +21,9 @@ mod voice '.justfiles/voice.just'
 [doc('Install to $GOBIN')]
 mod install '.justfiles/install.just'
 
+# Flat dev utilities
+import '.justfiles/dev.just'
+
 [private]
 default:
     #!/usr/bin/env bash
@@ -28,11 +31,11 @@ default:
     echo ""
     just --list --unsorted
 
-# Quick build to bin/
+# Build to bin/
 quick:
     go build -o {{bin_dir}}/{{binary_name}} {{main_path}}
 
-# Run samantha
+# Build and run with any args
 run *ARGS: quick
     ./{{bin_dir}}/{{binary_name}} {{ARGS}}
 
@@ -40,27 +43,6 @@ run *ARGS: quick
 talk: quick
     ./{{bin_dir}}/{{binary_name}}
 
-# Text mode (type + hear voice)
-text: quick
-    ./{{bin_dir}}/{{binary_name}} --text
-
-# Format Go code
-fmt:
-    go fmt ./...
-
-# Run linter
-lint:
-    go vet ./...
-
 # Clean build artifacts
 clean:
-    rm -rf {{bin_dir}}/ dist/
-
-# Show current config
-config: quick
-    ./{{bin_dir}}/{{binary_name}} config
-
-# Update and tidy dependencies
-deps:
-    go get -u ./...
-    go mod tidy
+    rm -rf {{bin_dir}}/ dist/ coverage.out coverage.html
