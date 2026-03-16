@@ -1,0 +1,31 @@
+# Binaries
+bin/
+samantha
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test
+*.test
+*.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+vendor/
+
+# Models (downloaded at runtime)
+*.onnx
+*.bin
