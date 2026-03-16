@@ -52,8 +52,8 @@ func requiredArchives(cfg *Config) []ModelArchive {
 			Name: fmt.Sprintf("whisper-%s", model),
 			URL:  fmt.Sprintf("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-%s.tar.bz2", model),
 			CheckFiles: []string{
-				fmt.Sprintf("sherpa-onnx-whisper-%s-encoder.onnx", model),
-				fmt.Sprintf("sherpa-onnx-whisper-%s-decoder.onnx", model),
+				fmt.Sprintf("%s-encoder.onnx", model),
+				fmt.Sprintf("%s-decoder.onnx", model),
 			},
 		},
 		{

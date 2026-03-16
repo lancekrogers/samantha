@@ -39,7 +39,7 @@ samantha --no-voice   # Voice input, text output
 
 ```bash
 samantha config                     # View all config
-samantha config set tts_voice af_bella  # Set a config value
+samantha config tts_voice af_bella      # Set a config value
 samantha voices                     # List available TTS voices
 samantha providers                  # Show TTS/STT providers
 samantha test                       # Test mic and speaker

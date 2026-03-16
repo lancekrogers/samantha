@@ -134,13 +134,20 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 	return p, cleanup, nil
 }
 
+var lastProgressPct int
+
 func modelProgress(name string, pct float64) {
+	iPct := int(pct)
 	if pct == 0 {
+		lastProgressPct = -1
 		fmt.Printf("  Downloading %s...\n", name)
-	} else if int(pct)%25 == 0 {
-		fmt.Printf("\r  %s: %.0f%%", name, pct)
+		return
 	}
-	if pct >= 100 {
-		fmt.Println()
+	if iPct != lastProgressPct {
+		lastProgressPct = iPct
+		fmt.Printf("\r  %s: %d%%", name, iPct)
+		if iPct >= 100 {
+			fmt.Println()
+		}
 	}
 }

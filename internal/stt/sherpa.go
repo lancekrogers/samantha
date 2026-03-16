@@ -27,8 +27,8 @@ func NewSherpaSTT(cfg *config.Config, capture *audio.Capture, vad *audio.VAD) (*
 	model := cfg.WhisperModel
 
 	whisperConfig := sherpa.OfflineWhisperModelConfig{
-		Encoder:  filepath.Join(modelsDir, fmt.Sprintf("sherpa-onnx-whisper-%s-encoder.onnx", model)),
-		Decoder:  filepath.Join(modelsDir, fmt.Sprintf("sherpa-onnx-whisper-%s-decoder.onnx", model)),
+		Encoder:  filepath.Join(modelsDir, fmt.Sprintf("%s-encoder.onnx", model)),
+		Decoder:  filepath.Join(modelsDir, fmt.Sprintf("%s-decoder.onnx", model)),
 		Language: cfg.Language[:2], // "en-US" -> "en"
 	}
 
