@@ -64,8 +64,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("vad_enabled", true)
 	v.SetDefault("vad_silence_duration", 0.5)
 
-	v.SetDefault("claude_model", "claude-sonnet-4-5-20250514")
-	v.SetDefault("claude_model_complex", "claude-opus-4-6-20250929")
+	v.SetDefault("claude_model", "claude-sonnet-4-6")
+	v.SetDefault("claude_model_complex", "claude-opus-4-6")
 
 	v.SetDefault("fish_api_key", "")
 	v.SetDefault("fish_voice_model_id", "474887f7949b4d1ab3e626cddf82613a")
