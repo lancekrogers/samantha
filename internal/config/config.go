@@ -40,7 +40,7 @@ type Config struct {
 }
 
 var (
-	configDir  = filepath.Join(homeDir(), ".samantha")
+	configDir  = filepath.Join(homeDir(), ".obey", "agents", "voice", "samantha")
 	configFile = filepath.Join(configDir, "config.yaml")
 	v          *viper.Viper
 )
@@ -163,6 +163,11 @@ func ModelsDir() string {
 // SessionsDir returns the sessions directory.
 func SessionsDir() string {
 	return filepath.Join(configDir, "sessions")
+}
+
+// ConfigDir returns the config directory path.
+func ConfigDir() string {
+	return configDir
 }
 
 func homeDir() string {
