@@ -187,6 +187,14 @@ func (b *Brain) ClearHistory() {
 }
 
 func cleanForVoice(s string) string {
-	r := strings.NewReplacer("**", "", "```", "", "##", "", "# ", "")
+	r := strings.NewReplacer(
+		// Strip markdown formatting.
+		"**", "", "```", "", "##", "", "# ", "",
+		// Replace vocal sounds that TTS spells out instead of vocalizing.
+		"Mmm", "", "mmm", "", "Hmm", "", "hmm", "",
+		"Haha", "", "haha", "", "Heh", "", "heh", "",
+		"Uhh", "", "uhh", "", "Umm", "", "umm", "",
+		"Ahh", "", "ahh", "",
+	)
 	return strings.TrimSpace(r.Replace(s))
 }
