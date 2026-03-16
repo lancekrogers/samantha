@@ -48,7 +48,7 @@ func (b *Brain) Available() bool {
 
 // ThinkStream sends input to Claude and returns a channel of streaming message chunks.
 // Each message on the channel may contain partial text.
-func (b *Brain) ThinkStream(ctx context.Context, input string) (<-chan string, error) {
+func (b *Brain) ThinkStream(ctx context.Context, input string, _ StreamOptions) (<-chan string, error) {
 	b.history = append(b.history, Turn{Role: "user", Content: input})
 	prompt := b.buildPrompt()
 

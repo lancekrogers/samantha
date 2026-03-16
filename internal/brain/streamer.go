@@ -6,8 +6,8 @@ import (
 )
 
 // sentencesPerChunk controls how many sentences are batched before sending to TTS.
-// Larger = smoother playback, but longer wait before first audio.
-const sentencesPerChunk = 3
+// Keep this at 1 for low latency so Samantha can start speaking on the first complete sentence.
+const sentencesPerChunk = 1
 
 // ChunkSentences reads text chunks from input and emits batches of sentences for TTS.
 // Batches sentencesPerChunk sentences together for smoother playback.

@@ -135,7 +135,8 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 	}
 
 	p := &pipeline.Pipeline{
-		Events: bus,
+		Events:            bus,
+		VoiceToolsEnabled: cfg.VoiceToolsEnabled,
 	}
 
 	// Brain — select provider based on config.
