@@ -15,6 +15,7 @@ import (
 	"github.com/Obedience-Corp/samantha/internal/config"
 	"github.com/Obedience-Corp/samantha/internal/events"
 	"github.com/Obedience-Corp/samantha/internal/pipeline"
+	"github.com/Obedience-Corp/samantha/internal/session"
 	"github.com/Obedience-Corp/samantha/internal/stt"
 	"github.com/Obedience-Corp/samantha/internal/tts"
 	appTUI "github.com/Obedience-Corp/samantha/internal/tui"
@@ -57,7 +58,7 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
-		return startPipeline(cfg)
+		return startPipeline(cfg, nil)
 	},
 }
 
@@ -72,7 +73,7 @@ func Execute() error {
 	return rootCmd.Execute()
 }
 
-func startPipeline(cfg *config.Config) error {
+func startPipeline(cfg *config.Config, resumeSession *session.Session) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
@@ -81,7 +82,7 @@ func startPipeline(cfg *config.Config) error {
 	}
 
 	bus := events.NewBus()
-	display := ui.New(bus)
+	display := ui.New(bus, cfg.AgentName)
 
 	p, cleanup, err := buildPipeline(ctx, cfg, bus, textMode, noVoice)
 	if err != nil {
@@ -89,11 +90,35 @@ func startPipeline(cfg *config.Config) error {
 	}
 	defer cleanup()
 
+	// Create or resume session.
+	model := cfg.OllamaModel
+	if cfg.BrainProvider == "claude" {
+		model = "claude"
+	}
+	sess := resumeSession
+	if sess == nil {
+		sess = session.New(cfg.BrainProvider, model)
+	} else {
+		// Restore conversation history.
+		p.Brain.LoadHistory(sess.Turns)
+		fmt.Printf("  Resuming session %s (%d turns)\n", sess.ID, len(sess.Turns))
+	}
+
+	// Auto-save after each turn.
+	p.OnTurn = func() {
+		_ = sess.Save(p.Brain.History())
+	}
+
 	display.ShowWelcome()
 	display.ShowProviders(cfg.TTSProvider, cfg.STTProvider)
 	defer display.ShowGoodbye()
 
-	return app.Run(ctx, p, textMode, noVoice)
+	err = app.Run(ctx, p, textMode, noVoice)
+
+	// Final save on exit.
+	_ = sess.Save(p.Brain.History())
+
+	return err
 }
 
 func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, text, silent bool) (*pipeline.Pipeline, func(), error) {
@@ -137,6 +162,7 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 			return nil, nil, fmt.Errorf("start capture: %w", err)
 		}
 		cleanups = append(cleanups, capture.Stop)
+		p.Capture = capture
 
 		vad, err := audio.NewVAD(cfg)
 		if err != nil {
@@ -144,6 +170,7 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 			return nil, nil, fmt.Errorf("init VAD: %w", err)
 		}
 		cleanups = append(cleanups, vad.Delete)
+		p.VAD = vad
 
 		sttProvider, err := stt.NewSherpaSTT(cfg, capture, vad)
 		if err != nil {

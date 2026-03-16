@@ -1,0 +1,1 @@
+I think the pipeline you’ve built hits the low‑latency target and the separation of STT, TTS, and Claude works well. To push it further you could move the VAD earlier, surface a few more model‑error details, and tighten up the CLI flag handling so it’s less error‑prone.

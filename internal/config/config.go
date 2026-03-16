@@ -17,8 +17,9 @@ type Config struct {
 	SpeechSpeed float64 `mapstructure:"speech_speed"`
 
 	// STT
-	STTProvider  string `mapstructure:"stt_provider"`
-	WhisperModel string `mapstructure:"whisper_model"`
+	STTProvider      string `mapstructure:"stt_provider"`
+	WhisperModel     string `mapstructure:"whisper_model"`
+	WhisperQuantized bool   `mapstructure:"whisper_quantized"`
 
 	// VAD
 	VADEnabled         bool    `mapstructure:"vad_enabled"`
@@ -39,6 +40,9 @@ type Config struct {
 
 	// Paths
 	ModelsDir string `mapstructure:"models_dir"`
+
+	// Agent
+	AgentName string `mapstructure:"agent_name"`
 
 	// General
 	Language        string `mapstructure:"language"`
@@ -65,6 +69,7 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("stt_provider", "sherpa")
 	v.SetDefault("whisper_model", "small")
+	v.SetDefault("whisper_quantized", true)
 
 	v.SetDefault("vad_enabled", true)
 	v.SetDefault("vad_silence_duration", 0.5)
@@ -79,6 +84,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("fish_api_key", "")
 	v.SetDefault("fish_voice_model_id", "474887f7949b4d1ab3e626cddf82613a")
 
+	v.SetDefault("agent_name", "Samantha")
 	v.SetDefault("models_dir", filepath.Join(homeDir(), ".cache", "samantha", "models"))
 
 	v.SetDefault("language", "en-US")

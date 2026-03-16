@@ -21,7 +21,7 @@ var genderMap = map[byte]string{
 	'f': "Female", 'm': "Male",
 }
 
-// voiceNames lists all kokoro voices in order — index = speaker ID.
+// voiceNames lists kokoro-multi-lang-v1_0 voices in order — index = speaker ID.
 var voiceNames = []string{
 	"af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica",
 	"af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
@@ -53,7 +53,6 @@ type KokoroTTS struct {
 func NewKokoroTTS(cfg *config.Config) (*KokoroTTS, error) {
 	modelsDir := config.ModelsDir()
 
-	// Multi-lingual kokoro v1.0+ requires lexicon + language.
 	lang := cfg.Language[:2] // "en-US" -> "en"
 	lexicon := filepath.Join(modelsDir, "lexicon-us-en.txt")
 	if lang != "en" {

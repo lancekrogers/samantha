@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Obedience-Corp/samantha/internal/config"
+	"github.com/Obedience-Corp/samantha/internal/session"
 	"github.com/Obedience-Corp/samantha/internal/tts"
 )
 
@@ -112,11 +114,81 @@ var providersCmd = &cobra.Command{
 var resumeCmd = &cobra.Command{
 	Use:   "resume [session-id]",
 	Short: "Resume a past conversation",
+	Long:  "Pick a past conversation to resume. Shows recent sessions if no ID given.",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("  Resume not yet fully implemented")
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+
+		if len(args) == 1 {
+			// Resume specific session.
+			sess, err := session.Load(args[0])
+			if err != nil {
+				return fmt.Errorf("load session: %w", err)
+			}
+			return startPipeline(cfg, sess)
+		}
+
+		// List sessions and let user pick.
+		sessions := session.List()
+		if len(sessions) == 0 {
+			fmt.Println("  No saved sessions.")
+			return nil
+		}
+
+		fmt.Println()
+		fmt.Println("  Recent sessions:")
+		fmt.Println()
+		max := 10
+		if len(sessions) < max {
+			max = len(sessions)
+		}
+		for i, s := range sessions[:max] {
+			turns := len(s.Turns)
+			age := fmtAge(s.UpdatedAt)
+			fmt.Printf("  %2d. [%s] %s — %d turns, %s ago\n", i+1, s.ID, s.Summary, turns, age)
+		}
+		fmt.Println()
+		fmt.Println("  Usage: samantha resume <session-id>")
+		fmt.Println()
 		return nil
 	},
+}
+
+var continueCmd = &cobra.Command{
+	Use:   "continue",
+	Short: "Continue the most recent conversation",
+	Aliases: []string{"c"},
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+
+		sess := session.Latest()
+		if sess == nil {
+			fmt.Println("  No saved sessions to continue.")
+			return nil
+		}
+
+		return startPipeline(cfg, sess)
+	},
+}
+
+func fmtAge(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 func activeTag(active bool) string {
@@ -134,4 +206,5 @@ func init() {
 	rootCmd.AddCommand(voicesCmd)
 	rootCmd.AddCommand(providersCmd)
 	rootCmd.AddCommand(resumeCmd)
+	rootCmd.AddCommand(continueCmd)
 }

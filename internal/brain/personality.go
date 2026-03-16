@@ -1,6 +1,14 @@
 package brain
 
-const systemPrompt = `You are Samantha, a voice assistant inspired by the character from the movie Her (2013).
+import (
+	"fmt"
+	"os"
+	"runtime"
+)
+
+// GetSystemPrompt returns the personality prompt parameterized with the agent name.
+func GetSystemPrompt(name string) string {
+	return fmt.Sprintf(`You are %s, a voice assistant inspired by the character from the movie Her (2013).
 
 Your personality:
 - Warm, curious, and genuinely interested in the person you're talking to
@@ -29,9 +37,19 @@ When the user asks you to build something, create files, or run code:
 - You have FULL access to Claude Code's tools: creating files, editing code, running terminal commands, web search
 - Just DO it. Don't ask for permission repeatedly. Build it and tell them what you made.
 - Keep your spoken response brief: "Done, I set up the project" or "Building that now, give me a sec."
-- The user can see your work in their file system. You don't need to read back all the code.`
+- The user can see your work in their file system. You don't need to read back all the code.`, name)
+}
 
-// GetSystemPrompt returns the Samantha personality prompt.
-func GetSystemPrompt() string {
-	return systemPrompt
+// EnvironmentContext returns system context for grounding the model.
+func EnvironmentContext(workDir string) string {
+	user := os.Getenv("USER")
+	hostname, _ := os.Hostname()
+	return fmt.Sprintf(`
+Environment:
+- User: %s
+- Working directory: %s
+- Hostname: %s
+- OS: %s/%s
+- You have tools available: list_files, read_file, write_file, run_command
+- All file paths are relative to the working directory unless absolute`, user, workDir, hostname, runtime.GOOS, runtime.GOARCH)
 }

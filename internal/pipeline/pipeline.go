@@ -14,11 +14,14 @@ import (
 
 // Pipeline orchestrates the voice conversation loop.
 type Pipeline struct {
-	STT    stt.Provider
-	Brain  brain.Provider
-	TTS    tts.Provider
-	Player *audio.Player
-	Events *events.Bus
+	STT     stt.Provider
+	Brain   brain.Provider
+	TTS     tts.Provider
+	Player  *audio.Player
+	Capture *audio.Capture // drain mic after playback to discard echo
+	VAD     *audio.VAD     // clear VAD after playback to discard echo segments
+	Events  *events.Bus
+	OnTurn  func() // called after each completed turn for session auto-save
 }
 
 // RunTurn executes one conversational turn with streaming TTS.
@@ -83,6 +86,14 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 			done := p.Player.PlayAsync(ctx, samples, sampleRate)
 			<-done
 
+			// Drain mic buffer and VAD to discard echo of our own playback.
+			if p.Capture != nil {
+				p.Capture.Reset()
+			}
+			if p.VAD != nil {
+				p.VAD.Clear()
+			}
+
 			p.Events.Emit(events.SpeakingComplete{Elapsed: time.Since(t3)})
 		}
 	}
@@ -92,6 +103,10 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 	}
 
 	p.Events.Emit(events.ResponseReady{Response: fullResponse})
+
+	if p.OnTurn != nil {
+		p.OnTurn()
+	}
 
 	return text, nil
 }
@@ -136,5 +151,10 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	}
 
 	p.Events.Emit(events.ResponseReady{Response: response})
+
+	if p.OnTurn != nil {
+		p.OnTurn()
+	}
+
 	return nil
 }

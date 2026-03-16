@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -26,15 +27,22 @@ func NewSherpaSTT(cfg *config.Config, capture *audio.Capture, vad *audio.VAD) (*
 	modelsDir := config.ModelsDir()
 	model := cfg.WhisperModel
 
+	suffix := ".onnx"
+	if cfg.WhisperQuantized {
+		suffix = ".int8.onnx"
+	}
+
 	whisperConfig := sherpa.OfflineWhisperModelConfig{
-		Encoder:  filepath.Join(modelsDir, fmt.Sprintf("%s-encoder.onnx", model)),
-		Decoder:  filepath.Join(modelsDir, fmt.Sprintf("%s-decoder.onnx", model)),
+		Encoder:  filepath.Join(modelsDir, fmt.Sprintf("%s-encoder%s", model, suffix)),
+		Decoder:  filepath.Join(modelsDir, fmt.Sprintf("%s-decoder%s", model, suffix)),
 		Language: cfg.Language[:2], // "en-US" -> "en"
 	}
 
+	threads := min(runtime.NumCPU(), 4)
 	modelConfig := sherpa.OfflineModelConfig{
-		Whisper: whisperConfig,
-		Tokens:  filepath.Join(modelsDir, fmt.Sprintf("%s-tokens.txt", model)),
+		Whisper:    whisperConfig,
+		Tokens:     filepath.Join(modelsDir, fmt.Sprintf("%s-tokens.txt", model)),
+		NumThreads: threads,
 	}
 
 	recognizerConfig := sherpa.OfflineRecognizerConfig{
@@ -59,8 +67,8 @@ const minSpeechSamples = 4800
 
 // Transcribe listens for speech using VAD and transcribes with whisper.
 func (s *SherpaSTT) Transcribe(ctx context.Context, onStatus func(phase string)) (string, error) {
-	// Flush stale audio and VAD state from previous turn.
-	s.capture.Reset()
+	// Flush stale VAD segments from previous turn.
+	// Do NOT reset capture — the user may already be speaking.
 	s.vad.Clear()
 
 	if onStatus != nil {

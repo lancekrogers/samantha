@@ -54,7 +54,7 @@ func (b *Brain) ThinkStream(ctx context.Context, input string) (<-chan string, e
 
 	opts := &claude.RunOptions{
 		Format:                 claude.StreamJSONOutput,
-		SystemPrompt:           GetSystemPrompt(),
+		SystemPrompt:           GetSystemPrompt(b.cfg.AgentName),
 		PermissionMode:         claude.PermissionModeBypassPermissions,
 		IncludePartialMessages: true,
 	}
@@ -118,7 +118,7 @@ func (b *Brain) ThinkFull(ctx context.Context, input string) (string, error) {
 
 	opts := &claude.RunOptions{
 		Format:         claude.TextOutput,
-		SystemPrompt:   GetSystemPrompt(),
+		SystemPrompt:   GetSystemPrompt(b.cfg.AgentName),
 		PermissionMode: claude.PermissionModeBypassPermissions,
 	}
 
@@ -186,7 +186,25 @@ func (b *Brain) ClearHistory() {
 	b.history = nil
 }
 
+// LoadHistory restores conversation history from a saved session.
+func (b *Brain) LoadHistory(turns []Turn) {
+	b.history = turns
+}
+
 func cleanForVoice(s string) string {
-	r := strings.NewReplacer("**", "", "```", "", "##", "", "# ", "")
+	r := strings.NewReplacer(
+		// Strip markdown formatting.
+		"**", "", "```", "", "##", "", "# ", "",
+		// Replace vocal sounds that TTS spells out instead of vocalizing.
+		"Mmm", "", "mmm", "", "Hmm", "", "hmm", "",
+		"Haha", "", "haha", "", "Heh", "", "heh", "",
+		"Uhh", "", "uhh", "", "Umm", "", "umm", "",
+		"Ahh", "", "ahh", "",
+		// Strip unicode combining characters that cause sherpa phoneme warnings.
+		"\u0329", "", // combining vertical line below
+		"\u0300", "", // combining grave accent
+		"\u0301", "", // combining acute accent
+		"\u0327", "", // combining cedilla
+	)
 	return strings.TrimSpace(r.Replace(s))
 }
