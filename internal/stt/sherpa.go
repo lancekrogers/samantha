@@ -59,8 +59,8 @@ const minSpeechSamples = 4800
 
 // Transcribe listens for speech using VAD and transcribes with whisper.
 func (s *SherpaSTT) Transcribe(ctx context.Context, onStatus func(phase string)) (string, error) {
-	// Flush stale audio and VAD state from previous turn.
-	s.capture.Reset()
+	// Flush stale VAD segments from previous turn.
+	// Do NOT reset capture — the user may already be speaking.
 	s.vad.Clear()
 
 	if onStatus != nil {
