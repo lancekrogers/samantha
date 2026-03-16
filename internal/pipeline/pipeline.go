@@ -15,7 +15,7 @@ import (
 // Pipeline orchestrates the voice conversation loop.
 type Pipeline struct {
 	STT    stt.Provider
-	Brain  *brain.Brain
+	Brain  brain.Provider
 	TTS    tts.Provider
 	Player *audio.Player
 	Events *events.Bus

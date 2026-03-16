@@ -24,7 +24,12 @@ type Config struct {
 	VADEnabled         bool    `mapstructure:"vad_enabled"`
 	VADSilenceDuration float64 `mapstructure:"vad_silence_duration"`
 
-	// Claude
+	// Brain
+	BrainProvider string `mapstructure:"brain_provider"`
+	OllamaModel   string `mapstructure:"ollama_model"`
+	OllamaHost    string `mapstructure:"ollama_host"`
+
+	// Claude (legacy, kept for override)
 	ClaudeModel        string `mapstructure:"claude_model"`
 	ClaudeModelComplex string `mapstructure:"claude_model_complex"`
 
@@ -64,8 +69,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("vad_enabled", true)
 	v.SetDefault("vad_silence_duration", 0.5)
 
-	v.SetDefault("claude_model", "claude-sonnet-4-6")
-	v.SetDefault("claude_model_complex", "claude-opus-4-6")
+	v.SetDefault("brain_provider", "claude")
+	v.SetDefault("ollama_model", "")
+	v.SetDefault("ollama_host", "http://localhost:11434")
+
+	v.SetDefault("claude_model", "")
+	v.SetDefault("claude_model_complex", "")
 
 	v.SetDefault("fish_api_key", "")
 	v.SetDefault("fish_voice_model_id", "474887f7949b4d1ab3e626cddf82613a")
@@ -94,8 +103,11 @@ func Load() (*Config, error) {
 		"tts_voice":     "TTS_VOICE",
 		"stt_provider":  "STT_PROVIDER",
 		"whisper_model": "WHISPER_MODEL",
-		"fish_api_key":  "FISH_API_KEY",
-		"models_dir":    "MODELS_DIR",
+		"fish_api_key":    "FISH_API_KEY",
+		"models_dir":      "MODELS_DIR",
+		"brain_provider":  "BRAIN_PROVIDER",
+		"ollama_model":    "OLLAMA_MODEL",
+		"ollama_host":     "OLLAMA_HOST",
 	}
 	for key, env := range bindings {
 		_ = v.BindEnv(key, env)

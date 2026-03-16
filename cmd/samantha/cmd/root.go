@@ -17,12 +17,14 @@ import (
 	"github.com/Obedience-Corp/samantha/internal/pipeline"
 	"github.com/Obedience-Corp/samantha/internal/stt"
 	"github.com/Obedience-Corp/samantha/internal/tts"
+	appTUI "github.com/Obedience-Corp/samantha/internal/tui"
 	"github.com/Obedience-Corp/samantha/internal/ui"
 )
 
 var (
 	textMode bool
 	noVoice  bool
+	skipTUI  bool
 )
 
 var rootCmd = &cobra.Command{
@@ -34,43 +36,64 @@ var rootCmd = &cobra.Command{
 		return err
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer cancel()
-
 		cfg, err := config.Load()
 		if err != nil {
 			return fmt.Errorf("load config: %w", err)
 		}
 
-		if err := config.EnsureModels(cfg, modelProgress); err != nil {
-			return fmt.Errorf("ensure models: %w", err)
+		// Launch TUI unless --text or --no-voice flags skip it.
+		if !skipTUI && !textMode && !noVoice {
+			shouldStart, err := appTUI.Run(cfg)
+			if err != nil {
+				return err
+			}
+			if !shouldStart {
+				return nil // user quit from TUI
+			}
+			// Reload config in case settings changed.
+			cfg, err = config.Load()
+			if err != nil {
+				return fmt.Errorf("reload config: %w", err)
+			}
 		}
 
-		bus := events.NewBus()
-		display := ui.New(bus)
-
-		p, cleanup, err := buildPipeline(ctx, cfg, bus, textMode, noVoice)
-		if err != nil {
-			return fmt.Errorf("init pipeline: %w", err)
-		}
-		defer cleanup()
-
-		display.ShowWelcome()
-		display.ShowProviders(cfg.TTSProvider, cfg.STTProvider)
-		defer display.ShowGoodbye()
-
-		return app.Run(ctx, p, textMode, noVoice)
+		return startPipeline(cfg)
 	},
 }
 
 func init() {
 	rootCmd.Flags().BoolVarP(&textMode, "text", "t", false, "Text-only input mode (no microphone)")
 	rootCmd.Flags().BoolVarP(&noVoice, "no-voice", "n", false, "Disable TTS output")
+	rootCmd.Flags().BoolVar(&skipTUI, "no-tui", false, "Skip TUI launcher, start directly")
 }
 
 // Execute runs the root command.
 func Execute() error {
 	return rootCmd.Execute()
+}
+
+func startPipeline(cfg *config.Config) error {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	if err := config.EnsureModels(cfg, modelProgress); err != nil {
+		return fmt.Errorf("ensure models: %w", err)
+	}
+
+	bus := events.NewBus()
+	display := ui.New(bus)
+
+	p, cleanup, err := buildPipeline(ctx, cfg, bus, textMode, noVoice)
+	if err != nil {
+		return fmt.Errorf("init pipeline: %w", err)
+	}
+	defer cleanup()
+
+	display.ShowWelcome()
+	display.ShowProviders(cfg.TTSProvider, cfg.STTProvider)
+	defer display.ShowGoodbye()
+
+	return app.Run(ctx, p, textMode, noVoice)
 }
 
 func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, text, silent bool) (*pipeline.Pipeline, func(), error) {
@@ -85,8 +108,8 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 		Events: bus,
 	}
 
-	// Brain is always needed.
-	b, err := brain.New(cfg)
+	// Brain — select provider based on config.
+	b, err := newBrain(cfg)
 	if err != nil {
 		cleanup()
 		return nil, nil, fmt.Errorf("init brain: %w", err)
@@ -132,6 +155,15 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 	}
 
 	return p, cleanup, nil
+}
+
+func newBrain(cfg *config.Config) (brain.Provider, error) {
+	switch cfg.BrainProvider {
+	case "ollama":
+		return brain.NewOllama(cfg)
+	default:
+		return brain.New(cfg)
+	}
 }
 
 var lastProgressPct int
