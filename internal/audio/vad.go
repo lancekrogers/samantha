@@ -48,6 +48,11 @@ func (v *VAD) IsSpeechDetected() bool {
 	return !v.detector.IsEmpty()
 }
 
+// IsEmpty returns true if no speech segments are available.
+func (v *VAD) IsEmpty() bool {
+	return v.detector.IsEmpty()
+}
+
 // IsSpeech returns true if current audio chunk contains speech.
 func (v *VAD) IsSpeech() bool {
 	return v.detector.IsSpeech()
