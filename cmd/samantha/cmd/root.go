@@ -77,8 +77,13 @@ func startPipeline(cfg *config.Config, resumeSession *session.Session) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	if err := config.EnsureModels(cfg, modelProgress); err != nil {
-		return fmt.Errorf("ensure models: %w", err)
+	req := config.AssetRequest{
+		NeedTTS: !noVoice,
+		NeedSTT: !textMode,
+		NeedVAD: !textMode && cfg.VADEnabled,
+	}
+	if err := config.EnsureRuntimeAssets(cfg, req, modelProgress); err != nil {
+		return fmt.Errorf("ensure runtime assets: %w", err)
 	}
 
 	bus := events.NewBus()
@@ -130,11 +135,12 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 	}
 
 	p := &pipeline.Pipeline{
-		Events: bus,
+		Events:            bus,
+		VoiceToolsEnabled: cfg.VoiceToolsEnabled,
 	}
 
 	// Brain — select provider based on config.
-	b, err := newBrain(cfg)
+	b, err := brain.NewProvider(cfg)
 	if err != nil {
 		cleanup()
 		return nil, nil, fmt.Errorf("init brain: %w", err)
@@ -145,13 +151,15 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 	if !silent {
 		p.Player = audio.NewPlayer()
 
-		kokoroTTS, err := tts.NewKokoroTTS(cfg)
+		ttsProvider, ttsCleanup, err := tts.NewProvider(cfg)
 		if err != nil {
 			cleanup()
 			return nil, nil, fmt.Errorf("init TTS: %w", err)
 		}
-		cleanups = append(cleanups, kokoroTTS.Delete)
-		p.TTS = kokoroTTS
+		if ttsCleanup != nil {
+			cleanups = append(cleanups, ttsCleanup)
+		}
+		p.TTS = ttsProvider
 	}
 
 	// Audio capture + VAD + STT (skip in text mode).
@@ -164,33 +172,29 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 		cleanups = append(cleanups, capture.Stop)
 		p.Capture = capture
 
-		vad, err := audio.NewVAD(cfg)
-		if err != nil {
-			cleanup()
-			return nil, nil, fmt.Errorf("init VAD: %w", err)
+		var vad *audio.VAD
+		if cfg.VADEnabled {
+			vad, err = audio.NewVAD(cfg)
+			if err != nil {
+				cleanup()
+				return nil, nil, fmt.Errorf("init VAD: %w", err)
+			}
+			cleanups = append(cleanups, vad.Delete)
+			p.VAD = vad
 		}
-		cleanups = append(cleanups, vad.Delete)
-		p.VAD = vad
 
-		sttProvider, err := stt.NewSherpaSTT(cfg, capture, vad)
+		sttProvider, sttCleanup, err := stt.NewProvider(cfg, capture, vad)
 		if err != nil {
 			cleanup()
 			return nil, nil, fmt.Errorf("init STT: %w", err)
 		}
-		cleanups = append(cleanups, sttProvider.Delete)
+		if sttCleanup != nil {
+			cleanups = append(cleanups, sttCleanup)
+		}
 		p.STT = sttProvider
 	}
 
 	return p, cleanup, nil
-}
-
-func newBrain(cfg *config.Config) (brain.Provider, error) {
-	switch cfg.BrainProvider {
-	case "ollama":
-		return brain.NewOllama(cfg)
-	default:
-		return brain.New(cfg)
-	}
 }
 
 var lastProgressPct int

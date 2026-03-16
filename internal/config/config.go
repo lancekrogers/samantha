@@ -26,9 +26,10 @@ type Config struct {
 	VADSilenceDuration float64 `mapstructure:"vad_silence_duration"`
 
 	// Brain
-	BrainProvider string `mapstructure:"brain_provider"`
-	OllamaModel   string `mapstructure:"ollama_model"`
-	OllamaHost    string `mapstructure:"ollama_host"`
+	BrainProvider     string `mapstructure:"brain_provider"`
+	OllamaModel       string `mapstructure:"ollama_model"`
+	OllamaHost        string `mapstructure:"ollama_host"`
+	VoiceToolsEnabled bool   `mapstructure:"voice_tools_enabled"`
 
 	// Claude (legacy, kept for override)
 	ClaudeModel        string `mapstructure:"claude_model"`
@@ -77,6 +78,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("brain_provider", "claude")
 	v.SetDefault("ollama_model", "")
 	v.SetDefault("ollama_host", "http://localhost:11434")
+	v.SetDefault("voice_tools_enabled", false)
 
 	v.SetDefault("claude_model", "")
 	v.SetDefault("claude_model_complex", "")
@@ -105,15 +107,16 @@ func Load() (*Config, error) {
 
 	// Explicit env bindings
 	bindings := map[string]string{
-		"tts_provider":  "TTS_PROVIDER",
-		"tts_voice":     "TTS_VOICE",
-		"stt_provider":  "STT_PROVIDER",
-		"whisper_model": "WHISPER_MODEL",
-		"fish_api_key":    "FISH_API_KEY",
-		"models_dir":      "MODELS_DIR",
-		"brain_provider":  "BRAIN_PROVIDER",
-		"ollama_model":    "OLLAMA_MODEL",
-		"ollama_host":     "OLLAMA_HOST",
+		"tts_provider":        "TTS_PROVIDER",
+		"tts_voice":           "TTS_VOICE",
+		"stt_provider":        "STT_PROVIDER",
+		"whisper_model":       "WHISPER_MODEL",
+		"fish_api_key":        "FISH_API_KEY",
+		"models_dir":          "MODELS_DIR",
+		"brain_provider":      "BRAIN_PROVIDER",
+		"ollama_model":        "OLLAMA_MODEL",
+		"ollama_host":         "OLLAMA_HOST",
+		"voice_tools_enabled": "VOICE_TOOLS_ENABLED",
 	}
 	for key, env := range bindings {
 		_ = v.BindEnv(key, env)

@@ -38,6 +38,9 @@ func TestLoadDefaults(t *testing.T) {
 	if !cfg.VADEnabled {
 		t.Error("VADEnabled = false, want true")
 	}
+	if cfg.VoiceToolsEnabled {
+		t.Error("VoiceToolsEnabled = true, want false")
+	}
 }
 
 func TestLoadValidConfig(t *testing.T) {
@@ -100,6 +103,24 @@ func TestEnvOverride(t *testing.T) {
 	}
 	if cfg.FishAPIKey != "sk-test-123" {
 		t.Errorf("FishAPIKey = %q, want sk-test-123", cfg.FishAPIKey)
+	}
+}
+
+func TestVoiceToolsEnvOverride(t *testing.T) {
+	orig := configFile
+	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")
+	defer func() { configFile = orig }()
+
+	setDefaults(v)
+	t.Setenv("VOICE_TOOLS_ENABLED", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if !cfg.VoiceToolsEnabled {
+		t.Error("VoiceToolsEnabled = false, want true from env")
 	}
 }
 

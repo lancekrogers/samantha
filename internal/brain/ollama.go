@@ -65,14 +65,17 @@ func NewOllama(cfg *config.Config) (*OllamaBrain, error) {
 // ThinkStream sends input and returns a channel of streaming text chunks.
 // Implements an agent loop: if the model returns tool calls, executes them
 // and re-requests until the model produces a text response.
-func (o *OllamaBrain) ThinkStream(ctx context.Context, input string) (<-chan string, error) {
+func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts StreamOptions) (<-chan string, error) {
 	o.history = append(o.history, api.Message{Role: "user", Content: input})
 
 	out := make(chan string, 8)
 	go func() {
 		defer close(out)
 
-		tools := voiceAssistantTools()
+		var tools api.Tools
+		if opts.ToolsEnabled {
+			tools = voiceAssistantTools()
+		}
 
 		for i := 0; i < maxToolIterations; i++ {
 			messages := o.buildMessages()
@@ -91,6 +94,9 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string) (<-chan str
 			err := o.client.Chat(ctx, req, func(resp api.ChatResponse) error {
 				if resp.Message.Content != "" {
 					textBuf.WriteString(resp.Message.Content)
+					if !opts.ToolsEnabled {
+						out <- resp.Message.Content
+					}
 				}
 				if len(resp.Message.ToolCalls) > 0 {
 					toolCalls = append(toolCalls, resp.Message.ToolCalls...)
@@ -125,7 +131,9 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string) (<-chan str
 			// No tool calls — stream text to output.
 			response := textBuf.String()
 			if response != "" {
-				out <- response
+				if opts.ToolsEnabled {
+					out <- response
+				}
 				response = cleanForVoice(response)
 				o.history = append(o.history, api.Message{Role: "assistant", Content: response})
 				o.trimHistory()
