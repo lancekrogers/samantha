@@ -38,7 +38,7 @@ func NewSherpaSTT(cfg *config.Config, capture *audio.Capture, vad *audio.VAD) (*
 		Language: cfg.Language[:2], // "en-US" -> "en"
 	}
 
-	threads := min(runtime.NumCPU(), 4)
+	threads := min(runtime.NumCPU(), 8)
 	modelConfig := sherpa.OfflineModelConfig{
 		Whisper:    whisperConfig,
 		Tokens:     filepath.Join(modelsDir, fmt.Sprintf("%s-tokens.txt", model)),
