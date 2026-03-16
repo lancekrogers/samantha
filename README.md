@@ -21,10 +21,11 @@ Mic → VAD → STT → Claude (streaming) → Sentence Chunker → TTS → Spea
 ## Install
 
 ```bash
-go install ./cmd/samantha
+just install global    # Build, sign (macOS), install to $GOBIN
+just install current   # Install last build from bin/
 ```
 
-Requires Go 1.26+. Model files are downloaded automatically on first run.
+Requires Go 1.26+ and [just](https://github.com/casey/just). Model files are downloaded automatically on first run.
 
 ## Usage
 
