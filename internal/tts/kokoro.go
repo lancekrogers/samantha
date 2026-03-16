@@ -33,11 +33,21 @@ type KokoroTTS struct {
 func NewKokoroTTS(cfg *config.Config) (*KokoroTTS, error) {
 	modelsDir := config.ModelsDir()
 
+	// Multi-lingual kokoro v1.0+ requires lexicon + language.
+	lang := cfg.Language[:2] // "en-US" -> "en"
+	lexicon := filepath.Join(modelsDir, "lexicon-us-en.txt")
+	if lang != "en" {
+		lexicon = filepath.Join(modelsDir, fmt.Sprintf("lexicon-%s.txt", lang))
+	}
+
 	kokoroConfig := sherpa.OfflineTtsKokoroModelConfig{
-		Model:   filepath.Join(modelsDir, "model.onnx"),
-		Voices:  filepath.Join(modelsDir, "voices.bin"),
-		Tokens:  filepath.Join(modelsDir, "tokens.txt"),
-		DataDir: filepath.Join(modelsDir, "espeak-ng-data"),
+		Model:       filepath.Join(modelsDir, "model.onnx"),
+		Voices:      filepath.Join(modelsDir, "voices.bin"),
+		Tokens:      filepath.Join(modelsDir, "tokens.txt"),
+		DataDir:     filepath.Join(modelsDir, "espeak-ng-data"),
+		DictDir:     filepath.Join(modelsDir, "dict"),
+		Lexicon:     lexicon,
+		LengthScale: float32(cfg.SpeechSpeed),
 	}
 
 	modelConfig := sherpa.OfflineTtsModelConfig{

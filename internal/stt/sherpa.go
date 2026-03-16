@@ -34,6 +34,7 @@ func NewSherpaSTT(cfg *config.Config, capture *audio.Capture, vad *audio.VAD) (*
 
 	modelConfig := sherpa.OfflineModelConfig{
 		Whisper: whisperConfig,
+		Tokens:  filepath.Join(modelsDir, fmt.Sprintf("%s-tokens.txt", model)),
 	}
 
 	recognizerConfig := sherpa.OfflineRecognizerConfig{
