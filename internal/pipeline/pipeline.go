@@ -64,26 +64,27 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 
 		fullResponse += sentence + " "
 
-		// Generate TTS
-		p.Events.Emit(events.GeneratingVoice{Sentence: sentence})
-		t2 := time.Now()
+		// Generate and play TTS (skip if no voice output)
+		if p.TTS != nil && p.Player != nil {
+			p.Events.Emit(events.GeneratingVoice{Sentence: sentence})
+			t2 := time.Now()
 
-		samples, sampleRate, err := p.TTS.Generate(sentence)
-		if err != nil {
-			p.Events.Emit(events.Error{Message: fmt.Sprintf("TTS: %v", err)})
-			continue
+			samples, sampleRate, err := p.TTS.Generate(sentence)
+			if err != nil {
+				p.Events.Emit(events.Error{Message: fmt.Sprintf("TTS: %v", err)})
+				continue
+			}
+
+			p.Events.Emit(events.VoiceGenerated{Elapsed: time.Since(t2)})
+
+			p.Events.Emit(events.SpeakingStarted{Text: sentence})
+			t3 := time.Now()
+
+			done := p.Player.PlayAsync(ctx, samples, sampleRate)
+			<-done
+
+			p.Events.Emit(events.SpeakingComplete{Elapsed: time.Since(t3)})
 		}
-
-		p.Events.Emit(events.VoiceGenerated{Elapsed: time.Since(t2)})
-
-		// Play audio (blocks until done, next sentence generates after)
-		p.Events.Emit(events.SpeakingStarted{Text: sentence})
-		t3 := time.Now()
-
-		done := p.Player.PlayAsync(ctx, samples, sampleRate)
-		<-done
-
-		p.Events.Emit(events.SpeakingComplete{Elapsed: time.Since(t3)})
 	}
 
 	if !thinkReported {

@@ -59,6 +59,7 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. All values have sen
 | `vad_enabled` | `true` | Voice activity detection |
 | `vad_silence_duration` | `0.5` | Seconds of silence to end speech |
 | `claude_model` | `claude-sonnet-4-5-20250514` | Default Claude model |
+| `models_dir` | `~/.cache/samantha/models` | Model download directory |
 
 ## Development
 

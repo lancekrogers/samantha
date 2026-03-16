@@ -128,6 +128,44 @@ func TestMigratePythonKeys(t *testing.T) {
 	}
 }
 
+func TestModelsDirDefault(t *testing.T) {
+	orig := configFile
+	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")
+	defer func() { configFile = orig }()
+
+	setDefaults(v)
+	_, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	home, _ := os.UserHomeDir()
+	want := filepath.Join(home, ".cache", "samantha", "models")
+	got := ModelsDir()
+	if got != want {
+		t.Errorf("ModelsDir() = %q, want %q", got, want)
+	}
+}
+
+func TestModelsDirEnvOverride(t *testing.T) {
+	orig := configFile
+	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")
+	defer func() { configFile = orig }()
+
+	setDefaults(v)
+	t.Setenv("MODELS_DIR", "/mnt/fast/models")
+
+	_, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	got := ModelsDir()
+	if got != "/mnt/fast/models" {
+		t.Errorf("ModelsDir() = %q, want /mnt/fast/models", got)
+	}
+}
+
 func TestSaveAndReload(t *testing.T) {
 	dir := t.TempDir()
 	origDir := configDir

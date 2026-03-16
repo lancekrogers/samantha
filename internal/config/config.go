@@ -32,6 +32,9 @@ type Config struct {
 	FishAPIKey     string `mapstructure:"fish_api_key"`
 	FishVoiceModel string `mapstructure:"fish_voice_model_id"`
 
+	// Paths
+	ModelsDir string `mapstructure:"models_dir"`
+
 	// General
 	Language        string `mapstructure:"language"`
 	MaxHistory      int    `mapstructure:"max_history"`
@@ -67,6 +70,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("fish_api_key", "")
 	v.SetDefault("fish_voice_model_id", "474887f7949b4d1ab3e626cddf82613a")
 
+	v.SetDefault("models_dir", filepath.Join(homeDir(), ".cache", "samantha", "models"))
+
 	v.SetDefault("language", "en-US")
 	v.SetDefault("max_history", 10)
 	v.SetDefault("listen_timeout", 10)
@@ -90,6 +95,7 @@ func Load() (*Config, error) {
 		"stt_provider":  "STT_PROVIDER",
 		"whisper_model": "WHISPER_MODEL",
 		"fish_api_key":  "FISH_API_KEY",
+		"models_dir":    "MODELS_DIR",
 	}
 	for key, env := range bindings {
 		_ = v.BindEnv(key, env)
@@ -157,7 +163,7 @@ func ConfigFile() string {
 
 // ModelsDir returns the model cache directory.
 func ModelsDir() string {
-	return filepath.Join(homeDir(), ".cache", "samantha", "models")
+	return v.GetString("models_dir")
 }
 
 // SessionsDir returns the sessions directory.
