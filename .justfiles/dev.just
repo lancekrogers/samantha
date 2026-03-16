@@ -1,20 +1,15 @@
 # Development recipes
+binary_name := "samantha"
+bin_dir := "bin"
 
 [private]
 default:
     @just --list --unsorted --justfile {{source_file()}}
 
-# Run with args
+# Run with go run (no build step)
 [no-cd]
 run *ARGS:
     go run ./cmd/samantha {{ARGS}}
-
-# Run tests with coverage
-[no-cd]
-coverage:
-    go test ./... -coverprofile=coverage.out
-    go tool cover -html=coverage.out -o coverage.html
-    @echo "Coverage report: coverage.html"
 
 # Watch for changes and rebuild (requires entr)
 [no-cd]

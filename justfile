@@ -1,15 +1,25 @@
 #!/usr/bin/env just --justfile
-# Samantha - Ultra-low-latency voice assistant for Claude Code
+# Samantha — ultra-low-latency voice assistant for Claude Code
+
+set dotenv-load := true
+
+# Configuration
+binary_name := "samantha"
+bin_dir := "bin"
+main_path := "cmd/samantha/main.go"
 
 # Modules
-[doc('Build options (release, cross-compile)')]
-mod builds '.justfiles/build.just'
+[doc('Build variants (dev, release, cross-platform)')]
+mod build '.justfiles/build.just'
 
-[doc('Development tasks')]
-mod dev '.justfiles/dev.just'
+[doc('Testing (unit, coverage)')]
+mod test '.justfiles/test.just'
 
 [doc('Voice & audio setup')]
 mod voice '.justfiles/voice.just'
+
+[doc('Install to $GOBIN')]
+mod install '.justfiles/install.just'
 
 [private]
 default:
@@ -18,42 +28,39 @@ default:
     echo ""
     just --list --unsorted
 
-# Build the binary
-build:
-    go build -o bin/samantha ./cmd/samantha
+# Quick build to bin/
+quick:
+    go build -o {{bin_dir}}/{{binary_name}} {{main_path}}
 
 # Run samantha
-run *ARGS: build
-    ./bin/samantha {{ARGS}}
+run *ARGS: quick
+    ./{{bin_dir}}/{{binary_name}} {{ARGS}}
 
 # Talk to Samantha (full voice mode)
-talk: build
-    ./bin/samantha
+talk: quick
+    ./{{bin_dir}}/{{binary_name}}
 
 # Text mode (type + hear voice)
-text: build
-    ./bin/samantha --text
+text: quick
+    ./{{bin_dir}}/{{binary_name}} --text
 
-# Run all tests
-test:
-    go test ./... -v
+# Format Go code
+fmt:
+    go fmt ./...
 
 # Run linter
 lint:
     go vet ./...
 
-# Install globally
-install:
-    go install ./cmd/samantha
-
 # Clean build artifacts
 clean:
-    rm -rf bin/ dist/
+    rm -rf {{bin_dir}}/ dist/
 
 # Show current config
-config: build
-    ./bin/samantha config
+config: quick
+    ./{{bin_dir}}/{{binary_name}} config
 
-# Sync dependencies
+# Update and tidy dependencies
 deps:
+    go get -u ./...
     go mod tidy
