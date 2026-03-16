@@ -1,12 +1,14 @@
 package tts
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
 
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 
+	"github.com/Obedience-Corp/samantha/internal/audio"
 	"github.com/Obedience-Corp/samantha/internal/config"
 )
 
@@ -96,13 +98,55 @@ func NewKokoroTTS(cfg *config.Config) (*KokoroTTS, error) {
 	}, nil
 }
 
-// Generate produces audio from text.
-func (k *KokoroTTS) Generate(text string) ([]float32, int, error) {
-	audio := k.tts.Generate(text, k.sid, k.speed)
-	if audio == nil {
-		return nil, 0, fmt.Errorf("TTS generation returned nil")
-	}
-	return audio.Samples, audio.SampleRate, nil
+// Synthesize streams synthesized PCM frames for the given text.
+func (k *KokoroTTS) Synthesize(ctx context.Context, text string) (*audio.PCMStream, error) {
+	stream := audio.NewPCMStream()
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				stream.CloseWithError(fmt.Errorf("kokoro panic: %v", r))
+			}
+		}()
+
+		if ctx.Err() != nil {
+			stream.CloseWithError(ctx.Err())
+			return
+		}
+
+		audioResult := k.tts.Generate(text, k.sid, k.speed)
+		if audioResult == nil {
+			stream.CloseWithError(fmt.Errorf("TTS generation returned nil"))
+			return
+		}
+
+		if err := stream.SetSampleRate(audioResult.SampleRate); err != nil {
+			stream.CloseWithError(err)
+			return
+		}
+
+		const chunkSize = 2048
+		for start := 0; start < len(audioResult.Samples); start += chunkSize {
+			if ctx.Err() != nil {
+				stream.CloseWithError(ctx.Err())
+				return
+			}
+
+			end := start + chunkSize
+			if end > len(audioResult.Samples) {
+				end = len(audioResult.Samples)
+			}
+
+			if err := stream.Write(audioResult.Samples[start:end]); err != nil {
+				stream.CloseWithError(err)
+				return
+			}
+		}
+
+		stream.Close()
+	}()
+
+	return stream, nil
 }
 
 // Available returns true if TTS is ready.
