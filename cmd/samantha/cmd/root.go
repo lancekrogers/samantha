@@ -162,6 +162,7 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 			return nil, nil, fmt.Errorf("start capture: %w", err)
 		}
 		cleanups = append(cleanups, capture.Stop)
+		p.Capture = capture
 
 		vad, err := audio.NewVAD(cfg)
 		if err != nil {
@@ -169,6 +170,7 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 			return nil, nil, fmt.Errorf("init VAD: %w", err)
 		}
 		cleanups = append(cleanups, vad.Delete)
+		p.VAD = vad
 
 		sttProvider, err := stt.NewSherpaSTT(cfg, capture, vad)
 		if err != nil {

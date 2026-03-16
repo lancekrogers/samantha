@@ -18,6 +18,8 @@ type Pipeline struct {
 	Brain   brain.Provider
 	TTS     tts.Provider
 	Player  *audio.Player
+	Capture *audio.Capture // drain mic after playback to discard echo
+	VAD     *audio.VAD     // clear VAD after playback to discard echo segments
 	Events  *events.Bus
 	OnTurn  func() // called after each completed turn for session auto-save
 }
@@ -83,6 +85,14 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 
 			done := p.Player.PlayAsync(ctx, samples, sampleRate)
 			<-done
+
+			// Drain mic buffer and VAD to discard echo of our own playback.
+			if p.Capture != nil {
+				p.Capture.Reset()
+			}
+			if p.VAD != nil {
+				p.VAD.Clear()
+			}
 
 			p.Events.Emit(events.SpeakingComplete{Elapsed: time.Since(t3)})
 		}
