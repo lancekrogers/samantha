@@ -137,7 +137,7 @@ func (o *OllamaBrain) ClearHistory() {
 
 func (o *OllamaBrain) buildMessages() []api.Message {
 	msgs := []api.Message{
-		{Role: "system", Content: GetSystemPrompt()},
+		{Role: "system", Content: GetSystemPrompt(o.cfg.AgentName)},
 	}
 
 	// Include recent history.

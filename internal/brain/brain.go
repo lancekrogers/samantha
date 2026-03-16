@@ -54,7 +54,7 @@ func (b *Brain) ThinkStream(ctx context.Context, input string) (<-chan string, e
 
 	opts := &claude.RunOptions{
 		Format:                 claude.StreamJSONOutput,
-		SystemPrompt:           GetSystemPrompt(),
+		SystemPrompt:           GetSystemPrompt(b.cfg.AgentName),
 		PermissionMode:         claude.PermissionModeBypassPermissions,
 		IncludePartialMessages: true,
 	}
@@ -118,7 +118,7 @@ func (b *Brain) ThinkFull(ctx context.Context, input string) (string, error) {
 
 	opts := &claude.RunOptions{
 		Format:         claude.TextOutput,
-		SystemPrompt:   GetSystemPrompt(),
+		SystemPrompt:   GetSystemPrompt(b.cfg.AgentName),
 		PermissionMode: claude.PermissionModeBypassPermissions,
 	}
 

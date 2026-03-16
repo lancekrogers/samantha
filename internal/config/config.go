@@ -40,6 +40,9 @@ type Config struct {
 	// Paths
 	ModelsDir string `mapstructure:"models_dir"`
 
+	// Agent
+	AgentName string `mapstructure:"agent_name"`
+
 	// General
 	Language        string `mapstructure:"language"`
 	MaxHistory      int    `mapstructure:"max_history"`
@@ -79,6 +82,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("fish_api_key", "")
 	v.SetDefault("fish_voice_model_id", "474887f7949b4d1ab3e626cddf82613a")
 
+	v.SetDefault("agent_name", "Samantha")
 	v.SetDefault("models_dir", filepath.Join(homeDir(), ".cache", "samantha", "models"))
 
 	v.SetDefault("language", "en-US")

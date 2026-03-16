@@ -81,7 +81,7 @@ func startPipeline(cfg *config.Config) error {
 	}
 
 	bus := events.NewBus()
-	display := ui.New(bus)
+	display := ui.New(bus, cfg.AgentName)
 
 	p, cleanup, err := buildPipeline(ctx, cfg, bus, textMode, noVoice)
 	if err != nil {

@@ -5,19 +5,24 @@ import (
 	"unicode"
 )
 
-// ChunkSentences reads text chunks from input and emits complete sentences.
-// Each string on the returned channel is a full sentence ready for TTS.
+// sentencesPerChunk controls how many sentences are batched before sending to TTS.
+// Larger = smoother playback, but longer wait before first audio.
+const sentencesPerChunk = 3
+
+// ChunkSentences reads text chunks from input and emits batches of sentences for TTS.
+// Batches sentencesPerChunk sentences together for smoother playback.
 func ChunkSentences(input <-chan string) <-chan string {
 	out := make(chan string, 4)
 
 	go func() {
 		defer close(out)
 		var buf strings.Builder
+		var sentences []string
 
 		for chunk := range input {
 			buf.WriteString(chunk)
 
-			// Emit complete sentences
+			// Extract complete sentences from buffer.
 			for {
 				text := buf.String()
 				idx := findSentenceEnd(text)
@@ -26,16 +31,28 @@ func ChunkSentences(input <-chan string) <-chan string {
 				}
 				sentence := strings.TrimSpace(text[:idx+1])
 				if sentence != "" {
-					out <- cleanForVoice(sentence)
+					sentences = append(sentences, sentence)
 				}
 				buf.Reset()
 				buf.WriteString(text[idx+1:])
+
+				// Emit batch when we have enough sentences.
+				if len(sentences) >= sentencesPerChunk {
+					batch := strings.Join(sentences, " ")
+					out <- cleanForVoice(batch)
+					sentences = sentences[:0]
+				}
 			}
 		}
 
-		// Flush remaining text
-		if remaining := strings.TrimSpace(buf.String()); remaining != "" {
-			out <- cleanForVoice(remaining)
+		// Flush remaining sentences + any trailing text.
+		remaining := strings.TrimSpace(buf.String())
+		if remaining != "" {
+			sentences = append(sentences, remaining)
+		}
+		if len(sentences) > 0 {
+			batch := strings.Join(sentences, " ")
+			out <- cleanForVoice(batch)
 		}
 	}()
 

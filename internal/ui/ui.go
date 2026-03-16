@@ -2,18 +2,20 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/Obedience-Corp/samantha/internal/events"
 )
 
 // UI handles terminal output for the voice assistant.
 type UI struct {
-	bus *events.Bus
+	bus  *events.Bus
+	name string
 }
 
 // New creates a UI and subscribes it to the event bus.
-func New(bus *events.Bus) *UI {
-	u := &UI{bus: bus}
+func New(bus *events.Bus, agentName string) *UI {
+	u := &UI{bus: bus, name: agentName}
 
 	events.Subscribe(bus, u.onSTTPhase)
 	events.Subscribe(bus, u.onUserInput)
@@ -33,10 +35,15 @@ func New(bus *events.Bus) *UI {
 
 // ShowWelcome displays the startup banner.
 func (u *UI) ShowWelcome() {
+	label := fmt.Sprintf("%s (Go)", u.name)
+	pad := 40 - len(label)
+	if pad < 0 {
+		pad = 2
+	}
 	fmt.Println()
 	fmt.Println("  ╭──────────────────────────────────────────╮")
-	fmt.Println("  │         Samantha (Go)                    │")
-	fmt.Println("  │   Give Claude a voice. Inspired by Her.  │")
+	fmt.Printf("  │  %s%s│\n", label, strings.Repeat(" ", pad))
+	fmt.Println("  │  Ultra-low-latency voice assistant       │")
 	fmt.Println("  ╰──────────────────────────────────────────╯")
 	fmt.Println()
 	fmt.Println("  Say something, and I'll respond.")
@@ -76,11 +83,11 @@ func (u *UI) onUserInput(e events.UserInput) {
 }
 
 func (u *UI) onThinkingStarted(_ events.ThinkingStarted) {
-	fmt.Print("  ● Claude thinking...\r")
+	fmt.Printf("  ● %s thinking...\r", u.name)
 }
 
 func (u *UI) onThinkingComplete(e events.ThinkingComplete) {
-	fmt.Printf("\033[2K    claude thinking (%.1fs)\n", e.Elapsed.Seconds())
+	fmt.Printf("\033[2K    thinking (%.1fs)\n", e.Elapsed.Seconds())
 }
 
 func (u *UI) onGeneratingVoice(_ events.GeneratingVoice) {
@@ -100,7 +107,7 @@ func (u *UI) onSpeakingComplete(e events.SpeakingComplete) {
 }
 
 func (u *UI) onResponseReady(e events.ResponseReady) {
-	fmt.Printf("  Samantha: %s\n\n", e.Response)
+	fmt.Printf("  %s: %s\n\n", u.name, e.Response)
 }
 
 func (u *UI) onCleared(_ events.ConversationCleared) {
