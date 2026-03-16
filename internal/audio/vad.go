@@ -22,7 +22,7 @@ func NewVAD(cfg *config.Config) (*VAD, error) {
 		Model:              modelPath,
 		MinSpeechDuration:  0.25,
 		MinSilenceDuration: float32(cfg.VADSilenceDuration),
-		Threshold:          0.5,
+		Threshold:          0.6,
 	}
 
 	vadConfig := sherpa.VadModelConfig{

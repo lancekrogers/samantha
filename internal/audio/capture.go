@@ -107,6 +107,12 @@ func (c *Capture) Read() []float32 {
 	return c.buf.Read(ChunkSize)
 }
 
+// Reset drains the ring buffer to discard stale audio between turns.
+func (c *Capture) Reset() {
+	for c.buf.Read(ChunkSize) != nil {
+	}
+}
+
 // IsRunning returns whether capture is active.
 func (c *Capture) IsRunning() bool {
 	c.mu.Lock()

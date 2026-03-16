@@ -54,8 +54,15 @@ func NewSherpaSTT(cfg *config.Config, capture *audio.Capture, vad *audio.VAD) (*
 	}, nil
 }
 
+// minSpeechSamples is the minimum number of audio samples for valid speech (0.3s at 16kHz).
+const minSpeechSamples = 4800
+
 // Transcribe listens for speech using VAD and transcribes with whisper.
 func (s *SherpaSTT) Transcribe(ctx context.Context, onStatus func(phase string)) (string, error) {
+	// Flush stale audio and VAD state from previous turn.
+	s.capture.Reset()
+	s.vad.Clear()
+
 	if onStatus != nil {
 		onStatus("listening")
 	}
@@ -98,6 +105,15 @@ func (s *SherpaSTT) Transcribe(ctx context.Context, onStatus func(phase string))
 				samples := s.vad.Front()
 				allSamples = append(allSamples, samples...)
 				s.vad.Pop()
+			}
+
+			// Skip if too short to be real speech.
+			if len(allSamples) < minSpeechSamples {
+				speechDetected = false
+				if onStatus != nil {
+					onStatus("listening")
+				}
+				continue
 			}
 
 			// Transcribe

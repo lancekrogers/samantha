@@ -21,12 +21,32 @@ var genderMap = map[byte]string{
 	'f': "Female", 'm': "Male",
 }
 
+// voiceNames lists all kokoro voices in order — index = speaker ID.
+var voiceNames = []string{
+	"af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica",
+	"af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
+	"am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam",
+	"am_michael", "am_onyx", "am_puck", "am_santa",
+	"bf_alice", "bf_emma", "bf_isabella", "bf_lily",
+	"bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+}
+
+// voiceToSID maps voice name to speaker ID.
+var voiceToSID map[string]int
+
+func init() {
+	voiceToSID = make(map[string]int, len(voiceNames))
+	for i, name := range voiceNames {
+		voiceToSID[name] = i
+	}
+}
+
 // KokoroTTS implements TTS using sherpa-onnx Kokoro.
 type KokoroTTS struct {
 	tts   *sherpa.OfflineTts
 	voice string
 	speed float32
-	sid   int // speaker ID (0-based index)
+	sid   int
 }
 
 // NewKokoroTTS creates a Kokoro TTS provider via sherpa-onnx.
@@ -47,7 +67,7 @@ func NewKokoroTTS(cfg *config.Config) (*KokoroTTS, error) {
 		DataDir:     filepath.Join(modelsDir, "espeak-ng-data"),
 		DictDir:     filepath.Join(modelsDir, "dict"),
 		Lexicon:     lexicon,
-		LengthScale: float32(cfg.SpeechSpeed),
+		LengthScale: 1.0,
 	}
 
 	modelConfig := sherpa.OfflineTtsModelConfig{
@@ -63,11 +83,17 @@ func NewKokoroTTS(cfg *config.Config) (*KokoroTTS, error) {
 		return nil, fmt.Errorf("failed to create Kokoro TTS (models dir: %s)", modelsDir)
 	}
 
+	// Map voice name to speaker ID.
+	sid, ok := voiceToSID[cfg.TTSVoice]
+	if !ok {
+		sid = voiceToSID["af_heart"] // fallback
+	}
+
 	return &KokoroTTS{
 		tts:   tts,
 		voice: cfg.TTSVoice,
 		speed: float32(cfg.SpeechSpeed),
-		sid:   0, // default speaker
+		sid:   sid,
 	}, nil
 }
 
@@ -87,19 +113,8 @@ func (k *KokoroTTS) Available() bool {
 
 // ListVoices returns available Kokoro voices with optional filtering.
 func (k *KokoroTTS) ListVoices(locale, gender string) []Voice {
-	// Kokoro voice names follow pattern: {lang}{gender}_{name}
-	// e.g., af_heart = American Female Heart
-	names := []string{
-		"af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica",
-		"af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
-		"am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam",
-		"am_michael", "am_onyx", "am_puck", "am_santa",
-		"bf_alice", "bf_emma", "bf_isabella", "bf_lily",
-		"bm_daniel", "bm_fable", "bm_george", "bm_lewis",
-	}
-
 	var voices []Voice
-	for _, name := range names {
+	for _, name := range voiceNames {
 		if len(name) < 3 || !strings.Contains(name, "_") {
 			continue
 		}
