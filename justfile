@@ -3,12 +3,12 @@
 
 set dotenv-load := true
 
+BUILDTOOL := "go run ./internal/buildutil"
 binary_name := "samantha"
 bin_dir := "bin"
-main_path := "./cmd/samantha"
 gobin := env_var_or_default("GOBIN", `go env GOPATH` + "/bin")
 
-# Modules (for less common commands)
+# Modules
 [doc('Testing (unit, integration, dashboard)')]
 mod test '.justfiles/test.just'
 
@@ -25,9 +25,9 @@ default:
     echo ""
     just --list --unsorted
 
-# Build to bin/
+# Build (vet + compile via dashboard)
 build:
-    go build -o {{bin_dir}}/{{binary_name}} {{main_path}}
+    @{{BUILDTOOL}} build
 
 # Build, sign, install to $GOBIN
 install: build
@@ -49,6 +49,10 @@ run *ARGS: build
 talk: build
     ./{{bin_dir}}/{{binary_name}}
 
+# Full pipeline (clean, build, test, integration)
+all:
+    @{{BUILDTOOL}} all
+
 # Clean build artifacts
 clean:
-    rm -rf {{bin_dir}}/ dist/ coverage.out coverage.html
+    @{{BUILDTOOL}} clean
