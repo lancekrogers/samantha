@@ -15,6 +15,8 @@ github.com/k2-fsa/sherpa-onnx-go-macos v1.12.29 h1:geO3InVQQ5zcvJsr2pqiHhnYM7BNd
 github.com/k2-fsa/sherpa-onnx-go-macos v1.12.29/go.mod h1:ZOhUAXC62Unj0ZNfu6zxSFKcW96aXf7P3BsqiUyOBbE=
 github.com/k2-fsa/sherpa-onnx-go-windows v1.12.29 h1:3NoDUddg6sefA3rC+UsHZv+kNJrlXJiOprR+xv4C1+s=
 github.com/k2-fsa/sherpa-onnx-go-windows v1.12.29/go.mod h1:5AX7TU8+P/gInjglY1ijtWUM2b8iyR0QX4yEngzMe64=
+github.com/lancekrogers/claude-code-go v1.0.2 h1:8EKSfib2TAPIjeMUjLh3o2Jis95ON+S1eZvg8vg10Ns=
+github.com/lancekrogers/claude-code-go v1.0.2/go.mod h1:yNDc4/VUF0fKSnLwzhz4cXZU3bDkS5Bzarvp11wBpVU=
 github.com/pelletier/go-toml/v2 v2.2.4 h1:mye9XuhQ6gvn5h28+VilKrrPoQVanw5PMw/TB0t5Ec4=
 github.com/pelletier/go-toml/v2 v2.2.4/go.mod h1:2gIqNv+qfxSVS7cM2xJQKtLSTLUE9V8t9Stt+h56mCY=
 github.com/russross/blackfriday/v2 v2.1.0/go.mod h1:+Rmxgy9KzJVeS9/2gXHxylqXiyQDYRxCVz55jmeOWTM=
