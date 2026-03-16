@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/ollama/ollama/api"
@@ -12,10 +13,11 @@ import (
 	"github.com/Obedience-Corp/samantha/internal/config"
 )
 
-// OllamaBrain implements Provider using the Ollama API.
+// OllamaBrain implements Provider using the Ollama API with tool calling.
 type OllamaBrain struct {
 	client  *api.Client
 	model   string
+	workDir string
 	history []api.Message
 	cfg     *config.Config
 }
@@ -50,48 +52,88 @@ func NewOllama(cfg *config.Config) (*OllamaBrain, error) {
 		return nil, fmt.Errorf("model %q not found in ollama — run: ollama pull %s", cfg.OllamaModel, cfg.OllamaModel)
 	}
 
+	workDir, _ := os.Getwd()
+
 	return &OllamaBrain{
-		client: client,
-		model:  cfg.OllamaModel,
-		cfg:    cfg,
+		client:  client,
+		model:   cfg.OllamaModel,
+		workDir: workDir,
+		cfg:     cfg,
 	}, nil
 }
 
 // ThinkStream sends input and returns a channel of streaming text chunks.
+// Implements an agent loop: if the model returns tool calls, executes them
+// and re-requests until the model produces a text response.
 func (o *OllamaBrain) ThinkStream(ctx context.Context, input string) (<-chan string, error) {
 	o.history = append(o.history, api.Message{Role: "user", Content: input})
-
-	messages := o.buildMessages()
-	stream := true
-	req := &api.ChatRequest{
-		Model:    o.model,
-		Messages: messages,
-		Stream:   &stream,
-	}
 
 	out := make(chan string, 8)
 	go func() {
 		defer close(out)
-		var fullResponse strings.Builder
 
-		err := o.client.Chat(ctx, req, func(resp api.ChatResponse) error {
-			if resp.Message.Content != "" {
-				fullResponse.WriteString(resp.Message.Content)
-				out <- resp.Message.Content
+		tools := voiceAssistantTools()
+
+		for i := 0; i < maxToolIterations; i++ {
+			messages := o.buildMessages()
+			stream := true
+			req := &api.ChatRequest{
+				Model:    o.model,
+				Messages: messages,
+				Tools:    tools,
+				Stream:   &stream,
 			}
-			return nil
-		})
 
-		if err != nil {
-			out <- fmt.Sprintf("[error: %v]", err)
+			// Accumulate the full response (text + tool calls).
+			var textBuf strings.Builder
+			var toolCalls []api.ToolCall
+
+			err := o.client.Chat(ctx, req, func(resp api.ChatResponse) error {
+				if resp.Message.Content != "" {
+					textBuf.WriteString(resp.Message.Content)
+				}
+				if len(resp.Message.ToolCalls) > 0 {
+					toolCalls = append(toolCalls, resp.Message.ToolCalls...)
+				}
+				return nil
+			})
+			if err != nil {
+				out <- fmt.Sprintf("[error: %v]", err)
+				return
+			}
+
+			// If model made tool calls, execute them and loop.
+			if len(toolCalls) > 0 {
+				// Add the assistant's tool-calling message to history.
+				o.history = append(o.history, api.Message{
+					Role:      "assistant",
+					Content:   textBuf.String(),
+					ToolCalls: toolCalls,
+				})
+
+				// Execute each tool and add results.
+				for _, tc := range toolCalls {
+					result := executeTool(ctx, o.workDir, tc)
+					o.history = append(o.history, api.Message{
+						Role:    "tool",
+						Content: result,
+					})
+				}
+				continue // re-request with tool results
+			}
+
+			// No tool calls — stream text to output.
+			response := textBuf.String()
+			if response != "" {
+				out <- response
+				response = cleanForVoice(response)
+				o.history = append(o.history, api.Message{Role: "assistant", Content: response})
+				o.trimHistory()
+			}
+			return
 		}
 
-		response := fullResponse.String()
-		if response != "" {
-			response = cleanForVoice(response)
-			o.history = append(o.history, api.Message{Role: "assistant", Content: response})
-			o.trimHistory()
-		}
+		out <- "I seem to be going in circles with my tools. Let me just answer directly."
 	}()
 
 	return out, nil
@@ -101,33 +143,57 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string) (<-chan str
 func (o *OllamaBrain) ThinkFull(ctx context.Context, input string) (string, error) {
 	o.history = append(o.history, api.Message{Role: "user", Content: input})
 
-	messages := o.buildMessages()
-	stream := false
-	req := &api.ChatRequest{
-		Model:    o.model,
-		Messages: messages,
-		Stream:   &stream,
+	tools := voiceAssistantTools()
+
+	for i := 0; i < maxToolIterations; i++ {
+		messages := o.buildMessages()
+		stream := false
+		req := &api.ChatRequest{
+			Model:    o.model,
+			Messages: messages,
+			Tools:    tools,
+			Stream:   &stream,
+		}
+
+		var response api.Message
+		err := o.client.Chat(ctx, req, func(resp api.ChatResponse) error {
+			response = resp.Message
+			return nil
+		})
+		if err != nil {
+			return "", fmt.Errorf("ollama error: %w", err)
+		}
+
+		// Tool calls — execute and loop.
+		if len(response.ToolCalls) > 0 {
+			o.history = append(o.history, api.Message{
+				Role:      "assistant",
+				Content:   response.Content,
+				ToolCalls: response.ToolCalls,
+			})
+
+			for _, tc := range response.ToolCalls {
+				result := executeTool(ctx, o.workDir, tc)
+				o.history = append(o.history, api.Message{
+					Role:    "tool",
+					Content: result,
+				})
+			}
+			continue
+		}
+
+		// Text response.
+		text := strings.TrimSpace(response.Content)
+		if text == "" {
+			text = "Hmm, I lost my train of thought for a second. What were you saying?"
+		}
+		text = cleanForVoice(text)
+		o.history = append(o.history, api.Message{Role: "assistant", Content: text})
+		o.trimHistory()
+		return text, nil
 	}
 
-	var response string
-	err := o.client.Chat(ctx, req, func(resp api.ChatResponse) error {
-		response = resp.Message.Content
-		return nil
-	})
-	if err != nil {
-		return "", fmt.Errorf("ollama error: %w", err)
-	}
-
-	response = strings.TrimSpace(response)
-	if response == "" {
-		response = "Hmm, I lost my train of thought for a second. What were you saying?"
-	}
-
-	response = cleanForVoice(response)
-	o.history = append(o.history, api.Message{Role: "assistant", Content: response})
-	o.trimHistory()
-
-	return response, nil
+	return "I seem to be going in circles with my tools. Let me just answer directly.", nil
 }
 
 // ClearHistory wipes conversation history.
@@ -136,11 +202,12 @@ func (o *OllamaBrain) ClearHistory() {
 }
 
 func (o *OllamaBrain) buildMessages() []api.Message {
+	systemPrompt := GetSystemPrompt(o.cfg.AgentName) + "\n" + EnvironmentContext(o.workDir)
+
 	msgs := []api.Message{
-		{Role: "system", Content: GetSystemPrompt(o.cfg.AgentName)},
+		{Role: "system", Content: systemPrompt},
 	}
 
-	// Include recent history.
 	recent := o.history
 	max := o.cfg.MaxHistory * 2
 	if len(recent) > max {

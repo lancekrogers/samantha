@@ -1,6 +1,10 @@
 package brain
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"runtime"
+)
 
 // GetSystemPrompt returns the personality prompt parameterized with the agent name.
 func GetSystemPrompt(name string) string {
@@ -34,4 +38,18 @@ When the user asks you to build something, create files, or run code:
 - Just DO it. Don't ask for permission repeatedly. Build it and tell them what you made.
 - Keep your spoken response brief: "Done, I set up the project" or "Building that now, give me a sec."
 - The user can see your work in their file system. You don't need to read back all the code.`, name)
+}
+
+// EnvironmentContext returns system context for grounding the model.
+func EnvironmentContext(workDir string) string {
+	user := os.Getenv("USER")
+	hostname, _ := os.Hostname()
+	return fmt.Sprintf(`
+Environment:
+- User: %s
+- Working directory: %s
+- Hostname: %s
+- OS: %s/%s
+- You have tools available: list_files, read_file, write_file, run_command
+- All file paths are relative to the working directory unless absolute`, user, workDir, hostname, runtime.GOOS, runtime.GOARCH)
 }
