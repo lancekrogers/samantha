@@ -1,6 +1,7 @@
 # Binaries
 bin/
 samantha
+/buildutil
 *.exe
 *.dll
 *.so
