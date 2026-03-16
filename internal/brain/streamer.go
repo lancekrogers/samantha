@@ -73,13 +73,13 @@ func findSentenceEnd(text string) int {
 				}
 			}
 
-			// Must be followed by space, end, or quote
-			if i == len(runes)-1 {
-				return i
-			}
-			next := runes[i+1]
-			if unicode.IsSpace(next) || next == '"' || next == '\'' {
-				return i
+			// Must be followed by space or quote — NOT end of buffer.
+			// End-of-buffer splits cause premature cuts on streaming partial text.
+			if i < len(runes)-1 {
+				next := runes[i+1]
+				if unicode.IsSpace(next) || next == '"' || next == '\'' {
+					return i
+				}
 			}
 		}
 	}
