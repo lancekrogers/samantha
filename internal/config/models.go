@@ -47,9 +47,11 @@ func requiredArchives(cfg *Config) []ModelArchive {
 			},
 		},
 		{
-			Name: "kokoro-data",
+			Name: "kokoro-tts",
 			URL:  "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2",
 			CheckFiles: []string{
+				"model.onnx",
+				"voices.bin",
 				"tokens.txt",
 				"espeak-ng-data",
 			},
