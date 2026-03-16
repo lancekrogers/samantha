@@ -200,6 +200,11 @@ func cleanForVoice(s string) string {
 		"Haha", "", "haha", "", "Heh", "", "heh", "",
 		"Uhh", "", "uhh", "", "Umm", "", "umm", "",
 		"Ahh", "", "ahh", "",
+		// Strip unicode combining characters that cause sherpa phoneme warnings.
+		"\u0329", "", // combining vertical line below
+		"\u0300", "", // combining grave accent
+		"\u0301", "", // combining acute accent
+		"\u0327", "", // combining cedilla
 	)
 	return strings.TrimSpace(r.Replace(s))
 }

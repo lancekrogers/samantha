@@ -17,8 +17,9 @@ type Config struct {
 	SpeechSpeed float64 `mapstructure:"speech_speed"`
 
 	// STT
-	STTProvider  string `mapstructure:"stt_provider"`
-	WhisperModel string `mapstructure:"whisper_model"`
+	STTProvider      string `mapstructure:"stt_provider"`
+	WhisperModel     string `mapstructure:"whisper_model"`
+	WhisperQuantized bool   `mapstructure:"whisper_quantized"`
 
 	// VAD
 	VADEnabled         bool    `mapstructure:"vad_enabled"`
@@ -68,6 +69,7 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("stt_provider", "sherpa")
 	v.SetDefault("whisper_model", "small")
+	v.SetDefault("whisper_quantized", true)
 
 	v.SetDefault("vad_enabled", true)
 	v.SetDefault("vad_silence_duration", 0.5)
