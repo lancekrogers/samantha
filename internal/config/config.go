@@ -17,9 +17,10 @@ type Config struct {
 	SpeechSpeed float64 `mapstructure:"speech_speed"`
 
 	// STT
-	STTProvider      string `mapstructure:"stt_provider"`
-	WhisperModel     string `mapstructure:"whisper_model"`
-	WhisperQuantized bool   `mapstructure:"whisper_quantized"`
+	STTProvider          string `mapstructure:"stt_provider"`
+	SherpaStreamingModel string `mapstructure:"sherpa_streaming_model"`
+	WhisperModel         string `mapstructure:"whisper_model"`
+	WhisperQuantized     bool   `mapstructure:"whisper_quantized"`
 
 	// VAD
 	VADEnabled         bool    `mapstructure:"vad_enabled"`
@@ -69,6 +70,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("speech_speed", 0.95)
 
 	v.SetDefault("stt_provider", "sherpa")
+	v.SetDefault("sherpa_streaming_model", "en-2023-06-26")
 	v.SetDefault("whisper_model", "small")
 	v.SetDefault("whisper_quantized", true)
 
@@ -107,16 +109,17 @@ func Load() (*Config, error) {
 
 	// Explicit env bindings
 	bindings := map[string]string{
-		"tts_provider":        "TTS_PROVIDER",
-		"tts_voice":           "TTS_VOICE",
-		"stt_provider":        "STT_PROVIDER",
-		"whisper_model":       "WHISPER_MODEL",
-		"fish_api_key":        "FISH_API_KEY",
-		"models_dir":          "MODELS_DIR",
-		"brain_provider":      "BRAIN_PROVIDER",
-		"ollama_model":        "OLLAMA_MODEL",
-		"ollama_host":         "OLLAMA_HOST",
-		"voice_tools_enabled": "VOICE_TOOLS_ENABLED",
+		"tts_provider":           "TTS_PROVIDER",
+		"tts_voice":              "TTS_VOICE",
+		"stt_provider":           "STT_PROVIDER",
+		"sherpa_streaming_model": "SHERPA_STREAMING_MODEL",
+		"whisper_model":          "WHISPER_MODEL",
+		"fish_api_key":           "FISH_API_KEY",
+		"models_dir":             "MODELS_DIR",
+		"brain_provider":         "BRAIN_PROVIDER",
+		"ollama_model":           "OLLAMA_MODEL",
+		"ollama_host":            "OLLAMA_HOST",
+		"voice_tools_enabled":    "VOICE_TOOLS_ENABLED",
 	}
 	for key, env := range bindings {
 		_ = v.BindEnv(key, env)

@@ -29,6 +29,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.STTProvider != "sherpa" {
 		t.Errorf("STTProvider = %q, want sherpa", cfg.STTProvider)
 	}
+	if cfg.SherpaStreamingModel != "en-2023-06-26" {
+		t.Errorf("SherpaStreamingModel = %q, want en-2023-06-26", cfg.SherpaStreamingModel)
+	}
 	if cfg.WhisperModel != "small" {
 		t.Errorf("WhisperModel = %q, want small", cfg.WhisperModel)
 	}

@@ -22,7 +22,8 @@ type ModelFile struct {
 type ModelArchive struct {
 	Name       string   // display name for progress
 	URL        string   // tar.bz2 URL
-	CheckFiles []string // paths relative to ModelsDir to verify extraction
+	TargetDir  string   // extraction target directory (defaults to ModelsDir)
+	CheckFiles []string // paths relative to TargetDir to verify extraction
 }
 
 // AssetRequest describes which runtime assets are needed for a command.
@@ -47,19 +48,33 @@ func runtimeFiles(req AssetRequest) []ModelFile {
 }
 
 // runtimeArchives returns tar.bz2 archives parameterized by config and request.
-func runtimeArchives(cfg *Config, req AssetRequest) []ModelArchive {
+func runtimeArchives(cfg *Config, req AssetRequest) ([]ModelArchive, error) {
 	var archives []ModelArchive
 
-	if req.NeedSTT && strings.EqualFold(cfg.STTProvider, "sherpa") {
-		model := cfg.WhisperModel
-		archives = append(archives, ModelArchive{
-			Name: fmt.Sprintf("whisper-%s", model),
-			URL:  fmt.Sprintf("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-%s.tar.bz2", model),
-			CheckFiles: []string{
-				fmt.Sprintf("%s-encoder.onnx", model),
-				fmt.Sprintf("%s-decoder.onnx", model),
-			},
-		})
+	if req.NeedSTT {
+		switch {
+		case strings.EqualFold(cfg.STTProvider, ""), strings.EqualFold(cfg.STTProvider, "sherpa"):
+			asset, err := SherpaStreamingModel(cfg.SherpaStreamingModel)
+			if err != nil {
+				return nil, err
+			}
+			archives = append(archives, ModelArchive{
+				Name:       asset.Name,
+				URL:        asset.URL,
+				TargetDir:  asset.ModelDir(ModelsDir()),
+				CheckFiles: asset.RequiredFiles(cfg.WhisperQuantized),
+			})
+		case strings.EqualFold(cfg.STTProvider, "sherpa-offline"):
+			model := cfg.WhisperModel
+			archives = append(archives, ModelArchive{
+				Name: fmt.Sprintf("whisper-%s", model),
+				URL:  fmt.Sprintf("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-%s.tar.bz2", model),
+				CheckFiles: []string{
+					fmt.Sprintf("%s-encoder.onnx", model),
+					fmt.Sprintf("%s-decoder.onnx", model),
+				},
+			})
+		}
 	}
 
 	if req.NeedTTS && strings.EqualFold(cfg.TTSProvider, "kokoro") {
@@ -75,7 +90,7 @@ func runtimeArchives(cfg *Config, req AssetRequest) []ModelArchive {
 		})
 	}
 
-	return archives
+	return archives, nil
 }
 
 // EnsureRuntimeAssets downloads any missing model files and archives needed for this run.
@@ -106,8 +121,17 @@ func EnsureRuntimeAssets(cfg *Config, req AssetRequest, onProgress func(name str
 	}
 
 	// Archive downloads with extraction.
-	for _, a := range runtimeArchives(cfg, req) {
-		if archiveExtracted(dir, a.CheckFiles) {
+	archives, err := runtimeArchives(cfg, req)
+	if err != nil {
+		return err
+	}
+	for _, a := range archives {
+		targetDir := dir
+		if a.TargetDir != "" {
+			targetDir = a.TargetDir
+		}
+
+		if archiveExtracted(targetDir, a.CheckFiles) {
 			continue
 		}
 
@@ -115,7 +139,7 @@ func EnsureRuntimeAssets(cfg *Config, req AssetRequest, onProgress func(name str
 			onProgress(a.Name, 0)
 		}
 
-		if err := downloadAndExtractArchive(dir, a.URL, func(pct float64) {
+		if err := downloadAndExtractArchive(targetDir, a.URL, func(pct float64) {
 			if onProgress != nil {
 				onProgress(a.Name, pct)
 			}

@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/Obedience-Corp/samantha/internal/audio"
 	"github.com/Obedience-Corp/samantha/internal/brain"
 	"github.com/Obedience-Corp/samantha/internal/events"
+	"github.com/Obedience-Corp/samantha/internal/stt"
 	"github.com/Obedience-Corp/samantha/internal/tts"
 )
 
@@ -22,6 +24,16 @@ func TestRunTurnOverlapsSynthesisWithPlayback(t *testing.T) {
 	}
 	player := newFakePlayer(120 * time.Millisecond)
 	defer player.Close()
+
+	var metrics events.TurnMetrics
+	metricsSeen := make(chan struct{}, 1)
+	events.Subscribe(bus, func(e events.TurnMetrics) {
+		metrics = e
+		select {
+		case metricsSeen <- struct{}{}:
+		default:
+		}
+	})
 
 	p := &Pipeline{
 		STT:    sttProvider,
@@ -51,6 +63,17 @@ func TestRunTurnOverlapsSynthesisWithPlayback(t *testing.T) {
 
 	if !callTimes[1].Before(finished[0]) {
 		t.Fatalf("second synthesis started at %v, want before first playback finished at %v", callTimes[1], finished[0])
+	}
+	select {
+	case <-metricsSeen:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for TurnMetrics event")
+	}
+	if metrics.FirstModelChunkElapsed <= 0 {
+		t.Fatalf("FirstModelChunkElapsed = %v, want > 0", metrics.FirstModelChunkElapsed)
+	}
+	if metrics.ModelCompleteElapsed <= 0 {
+		t.Fatalf("ModelCompleteElapsed = %v, want > 0", metrics.ModelCompleteElapsed)
 	}
 }
 
@@ -132,36 +155,69 @@ func TestRunTurnBargeInInterruptsPlayback(t *testing.T) {
 	}
 }
 
+func TestRunTurnReturnsBrainStreamError(t *testing.T) {
+	bus := events.NewBus()
+	sttProvider := &fakeSTT{text: "hello"}
+	brainProvider := &fakeBrain{streamErr: errors.New("boom")}
+
+	p := &Pipeline{
+		STT:    sttProvider,
+		Brain:  brainProvider,
+		Events: bus,
+	}
+
+	_, err := p.RunTurn(context.Background())
+	if err == nil {
+		t.Fatal("RunTurn() error = nil, want brain stream error")
+	}
+	if err.Error() != "brain: boom" {
+		t.Fatalf("RunTurn() error = %q, want %q", err.Error(), "brain: boom")
+	}
+}
+
 type fakeSTT struct {
 	text string
 }
 
-func (f *fakeSTT) Transcribe(ctx context.Context, onStatus func(string)) (string, error) {
-	if onStatus != nil {
-		onStatus("listening")
-	}
-	return f.text, nil
+type fakeSTTSession struct {
+	events chan stt.Event
+}
+
+func (s *fakeSTTSession) Events() <-chan stt.Event { return s.events }
+func (s *fakeSTTSession) Close() error             { return nil }
+
+func (f *fakeSTT) Start(ctx context.Context) (stt.Session, error) {
+	eventsCh := make(chan stt.Event, 2)
+	eventsCh <- stt.PhaseEvent{Phase: "listening"}
+	eventsCh <- stt.FinalTranscript{Text: f.text}
+	close(eventsCh)
+	return &fakeSTTSession{events: eventsCh}, nil
 }
 
 func (f *fakeSTT) Available() bool { return true }
 
 type fakeBrain struct {
-	chunks []string
+	chunks    []string
+	streamErr error
 }
 
-func (f *fakeBrain) ThinkStream(ctx context.Context, input string, opts brain.StreamOptions) (<-chan string, error) {
+func (f *fakeBrain) ThinkStream(ctx context.Context, input string, opts brain.StreamOptions) (*brain.Stream, error) {
 	out := make(chan string, len(f.chunks))
+	done := make(chan brain.StreamResult, 1)
 	go func() {
 		defer close(out)
+		defer close(done)
 		for _, chunk := range f.chunks {
 			select {
 			case <-ctx.Done():
+				done <- brain.StreamResult{Err: ctx.Err()}
 				return
 			case out <- chunk:
 			}
 		}
+		done <- brain.StreamResult{Err: f.streamErr}
 	}()
-	return out, nil
+	return &brain.Stream{Chunks: out, Done: done}, nil
 }
 
 func (f *fakeBrain) ThinkFull(ctx context.Context, input string) (string, error) {

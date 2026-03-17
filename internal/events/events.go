@@ -22,6 +22,13 @@ type UserInput struct {
 
 func (e UserInput) eventType() string { return "user_input" }
 
+// TranscriptPartial carries an incremental transcript update.
+type TranscriptPartial struct {
+	Text string
+}
+
+func (e TranscriptPartial) eventType() string { return "transcript_partial" }
+
 // ThinkingStarted signals Claude has begun processing.
 type ThinkingStarted struct{}
 
@@ -35,6 +42,21 @@ type ThinkingComplete struct {
 }
 
 func (e ThinkingComplete) eventType() string { return "thinking_complete" }
+
+// TurnMetrics captures per-turn latency milestones for benchmarking.
+type TurnMetrics struct {
+	Interrupted             bool
+	STTFinalElapsed         time.Duration
+	FirstModelChunkElapsed  time.Duration
+	ModelCompleteElapsed    time.Duration
+	FirstSegmentElapsed     time.Duration
+	FirstAudioReadyElapsed  time.Duration
+	PlaybackStartElapsed    time.Duration
+	PlaybackCompleteElapsed time.Duration
+	BargeInElapsed          time.Duration
+}
+
+func (e TurnMetrics) eventType() string { return "turn_metrics" }
 
 // ResponseStreamingStarted signals the first response chunk has arrived.
 type ResponseStreamingStarted struct {
@@ -109,6 +131,7 @@ func (e ConversationCleared) eventType() string { return "conversation_cleared" 
 
 // Error carries an error message for display.
 type Error struct {
+	Stage   string
 	Message string
 }
 

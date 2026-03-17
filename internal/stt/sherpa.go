@@ -14,16 +14,32 @@ import (
 	"github.com/Obedience-Corp/samantha/internal/config"
 )
 
-// SherpaSTT implements STT using sherpa-onnx whisper.
-type SherpaSTT struct {
+// SherpaOfflineSTT implements utterance-final STT using sherpa-onnx whisper.
+type SherpaOfflineSTT struct {
 	cfg        *config.Config
 	recognizer *sherpa.OfflineRecognizer
 	vad        *audio.VAD
 	capture    *audio.Capture
 }
 
-// NewSherpaSTT creates a new sherpa-onnx whisper STT provider.
-func NewSherpaSTT(cfg *config.Config, capture *audio.Capture, vad *audio.VAD) (*SherpaSTT, error) {
+type sherpaSession struct {
+	cancel context.CancelFunc
+	events chan Event
+}
+
+func (s *sherpaSession) Events() <-chan Event {
+	return s.events
+}
+
+func (s *sherpaSession) Close() error {
+	if s.cancel != nil {
+		s.cancel()
+	}
+	return nil
+}
+
+// NewSherpaOfflineSTT creates a new sherpa-onnx whisper STT provider.
+func NewSherpaOfflineSTT(cfg *config.Config, capture *audio.Capture, vad *audio.VAD) (*SherpaOfflineSTT, error) {
 	modelsDir := config.ModelsDir()
 	model := cfg.WhisperModel
 
@@ -54,7 +70,7 @@ func NewSherpaSTT(cfg *config.Config, capture *audio.Capture, vad *audio.VAD) (*
 		return nil, fmt.Errorf("failed to create whisper recognizer (model: %s)", model)
 	}
 
-	return &SherpaSTT{
+	return &SherpaOfflineSTT{
 		cfg:        cfg,
 		recognizer: recognizer,
 		vad:        vad,
@@ -65,15 +81,31 @@ func NewSherpaSTT(cfg *config.Config, capture *audio.Capture, vad *audio.VAD) (*
 // minSpeechSamples is the minimum number of audio samples for valid speech (0.3s at 16kHz).
 const minSpeechSamples = 4800
 
-// Transcribe listens for speech using VAD and transcribes with whisper.
-func (s *SherpaSTT) Transcribe(ctx context.Context, onStatus func(phase string)) (string, error) {
+// Start begins an STT session using utterance-final decoding.
+func (s *SherpaOfflineSTT) Start(ctx context.Context) (Session, error) {
+	sessionCtx, cancel := context.WithCancel(ctx)
+	session := &sherpaSession{
+		cancel: cancel,
+		events: make(chan Event, 8),
+	}
+
+	go s.runSession(sessionCtx, session.events)
+	return session, nil
+}
+
+func (s *SherpaOfflineSTT) runSession(ctx context.Context, events chan<- Event) {
+	defer close(events)
+
 	// Flush stale VAD segments from previous turn.
 	// Do NOT reset capture — the user may already be speaking.
 	s.vad.Clear()
-
-	if onStatus != nil {
-		onStatus("listening")
+	lastPhaseAt := time.Now()
+	emitPhase := func(phase string) {
+		now := time.Now()
+		events <- PhaseEvent{Phase: phase, Elapsed: now.Sub(lastPhaseAt).Nanoseconds()}
+		lastPhaseAt = now
 	}
+	emitPhase("listening")
 
 	speechDetected := false
 	timeout := time.After(time.Duration(s.cfg.ListenTimeout) * time.Second)
@@ -81,9 +113,11 @@ func (s *SherpaSTT) Transcribe(ctx context.Context, onStatus func(phase string))
 	for {
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			events <- Failure{Err: ctx.Err()}
+			return
 		case <-timeout:
-			return "", nil // no speech detected
+			events <- Timeout{}
+			return
 		default:
 		}
 
@@ -97,15 +131,11 @@ func (s *SherpaSTT) Transcribe(ctx context.Context, onStatus func(phase string))
 
 		if !speechDetected && s.vad.IsSpeech() {
 			speechDetected = true
-			if onStatus != nil {
-				onStatus("hearing")
-			}
+			emitPhase("hearing")
 		}
 
 		if s.vad.IsSpeechDetected() {
-			if onStatus != nil {
-				onStatus("transcribing")
-			}
+			emitPhase("transcribing")
 
 			// Collect all speech segments
 			var allSamples []float32
@@ -118,9 +148,7 @@ func (s *SherpaSTT) Transcribe(ctx context.Context, onStatus func(phase string))
 			// Skip if too short to be real speech.
 			if len(allSamples) < minSpeechSamples {
 				speechDetected = false
-				if onStatus != nil {
-					onStatus("listening")
-				}
+				emitPhase("listening")
 				continue
 			}
 
@@ -133,25 +161,24 @@ func (s *SherpaSTT) Transcribe(ctx context.Context, onStatus func(phase string))
 
 			text := strings.TrimSpace(result.Text)
 			if text != "" {
-				return text, nil
+				events <- FinalTranscript{Text: text}
+				return
 			}
 
 			// Empty transcription — keep listening
 			speechDetected = false
-			if onStatus != nil {
-				onStatus("listening")
-			}
+			emitPhase("listening")
 		}
 	}
 }
 
 // Available returns true if the STT provider is ready.
-func (s *SherpaSTT) Available() bool {
+func (s *SherpaOfflineSTT) Available() bool {
 	return s.recognizer != nil
 }
 
 // Delete frees resources.
-func (s *SherpaSTT) Delete() {
+func (s *SherpaOfflineSTT) Delete() {
 	if s.recognizer != nil {
 		sherpa.DeleteOfflineRecognizer(s.recognizer)
 	}

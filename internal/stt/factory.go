@@ -15,7 +15,8 @@ type ProviderSpec struct {
 }
 
 var providerSpecs = []ProviderSpec{
-	{Name: "sherpa", Description: "Local sherpa-onnx Whisper"},
+	{Name: "sherpa", Description: "Local sherpa-onnx streaming Zipformer"},
+	{Name: "sherpa-offline", Description: "Local sherpa-onnx Whisper (utterance-final)"},
 }
 
 // Providers returns the list of implemented STT providers.
@@ -36,7 +37,20 @@ func NewProvider(cfg *config.Config, capture *audio.Capture, vad *audio.VAD) (Pr
 			return nil, nil, fmt.Errorf("sherpa STT requires VAD; set vad_enabled=true or choose a different stt_provider")
 		}
 
-		provider, err := NewSherpaSTT(cfg, capture, vad)
+		provider, err := NewSherpaStreamingSTT(cfg, capture, vad)
+		if err != nil {
+			return nil, nil, err
+		}
+		return provider, provider.Delete, nil
+	case "sherpa-offline":
+		if capture == nil {
+			return nil, nil, fmt.Errorf("sherpa-offline STT requires audio capture")
+		}
+		if vad == nil {
+			return nil, nil, fmt.Errorf("sherpa-offline STT requires VAD; set vad_enabled=true or choose a different stt_provider")
+		}
+
+		provider, err := NewSherpaOfflineSTT(cfg, capture, vad)
 		if err != nil {
 			return nil, nil, err
 		}

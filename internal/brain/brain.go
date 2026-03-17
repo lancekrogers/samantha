@@ -48,7 +48,7 @@ func (b *Brain) Available() bool {
 
 // ThinkStream sends input to Claude and returns a channel of streaming message chunks.
 // Each message on the channel may contain partial text.
-func (b *Brain) ThinkStream(ctx context.Context, input string, _ StreamOptions) (<-chan string, error) {
+func (b *Brain) ThinkStream(ctx context.Context, input string, _ StreamOptions) (*Stream, error) {
 	b.history = append(b.history, Turn{Role: "user", Content: input})
 	prompt := b.buildPrompt()
 
@@ -62,9 +62,12 @@ func (b *Brain) ThinkStream(ctx context.Context, input string, _ StreamOptions) 
 	messages, errs := b.client.StreamPrompt(ctx, prompt, opts)
 
 	out := make(chan string, 8)
+	done := make(chan StreamResult, 1)
 	go func() {
 		defer close(out)
+		defer close(done)
 		var fullResponse strings.Builder
+		var streamErr error
 
 		for msg := range messages {
 			// Extract text content from assistant messages
@@ -97,8 +100,15 @@ func (b *Brain) ThinkStream(ctx context.Context, input string, _ StreamOptions) 
 		// Drain errors
 		for err := range errs {
 			if err != nil {
-				out <- fmt.Sprintf("[error: %v]", err)
+				if streamErr == nil {
+					streamErr = fmt.Errorf("claude stream: %w", err)
+				}
 			}
+		}
+
+		if streamErr != nil {
+			done <- StreamResult{Err: streamErr}
+			return
 		}
 
 		response := fullResponse.String()
@@ -106,9 +116,10 @@ func (b *Brain) ThinkStream(ctx context.Context, input string, _ StreamOptions) 
 			b.history = append(b.history, Turn{Role: "samantha", Content: response})
 			b.trimHistory()
 		}
+		done <- StreamResult{}
 	}()
 
-	return out, nil
+	return &Stream{Chunks: out, Done: done}, nil
 }
 
 // ThinkFull sends input and waits for the complete response.
