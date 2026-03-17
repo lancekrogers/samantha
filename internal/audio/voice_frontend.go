@@ -3,39 +3,46 @@ package audio
 import (
 	"math"
 	"sync"
-	"time"
 )
 
 const (
-	frontendTargetRMS = 0.08
-	playbackHalfLife  = 160 * time.Millisecond
-	highPassAlpha     = 0.995
+	frontendTargetRMS     = 0.08
+	frontendMaxRefQueue   = SampleRate * 2
+	echoCancellerTaps     = 192
+	echoCancellerStep     = 0.08
+	echoCancellerLeak     = 0.9995
+	noiseSuppressorFloor  = 0.12
+	noiseSuppressorTarget = 0.22
+	agcMinGain            = 0.8
+	agcMaxGain            = 6.0
+	highPassAlpha         = 0.995
 )
 
-// VoiceFrontend applies lightweight local preprocessing to capture audio.
-// It reduces rumble, gates low-level noise, ducks likely speaker bleed using
-// playback reference energy, and stabilizes level with a gentle AGC.
+// VoiceFrontend applies local AEC/NS/AGC before VAD and STT.
 type VoiceFrontend struct {
 	mu sync.Mutex
 
-	lastCaptureX float64
-	lastCaptureY float64
-	noiseFloor   float64
-	gain         float64
-
-	playbackEnvelope float64
-	lastPlaybackAt   time.Time
+	highPass highPassFilter
+	aec      nlmsEchoCanceller
+	ns       noiseSuppressor
+	agc      automaticGainControl
+	refs     sampleQueue
 }
 
 // NewVoiceFrontend creates the default local audio front-end.
 func NewVoiceFrontend() *VoiceFrontend {
 	return &VoiceFrontend{
-		noiseFloor: 0.0025,
-		gain:       1.0,
+		aec: newNLMSEchoCanceller(echoCancellerTaps, echoCancellerStep, echoCancellerLeak),
+		ns:  newNoiseSuppressor(noiseSuppressorFloor, noiseSuppressorTarget),
+		agc: newAutomaticGainControl(frontendTargetRMS, agcMinGain, agcMaxGain),
+		refs: sampleQueue{
+			capacity: frontendMaxRefQueue,
+		},
 	}
 }
 
-// ProcessCapture cleans incoming microphone samples in place for VAD/STT use.
+// ProcessCapture runs microphone audio through high-pass, AEC, noise suppression,
+// and automatic gain control before it reaches VAD/STT.
 func (f *VoiceFrontend) ProcessCapture(samples []float32) []float32 {
 	if len(samples) == 0 {
 		return samples
@@ -44,90 +51,29 @@ func (f *VoiceFrontend) ProcessCapture(samples []float32) []float32 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	playbackEnvelope := f.playbackLevelLocked(time.Now())
+	refs := f.refs.pop(len(samples))
 	out := make([]float32, len(samples))
 
-	sumSquares := 0.0
 	for i, sample := range samples {
-		x := float64(sample)
-		y := highPassAlpha * (f.lastCaptureY + x - f.lastCaptureX)
-		f.lastCaptureX = x
-		f.lastCaptureY = y
-		out[i] = float32(y)
-		sumSquares += y * y
+		clean := f.highPass.Process(float64(sample))
+		echoFree := f.aec.Process(clean, refs[i])
+		out[i] = float32(echoFree)
 	}
 
-	rms := math.Sqrt(sumSquares / float64(len(out)))
-	if rms < f.noiseFloor*1.5 {
-		f.noiseFloor = 0.995*f.noiseFloor + 0.005*rms
-	} else {
-		f.noiseFloor = 0.999*f.noiseFloor + 0.001*rms
-	}
-
-	gateThreshold := math.Max(f.noiseFloor*1.8, 0.0025)
-	duck := 1.0
-	if playbackEnvelope > gateThreshold*2 {
-		ratio := rms / math.Max(playbackEnvelope, 1e-6)
-		switch {
-		case ratio < 0.55:
-			duck = 0.18
-		case ratio < 0.9:
-			duck = 0.35
-		default:
-			duck = 0.7
-		}
-	}
-
-	postSquares := 0.0
-	for i, sample := range out {
-		value := float64(sample) * duck
-		abs := math.Abs(value)
-		if abs < gateThreshold {
-			value *= 0.15
-		}
-		out[i] = float32(value)
-		postSquares += value * value
-	}
-
-	postRMS := math.Sqrt(postSquares / float64(len(out)))
-	targetGain := clamp(frontendTargetRMS/math.Max(postRMS, 1e-4), 0.8, 3.0)
-	if targetGain > f.gain {
-		f.gain = 0.25*f.gain + 0.75*targetGain
-	} else {
-		f.gain = 0.92*f.gain + 0.08*targetGain
-	}
-
-	for i, sample := range out {
-		value := float64(sample) * f.gain
-		out[i] = float32(clamp(value, -1.0, 1.0))
-	}
-
+	f.ns.Process(out)
+	f.agc.Process(out)
 	return out
 }
 
-// PushPlaybackReference updates the reference energy used to duck speaker bleed.
+// PushPlaybackReference feeds far-end playback audio into the AEC reference path.
 func (f *VoiceFrontend) PushPlaybackReference(samples []float32) {
 	if len(samples) == 0 {
 		return
 	}
 
-	sumSquares := 0.0
-	for _, sample := range samples {
-		value := float64(sample)
-		sumSquares += value * value
-	}
-	rms := math.Sqrt(sumSquares / float64(len(samples)))
-
 	f.mu.Lock()
 	defer f.mu.Unlock()
-
-	current := f.playbackLevelLocked(time.Now())
-	if rms > current {
-		f.playbackEnvelope = 0.4*current + 0.6*rms
-	} else {
-		f.playbackEnvelope = 0.85*current + 0.15*rms
-	}
-	f.lastPlaybackAt = time.Now()
+	f.refs.push(samples)
 }
 
 // Close releases front-end resources.
@@ -135,22 +81,187 @@ func (f *VoiceFrontend) Close() error {
 	return nil
 }
 
-func (f *VoiceFrontend) playbackLevelLocked(now time.Time) float64 {
-	if f.lastPlaybackAt.IsZero() {
-		return f.playbackEnvelope
-	}
-	elapsed := now.Sub(f.lastPlaybackAt)
-	if elapsed <= 0 {
-		return f.playbackEnvelope
-	}
-
-	decay := math.Exp(-math.Ln2 * float64(elapsed) / float64(playbackHalfLife))
-	f.playbackEnvelope *= decay
-	f.lastPlaybackAt = now
-	return f.playbackEnvelope
+type highPassFilter struct {
+	lastX float64
+	lastY float64
 }
 
-func clamp[T ~float64 | ~float32](value, low, high T) T {
+func (h *highPassFilter) Process(sample float64) float64 {
+	y := highPassAlpha * (h.lastY + sample - h.lastX)
+	h.lastX = sample
+	h.lastY = y
+	return y
+}
+
+type nlmsEchoCanceller struct {
+	coeffs []float64
+	hist   []float64
+	pos    int
+	step   float64
+	leak   float64
+}
+
+func newNLMSEchoCanceller(taps int, step, leak float64) nlmsEchoCanceller {
+	return nlmsEchoCanceller{
+		coeffs: make([]float64, taps),
+		hist:   make([]float64, taps),
+		step:   step,
+		leak:   leak,
+	}
+}
+
+func (n *nlmsEchoCanceller) Process(mic, ref float64) float64 {
+	if len(n.hist) == 0 {
+		return mic
+	}
+
+	n.hist[n.pos] = ref
+	n.pos = (n.pos + 1) % len(n.hist)
+
+	estimated := 0.0
+	energy := 1e-6
+	for i := range n.coeffs {
+		x := n.hist[(n.pos-1-i+len(n.hist))%len(n.hist)]
+		estimated += n.coeffs[i] * x
+		energy += x * x
+	}
+
+	err := mic - estimated
+
+	adaptScale := n.step / energy
+	if math.Abs(err) > math.Abs(estimated)*2.5 {
+		adaptScale *= 0.2
+	}
+
+	for i := range n.coeffs {
+		x := n.hist[(n.pos-1-i+len(n.hist))%len(n.hist)]
+		n.coeffs[i] = n.coeffs[i]*n.leak + adaptScale*err*x
+	}
+
+	return err
+}
+
+type noiseSuppressor struct {
+	noiseFloor float64
+	targetSNR  float64
+}
+
+func newNoiseSuppressor(initialFloor, targetSNR float64) noiseSuppressor {
+	return noiseSuppressor{
+		noiseFloor: initialFloor,
+		targetSNR:  targetSNR,
+	}
+}
+
+func (n *noiseSuppressor) Process(samples []float32) {
+	if len(samples) == 0 {
+		return
+	}
+
+	rms := frameRMS(samples)
+	if rms < n.noiseFloor*1.8 {
+		n.noiseFloor = 0.992*n.noiseFloor + 0.008*rms
+	} else {
+		n.noiseFloor = 0.999*n.noiseFloor + 0.001*rms
+	}
+
+	signal := rms
+	noise := math.Max(n.noiseFloor, 1e-4)
+	snr := signal / noise
+	gain := clampFloat((snr-1.0)/math.Max(n.targetSNR, 1.0), noiseSuppressorFloor, 1.0)
+	gate := math.Max(n.noiseFloor*1.6, 0.0015)
+
+	for i, sample := range samples {
+		value := float64(sample) * gain
+		if math.Abs(value) < gate {
+			value *= 0.12
+		}
+		samples[i] = float32(value)
+	}
+}
+
+type automaticGainControl struct {
+	target float64
+	min    float64
+	max    float64
+	gain   float64
+}
+
+func newAutomaticGainControl(target, minGain, maxGain float64) automaticGainControl {
+	return automaticGainControl{
+		target: target,
+		min:    minGain,
+		max:    maxGain,
+		gain:   1.0,
+	}
+}
+
+func (a *automaticGainControl) Process(samples []float32) {
+	if len(samples) == 0 {
+		return
+	}
+
+	rms := frameRMS(samples)
+	targetGain := clampFloat(a.target/math.Max(rms, 1e-4), a.min, a.max)
+	if targetGain > a.gain {
+		a.gain = 0.3*a.gain + 0.7*targetGain
+	} else {
+		a.gain = 0.92*a.gain + 0.08*targetGain
+	}
+
+	for i, sample := range samples {
+		samples[i] = float32(clampFloat(float64(sample)*a.gain, -1.0, 1.0))
+	}
+}
+
+type sampleQueue struct {
+	samples  []float64
+	capacity int
+}
+
+func (q *sampleQueue) push(samples []float32) {
+	if len(samples) == 0 {
+		return
+	}
+
+	for _, sample := range samples {
+		q.samples = append(q.samples, float64(sample))
+	}
+	if len(q.samples) > q.capacity {
+		q.samples = append([]float64(nil), q.samples[len(q.samples)-q.capacity:]...)
+	}
+}
+
+func (q *sampleQueue) pop(n int) []float64 {
+	if n <= 0 {
+		return nil
+	}
+
+	out := make([]float64, n)
+	if len(q.samples) == 0 {
+		return out
+	}
+
+	available := min(len(q.samples), n)
+	copy(out, q.samples[:available])
+	q.samples = append([]float64(nil), q.samples[available:]...)
+	return out
+}
+
+func frameRMS(samples []float32) float64 {
+	if len(samples) == 0 {
+		return 0
+	}
+
+	sum := 0.0
+	for _, sample := range samples {
+		value := float64(sample)
+		sum += value * value
+	}
+	return math.Sqrt(sum / float64(len(samples)))
+}
+
+func clampFloat(value, low, high float64) float64 {
 	if value < low {
 		return low
 	}

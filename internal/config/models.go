@@ -35,16 +35,15 @@ type AssetRequest struct {
 
 // runtimeFiles returns the required individual downloads for the given run.
 func runtimeFiles(req AssetRequest) []ModelFile {
-	if !req.NeedVAD {
-		return nil
-	}
-	return []ModelFile{
-		{
+	var files []ModelFile
+	if req.NeedVAD {
+		files = append(files, ModelFile{
 			Name: "silero_vad.onnx",
 			URL:  "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
 			Size: 0,
-		},
+		})
 	}
+	return files
 }
 
 // runtimeArchives returns tar.bz2 archives parameterized by config and request.
@@ -101,7 +100,19 @@ func EnsureRuntimeAssets(cfg *Config, req AssetRequest, onProgress func(name str
 	}
 
 	// Individual file downloads.
-	for _, m := range runtimeFiles(req) {
+	files := runtimeFiles(req)
+	if req.NeedSTT && strings.EqualFold(cfg.STTProvider, "whispercpp") {
+		asset, err := WhisperCPPModelAsset(cfg.WhisperCPPModel)
+		if err != nil {
+			return err
+		}
+		files = append(files, ModelFile{
+			Name: filepath.Join("whispercpp", asset.Filename),
+			URL:  asset.URL,
+			Size: 0,
+		})
+	}
+	for _, m := range files {
 		path := filepath.Join(dir, m.Name)
 		if fileExists(path, m.Size) {
 			continue
@@ -154,7 +165,9 @@ func EnsureRuntimeAssets(cfg *Config, req AssetRequest, onProgress func(name str
 // EnsureModels preserves the old behavior for callers that still need the default asset set.
 func EnsureModels(cfg *Config, onProgress func(name string, pct float64)) error {
 	return EnsureRuntimeAssets(cfg, AssetRequest{
-		NeedSTT: strings.EqualFold(cfg.STTProvider, "sherpa"),
+		NeedSTT: strings.EqualFold(cfg.STTProvider, "sherpa") ||
+			strings.EqualFold(cfg.STTProvider, "sherpa-offline") ||
+			strings.EqualFold(cfg.STTProvider, "whispercpp"),
 		NeedTTS: strings.EqualFold(cfg.TTSProvider, "kokoro"),
 		NeedVAD: cfg.VADEnabled,
 	}, onProgress)

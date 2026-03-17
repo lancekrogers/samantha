@@ -20,11 +20,11 @@ type SherpaStreamingSTT struct {
 	cfg        *config.Config
 	recognizer *sherpa.OnlineRecognizer
 	vad        *audio.VAD
-	capture    *audio.Capture
+	capture    audioSource
 }
 
 // NewSherpaStreamingSTT creates a new online sherpa-onnx STT provider.
-func NewSherpaStreamingSTT(cfg *config.Config, capture *audio.Capture, vad *audio.VAD) (*SherpaStreamingSTT, error) {
+func NewSherpaStreamingSTT(cfg *config.Config, capture audioSource, vad *audio.VAD) (*SherpaStreamingSTT, error) {
 	asset, err := config.SherpaStreamingModel(cfg.SherpaStreamingModel)
 	if err != nil {
 		return nil, err

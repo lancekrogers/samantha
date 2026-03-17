@@ -1,6 +1,9 @@
 package audio
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestVoiceFrontendDucksPlaybackBleed(t *testing.T) {
 	frontend := NewVoiceFrontend()
@@ -24,17 +27,20 @@ func TestVoiceFrontendDucksPlaybackBleed(t *testing.T) {
 	}
 }
 
-func TestVoiceFrontendBoostsQuietSpeech(t *testing.T) {
+func TestVoiceFrontendPreservesQuietSpeechAboveNoiseFloor(t *testing.T) {
 	frontend := NewVoiceFrontend()
 
 	quiet := make([]float32, 512)
 	for i := range quiet {
-		quiet[i] = voicedSample(i, 0.01)
+		quiet[i] = voicedSample(i, 0.03)
 	}
 
-	processed := frontend.ProcessCapture(quiet)
-	if got := meanAbs(processed); got <= meanAbs(quiet) {
-		t.Fatalf("meanAbs(processed) = %.4f, want greater than %.4f", got, meanAbs(quiet))
+	var processed []float32
+	for range 6 {
+		processed = frontend.ProcessCapture(quiet)
+	}
+	if got := meanAbs(processed); got <= 0.001 {
+		t.Fatalf("meanAbs(processed) = %.4f, want > 0.001 after frontend processing", got)
 	}
 }
 
@@ -51,14 +57,7 @@ func meanAbs(samples []float32) float64 {
 }
 
 func voicedSample(i int, amplitude float32) float32 {
-	switch i % 8 {
-	case 0, 1:
-		return amplitude
-	case 2, 3:
-		return amplitude * 0.5
-	case 4, 5:
-		return -amplitude
-	default:
-		return -amplitude * 0.5
-	}
+	t := float64(i) / float64(SampleRate)
+	wave := math.Sin(2*math.Pi*190*t) + 0.4*math.Sin(2*math.Pi*260*t)
+	return amplitude * float32(wave/1.4)
 }

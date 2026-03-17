@@ -19,7 +19,7 @@ type SherpaOfflineSTT struct {
 	cfg        *config.Config
 	recognizer *sherpa.OfflineRecognizer
 	vad        *audio.VAD
-	capture    *audio.Capture
+	capture    audioSource
 }
 
 type sherpaSession struct {
@@ -39,7 +39,7 @@ func (s *sherpaSession) Close() error {
 }
 
 // NewSherpaOfflineSTT creates a new sherpa-onnx whisper STT provider.
-func NewSherpaOfflineSTT(cfg *config.Config, capture *audio.Capture, vad *audio.VAD) (*SherpaOfflineSTT, error) {
+func NewSherpaOfflineSTT(cfg *config.Config, capture audioSource, vad *audio.VAD) (*SherpaOfflineSTT, error) {
 	modelsDir := config.ModelsDir()
 	model := cfg.WhisperModel
 

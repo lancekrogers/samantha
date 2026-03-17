@@ -21,6 +21,9 @@ type Config struct {
 	SherpaStreamingModel string `mapstructure:"sherpa_streaming_model"`
 	WhisperModel         string `mapstructure:"whisper_model"`
 	WhisperQuantized     bool   `mapstructure:"whisper_quantized"`
+	WhisperCPPBinary     string `mapstructure:"whispercpp_binary"`
+	WhisperCPPModel      string `mapstructure:"whispercpp_model"`
+	WhisperCPPModelPath  string `mapstructure:"whispercpp_model_path"`
 
 	// VAD
 	VADEnabled         bool    `mapstructure:"vad_enabled"`
@@ -73,6 +76,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("sherpa_streaming_model", "en-2023-06-26")
 	v.SetDefault("whisper_model", "small")
 	v.SetDefault("whisper_quantized", true)
+	v.SetDefault("whispercpp_binary", "whisper-cli")
+	v.SetDefault("whispercpp_model", "base.en")
+	v.SetDefault("whispercpp_model_path", filepath.Join(homeDir(), ".cache", "samantha", "models", "whispercpp", "ggml-base.en.bin"))
 
 	v.SetDefault("vad_enabled", true)
 	v.SetDefault("vad_silence_duration", 0.5)
@@ -114,6 +120,9 @@ func Load() (*Config, error) {
 		"stt_provider":           "STT_PROVIDER",
 		"sherpa_streaming_model": "SHERPA_STREAMING_MODEL",
 		"whisper_model":          "WHISPER_MODEL",
+		"whispercpp_binary":      "WHISPERCPP_BINARY",
+		"whispercpp_model":       "WHISPERCPP_MODEL",
+		"whispercpp_model_path":  "WHISPERCPP_MODEL_PATH",
 		"fish_api_key":           "FISH_API_KEY",
 		"models_dir":             "MODELS_DIR",
 		"brain_provider":         "BRAIN_PROVIDER",

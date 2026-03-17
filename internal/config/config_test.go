@@ -35,6 +35,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.WhisperModel != "small" {
 		t.Errorf("WhisperModel = %q, want small", cfg.WhisperModel)
 	}
+	if cfg.WhisperCPPBinary != "whisper-cli" {
+		t.Errorf("WhisperCPPBinary = %q, want whisper-cli", cfg.WhisperCPPBinary)
+	}
+	if cfg.WhisperCPPModel != "base.en" {
+		t.Errorf("WhisperCPPModel = %q, want base.en", cfg.WhisperCPPModel)
+	}
 	if cfg.MaxHistory != 10 {
 		t.Errorf("MaxHistory = %d, want 10", cfg.MaxHistory)
 	}
