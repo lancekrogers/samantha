@@ -29,6 +29,8 @@ func TestFixtureStreamingSTTFlow(t *testing.T) {
 	var partials []string
 	var userInput string
 	var metrics events.TurnMetrics
+	var response events.ResponseReady
+	responseSeen := make(chan struct{}, 1)
 	events.Subscribe(bus, func(e events.TranscriptPartial) {
 		partials = append(partials, e.Text)
 	})
@@ -37,6 +39,13 @@ func TestFixtureStreamingSTTFlow(t *testing.T) {
 	})
 	events.Subscribe(bus, func(e events.TurnMetrics) {
 		metrics = e
+	})
+	events.Subscribe(bus, func(e events.ResponseReady) {
+		response = e
+		select {
+		case responseSeen <- struct{}{}:
+		default:
+		}
 	})
 
 	p := &pipeline.Pipeline{
@@ -58,8 +67,22 @@ func TestFixtureStreamingSTTFlow(t *testing.T) {
 	if len(partials) < 2 {
 		t.Fatalf("partials = %v, want at least 2 transcript partials", partials)
 	}
+	select {
+	case <-responseSeen:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for response event")
+	}
+	if response.Response != "All set." {
+		t.Fatalf("ResponseReady.Response = %q, want %q", response.Response, "All set.")
+	}
+	if response.Interrupted {
+		t.Fatal("ResponseReady.Interrupted = true, want false")
+	}
 	if metrics.STTFinalElapsed <= 0 {
 		t.Fatalf("STTFinalElapsed = %v, want > 0", metrics.STTFinalElapsed)
+	}
+	if metrics.ModelCompleteElapsed <= 0 {
+		t.Fatalf("ModelCompleteElapsed = %v, want > 0", metrics.ModelCompleteElapsed)
 	}
 }
 
@@ -74,6 +97,7 @@ func TestFixtureBargeInInterruptsPlayback(t *testing.T) {
 	vad := &energyVAD{threshold: 0.03, required: 2}
 
 	var response events.ResponseReady
+	var metrics events.TurnMetrics
 	responseSeen := make(chan struct{}, 1)
 	events.Subscribe(bus, func(e events.ResponseReady) {
 		response = e
@@ -81,6 +105,9 @@ func TestFixtureBargeInInterruptsPlayback(t *testing.T) {
 		case responseSeen <- struct{}{}:
 		default:
 		}
+	})
+	events.Subscribe(bus, func(e events.TurnMetrics) {
+		metrics = e
 	})
 
 	p := &pipeline.Pipeline{
@@ -128,6 +155,9 @@ func TestFixtureBargeInInterruptsPlayback(t *testing.T) {
 	}
 	if player.stopCount.Load() == 0 {
 		t.Fatal("player Stop() was not called")
+	}
+	if !metrics.Interrupted {
+		t.Fatal("TurnMetrics.Interrupted = false, want true")
 	}
 }
 
