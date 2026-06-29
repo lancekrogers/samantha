@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/pipeline"
+	"github.com/lancekrogers/samantha/internal/stt"
 )
 
 // TestClassifyVoiceFailure covers the recovery policy: a transient voice-turn
@@ -118,5 +120,40 @@ func TestRunReturnsOnCancel(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return within 2s after context cancellation")
+	}
+}
+
+// failingSTT is an stt.Provider whose sessions never start, so every voice turn
+// returns an error.
+type failingSTT struct{}
+
+func (failingSTT) Start(context.Context) (stt.Session, error) {
+	return nil, errors.New("stt unavailable")
+}
+
+func (failingSTT) Available() bool { return true }
+
+// TestRunFallsBackToTextAfterSustainedVoiceFailures drives Run in voice mode
+// against an STT backend that always fails. It must retry, then fall back to
+// text input where the queued "exit" ends the loop — proving the fallback is
+// reached rather than spinning forever in voice mode (and that retries don't
+// hang).
+func TestRunFallsBackToTextAfterSustainedVoiceFailures(t *testing.T) {
+	p := &pipeline.Pipeline{Events: events.NewBus(), STT: failingSTT{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, p, strings.NewReader("exit\n"), false /* textMode */, false)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run never fell back to text input after sustained voice failures")
 	}
 }
