@@ -77,6 +77,48 @@ func TestRunTurnOverlapsSynthesisWithPlayback(t *testing.T) {
 	}
 }
 
+func TestRunTurnDrainsFullPlaybackQueue(t *testing.T) {
+	bus := events.NewBus()
+	sttProvider := &fakeSTT{text: "hello"}
+	// More sentences than voiceQueueDepth so the playback queue fills and the
+	// loop must apply backpressure without blocking — a regression guard for
+	// the slotSem deadlock that hung voice mode once the queue was full.
+	brainProvider := &fakeBrain{chunks: []string{"One. Two. Three. Four. Five."}}
+	ttsProvider := &fakeTTS{delay: 5 * time.Millisecond}
+	player := newFakePlayer(60 * time.Millisecond)
+	defer player.Close()
+
+	p := &Pipeline{
+		STT:    sttProvider,
+		Brain:  brainProvider,
+		TTS:    ttsProvider,
+		Player: player,
+		Events: bus,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.RunTurn(context.Background())
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunTurn() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunTurn deadlocked with a full playback queue")
+	}
+
+	if got := len(ttsProvider.CallTimes()); got != 5 {
+		t.Fatalf("TTS call count = %d, want 5", got)
+	}
+	if got := len(player.FinishedTimes()); got != 5 {
+		t.Fatalf("played segment count = %d, want 5", got)
+	}
+}
+
 func TestRunTurnBargeInInterruptsPlayback(t *testing.T) {
 	bus := events.NewBus()
 	sttProvider := &fakeSTT{text: "hello"}

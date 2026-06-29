@@ -271,12 +271,19 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 		bargeIn = p.watchBargeIn(streamCtx, &armAt)
 	}
 
-	slotSem := make(chan struct{}, voiceQueueDepth)
 	playbackEvents := make(chan playbackEvent, voiceQueueDepth*2)
 	modelDone := stream.Done
 	modelFinished := false
 
 	for sentences != nil || pending > 0 || modelDone != nil {
+		// Pause sentence intake while the playback queue is full so the loop
+		// always returns to select and can drain playbackEvents. Blocking here
+		// to acquire a slot would deadlock the turn once the queue fills.
+		var sentenceCh <-chan string
+		if pending < voiceQueueDepth {
+			sentenceCh = sentences
+		}
+
 		select {
 		case <-ctx.Done():
 			return strings.TrimSpace(fullResponse.String()), interrupted, ctx.Err()
@@ -311,7 +318,7 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 				return strings.TrimSpace(fullResponse.String()), interrupted, fmt.Errorf("brain: %w", result.Err)
 			}
 
-		case sentence, ok := <-sentences:
+		case sentence, ok := <-sentenceCh:
 			if !ok {
 				sentences = nil
 				continue
@@ -334,14 +341,12 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 			if metrics.firstSegment.IsZero() {
 				metrics.firstSegment = time.Now()
 			}
-			slotSem <- struct{}{}
 			p.emit(events.SpeechSegmentReady{Text: sentence})
 			p.emit(events.GeneratingVoice{Sentence: sentence})
 
 			synthStarted := time.Now()
 			stream, err := p.TTS.Synthesize(streamCtx, sentence)
 			if err != nil {
-				<-slotSem
 				if interrupted || errors.Is(err, context.Canceled) {
 					continue
 				}
@@ -351,7 +356,6 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 
 			playback, err := p.Player.PlayStream(streamCtx, stream)
 			if err != nil {
-				<-slotSem
 				if interrupted || errors.Is(err, context.Canceled) {
 					continue
 				}
@@ -380,7 +384,6 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 
 			case playbackFinished:
 				pending--
-				<-slotSem
 				metrics.playbackComplete = time.Now()
 
 				if event.result.Interrupted {
