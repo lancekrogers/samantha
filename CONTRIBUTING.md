@@ -32,4 +32,4 @@ When filing a bug, include:
 
 ## License
 
-This project does not have a selected license yet. Do not submit external contributions until the project owner has added one.
+By contributing, you agree that your contributions will be licensed under the MIT License.

@@ -16,6 +16,8 @@ It captures speech, transcribes it locally, streams the prompt through an AI cod
 
 ## Architecture
 
+Concurrent goroutine pipeline targeting <2s end-to-end latency:
+
 ```text
 Mic -> VAD -> STT -> Brain -> Sentence Chunker -> TTS -> Speaker
 ```
@@ -143,6 +145,6 @@ just voice voices
 just voice providers
 ```
 
-## Open Source Status
+## License
 
-This repository is being prepared for public collaboration. A license has not been selected yet; choose and add one before accepting external contributions.
+Samantha is released under the MIT License. See [LICENSE](LICENSE).
