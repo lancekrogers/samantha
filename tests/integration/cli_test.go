@@ -42,7 +42,7 @@ func TestCLI_ConfigSet(t *testing.T) {
 	tc := GetSharedContainer(t)
 
 	// Set a config value.
-	_, err := tc.RunSamantha("config", "set", "tts_voice", "af_bella")
+	_, err := tc.RunSamantha("config", "tts_voice", "af_bella")
 	if err != nil {
 		t.Fatalf("samantha config set failed: %v", err)
 	}

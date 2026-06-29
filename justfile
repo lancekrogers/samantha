@@ -51,7 +51,10 @@ talk: build
 
 # Full pipeline (clean, build, test, integration)
 all:
-    @{{BUILDTOOL}} all
+    just clean
+    just build
+    just test unit
+    just test integration
 
 # Clean build artifacts
 clean:

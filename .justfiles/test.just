@@ -32,7 +32,7 @@ integration-verbose:
     set -euo pipefail
     echo "Building Linux binary for containers..."
     mkdir -p bin/linux
-    CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) go build -o bin/linux/samantha ./cmd/samantha
+    CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) go build -tags=integration -o bin/linux/samantha ./cmd/samantha
     echo "Running container-based integration tests..."
     DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock" \
     TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock \
