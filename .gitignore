@@ -10,7 +10,14 @@ bin/
 # Test
 *.test
 *.out
+coverage.out
 coverage.html
+*.log
+
+# Local environment
+.env
+.env.*
+samantha_review.txt
 
 # IDE
 .idea/
