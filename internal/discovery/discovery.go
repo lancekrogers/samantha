@@ -10,7 +10,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 
-	"github.com/Obedience-Corp/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/config"
 )
 
 // ProviderInfo describes an available brain provider.

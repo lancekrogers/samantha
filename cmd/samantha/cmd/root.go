@@ -9,17 +9,17 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Obedience-Corp/samantha/internal/app"
-	"github.com/Obedience-Corp/samantha/internal/audio"
-	"github.com/Obedience-Corp/samantha/internal/brain"
-	"github.com/Obedience-Corp/samantha/internal/config"
-	"github.com/Obedience-Corp/samantha/internal/events"
-	"github.com/Obedience-Corp/samantha/internal/pipeline"
-	"github.com/Obedience-Corp/samantha/internal/session"
-	"github.com/Obedience-Corp/samantha/internal/stt"
-	"github.com/Obedience-Corp/samantha/internal/tts"
-	appTUI "github.com/Obedience-Corp/samantha/internal/tui"
-	"github.com/Obedience-Corp/samantha/internal/ui"
+	"github.com/lancekrogers/samantha/internal/app"
+	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/internal/brain"
+	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/pipeline"
+	"github.com/lancekrogers/samantha/internal/session"
+	"github.com/lancekrogers/samantha/internal/stt"
+	"github.com/lancekrogers/samantha/internal/tts"
+	appTUI "github.com/lancekrogers/samantha/internal/tui"
+	"github.com/lancekrogers/samantha/internal/ui"
 )
 
 var (

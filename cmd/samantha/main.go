@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/Obedience-Corp/samantha/cmd/samantha/cmd"
+	"github.com/lancekrogers/samantha/cmd/samantha/cmd"
 )
 
 func main() {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Obedience-Corp/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/events"
 )
 
 // UI handles terminal output for the voice assistant.

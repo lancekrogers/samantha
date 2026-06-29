@@ -1,4 +1,4 @@
-module github.com/Obedience-Corp/samantha
+module github.com/lancekrogers/samantha
 
 go 1.26.1
 
