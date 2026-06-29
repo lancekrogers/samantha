@@ -275,9 +275,6 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 	modelDone := stream.Done
 	modelFinished := false
 
-	var playbackBegun atomic.Bool
-	watchdogArmed := false
-
 	for sentences != nil || pending > 0 || modelDone != nil {
 		// Pause sentence intake while the playback queue is full so the loop
 		// always returns to select and can drain playbackEvents. Blocking here
@@ -344,10 +341,6 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 			if metrics.firstSegment.IsZero() {
 				metrics.firstSegment = time.Now()
 			}
-			if !watchdogArmed {
-				watchdogArmed = true
-				go p.watchPlaybackStall(streamCtx, time.Now(), &playbackBegun, cancel)
-			}
 			p.emit(events.SpeechSegmentReady{Text: sentence})
 			p.emit(events.GeneratingVoice{Sentence: sentence})
 
@@ -376,7 +369,6 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 		case event := <-playbackEvents:
 			switch event.kind {
 			case playbackStarted:
-				playbackBegun.Store(true)
 				armAt.Store(time.Now().Add(bargeInArmDelay).UnixNano())
 				if metrics.firstAudioReady.IsZero() {
 					metrics.firstAudioReady = time.Now()
