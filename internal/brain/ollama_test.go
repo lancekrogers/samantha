@@ -80,6 +80,63 @@ func TestChatRetriesWithoutToolsWhenUnsupported(t *testing.T) {
 	}
 }
 
+// recordingStub captures each request body so a test can assert what was sent.
+func recordingStub(t *testing.T, count *int, bodies *[][]byte) *api.Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*count++
+		body, _ := io.ReadAll(r.Body)
+		*bodies = append(*bodies, body)
+		_, _ = io.WriteString(w, `{"model":"m","message":{"role":"assistant","content":"hi"},"done":true,"done_reason":"stop"}`+"\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	base, _ := url.Parse(srv.URL)
+	return api.NewClient(base, http.DefaultClient)
+}
+
+func TestWarmupFiresMinimalRequest(t *testing.T) {
+	var count int
+	var bodies [][]byte
+	o := &OllamaBrain{client: recordingStub(t, &count, &bodies), model: "m"}
+
+	o.Warmup(context.Background())
+
+	if count != 1 {
+		t.Fatalf("want exactly 1 warmup request, got %d", count)
+	}
+	body := bodies[0]
+	if bytes.Contains(body, []byte(`"tools":`)) {
+		t.Errorf("warmup must not send tools; body=%s", body)
+	}
+	if !bytes.Contains(body, []byte(`"num_predict":1`)) {
+		t.Errorf("warmup must cap generation with num_predict; body=%s", body)
+	}
+}
+
+// TestSystemPrefixStableAcrossTurns guards the KV-cache reuse property: the
+// system message (the cached prefix) must be byte-identical across turns, even
+// as conversation history grows.
+func TestSystemPrefixStableAcrossTurns(t *testing.T) {
+	o := &OllamaBrain{
+		workDir: "/work/dir",
+		cfg:     &config.Config{AgentName: "Samantha", MaxHistory: 10},
+	}
+
+	o.history = append(o.history, api.Message{Role: "user", Content: "first"})
+	firstPrefix := o.buildMessages()[0].Content
+
+	o.history = append(o.history,
+		api.Message{Role: "assistant", Content: "hello there"},
+		api.Message{Role: "user", Content: "second"},
+	)
+	secondPrefix := o.buildMessages()[0].Content
+
+	if firstPrefix != secondPrefix {
+		t.Errorf("system prefix changed across turns, defeating KV-cache reuse:\nfirst=%q\nsecond=%q", firstPrefix, secondPrefix)
+	}
+}
+
 func TestThinkFullOmitsToolsWhenDisabled(t *testing.T) {
 	var withTools, withoutTools int
 	o := &OllamaBrain{

@@ -27,3 +27,10 @@ type Provider interface {
 	History() []Turn
 	LoadHistory(turns []Turn)
 }
+
+// Warmer is an optional Provider capability that preloads the backend (e.g.
+// loads the model into memory) so the user's first turn avoids the cold-start
+// cost. Implementations are best-effort and must not block on failures.
+type Warmer interface {
+	Warmup(ctx context.Context)
+}
