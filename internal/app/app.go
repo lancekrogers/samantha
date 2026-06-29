@@ -3,13 +3,42 @@ package app
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/pipeline"
 )
+
+const (
+	maxVoiceFailures  = 3
+	voiceRetryBackoff = 500 * time.Millisecond
+)
+
+type voiceFailureAction int
+
+const (
+	voiceRetry voiceFailureAction = iota
+	voiceFallback
+	voiceShutdown
+)
+
+func classifyVoiceFailure(err, ctxErr error, consecutiveFailures int) voiceFailureAction {
+	if errors.Is(err, context.Canceled) || ctxErr != nil {
+		return voiceShutdown
+	}
+	if consecutiveFailures >= maxVoiceFailures {
+		return voiceFallback
+	}
+	return voiceRetry
+}
+
+func isResumeVoiceCommand(cmd string) bool {
+	return cmd == "/voice" || cmd == "/v"
+}
 
 var exitPhrases = map[string]bool{
 	"exit": true, "quit": true, "bye": true, "goodbye": true, "stop": true,
@@ -27,11 +56,12 @@ var clearPhrases = []string{
 	"fresh start", "new conversation", "reset",
 }
 
-// Run starts the main conversation loop. Text input is read from in (typically
-// os.Stdin) via a cancellable reader, so the loop unwinds promptly when ctx is
-// cancelled even while waiting for typed input.
+// Run drives the conversation loop until the user exits or ctx is cancelled.
+// Text input is read from in cancellably so a stdin read never blocks shutdown.
 func Run(ctx context.Context, p *pipeline.Pipeline, in io.Reader, textMode, noVoice bool) error {
 	var input *lineReader // started lazily so voice mode never touches stdin
+	voiceAvailable := p.STT != nil
+	voiceFailures := 0
 
 	for {
 		select {
@@ -41,7 +71,6 @@ func Run(ctx context.Context, p *pipeline.Pipeline, in io.Reader, textMode, noVo
 		}
 
 		var text string
-		var err error
 
 		if textMode {
 			if input == nil {
@@ -50,23 +79,40 @@ func Run(ctx context.Context, p *pipeline.Pipeline, in io.Reader, textMode, noVo
 			fmt.Print("  You: ")
 			line, ok := input.next(ctx)
 			if !ok {
-				return nil // EOF or context cancelled
+				return nil
 			}
 			text = strings.TrimSpace(line)
 			if text == "" {
 				continue
 			}
 		} else {
-			text, err = p.RunTurn(ctx)
+			turnText, err := p.RunTurn(ctx)
 			if err != nil {
-				p.Events.Emit(events.Error{Message: err.Error()})
-				p.Events.Emit(events.Info{Message: "Switching to text mode."})
-				textMode = true
-				continue
+				switch classifyVoiceFailure(err, ctx.Err(), voiceFailures+1) {
+				case voiceShutdown:
+					return nil
+				case voiceFallback:
+					p.Events.Emit(events.Error{Message: err.Error()})
+					p.Events.Emit(events.Info{Message: "Voice input keeps failing — switching to text. Type /voice to switch back."})
+					textMode = true
+					voiceFailures = 0
+					continue
+				case voiceRetry:
+					voiceFailures++
+					p.Events.Emit(events.Error{Message: err.Error()})
+					select {
+					case <-ctx.Done():
+						return nil
+					case <-time.After(voiceRetryBackoff):
+					}
+					continue
+				}
 			}
-			if text == "" {
+			voiceFailures = 0
+			if turnText == "" {
 				continue // silence, keep listening
 			}
+			text = turnText
 		}
 
 		cmd := strings.ToLower(strings.TrimSpace(text))
@@ -74,6 +120,14 @@ func Run(ctx context.Context, p *pipeline.Pipeline, in io.Reader, textMode, noVo
 		// Exit check
 		if exitPhrases[cmd] {
 			return nil
+		}
+
+		// Resume voice after a fallback.
+		if textMode && voiceAvailable && isResumeVoiceCommand(cmd) {
+			textMode = false
+			voiceFailures = 0
+			p.Events.Emit(events.Info{Message: "Switching back to voice mode."})
+			continue
 		}
 
 		// Clear check
