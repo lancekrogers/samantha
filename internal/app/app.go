@@ -14,10 +14,7 @@ import (
 )
 
 const (
-	// maxVoiceFailures is how many consecutive voice-turn failures to tolerate
-	// before falling back to text input.
-	maxVoiceFailures = 3
-	// voiceRetryBackoff is the cancellable pause between voice-turn retries.
+	maxVoiceFailures  = 3
 	voiceRetryBackoff = 500 * time.Millisecond
 )
 
@@ -29,9 +26,6 @@ const (
 	voiceShutdown
 )
 
-// classifyVoiceFailure decides how to handle a failed voice turn: shut down on
-// cancellation, retry transient failures, and fall back to text only once
-// failures are sustained.
 func classifyVoiceFailure(err, ctxErr error, consecutiveFailures int) voiceFailureAction {
 	if errors.Is(err, context.Canceled) || ctxErr != nil {
 		return voiceShutdown
@@ -62,9 +56,8 @@ var clearPhrases = []string{
 	"fresh start", "new conversation", "reset",
 }
 
-// Run starts the main conversation loop. Text input is read from in (typically
-// os.Stdin) via a cancellable reader, so the loop unwinds promptly when ctx is
-// cancelled even while waiting for typed input.
+// Run drives the conversation loop until the user exits or ctx is cancelled.
+// Text input is read from in cancellably so a stdin read never blocks shutdown.
 func Run(ctx context.Context, p *pipeline.Pipeline, in io.Reader, textMode, noVoice bool) error {
 	var input *lineReader // started lazily so voice mode never touches stdin
 	voiceAvailable := p.STT != nil
@@ -86,7 +79,7 @@ func Run(ctx context.Context, p *pipeline.Pipeline, in io.Reader, textMode, noVo
 			fmt.Print("  You: ")
 			line, ok := input.next(ctx)
 			if !ok {
-				return nil // EOF or context cancelled
+				return nil
 			}
 			text = strings.TrimSpace(line)
 			if text == "" {
@@ -104,7 +97,7 @@ func Run(ctx context.Context, p *pipeline.Pipeline, in io.Reader, textMode, noVo
 					textMode = true
 					voiceFailures = 0
 					continue
-				default: // transient: retry in voice mode
+				case voiceRetry:
 					voiceFailures++
 					p.Events.Emit(events.Error{Message: err.Error()})
 					select {

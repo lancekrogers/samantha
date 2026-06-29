@@ -14,9 +14,6 @@ import (
 	"github.com/lancekrogers/samantha/internal/stt"
 )
 
-// TestClassifyVoiceFailure covers the recovery policy: a transient voice-turn
-// failure is retried in voice mode, voice is abandoned only after sustained
-// failures, and context cancellation always stops the loop.
 func TestClassifyVoiceFailure(t *testing.T) {
 	transient := errors.New("STT: stream reset failed")
 
@@ -64,9 +61,7 @@ func TestIsResumeVoiceCommand(t *testing.T) {
 	}
 }
 
-// TestLineReaderNextCancels verifies that next unblocks promptly when the
-// context is cancelled while waiting on input that never arrives — the core of
-// the fix for the unkillable-on-SIGTERM hang in text mode.
+// TestLineReaderNextCancels: next unblocks when ctx is cancelled mid-wait.
 func TestLineReaderNextCancels(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer pw.Close() // unblock the reader goroutine when the test ends
@@ -96,9 +91,7 @@ func TestLineReaderNextCancels(t *testing.T) {
 	}
 }
 
-// TestRunReturnsOnCancel verifies that the main loop unwinds when ctx is
-// cancelled while blocked waiting for text input, instead of hanging on a
-// blocking stdin read.
+// TestRunReturnsOnCancel: Run unwinds when ctx is cancelled while awaiting input.
 func TestRunReturnsOnCancel(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer pw.Close()
@@ -123,8 +116,7 @@ func TestRunReturnsOnCancel(t *testing.T) {
 	}
 }
 
-// failingSTT is an stt.Provider whose sessions never start, so every voice turn
-// returns an error.
+// failingSTT always fails to start a session, so every voice turn errors.
 type failingSTT struct{}
 
 func (failingSTT) Start(context.Context) (stt.Session, error) {
@@ -133,11 +125,8 @@ func (failingSTT) Start(context.Context) (stt.Session, error) {
 
 func (failingSTT) Available() bool { return true }
 
-// TestRunFallsBackToTextAfterSustainedVoiceFailures drives Run in voice mode
-// against an STT backend that always fails. It must retry, then fall back to
-// text input where the queued "exit" ends the loop — proving the fallback is
-// reached rather than spinning forever in voice mode (and that retries don't
-// hang).
+// TestRunFallsBackToTextAfterSustainedVoiceFailures: with an always-failing STT,
+// Run retries then falls back to text input, where the queued "exit" ends it.
 func TestRunFallsBackToTextAfterSustainedVoiceFailures(t *testing.T) {
 	p := &pipeline.Pipeline{Events: events.NewBus(), STT: failingSTT{}}
 	ctx, cancel := context.WithCancel(context.Background())
