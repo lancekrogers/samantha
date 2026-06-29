@@ -15,10 +15,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Obedience-Corp/samantha/internal/audio"
-	"github.com/Obedience-Corp/samantha/internal/config"
-	"github.com/Obedience-Corp/samantha/internal/events"
-	"github.com/Obedience-Corp/samantha/internal/stt"
+	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/stt"
 )
 
 var (

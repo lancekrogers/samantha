@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Obedience-Corp/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/events"
 )
 
 func TestEvaluateTextThresholds(t *testing.T) {

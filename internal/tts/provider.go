@@ -3,7 +3,7 @@ package tts
 import (
 	"context"
 
-	"github.com/Obedience-Corp/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/internal/audio"
 )
 
 // Provider is the interface all TTS backends implement.
