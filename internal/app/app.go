@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"os"
+	"io"
 	"strings"
 
 	"github.com/lancekrogers/samantha/internal/events"
@@ -27,9 +27,11 @@ var clearPhrases = []string{
 	"fresh start", "new conversation", "reset",
 }
 
-// Run starts the main conversation loop.
-func Run(ctx context.Context, p *pipeline.Pipeline, textMode, noVoice bool) error {
-	scanner := bufio.NewScanner(os.Stdin)
+// Run starts the main conversation loop. Text input is read from in (typically
+// os.Stdin) via a cancellable reader, so the loop unwinds promptly when ctx is
+// cancelled even while waiting for typed input.
+func Run(ctx context.Context, p *pipeline.Pipeline, in io.Reader, textMode, noVoice bool) error {
+	var input *lineReader // started lazily so voice mode never touches stdin
 
 	for {
 		select {
@@ -42,11 +44,15 @@ func Run(ctx context.Context, p *pipeline.Pipeline, textMode, noVoice bool) erro
 		var err error
 
 		if textMode {
-			fmt.Print("  You: ")
-			if !scanner.Scan() {
-				return nil
+			if input == nil {
+				input = newLineReader(ctx, in)
 			}
-			text = strings.TrimSpace(scanner.Text())
+			fmt.Print("  You: ")
+			line, ok := input.next(ctx)
+			if !ok {
+				return nil // EOF or context cancelled
+			}
+			text = strings.TrimSpace(line)
 			if text == "" {
 				continue
 			}
@@ -92,5 +98,39 @@ func Run(ctx context.Context, p *pipeline.Pipeline, textMode, noVoice bool) erro
 				p.Events.Emit(events.Error{Message: err.Error()})
 			}
 		}
+	}
+}
+
+// lineReader reads lines in a background goroutine so the loop can wait on input
+// and ctx cancellation at once; a blocking stdin read can't be interrupted in
+// place.
+type lineReader struct {
+	lines chan string
+}
+
+func newLineReader(ctx context.Context, r io.Reader) *lineReader {
+	lr := &lineReader{lines: make(chan string, 1)}
+	go func() {
+		defer close(lr.lines)
+		scanner := bufio.NewScanner(r)
+		for scanner.Scan() {
+			select {
+			case lr.lines <- scanner.Text():
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return lr
+}
+
+// next returns the next line, or ok=false if input is exhausted or ctx is
+// cancelled.
+func (lr *lineReader) next(ctx context.Context) (string, bool) {
+	select {
+	case <-ctx.Done():
+		return "", false
+	case line, ok := <-lr.lines:
+		return line, ok
 	}
 }
