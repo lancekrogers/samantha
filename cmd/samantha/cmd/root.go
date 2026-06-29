@@ -149,7 +149,9 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 
 	// TTS + Player (skip in no-voice mode).
 	if !silent {
-		p.Player = audio.NewPlayer()
+		player := audio.NewPlayer()
+		cleanups = append(cleanups, func() { _ = player.Close() })
+		p.Player = player
 
 		ttsProvider, ttsCleanup, err := tts.NewProvider(cfg)
 		if err != nil {
@@ -181,6 +183,16 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 			}
 			cleanups = append(cleanups, vad.Delete)
 			p.VAD = vad
+
+			if !silent {
+				bargeInVAD, err := audio.NewVAD(cfg)
+				if err != nil {
+					cleanup()
+					return nil, nil, fmt.Errorf("init barge-in VAD: %w", err)
+				}
+				cleanups = append(cleanups, bargeInVAD.Delete)
+				p.BargeInVAD = bargeInVAD
+			}
 		}
 
 		sttProvider, sttCleanup, err := stt.NewProvider(cfg, capture, vad)

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -46,12 +47,24 @@ var testCmd = &cobra.Command{
 				defer cleanup()
 			}
 
-			samples, sr, err := ttsProvider.Generate("Hello! I'm Samantha. Your speaker is working.")
+			player := audio.NewPlayer()
+			defer func() { _ = player.Close() }()
+
+			stream, err := ttsProvider.Synthesize(context.Background(), "Hello! I'm Samantha. Your speaker is working.")
 			if err != nil {
 				fmt.Printf("  FAIL: %v\n\n", err)
 			} else {
-				fmt.Printf("  PASS: Generated %d samples at %dHz\n\n", len(samples), sr)
-				_ = samples // TODO: play audio when player is wired
+				playback, err := player.PlayStream(context.Background(), stream)
+				if err != nil {
+					fmt.Printf("  FAIL: %v\n\n", err)
+				} else {
+					result := <-playback.Done()
+					if result.Err != nil && !result.Interrupted {
+						fmt.Printf("  FAIL: %v\n\n", result.Err)
+					} else {
+						fmt.Printf("  PASS: Played speaker test clip\n\n")
+					}
+				}
 			}
 		}
 

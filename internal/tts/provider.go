@@ -1,10 +1,15 @@
 package tts
 
+import (
+	"context"
+
+	"github.com/Obedience-Corp/samantha/internal/audio"
+)
+
 // Provider is the interface all TTS backends implement.
 type Provider interface {
-	// Generate produces audio from text.
-	// Returns float32 samples and sample rate.
-	Generate(text string) (samples []float32, sampleRate int, err error)
+	// Synthesize streams synthesized PCM frames for the given text.
+	Synthesize(ctx context.Context, text string) (*audio.PCMStream, error)
 
 	// Available returns true if this provider is ready.
 	Available() bool

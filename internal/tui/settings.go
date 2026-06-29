@@ -198,14 +198,23 @@ func (m *settingsModel) previewVoice() tea.Cmd {
 			defer cleanup()
 		}
 
-		samples, sampleRate, err := ttsProvider.Generate("Hi, I'm Samantha. This is how I sound.")
+		stream, err := ttsProvider.Synthesize(context.Background(), "Hi, I'm Samantha. This is how I sound.")
 		if err != nil {
-			return voicePreviewDoneMsg{message: fmt.Sprintf("Generate error: %v", err)}
+			return voicePreviewDoneMsg{message: fmt.Sprintf("Synthesize error: %v", err)}
 		}
 
 		player := audio.NewPlayer()
-		done := player.PlayAsync(context.Background(), samples, sampleRate)
-		<-done
+		defer func() { _ = player.Close() }()
+
+		playback, err := player.PlayStream(context.Background(), stream)
+		if err != nil {
+			return voicePreviewDoneMsg{message: fmt.Sprintf("Playback error: %v", err)}
+		}
+
+		result := <-playback.Done()
+		if result.Err != nil && !result.Interrupted {
+			return voicePreviewDoneMsg{message: fmt.Sprintf("Playback error: %v", result.Err)}
+		}
 
 		return voicePreviewDoneMsg{message: fmt.Sprintf("Previewed %s", voice.Name)}
 	}

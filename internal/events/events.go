@@ -36,6 +36,20 @@ type ThinkingComplete struct {
 
 func (e ThinkingComplete) eventType() string { return "thinking_complete" }
 
+// ResponseStreamingStarted signals the first response chunk has arrived.
+type ResponseStreamingStarted struct {
+	Elapsed time.Duration
+}
+
+func (e ResponseStreamingStarted) eventType() string { return "response_streaming_started" }
+
+// SpeechSegmentReady signals a sentence is ready for voice synthesis.
+type SpeechSegmentReady struct {
+	Text string
+}
+
+func (e SpeechSegmentReady) eventType() string { return "speech_segment_ready" }
+
 // GeneratingVoice signals TTS generation has started.
 type GeneratingVoice struct {
 	Sentence string
@@ -45,7 +59,8 @@ func (e GeneratingVoice) eventType() string { return "generating_voice" }
 
 // VoiceGenerated signals TTS generation is complete.
 type VoiceGenerated struct {
-	Elapsed time.Duration
+	Sentence string
+	Elapsed  time.Duration
 }
 
 func (e VoiceGenerated) eventType() string { return "voice_generated" }
@@ -59,14 +74,30 @@ func (e SpeakingStarted) eventType() string { return "speaking_started" }
 
 // SpeakingComplete signals audio playback is done.
 type SpeakingComplete struct {
-	Elapsed time.Duration
+	Elapsed     time.Duration
+	Interrupted bool
 }
 
 func (e SpeakingComplete) eventType() string { return "speaking_complete" }
 
+// SpeakingInterrupted signals playback was cut short.
+type SpeakingInterrupted struct {
+	Reason string
+}
+
+func (e SpeakingInterrupted) eventType() string { return "speaking_interrupted" }
+
+// TurnInterrupted signals the active assistant turn was canceled.
+type TurnInterrupted struct {
+	Reason string
+}
+
+func (e TurnInterrupted) eventType() string { return "turn_interrupted" }
+
 // ResponseReady carries the final display text.
 type ResponseReady struct {
-	Response string
+	Response    string
+	Interrupted bool
 }
 
 func (e ResponseReady) eventType() string { return "response_ready" }
