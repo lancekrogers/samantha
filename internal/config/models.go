@@ -52,7 +52,7 @@ func runtimeArchives(cfg *Config, req AssetRequest) ([]ModelArchive, error) {
 
 	if req.NeedSTT {
 		switch {
-		case strings.EqualFold(cfg.STTProvider, ""), strings.EqualFold(cfg.STTProvider, "sherpa"):
+		case strings.EqualFold(cfg.STTProvider, "sherpa-streaming"):
 			asset, err := SherpaStreamingModel(cfg.SherpaStreamingModel)
 			if err != nil {
 				return nil, err
@@ -63,7 +63,7 @@ func runtimeArchives(cfg *Config, req AssetRequest) ([]ModelArchive, error) {
 				TargetDir:  asset.ModelDir(ModelsDir()),
 				CheckFiles: asset.RequiredFiles(cfg.WhisperQuantized),
 			})
-		case strings.EqualFold(cfg.STTProvider, "sherpa-offline"):
+		case strings.EqualFold(cfg.STTProvider, ""), strings.EqualFold(cfg.STTProvider, "sherpa"), strings.EqualFold(cfg.STTProvider, "sherpa-offline"):
 			model := cfg.WhisperModel
 			archives = append(archives, ModelArchive{
 				Name: fmt.Sprintf("whisper-%s", model),
@@ -166,6 +166,7 @@ func EnsureRuntimeAssets(cfg *Config, req AssetRequest, onProgress func(name str
 func EnsureModels(cfg *Config, onProgress func(name string, pct float64)) error {
 	return EnsureRuntimeAssets(cfg, AssetRequest{
 		NeedSTT: strings.EqualFold(cfg.STTProvider, "sherpa") ||
+			strings.EqualFold(cfg.STTProvider, "sherpa-streaming") ||
 			strings.EqualFold(cfg.STTProvider, "sherpa-offline") ||
 			strings.EqualFold(cfg.STTProvider, "whispercpp"),
 		NeedTTS: strings.EqualFold(cfg.TTSProvider, "kokoro"),
@@ -302,6 +303,10 @@ func downloadFile(path, url string, onProgress func(float64)) error {
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d for %s", resp.StatusCode, url)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create parent dir: %w", err)
 	}
 
 	f, err := os.Create(path + ".tmp")

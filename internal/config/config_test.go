@@ -1,6 +1,8 @@
 package config
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -193,6 +195,26 @@ func TestModelsDirEnvOverride(t *testing.T) {
 	got := ModelsDir()
 	if got != "/mnt/fast/models" {
 		t.Errorf("ModelsDir() = %q, want /mnt/fast/models", got)
+	}
+}
+
+func TestDownloadFileCreatesNestedParentDir(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("model"))
+	}))
+	defer server.Close()
+
+	path := filepath.Join(t.TempDir(), "whispercpp", "ggml-base.en.bin")
+	if err := downloadFile(path, server.URL, nil); err != nil {
+		t.Fatalf("downloadFile() error = %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(data) != "model" {
+		t.Fatalf("downloaded data = %q, want model", data)
 	}
 }
 

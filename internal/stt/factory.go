@@ -15,8 +15,9 @@ type ProviderSpec struct {
 }
 
 var providerSpecs = []ProviderSpec{
-	{Name: "sherpa", Description: "Local sherpa-onnx streaming Zipformer"},
-	{Name: "sherpa-offline", Description: "Local sherpa-onnx Whisper (utterance-final)"},
+	{Name: "sherpa", Description: "Local sherpa-onnx Whisper (utterance-final)"},
+	{Name: "sherpa-streaming", Description: "Local sherpa-onnx streaming Zipformer"},
+	{Name: "sherpa-offline", Description: "Local sherpa-onnx Whisper (legacy alias)"},
 	{Name: "whispercpp", Description: "Local whisper.cpp CLI"},
 }
 
@@ -30,12 +31,12 @@ func Providers() []ProviderSpec {
 // NewProvider constructs the configured STT provider and its cleanup hook.
 func NewProvider(cfg *config.Config, capture audioSource, vad *audio.VAD) (Provider, func(), error) {
 	switch strings.TrimSpace(strings.ToLower(cfg.STTProvider)) {
-	case "", "sherpa":
+	case "sherpa-streaming":
 		if capture == nil {
-			return nil, nil, fmt.Errorf("sherpa STT requires audio capture")
+			return nil, nil, fmt.Errorf("sherpa-streaming STT requires audio capture")
 		}
 		if vad == nil {
-			return nil, nil, fmt.Errorf("sherpa STT requires VAD; set vad_enabled=true or choose a different stt_provider")
+			return nil, nil, fmt.Errorf("sherpa-streaming STT requires VAD; set vad_enabled=true or choose a different stt_provider")
 		}
 
 		provider, err := NewSherpaStreamingSTT(cfg, capture, vad)
@@ -43,12 +44,12 @@ func NewProvider(cfg *config.Config, capture audioSource, vad *audio.VAD) (Provi
 			return nil, nil, err
 		}
 		return provider, provider.Delete, nil
-	case "sherpa-offline":
+	case "", "sherpa", "sherpa-offline":
 		if capture == nil {
-			return nil, nil, fmt.Errorf("sherpa-offline STT requires audio capture")
+			return nil, nil, fmt.Errorf("sherpa STT requires audio capture")
 		}
 		if vad == nil {
-			return nil, nil, fmt.Errorf("sherpa-offline STT requires VAD; set vad_enabled=true or choose a different stt_provider")
+			return nil, nil, fmt.Errorf("sherpa STT requires VAD; set vad_enabled=true or choose a different stt_provider")
 		}
 
 		provider, err := NewSherpaOfflineSTT(cfg, capture, vad)
