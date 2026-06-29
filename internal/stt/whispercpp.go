@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Obedience-Corp/samantha/internal/audio"
-	"github.com/Obedience-Corp/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/internal/config"
 )
 
 // WhisperCPPSTT implements utterance-final STT using whisper.cpp CLI.

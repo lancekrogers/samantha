@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/session"

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Obedience-Corp/samantha/internal/audio"
-	"github.com/Obedience-Corp/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/internal/config"
 )
 
 func TestWhisperCPPTranscribeInvokesCLIAndNormalizesText(t *testing.T) {

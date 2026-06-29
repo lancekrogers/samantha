@@ -11,8 +11,8 @@ import (
 
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 
-	"github.com/Obedience-Corp/samantha/internal/audio"
-	"github.com/Obedience-Corp/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/internal/config"
 )
 
 // SherpaStreamingSTT implements streaming STT using sherpa-onnx online Zipformer.

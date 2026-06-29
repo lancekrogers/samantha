@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Obedience-Corp/samantha/internal/audio"
-	"github.com/Obedience-Corp/samantha/internal/brain"
-	"github.com/Obedience-Corp/samantha/internal/events"
-	"github.com/Obedience-Corp/samantha/internal/stt"
-	"github.com/Obedience-Corp/samantha/internal/tts"
+	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/internal/brain"
+	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/stt"
+	"github.com/lancekrogers/samantha/internal/tts"
 )
 
 func TestRunTurnOverlapsSynthesisWithPlayback(t *testing.T) {
