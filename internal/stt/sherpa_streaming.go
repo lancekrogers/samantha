@@ -125,43 +125,56 @@ func (s *SherpaStreamingSTT) runSession(ctx context.Context, events chan<- Event
 		}
 
 		chunk := s.capture.Read()
+		exhausted := len(chunk) == 0 && sourceExhausted(s.capture)
 		if len(chunk) == 0 {
-			time.Sleep(10 * time.Millisecond)
-			continue
-		}
-
-		s.vad.AcceptWaveform(chunk)
-		if !speechDetected && s.vad.IsSpeech() {
-			speechDetected = true
-			speechStartedAt = time.Now()
-			emitPhase("hearing")
-		}
-
-		stream.AcceptWaveform(audio.SampleRate, chunk)
-		for s.recognizer.IsReady(stream) {
-			s.recognizer.Decode(stream)
-		}
-
-		partial := normalizeTranscript(strings.TrimSpace(s.recognizer.GetResult(stream).Text))
-		if partial != "" {
-			if !speechDetected {
+			if !exhausted {
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+			s.vad.Flush()
+			if !speechDetected && s.vad.IsSpeechDetected() {
 				speechDetected = true
 				speechStartedAt = time.Now()
 				emitPhase("hearing")
 			}
-			if !transcribing {
-				transcribing = true
-				emitPhase("transcribing")
+			if !speechDetected && lastPartial == "" {
+				events <- Timeout{}
+				return
 			}
-			if partial != lastPartial {
-				events <- PartialTranscript{Text: partial}
-				lastPartial = partial
+		} else {
+			s.vad.AcceptWaveform(chunk)
+			if !speechDetected && s.vad.IsSpeech() {
+				speechDetected = true
+				speechStartedAt = time.Now()
+				emitPhase("hearing")
+			}
+
+			stream.AcceptWaveform(audio.SampleRate, chunk)
+			for s.recognizer.IsReady(stream) {
+				s.recognizer.Decode(stream)
+			}
+
+			partial := normalizeTranscript(strings.TrimSpace(s.recognizer.GetResult(stream).Text))
+			if partial != "" {
+				if !speechDetected {
+					speechDetected = true
+					speechStartedAt = time.Now()
+					emitPhase("hearing")
+				}
+				if !transcribing {
+					transcribing = true
+					emitPhase("transcribing")
+				}
+				if partial != lastPartial {
+					events <- PartialTranscript{Text: partial}
+					lastPartial = partial
+				}
 			}
 		}
 
 		phraseExpired := !speechStartedAt.IsZero() &&
 			time.Since(speechStartedAt) >= time.Duration(max(s.cfg.PhraseTimeLimit, 1))*time.Second
-		endpoint := speechDetected && (s.recognizer.IsEndpoint(stream) || s.vad.IsSpeechDetected() || phraseExpired)
+		endpoint := speechDetected && (exhausted || s.recognizer.IsEndpoint(stream) || s.vad.IsSpeechDetected() || phraseExpired)
 		if !endpoint {
 			continue
 		}
@@ -174,6 +187,11 @@ func (s *SherpaStreamingSTT) runSession(ctx context.Context, events chan<- Event
 		finalText := normalizeTranscript(strings.TrimSpace(s.flushStream(stream)))
 		if finalText != "" {
 			events <- FinalTranscript{Text: finalText}
+			return
+		}
+
+		if exhausted {
+			events <- Timeout{}
 			return
 		}
 

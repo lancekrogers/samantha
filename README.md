@@ -6,8 +6,8 @@ It captures speech, transcribes it locally, streams the prompt through an AI cod
 
 ## Features
 
-- Local speech-to-text with sherpa-onnx streaming Zipformer by default.
-- Optional utterance-final STT through sherpa-onnx Whisper or whisper.cpp.
+- Local speech-to-text with sherpa-onnx Whisper by default.
+- Optional streaming STT through sherpa-onnx Zipformer and utterance-final STT through whisper.cpp.
 - Local text-to-speech with Kokoro through sherpa-onnx.
 - Claude CLI and Ollama brain providers.
 - Voice activity detection with Silero.
@@ -27,7 +27,7 @@ Implemented providers:
 | Layer | Providers |
 |-------|-----------|
 | Brain | `claude`, `ollama` |
-| STT | `sherpa`, `sherpa-offline`, `whispercpp` |
+| STT | `sherpa`, `sherpa-streaming`, `sherpa-offline`, `whispercpp` |
 | TTS | `kokoro` |
 | VAD | Silero through sherpa-onnx |
 | Audio | miniaudio through malgo |
@@ -94,7 +94,7 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `tts_provider` | `kokoro` | `TTS_PROVIDER` | TTS backend |
 | `tts_voice` | `af_heart` | `TTS_VOICE` | Kokoro voice name |
 | `speech_speed` | `0.95` | | Playback speed |
-| `stt_provider` | `sherpa` | `STT_PROVIDER` | STT backend: `sherpa`, `sherpa-offline`, or `whispercpp` |
+| `stt_provider` | `sherpa` | `STT_PROVIDER` | STT backend: `sherpa`, `sherpa-streaming`, `sherpa-offline`, or `whispercpp` |
 | `sherpa_streaming_model` | `en-2023-06-26` | `SHERPA_STREAMING_MODEL` | sherpa-onnx streaming model |
 | `whisper_model` | `small` | `WHISPER_MODEL` | sherpa-onnx Whisper model size |
 | `whisper_quantized` | `true` | | Prefer quantized Whisper models |

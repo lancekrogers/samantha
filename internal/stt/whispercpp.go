@@ -92,22 +92,35 @@ func (w *WhisperCPPSTT) runSession(ctx context.Context, events chan<- Event) {
 		}
 
 		chunk := w.capture.Read()
+		exhausted := len(chunk) == 0 && sourceExhausted(w.capture)
 		if len(chunk) == 0 {
-			time.Sleep(10 * time.Millisecond)
-			continue
-		}
-
-		w.vad.AcceptWaveform(chunk)
-		if !speechDetected && w.vad.IsSpeech() {
-			speechDetected = true
-			speechStartedAt = time.Now()
-			emitPhase("hearing")
+			if !exhausted {
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+			w.vad.Flush()
+			if !speechDetected && !w.vad.IsSpeechDetected() {
+				events <- Timeout{}
+				return
+			}
+		} else {
+			w.vad.AcceptWaveform(chunk)
+			if !speechDetected && w.vad.IsSpeech() {
+				speechDetected = true
+				speechStartedAt = time.Now()
+				emitPhase("hearing")
+			}
 		}
 
 		phraseExpired := !speechStartedAt.IsZero() &&
 			time.Since(speechStartedAt) >= time.Duration(max(w.cfg.PhraseTimeLimit, 1))*time.Second
-		if !w.vad.IsSpeechDetected() && !phraseExpired {
+		if !w.vad.IsSpeechDetected() && !phraseExpired && !exhausted {
 			continue
+		}
+
+		if !w.vad.IsSpeechDetected() {
+			events <- Timeout{}
+			return
 		}
 
 		emitPhase("transcribing")
@@ -119,6 +132,10 @@ func (w *WhisperCPPSTT) runSession(ctx context.Context, events chan<- Event) {
 		}
 
 		if len(allSamples) < minSpeechSamples {
+			if exhausted {
+				events <- Timeout{}
+				return
+			}
 			speechDetected = false
 			speechStartedAt = time.Time{}
 			listenDeadline = time.Now().Add(time.Duration(w.cfg.ListenTimeout) * time.Second)
@@ -132,6 +149,10 @@ func (w *WhisperCPPSTT) runSession(ctx context.Context, events chan<- Event) {
 			return
 		}
 		if text == "" {
+			if exhausted {
+				events <- Timeout{}
+				return
+			}
 			speechDetected = false
 			speechStartedAt = time.Time{}
 			listenDeadline = time.Now().Add(time.Duration(w.cfg.ListenTimeout) * time.Second)

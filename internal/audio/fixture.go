@@ -54,6 +54,11 @@ func (f *FixtureSource) Read() []float32 {
 	return chunk
 }
 
+// Exhausted reports whether every fixture chunk has been read.
+func (f *FixtureSource) Exhausted() bool {
+	return f.index >= len(f.chunks)
+}
+
 // Reset replays the fixture from the beginning.
 func (f *FixtureSource) Reset() {
 	f.index = 0

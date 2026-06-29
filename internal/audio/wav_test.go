@@ -45,6 +45,9 @@ func TestFixtureSourceReadsFixtureSequentially(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFixtureSourceFromWAV() error = %v", err)
 	}
+	if source.Exhausted() {
+		t.Fatal("source.Exhausted() = true before reading")
+	}
 
 	var total int
 	for {
@@ -58,8 +61,14 @@ func TestFixtureSourceReadsFixtureSequentially(t *testing.T) {
 	if total != len(input) {
 		t.Fatalf("total samples = %d, want %d", total, len(input))
 	}
+	if !source.Exhausted() {
+		t.Fatal("source.Exhausted() = false after reading all chunks")
+	}
 
 	source.Reset()
+	if source.Exhausted() {
+		t.Fatal("source.Exhausted() = true after reset")
+	}
 	if first := source.Read(); len(first) != ChunkSize {
 		t.Fatalf("len(first chunk after reset) = %d, want %d", len(first), ChunkSize)
 	}

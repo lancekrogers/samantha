@@ -22,8 +22,9 @@ var providersCmd = &cobra.Command{
 		fmt.Println("    [active] kokoro — Local Kokoro TTS")
 		fmt.Println()
 		fmt.Println("  STT (speech-to-text):")
-		fmt.Println("    [active] sherpa — Local sherpa-onnx streaming Zipformer")
-		fmt.Println("    [      ] sherpa-offline — Local sherpa-onnx Whisper (utterance-final)")
+		fmt.Println("    [active] sherpa — Local sherpa-onnx Whisper (utterance-final)")
+		fmt.Println("    [      ] sherpa-streaming — Local sherpa-onnx streaming Zipformer")
+		fmt.Println("    [      ] sherpa-offline — Local sherpa-onnx Whisper (legacy alias)")
 		fmt.Println("    [      ] whispercpp — Local whisper.cpp CLI")
 		fmt.Println()
 		return nil

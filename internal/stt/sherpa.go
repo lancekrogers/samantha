@@ -122,16 +122,24 @@ func (s *SherpaOfflineSTT) runSession(ctx context.Context, events chan<- Event) 
 		}
 
 		chunk := s.capture.Read()
-		if chunk == nil {
-			time.Sleep(10 * time.Millisecond)
-			continue
-		}
+		exhausted := len(chunk) == 0 && sourceExhausted(s.capture)
+		if len(chunk) == 0 {
+			if !exhausted {
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+			s.vad.Flush()
+			if !speechDetected && !s.vad.IsSpeechDetected() {
+				events <- Timeout{}
+				return
+			}
+		} else {
+			s.vad.AcceptWaveform(chunk)
 
-		s.vad.AcceptWaveform(chunk)
-
-		if !speechDetected && s.vad.IsSpeech() {
-			speechDetected = true
-			emitPhase("hearing")
+			if !speechDetected && s.vad.IsSpeech() {
+				speechDetected = true
+				emitPhase("hearing")
+			}
 		}
 
 		if s.vad.IsSpeechDetected() {
@@ -147,6 +155,10 @@ func (s *SherpaOfflineSTT) runSession(ctx context.Context, events chan<- Event) 
 
 			// Skip if too short to be real speech.
 			if len(allSamples) < minSpeechSamples {
+				if exhausted {
+					events <- Timeout{}
+					return
+				}
 				speechDetected = false
 				emitPhase("listening")
 				continue
@@ -166,8 +178,17 @@ func (s *SherpaOfflineSTT) runSession(ctx context.Context, events chan<- Event) 
 			}
 
 			// Empty transcription — keep listening
+			if exhausted {
+				events <- Timeout{}
+				return
+			}
 			speechDetected = false
 			emitPhase("listening")
+		}
+
+		if exhausted {
+			events <- Timeout{}
+			return
 		}
 	}
 }
