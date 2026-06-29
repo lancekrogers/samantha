@@ -31,7 +31,7 @@ var clearPhrases = []string{
 // os.Stdin) via a cancellable reader, so the loop unwinds promptly when ctx is
 // cancelled even while waiting for typed input.
 func Run(ctx context.Context, p *pipeline.Pipeline, in io.Reader, textMode, noVoice bool) error {
-	input := newLineReader(ctx, in)
+	var input *lineReader // started lazily so voice mode never touches stdin
 
 	for {
 		select {
@@ -44,6 +44,9 @@ func Run(ctx context.Context, p *pipeline.Pipeline, in io.Reader, textMode, noVo
 		var err error
 
 		if textMode {
+			if input == nil {
+				input = newLineReader(ctx, in)
+			}
 			fmt.Print("  You: ")
 			line, ok := input.next(ctx)
 			if !ok {
@@ -98,10 +101,9 @@ func Run(ctx context.Context, p *pipeline.Pipeline, in io.Reader, textMode, noVo
 	}
 }
 
-// lineReader reads newline-delimited input in a background goroutine so the main
-// loop can wait on input and context cancellation simultaneously. A blocking
-// stdin read cannot itself be interrupted, so next selects on ctx.Done()
-// instead; the reader goroutine exits when ctx is cancelled or input ends.
+// lineReader reads lines in a background goroutine so the loop can wait on input
+// and ctx cancellation at once; a blocking stdin read can't be interrupted in
+// place.
 type lineReader struct {
 	lines chan string
 }
