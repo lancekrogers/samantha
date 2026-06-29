@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -74,7 +72,7 @@ func Execute() error {
 }
 
 func startPipeline(cfg *config.Config, resumeSession *session.Session) error {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := signalContext()
 	defer cancel()
 
 	req := config.AssetRequest{
@@ -118,7 +116,7 @@ func startPipeline(cfg *config.Config, resumeSession *session.Session) error {
 	display.ShowProviders(cfg.TTSProvider, cfg.STTProvider)
 	defer display.ShowGoodbye()
 
-	err = app.Run(ctx, p, textMode, noVoice)
+	err = app.Run(ctx, p, os.Stdin, textMode, noVoice)
 
 	// Final save on exit.
 	_ = sess.Save(p.Brain.History())
