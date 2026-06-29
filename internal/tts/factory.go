@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Obedience-Corp/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/config"
 )
 
 // ProviderSpec describes a TTS provider compiled into this build.

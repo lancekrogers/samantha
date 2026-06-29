@@ -7,11 +7,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Obedience-Corp/samantha/internal/brain"
-	"github.com/Obedience-Corp/samantha/internal/config"
-	"github.com/Obedience-Corp/samantha/internal/session"
-	"github.com/Obedience-Corp/samantha/internal/stt"
-	"github.com/Obedience-Corp/samantha/internal/tts"
+	"github.com/lancekrogers/samantha/internal/brain"
+	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/session"
+	"github.com/lancekrogers/samantha/internal/stt"
+	"github.com/lancekrogers/samantha/internal/tts"
 )
 
 var (

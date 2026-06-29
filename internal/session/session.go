@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Obedience-Corp/samantha/internal/brain"
-	"github.com/Obedience-Corp/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/brain"
+	"github.com/lancekrogers/samantha/internal/config"
 )
 
 // Session represents a saved conversation.

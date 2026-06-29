@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/Obedience-Corp/samantha/internal/events"
-	"github.com/Obedience-Corp/samantha/internal/pipeline"
+	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/pipeline"
 )
 
 var exitPhrases = map[string]bool{

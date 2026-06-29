@@ -9,7 +9,7 @@ import (
 
 	"github.com/lancekrogers/claude-code-go/pkg/claude"
 
-	"github.com/Obedience-Corp/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/config"
 )
 
 // Brain manages conversation with Claude via claude-code-go.

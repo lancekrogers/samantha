@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/Obedience-Corp/samantha/internal/config"
-	"github.com/Obedience-Corp/samantha/internal/discovery"
+	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/discovery"
 )
 
 type launcherModel struct {

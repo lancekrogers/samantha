@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Obedience-Corp/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/config"
 )
 
 func TestNewProviderRejectsUnsupportedProvider(t *testing.T) {
