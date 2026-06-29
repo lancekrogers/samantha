@@ -95,6 +95,12 @@ func startPipeline(cfg *config.Config, resumeSession *session.Session) error {
 	}
 	defer cleanup()
 
+	// Preload the model while the welcome/setup is shown so the user's first
+	// turn isn't the cold one. Best-effort — failures are ignored.
+	if w, ok := p.Brain.(brain.Warmer); ok {
+		go w.Warmup(ctx)
+	}
+
 	// Create or resume session.
 	model := cfg.OllamaModel
 	if cfg.BrainProvider == "claude" {
