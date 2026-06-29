@@ -93,7 +93,7 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 			var textBuf strings.Builder
 			var toolCalls []api.ToolCall
 
-			err := o.client.Chat(ctx, req, func(resp api.ChatResponse) error {
+			err := o.chat(ctx, req, func(resp api.ChatResponse) error {
 				if resp.Message.Content != "" {
 					textBuf.WriteString(resp.Message.Content)
 					if !opts.ToolsEnabled {
@@ -155,7 +155,10 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 func (o *OllamaBrain) ThinkFull(ctx context.Context, input string) (string, error) {
 	o.history = append(o.history, api.Message{Role: "user", Content: input})
 
-	tools := voiceAssistantTools()
+	var tools api.Tools
+	if o.cfg.VoiceToolsEnabled {
+		tools = voiceAssistantTools()
+	}
 
 	for i := 0; i < maxToolIterations; i++ {
 		messages := o.buildMessages()
@@ -168,7 +171,7 @@ func (o *OllamaBrain) ThinkFull(ctx context.Context, input string) (string, erro
 		}
 
 		var response api.Message
-		err := o.client.Chat(ctx, req, func(resp api.ChatResponse) error {
+		err := o.chat(ctx, req, func(resp api.ChatResponse) error {
 			response = resp.Message
 			return nil
 		})
@@ -206,6 +209,22 @@ func (o *OllamaBrain) ThinkFull(ctx context.Context, input string) (string, erro
 	}
 
 	return "I seem to be going in circles with my tools. Let me just answer directly.", nil
+}
+
+// chat issues a chat request, retrying once without tools if the model reports
+// it doesn't support them — so a non-tool model degrades to plain chat instead
+// of failing the turn.
+func (o *OllamaBrain) chat(ctx context.Context, req *api.ChatRequest, fn api.ChatResponseFunc) error {
+	err := o.client.Chat(ctx, req, fn)
+	if err != nil && req.Tools != nil && modelRejectedTools(err) {
+		req.Tools = nil
+		return o.client.Chat(ctx, req, fn)
+	}
+	return err
+}
+
+func modelRejectedTools(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "does not support tools")
 }
 
 // ClearHistory wipes conversation history.
