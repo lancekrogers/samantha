@@ -59,6 +59,7 @@ type Player struct {
 	ctx        *malgo.AllocatedContext
 	device     *malgo.Device
 	sampleRate int
+	frontend   Frontend
 	current    *playbackSegment
 	queue      []*playbackSegment
 	playing    atomic.Bool
@@ -68,6 +69,14 @@ type Player struct {
 // NewPlayer creates a new audio player.
 func NewPlayer() *Player {
 	return &Player{}
+}
+
+// SetFrontend installs an audio front-end that can observe playback
+// reference audio for echo cancellation or similar processing.
+func (p *Player) SetFrontend(frontend Frontend) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.frontend = frontend
 }
 
 // PlayStream queues a synthesized PCM stream for playback.
@@ -175,6 +184,13 @@ func (p *Player) pumpSegment(ctx context.Context, segment *playbackSegment, stre
 
 			if inputRate != outputRate {
 				frames = resampleLinear(frames, inputRate, outputRate)
+			}
+
+			p.mu.Lock()
+			frontend := p.frontend
+			p.mu.Unlock()
+			if frontend != nil {
+				frontend.PushPlaybackReference(frames)
 			}
 
 			segment.append(float32ToPCM16(frames))

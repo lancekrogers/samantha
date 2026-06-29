@@ -18,6 +18,7 @@ func New(bus *events.Bus, agentName string) *UI {
 	u := &UI{bus: bus, name: agentName}
 
 	events.Subscribe(bus, u.onSTTPhase)
+	events.Subscribe(bus, u.onTranscriptPartial)
 	events.Subscribe(bus, u.onUserInput)
 	events.Subscribe(bus, u.onThinkingStarted)
 	events.Subscribe(bus, u.onThinkingComplete)
@@ -81,6 +82,10 @@ func (u *UI) onSTTPhase(e events.STTPhase) {
 	}
 }
 
+func (u *UI) onTranscriptPartial(e events.TranscriptPartial) {
+	fmt.Printf("\033[2K  You (partial): %s\r", e.Text)
+}
+
 func (u *UI) onUserInput(e events.UserInput) {
 	fmt.Printf("\033[2K  You: %s\n", e.Text)
 }
@@ -90,7 +95,7 @@ func (u *UI) onThinkingStarted(_ events.ThinkingStarted) {
 }
 
 func (u *UI) onThinkingComplete(e events.ThinkingComplete) {
-	fmt.Printf("\033[2K    thinking (%.1fs)\n", e.Elapsed.Seconds())
+	fmt.Printf("\033[2K    model complete (%.1fs)\n", e.Elapsed.Seconds())
 }
 
 func (u *UI) onResponseStreamingStarted(e events.ResponseStreamingStarted) {
@@ -134,6 +139,10 @@ func (u *UI) onCleared(_ events.ConversationCleared) {
 }
 
 func (u *UI) onError(e events.Error) {
+	if e.Stage != "" {
+		fmt.Printf("  Error [%s]: %s\n\n", e.Stage, e.Message)
+		return
+	}
 	fmt.Printf("  Error: %s\n\n", e.Message)
 }
 

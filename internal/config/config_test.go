@@ -29,8 +29,17 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.STTProvider != "sherpa" {
 		t.Errorf("STTProvider = %q, want sherpa", cfg.STTProvider)
 	}
+	if cfg.SherpaStreamingModel != "en-2023-06-26" {
+		t.Errorf("SherpaStreamingModel = %q, want en-2023-06-26", cfg.SherpaStreamingModel)
+	}
 	if cfg.WhisperModel != "small" {
 		t.Errorf("WhisperModel = %q, want small", cfg.WhisperModel)
+	}
+	if cfg.WhisperCPPBinary != "whisper-cli" {
+		t.Errorf("WhisperCPPBinary = %q, want whisper-cli", cfg.WhisperCPPBinary)
+	}
+	if cfg.WhisperCPPModel != "base.en" {
+		t.Errorf("WhisperCPPModel = %q, want base.en", cfg.WhisperCPPModel)
 	}
 	if cfg.MaxHistory != 10 {
 		t.Errorf("MaxHistory = %d, want 10", cfg.MaxHistory)

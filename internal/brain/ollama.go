@@ -65,12 +65,14 @@ func NewOllama(cfg *config.Config) (*OllamaBrain, error) {
 // ThinkStream sends input and returns a channel of streaming text chunks.
 // Implements an agent loop: if the model returns tool calls, executes them
 // and re-requests until the model produces a text response.
-func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts StreamOptions) (<-chan string, error) {
+func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts StreamOptions) (*Stream, error) {
 	o.history = append(o.history, api.Message{Role: "user", Content: input})
 
 	out := make(chan string, 8)
+	done := make(chan StreamResult, 1)
 	go func() {
 		defer close(out)
+		defer close(done)
 
 		var tools api.Tools
 		if opts.ToolsEnabled {
@@ -104,7 +106,7 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 				return nil
 			})
 			if err != nil {
-				out <- fmt.Sprintf("[error: %v]", err)
+				done <- StreamResult{Err: fmt.Errorf("ollama stream: %w", err)}
 				return
 			}
 
@@ -138,13 +140,15 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 				o.history = append(o.history, api.Message{Role: "assistant", Content: response})
 				o.trimHistory()
 			}
+			done <- StreamResult{}
 			return
 		}
 
 		out <- "I seem to be going in circles with my tools. Let me just answer directly."
+		done <- StreamResult{}
 	}()
 
-	return out, nil
+	return &Stream{Chunks: out, Done: done}, nil
 }
 
 // ThinkFull sends input and waits for the complete response.

@@ -19,14 +19,15 @@ const (
 
 // Capture handles microphone input using miniaudio.
 type Capture struct {
-	mu      sync.Mutex
-	subsMu  sync.RWMutex
-	ctx     *malgo.AllocatedContext
-	device  *malgo.Device
-	buf     *RingBuffer
-	running bool
-	subs    map[int]chan []float32
-	nextSub int
+	mu       sync.Mutex
+	subsMu   sync.RWMutex
+	ctx      *malgo.AllocatedContext
+	device   *malgo.Device
+	buf      *RingBuffer
+	frontend Frontend
+	running  bool
+	subs     map[int]chan []float32
+	nextSub  int
 }
 
 // NewCapture creates a new mic capture instance.
@@ -59,6 +60,9 @@ func (c *Capture) Start(ctx context.Context) error {
 
 	onData := func(outputSamples, inputSamples []byte, frameCount uint32) {
 		samples := bytesToFloat32(inputSamples)
+		if c.frontend != nil {
+			samples = c.frontend.ProcessCapture(samples)
+		}
 		c.buf.Write(samples)
 		c.publish(samples)
 	}
@@ -116,6 +120,13 @@ func (c *Capture) Read() []float32 {
 func (c *Capture) Reset() {
 	for c.buf.Read(ChunkSize) != nil {
 	}
+}
+
+// SetFrontend installs an audio front-end for live capture processing.
+func (c *Capture) SetFrontend(frontend Frontend) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.frontend = frontend
 }
 
 // Subscribe registers a non-blocking listener for live capture chunks.
