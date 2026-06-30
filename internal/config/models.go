@@ -33,86 +33,23 @@ type AssetRequest struct {
 	NeedVAD bool
 }
 
-// runtimeFiles returns the required individual downloads for the given run.
-func runtimeFiles(req AssetRequest) []ModelFile {
-	var files []ModelFile
-	if req.NeedVAD {
-		files = append(files, ModelFile{
-			Name: "silero_vad.onnx",
-			URL:  "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
-			Size: 0,
-		})
-	}
-	return files
-}
-
-// runtimeArchives returns tar.bz2 archives parameterized by config and request.
-func runtimeArchives(cfg *Config, req AssetRequest) ([]ModelArchive, error) {
-	var archives []ModelArchive
-
-	if req.NeedSTT {
-		switch {
-		case strings.EqualFold(cfg.STTProvider, "sherpa-streaming"):
-			asset, err := SherpaStreamingModel(cfg.SherpaStreamingModel)
-			if err != nil {
-				return nil, err
-			}
-			archives = append(archives, ModelArchive{
-				Name:       asset.Name,
-				URL:        asset.URL,
-				TargetDir:  asset.ModelDir(ModelsDir()),
-				CheckFiles: asset.RequiredFiles(cfg.WhisperQuantized),
-			})
-		case strings.EqualFold(cfg.STTProvider, ""), strings.EqualFold(cfg.STTProvider, "sherpa"), strings.EqualFold(cfg.STTProvider, "sherpa-offline"):
-			model := cfg.WhisperModel
-			archives = append(archives, ModelArchive{
-				Name: fmt.Sprintf("whisper-%s", model),
-				URL:  fmt.Sprintf("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-%s.tar.bz2", model),
-				CheckFiles: []string{
-					fmt.Sprintf("%s-encoder.onnx", model),
-					fmt.Sprintf("%s-decoder.onnx", model),
-				},
-			})
-		}
-	}
-
-	if req.NeedTTS && strings.EqualFold(cfg.TTSProvider, "kokoro") {
-		archives = append(archives, ModelArchive{
-			Name: "kokoro-tts",
-			URL:  "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2",
-			CheckFiles: []string{
-				"model.onnx",
-				"voices.bin",
-				"tokens.txt",
-				"espeak-ng-data",
-			},
-		})
-	}
-
-	return archives, nil
-}
-
-// EnsureRuntimeAssets downloads any missing model files and archives needed for this run.
+// EnsureRuntimeAssets downloads any missing model files and archives needed for
+// this run. The required asset set is resolved once from the asset manifest
+// (ManifestFor), so URLs, file names, and extraction targets have a single
+// source of truth; this function only performs the downloads.
 func EnsureRuntimeAssets(cfg *Config, req AssetRequest, onProgress func(name string, pct float64)) error {
 	dir := ModelsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create models dir: %w", err)
 	}
 
-	// Individual file downloads.
-	files := runtimeFiles(req)
-	if req.NeedSTT && strings.EqualFold(cfg.STTProvider, "whispercpp") {
-		asset, err := WhisperCPPModelAsset(cfg.WhisperCPPModel)
-		if err != nil {
-			return err
-		}
-		files = append(files, ModelFile{
-			Name: filepath.Join("whispercpp", asset.Filename),
-			URL:  asset.URL,
-			Size: 0,
-		})
+	manifest, err := ManifestFor(cfg, req)
+	if err != nil {
+		return err
 	}
-	for _, m := range files {
+
+	// Individual file downloads.
+	for _, m := range manifest.ModelFiles() {
 		path := filepath.Join(dir, m.Name)
 		if fileExists(path, m.Size) {
 			continue
@@ -132,11 +69,7 @@ func EnsureRuntimeAssets(cfg *Config, req AssetRequest, onProgress func(name str
 	}
 
 	// Archive downloads with extraction.
-	archives, err := runtimeArchives(cfg, req)
-	if err != nil {
-		return err
-	}
-	for _, a := range archives {
+	for _, a := range manifest.ModelArchives(dir) {
 		targetDir := dir
 		if a.TargetDir != "" {
 			targetDir = a.TargetDir

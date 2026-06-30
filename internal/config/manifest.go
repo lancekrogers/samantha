@@ -1,9 +1,26 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"path/filepath"
+	"strings"
+)
 
 // AssetSchema identifies the asset manifest schema version.
 const AssetSchema = "samantha.assets.v1"
+
+// Canonical asset facts shared by the manifest builder and the legacy download
+// adapters so URLs and check files have a single source of truth.
+const (
+	sileroVADURL     = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
+	kokoroArchiveURL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2"
+)
+
+var kokoroCheckFiles = []string{"model.onnx", "voices.bin", "tokens.txt", "espeak-ng-data"}
+
+func sherpaWhisperOfflineURL(model string) string {
+	return fmt.Sprintf("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-%s.tar.bz2", model)
+}
 
 // AssetKind classifies what a model asset provides.
 type AssetKind string
@@ -113,4 +130,136 @@ func (m AssetManifest) Validate() error {
 		seen[a.ID] = true
 	}
 	return nil
+}
+
+// ManifestFor builds the asset manifest describing exactly the assets required
+// for req under cfg. It is pure metadata — no I/O or network — so status, doctor,
+// and the installer can all resolve requirements from one source. STT
+// provider/mode selection uses NormalizeSTT; an unsupported provider yields no
+// STT asset (matching the historical download no-op), while an unsupported model
+// for a recognized provider returns an error naming it.
+func ManifestFor(cfg *Config, req AssetRequest) (AssetManifest, error) {
+	m := AssetManifest{Schema: AssetSchema}
+
+	if req.NeedVAD {
+		m.Assets = append(m.Assets, Asset{
+			ID:       "vad.silero.v1",
+			Provider: "sherpa",
+			Kind:     AssetKindVAD,
+			Name:     "silero_vad.onnx",
+			Files:    []AssetFile{{Path: "silero_vad.onnx", URL: sileroVADURL}},
+		})
+	}
+
+	if req.NeedSTT {
+		if norm, ok := NormalizeSTT(cfg.STTProvider); ok {
+			asset, err := sttAsset(cfg, norm)
+			if err != nil {
+				return AssetManifest{}, err
+			}
+			if asset != nil {
+				m.Assets = append(m.Assets, *asset)
+			}
+		}
+	}
+
+	if req.NeedTTS && strings.EqualFold(cfg.TTSProvider, "kokoro") {
+		m.Assets = append(m.Assets, Asset{
+			ID:         "tts.kokoro.multi-lang-v1_0",
+			Provider:   "kokoro",
+			Kind:       AssetKindTTS,
+			Name:       "kokoro-tts",
+			Archive:    &AssetArchive{URL: kokoroArchiveURL, StripPrefix: true},
+			CheckFiles: kokoroCheckFiles,
+		})
+	}
+
+	return m, nil
+}
+
+// sttAsset resolves the single STT asset for a normalized provider/mode, or nil
+// when the recognized provider has no managed asset.
+func sttAsset(cfg *Config, norm NormalizedSTT) (*Asset, error) {
+	switch {
+	case norm.Provider == STTProviderSherpa && norm.Mode == STTModeStreaming:
+		s, err := SherpaStreamingModel(cfg.SherpaStreamingModel)
+		if err != nil {
+			return nil, err
+		}
+		return &Asset{
+			ID:         "stt.sherpa.streaming." + s.DirName,
+			Provider:   "sherpa",
+			Mode:       "streaming",
+			Kind:       AssetKindSTT,
+			Name:       s.Name,
+			TargetDir:  s.DirName,
+			Archive:    &AssetArchive{URL: s.URL, StripPrefix: true},
+			CheckFiles: s.RequiredFiles(cfg.WhisperQuantized),
+		}, nil
+	case norm.Provider == STTProviderSherpa && norm.Mode == STTModeOffline:
+		model := cfg.WhisperModel
+		return &Asset{
+			ID:       "stt.sherpa.offline.whisper-" + model,
+			Provider: "sherpa",
+			Mode:     "offline",
+			Kind:     AssetKindSTT,
+			Name:     "whisper-" + model,
+			Archive:  &AssetArchive{URL: sherpaWhisperOfflineURL(model), StripPrefix: true},
+			CheckFiles: []string{
+				model + "-encoder.onnx",
+				model + "-decoder.onnx",
+			},
+		}, nil
+	case norm.Provider == STTProviderWhisperCPP:
+		a, err := WhisperCPPModelAsset(cfg.WhisperCPPModel)
+		if err != nil {
+			return nil, err
+		}
+		return &Asset{
+			ID:       "stt.whispercpp." + a.Name,
+			Provider: "whispercpp",
+			Mode:     "cli",
+			Kind:     AssetKindSTT,
+			Name:     a.Name,
+			Files:    []AssetFile{{Path: filepath.Join("whispercpp", a.Filename), URL: a.URL}},
+		}, nil
+	}
+	return nil, nil
+}
+
+// ModelFiles returns the individual-file downloads in this manifest (the legacy
+// ModelFile view).
+func (m AssetManifest) ModelFiles() []ModelFile {
+	var files []ModelFile
+	for _, a := range m.Assets {
+		if a.IsArchive() {
+			continue
+		}
+		for _, f := range a.Files {
+			files = append(files, ModelFile{Name: f.Path, URL: f.URL, Size: f.Size})
+		}
+	}
+	return files
+}
+
+// ModelArchives returns the archive downloads in this manifest (the legacy
+// ModelArchive view), resolving each relative TargetDir under base.
+func (m AssetManifest) ModelArchives(base string) []ModelArchive {
+	var archives []ModelArchive
+	for _, a := range m.Assets {
+		if !a.IsArchive() {
+			continue
+		}
+		targetDir := ""
+		if a.TargetDir != "" {
+			targetDir = filepath.Join(base, a.TargetDir)
+		}
+		archives = append(archives, ModelArchive{
+			Name:       a.Name,
+			URL:        a.Archive.URL,
+			TargetDir:  targetDir,
+			CheckFiles: a.CheckFiles,
+		})
+	}
+	return archives
 }
