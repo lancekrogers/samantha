@@ -56,7 +56,7 @@ func (g *GrokBrain) ThinkStream(ctx context.Context, input string, _ StreamOptio
 
 		for ev := range events {
 			switch ev.Type {
-			case grok.EventText, grok.EventAssistant, grok.EventDelta:
+			case grok.EventText:
 				if text := ev.Content(); text != "" {
 					fullResponse.WriteString(text)
 					out <- text
