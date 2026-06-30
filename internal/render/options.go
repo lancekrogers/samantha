@@ -6,6 +6,7 @@ package render
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -31,9 +32,27 @@ type Options struct {
 	Voice     string  // override the configured TTS voice
 	Speed     float64 // override the configured speech speed (0 = use config)
 	Title     string  // override the document title
+	Manifest  string  // manifest output path (default: OUT_DIR/manifest.json for multi-file)
 	JSON      bool    // print a machine-readable summary
 	Resume    bool    // skip completed manifest entries with matching text hash
 	Overwrite bool    // replace existing outputs
+}
+
+// ManifestPath returns where the manifest should be written. Every render writes
+// an inspectable manifest: --manifest overrides the path; multi-file renders
+// default to OUT_DIR/manifest.json; single-file renders default to a
+// "<out>.manifest.json" sidecar.
+func (o Options) ManifestPath() string {
+	if o.Manifest != "" {
+		return o.Manifest
+	}
+	if o.MultiFile() {
+		return filepath.Join(o.OutDir, "manifest.json")
+	}
+	if o.Out != "" {
+		return o.Out + ".manifest.json"
+	}
+	return ""
 }
 
 // Validate checks the option combination before any synthesis. It is cgo-free

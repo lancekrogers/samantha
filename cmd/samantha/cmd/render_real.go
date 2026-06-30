@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -58,18 +59,36 @@ func runRenderText(cmd *cobra.Command, opts render.Options) error {
 		return err
 	}
 
+	// Write the manifest when one is requested (always for multi-file).
+	manifestPath := opts.ManifestPath()
+	if manifestPath != "" {
+		m := result.Manifest
+		m.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := render.WriteManifest(manifestPath, m); err != nil {
+			return err
+		}
+	}
+
 	out := cmd.OutOrStdout()
+	complete, skipped, failed := result.Manifest.Counts()
 	if opts.JSON {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
 		return enc.Encode(map[string]any{
 			"output":      result.Output,
+			"manifest":    manifestPath,
 			"segments":    result.Segments,
+			"completed":   complete,
+			"skipped":     skipped,
+			"failed":      failed,
 			"sample_rate": result.SampleRate,
 			"duration_ms": result.Duration.Milliseconds(),
 		})
 	}
 	fmt.Fprintf(out, "  Rendered %s (%d segment(s), %s)\n", result.Output, result.Segments, result.Duration.Round(10_000_000))
+	if manifestPath != "" {
+		fmt.Fprintf(out, "  Manifest: %s\n", manifestPath)
+	}
 	return nil
 }
 

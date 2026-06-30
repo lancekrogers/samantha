@@ -28,12 +28,15 @@ type Result struct {
 	SampleRate int
 	Samples    int
 	Duration   time.Duration
+	Manifest   RenderManifest
 }
 
 // RenderText synthesizes text into a single WAV file at opts.Out. It segments
 // the text (paragraph-aware, size-capped), synthesizes each segment, and writes
-// the concatenated audio. It performs no STT/brain/microphone/playback work and
-// returns promptly on context cancellation.
+// the concatenated audio. It also builds a render manifest (with per-segment
+// text hashes and durations) that the caller can write. It performs no
+// STT/brain/microphone/playback work and returns promptly on context
+// cancellation.
 func RenderText(ctx context.Context, opts Options, text string, synth Synthesizer, writeWAV WAVWriter) (Result, error) {
 	if opts.Out == "" {
 		return Result{}, fmt.Errorf("render: text rendering requires --out FILE")
@@ -45,6 +48,7 @@ func RenderText(ctx context.Context, opts Options, text string, synth Synthesize
 
 	var all []float32
 	sampleRate := 0
+	manifestSegs := make([]ManifestSegment, 0, len(segments))
 	for i, seg := range segments {
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
@@ -57,6 +61,14 @@ func RenderText(ctx context.Context, opts Options, text string, synth Synthesize
 			sampleRate = rate
 		}
 		all = append(all, samples...)
+		manifestSegs = append(manifestSegs, ManifestSegment{
+			Index:      i + 1,
+			ID:         fmt.Sprintf("seg-%03d", i+1),
+			TextSHA256: textHash(seg),
+			Output:     opts.Out,
+			DurationMS: samplesDurationMS(len(samples), rate),
+			Status:     StatusComplete,
+		})
 	}
 
 	if err := writeWAV(opts.Out, sampleRate, all); err != nil {
@@ -67,13 +79,32 @@ func RenderText(ctx context.Context, opts Options, text string, synth Synthesize
 	if sampleRate > 0 {
 		dur = time.Duration(float64(len(all)) / float64(sampleRate) * float64(time.Second))
 	}
+	manifest := RenderManifest{
+		Schema:       RenderSchema,
+		Title:        opts.Title,
+		Source:       sourceLabel(opts),
+		SourceFormat: opts.ResolveFormat(),
+		Voice:        opts.Voice,
+		SpeechSpeed:  opts.Speed,
+		SampleRate:   sampleRate,
+		Segments:     manifestSegs,
+	}
 	return Result{
 		Output:     opts.Out,
 		Segments:   len(segments),
 		SampleRate: sampleRate,
 		Samples:    len(all),
 		Duration:   dur,
+		Manifest:   manifest,
 	}, nil
+}
+
+// samplesDurationMS converts a sample count to milliseconds at rate.
+func samplesDurationMS(samples, rate int) int64 {
+	if rate <= 0 {
+		return 0
+	}
+	return int64(float64(samples) / float64(rate) * 1000)
 }
 
 // SegmentText splits text into TTS-sized segments, preserving paragraph

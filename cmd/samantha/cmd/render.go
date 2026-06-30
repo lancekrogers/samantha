@@ -53,6 +53,7 @@ Examples:
 	f.StringVar(&opts.Voice, "voice", "", "Override the configured TTS voice")
 	f.Float64Var(&opts.Speed, "speed", 0, "Override the configured speech speed")
 	f.StringVar(&opts.Title, "title", "", "Override the document title")
+	f.StringVar(&opts.Manifest, "manifest", "", "Write the render manifest to PATH (default OUT_DIR/manifest.json for --out-dir)")
 	f.BoolVar(&opts.JSON, "json", false, "Print a machine-readable summary")
 	f.BoolVar(&opts.Resume, "resume", false, "Skip completed manifest entries with matching text hash")
 	f.BoolVar(&opts.Overwrite, "overwrite", false, "Replace existing outputs")
