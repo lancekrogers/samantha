@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,48 +16,36 @@ import (
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/render"
+	"github.com/lancekrogers/samantha/internal/render/epub"
 	"github.com/lancekrogers/samantha/internal/render/extractors"
 	"github.com/lancekrogers/samantha/internal/tts"
 )
 
-// runRenderText is the real batch render runner: it extracts the input text
-// (plain text or Markdown for now), constructs the TTS provider (the only heavy
-// dependency batch rendering needs — no STT, brain, microphone, or playback),
-// and writes a WAV file. HTML/URL/EPUB formats are added in later tasks.
+// runRenderText is the real batch render runner: it constructs the TTS provider
+// (the only heavy dependency batch rendering needs — no STT, brain, microphone,
+// or playback) and renders the input to WAV. EPUB is rendered per chapter into a
+// directory; other formats render to a single WAV.
 func runRenderText(cmd *cobra.Command, opts render.Options) error {
+	synth, cleanup, err := newRenderSynth(opts)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	if opts.ResolveFormat() == render.FormatEPUB {
+		return runRenderEPUB(cmd, opts, synth)
+	}
+
 	text, err := extractRenderText(cmd, &opts)
 	if err != nil {
 		return err
 	}
 
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-	if opts.Voice != "" {
-		cfg.TTSVoice = opts.Voice
-	}
-	if opts.Speed > 0 {
-		cfg.SpeechSpeed = opts.Speed
-	}
-	if err := config.EnsureRuntimeAssets(cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
-		return fmt.Errorf("render: TTS assets: %w", err)
-	}
-
-	provider, cleanup, err := tts.NewProvider(cfg)
-	if err != nil {
-		return fmt.Errorf("render: init TTS: %w", err)
-	}
-	if cleanup != nil {
-		defer cleanup()
-	}
-
-	result, err := render.RenderText(cmd.Context(), opts, text, &ttsSynth{provider: provider}, audio.WriteWAVFloat32)
+	result, err := render.RenderText(cmd.Context(), opts, text, synth, audio.WriteWAVFloat32)
 	if err != nil {
 		return err
 	}
 
-	// Write the manifest when one is requested (always for multi-file).
 	manifestPath := opts.ManifestPath()
 	if manifestPath != "" {
 		m := result.Manifest
@@ -69,9 +58,7 @@ func runRenderText(cmd *cobra.Command, opts render.Options) error {
 	out := cmd.OutOrStdout()
 	complete, skipped, failed := result.Manifest.Counts()
 	if opts.JSON {
-		enc := json.NewEncoder(out)
-		enc.SetIndent("", "  ")
-		return enc.Encode(map[string]any{
+		return writeRenderJSON(out, map[string]any{
 			"output":      result.Output,
 			"manifest":    manifestPath,
 			"segments":    result.Segments,
@@ -87,6 +74,106 @@ func runRenderText(cmd *cobra.Command, opts render.Options) error {
 		fmt.Fprintf(out, "  Manifest: %s\n", manifestPath)
 	}
 	return nil
+}
+
+// runRenderEPUB renders an EPUB's chapters (in spine order) into per-chapter WAV
+// files plus a manifest under --out-dir.
+func runRenderEPUB(cmd *cobra.Command, opts render.Options, synth render.Synthesizer) error {
+	if opts.OutDir == "" {
+		return fmt.Errorf("render: EPUB rendering requires --out-dir DIR")
+	}
+
+	zr, err := zip.OpenReader(opts.Input)
+	if err != nil {
+		return fmt.Errorf("render: open %s: %w", opts.Input, err)
+	}
+	defer zr.Close()
+
+	book, err := epub.Parse(&zr.Reader)
+	if err != nil {
+		return err
+	}
+	if opts.Title == "" {
+		opts.Title = book.Metadata.Title
+	}
+
+	chapters := make([]render.RenderChapter, 0, len(book.Chapters))
+	for _, ch := range book.Chapters {
+		data, err := book.ReadChapter(ch.Href)
+		if err != nil {
+			return err
+		}
+		doc, err := extractors.ExtractHTML(ch.Href, data)
+		if err != nil {
+			return err
+		}
+		title := ch.Title
+		if title == "" {
+			title = doc.Title
+		}
+		chapters = append(chapters, render.RenderChapter{ID: ch.ID, Title: title, Text: doc.Narration()})
+	}
+
+	manifest, err := render.RenderChapters(cmd.Context(), opts, chapters, synth, audio.WriteWAVFloat32)
+	if err != nil {
+		return err
+	}
+
+	manifestPath := opts.ManifestPath()
+	manifest.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := render.WriteManifest(manifestPath, manifest); err != nil {
+		return err
+	}
+
+	out := cmd.OutOrStdout()
+	complete, skipped, failed := manifest.Counts()
+	if opts.JSON {
+		return writeRenderJSON(out, map[string]any{
+			"output_dir":  opts.OutDir,
+			"manifest":    manifestPath,
+			"segments":    len(manifest.Segments),
+			"completed":   complete,
+			"skipped":     skipped,
+			"failed":      failed,
+			"sample_rate": manifest.SampleRate,
+			"duration_ms": manifest.TotalDurationMS(),
+		})
+	}
+	fmt.Fprintf(out, "  Rendered %d chapter(s) to %s (%d skipped)\n", complete, opts.OutDir, skipped)
+	fmt.Fprintf(out, "  Manifest: %s\n", manifestPath)
+	return nil
+}
+
+// newRenderSynth builds the TTS-backed synthesizer for batch rendering, applying
+// --voice/--speed and ensuring only TTS assets.
+func newRenderSynth(opts render.Options) (render.Synthesizer, func(), error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, nil, err
+	}
+	if opts.Voice != "" {
+		cfg.TTSVoice = opts.Voice
+	}
+	if opts.Speed > 0 {
+		cfg.SpeechSpeed = opts.Speed
+	}
+	if err := config.EnsureRuntimeAssets(cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
+		return nil, nil, fmt.Errorf("render: TTS assets: %w", err)
+	}
+	provider, cleanup, err := tts.NewProvider(cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("render: init TTS: %w", err)
+	}
+	if cleanup == nil {
+		cleanup = func() {}
+	}
+	return &ttsSynth{provider: provider}, cleanup, nil
+}
+
+func writeRenderJSON(out io.Writer, payload map[string]any) error {
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	return enc.Encode(payload)
 }
 
 // extractRenderText reads the input and converts it to narration text according

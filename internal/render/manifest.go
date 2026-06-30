@@ -69,6 +69,28 @@ func (m RenderManifest) TotalDurationMS() int64 {
 	return total
 }
 
+// priorSegmentsByOutput loads an existing manifest at path (if any) and returns
+// its segments keyed by output filename, for resume decisions. A missing or
+// unreadable manifest yields an empty map.
+func priorSegmentsByOutput(path string) map[string]ManifestSegment {
+	out := map[string]ManifestSegment{}
+	if path == "" {
+		return out
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	var m RenderManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return out
+	}
+	for _, s := range m.Segments {
+		out[s.Output] = s
+	}
+	return out
+}
+
 // WriteManifest writes m to path as indented JSON, creating parent directories.
 func WriteManifest(path string, m RenderManifest) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
