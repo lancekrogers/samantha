@@ -7,7 +7,7 @@ import (
 
 func runRender(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	cmd := newRenderCmd()
+	cmd := newRenderCmd(runRenderPlan)
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)

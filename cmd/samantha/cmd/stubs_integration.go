@@ -33,5 +33,5 @@ var providersCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(providersCmd)
-	rootCmd.AddCommand(newRenderCmd())
+	rootCmd.AddCommand(newRenderCmd(runRenderPlan))
 }

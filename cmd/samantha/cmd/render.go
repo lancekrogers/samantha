@@ -8,10 +8,15 @@ import (
 	"github.com/lancekrogers/samantha/internal/render"
 )
 
-// newRenderCmd builds the `samantha render` command. The skeleton parses and
-// validates flags and prints the resolved plan; synthesis is wired in a later
-// task. It is cgo-free so it serves both the normal and integration binaries.
-func newRenderCmd() *cobra.Command {
+// renderRunner executes a validated render invocation. The cgo command layer
+// supplies the real synthesizing runner; the integration build supplies a
+// plan-only runner. This keeps the command definition (flags + validation)
+// cgo-free and shared across both binaries.
+type renderRunner func(cmd *cobra.Command, opts render.Options) error
+
+// newRenderCmd builds the `samantha render` command. It parses and validates
+// flags (cgo-free) and delegates execution to run.
+func newRenderCmd(run renderRunner) *cobra.Command {
 	var opts render.Options
 
 	cmd := &cobra.Command{
@@ -36,7 +41,7 @@ Examples:
 			if err := opts.Validate(); err != nil {
 				return err
 			}
-			return runRenderPlan(cmd, opts)
+			return run(cmd, opts)
 		},
 	}
 
