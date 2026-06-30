@@ -6,12 +6,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/endpoint"
 )
 
 // SherpaOfflineSTT implements utterance-final STT using sherpa-onnx whisper.
@@ -78,10 +78,8 @@ func NewSherpaOfflineSTT(cfg *config.Config, capture audioSource, vad *audio.VAD
 	}, nil
 }
 
-// minSpeechSamples is the minimum number of audio samples for valid speech (0.3s at 16kHz).
-const minSpeechSamples = 4800
-
-// Start begins an STT session using utterance-final decoding.
+// Start begins an STT session using utterance-final decoding over the typed
+// frame contract and the endpoint policy.
 func (s *SherpaOfflineSTT) Start(ctx context.Context) (Session, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 	session := &sherpaSession{
@@ -89,109 +87,51 @@ func (s *SherpaOfflineSTT) Start(ctx context.Context) (Session, error) {
 		events: make(chan Event, 8),
 	}
 
-	go s.runSession(sessionCtx, session.events)
+	finite := sourceKind(s.capture) != audio.SourceLive
+	deps := offlineLoopDeps{
+		frames:     asFrameSource(s.capture),
+		seg:        vadSegmenter{vad: s.vad},
+		policy:     endpoint.FromConfig(s.cfg, finite),
+		transcribe: s.transcribe,
+	}
+
+	go func() {
+		defer close(session.events)
+		runOfflineLoop(sessionCtx, deps, session.events)
+	}()
 	return session, nil
 }
 
-func (s *SherpaOfflineSTT) runSession(ctx context.Context, events chan<- Event) {
-	defer close(events)
+// transcribe decodes finalized speech samples to text via the cgo sherpa
+// recognizer. It is the production transcribeFunc seam for runOfflineLoop.
+func (s *SherpaOfflineSTT) transcribe(samples []float32) (string, error) {
+	stream := sherpa.NewOfflineStream(s.recognizer)
+	defer sherpa.DeleteOfflineStream(stream)
 
-	// Flush stale VAD segments from previous turn.
-	// Do NOT reset capture — the user may already be speaking.
-	s.vad.Clear()
-	lastPhaseAt := time.Now()
-	emitPhase := func(phase string) {
-		now := time.Now()
-		events <- PhaseEvent{Phase: phase, Elapsed: now.Sub(lastPhaseAt).Nanoseconds()}
-		lastPhaseAt = now
-	}
-	emitPhase("listening")
-
-	speechDetected := false
-	timeout := time.After(time.Duration(s.cfg.ListenTimeout) * time.Second)
-
-	for {
-		select {
-		case <-ctx.Done():
-			events <- Failure{Err: ctx.Err()}
-			return
-		case <-timeout:
-			events <- Timeout{}
-			return
-		default:
-		}
-
-		chunk := s.capture.Read()
-		exhausted := len(chunk) == 0 && sourceExhausted(s.capture)
-		if len(chunk) == 0 {
-			if !exhausted {
-				time.Sleep(10 * time.Millisecond)
-				continue
-			}
-			s.vad.Flush()
-			if !speechDetected && !s.vad.IsSpeechDetected() {
-				events <- Timeout{}
-				return
-			}
-		} else {
-			s.vad.AcceptWaveform(chunk)
-
-			if !speechDetected && s.vad.IsSpeech() {
-				speechDetected = true
-				emitPhase("hearing")
-			}
-		}
-
-		if s.vad.IsSpeechDetected() {
-			emitPhase("transcribing")
-
-			// Collect all speech segments
-			var allSamples []float32
-			for !s.vad.IsEmpty() {
-				samples := s.vad.Front()
-				allSamples = append(allSamples, samples...)
-				s.vad.Pop()
-			}
-
-			// Skip if too short to be real speech.
-			if len(allSamples) < minSpeechSamples {
-				if exhausted {
-					events <- Timeout{}
-					return
-				}
-				speechDetected = false
-				emitPhase("listening")
-				continue
-			}
-
-			// Transcribe
-			stream := sherpa.NewOfflineStream(s.recognizer)
-			stream.AcceptWaveform(audio.SampleRate, allSamples)
-			s.recognizer.Decode(stream)
-			result := stream.GetResult()
-			sherpa.DeleteOfflineStream(stream)
-
-			text := strings.TrimSpace(result.Text)
-			if text != "" {
-				events <- FinalTranscript{Text: text}
-				return
-			}
-
-			// Empty transcription — keep listening
-			if exhausted {
-				events <- Timeout{}
-				return
-			}
-			speechDetected = false
-			emitPhase("listening")
-		}
-
-		if exhausted {
-			events <- Timeout{}
-			return
-		}
-	}
+	stream.AcceptWaveform(audio.SampleRate, samples)
+	s.recognizer.Decode(stream)
+	return strings.TrimSpace(stream.GetResult().Text), nil
 }
+
+// vadSegmenter adapts the cgo Silero *audio.VAD to the segmenter seam so the
+// offline loop can run against either the real VAD or a deterministic fake.
+type vadSegmenter struct{ vad *audio.VAD }
+
+func (s vadSegmenter) AcceptWaveform(samples []float32) { s.vad.AcceptWaveform(samples) }
+func (s vadSegmenter) IsSpeech() bool                   { return s.vad.IsSpeech() }
+func (s vadSegmenter) HasSegments() bool                { return s.vad.IsSpeechDetected() }
+
+func (s vadSegmenter) NextSegment() ([]float32, bool) {
+	if s.vad.IsEmpty() {
+		return nil, false
+	}
+	seg := s.vad.Front()
+	s.vad.Pop()
+	return seg, true
+}
+
+func (s vadSegmenter) Reset() { s.vad.Clear() }
+func (s vadSegmenter) Flush() { s.vad.Flush() }
 
 // Available returns true if the STT provider is ready.
 func (s *SherpaOfflineSTT) Available() bool {
