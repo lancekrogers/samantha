@@ -16,9 +16,13 @@ import (
 )
 
 const (
-	voiceQueueDepth        = 2
-	bargeInArmDelay        = 180 * time.Millisecond
-	bargeInMinSpeechChunks = 3
+	voiceQueueDepth = 2
+	// bargeInArmDelay holds off interrupt detection after playback starts so the
+	// echo of Samantha's own first words doesn't trip barge-in.
+	bargeInArmDelay = 600 * time.Millisecond
+	// bargeInMinSpeechChunks requires sustained speech before interrupting, so a
+	// brief burst of residual echo isn't mistaken for the user.
+	bargeInMinSpeechChunks = 6
 	bargeInBufferSize      = 8
 )
 

@@ -9,6 +9,14 @@ import (
 	"github.com/lancekrogers/samantha/internal/config"
 )
 
+const (
+	vadThreshold = 0.6
+	// bargeInVADThreshold is stricter than the capture VAD so residual TTS echo
+	// is far less likely to register as the user interrupting.
+	bargeInVADThreshold  = 0.85
+	vadMinSpeechDuration = 0.25
+)
+
 // VAD wraps sherpa-onnx Silero voice activity detection.
 type VAD struct {
 	detector *sherpa.VoiceActivityDetector
@@ -16,13 +24,23 @@ type VAD struct {
 
 // NewVAD creates a VAD instance with the Silero model.
 func NewVAD(cfg *config.Config) (*VAD, error) {
+	return newVAD(cfg, vadThreshold)
+}
+
+// NewBargeInVAD creates a VAD tuned for interrupt detection with a stricter
+// speech threshold than the capture VAD.
+func NewBargeInVAD(cfg *config.Config) (*VAD, error) {
+	return newVAD(cfg, bargeInVADThreshold)
+}
+
+func newVAD(cfg *config.Config, threshold float32) (*VAD, error) {
 	modelPath := filepath.Join(config.ModelsDir(), "silero_vad.onnx")
 
 	sileroConfig := sherpa.SileroVadModelConfig{
 		Model:              modelPath,
-		MinSpeechDuration:  0.25,
+		MinSpeechDuration:  vadMinSpeechDuration,
 		MinSilenceDuration: float32(cfg.VADSilenceDuration),
-		Threshold:          0.6,
+		Threshold:          threshold,
 	}
 
 	vadConfig := sherpa.VadModelConfig{

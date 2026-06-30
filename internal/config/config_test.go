@@ -52,6 +52,27 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.VoiceToolsEnabled {
 		t.Error("VoiceToolsEnabled = true, want false")
 	}
+	if cfg.BargeInEnabled {
+		t.Error("BargeInEnabled = true, want false")
+	}
+}
+
+func TestBargeInEnvOverride(t *testing.T) {
+	orig := configFile
+	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")
+	defer func() { configFile = orig }()
+
+	setDefaults(v)
+	t.Setenv("BARGE_IN_ENABLED", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if !cfg.BargeInEnabled {
+		t.Error("BargeInEnabled = false, want true from env")
+	}
 }
 
 func TestLoadValidConfig(t *testing.T) {
