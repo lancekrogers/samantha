@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -34,8 +35,9 @@ type settingsModel struct {
 	voiceItems    []tts.Voice
 
 	// Preview playback state.
-	previewing string
-	message    string
+	previewing    string
+	previewCancel context.CancelFunc
+	message       string
 }
 
 func newSettings(cfg *config.Config, providers []discovery.ProviderInfo) settingsModel {
@@ -118,15 +120,28 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 			m.selectCurrent()
 		case "p":
 			if m.section == sectionVoice {
-				return m, m.previewVoice()
+				if m.previewCancel != nil {
+					m.previewCancel()
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				m.previewCancel = cancel
+				return m, m.previewVoice(ctx)
 			}
 		case "esc", "q":
+			if m.previewCancel != nil {
+				m.previewCancel()
+			}
 			return m, func() tea.Msg { return switchScreenMsg(screenLauncher) }
 		}
 
 	case voicePreviewDoneMsg:
-		m.previewing = ""
-		m.message = msg.message
+		// Ignore completions from a preview that's already been superseded.
+		if msg.voice == m.previewing {
+			m.previewing = ""
+			if msg.message != "" {
+				m.message = msg.message
+			}
+		}
 	}
 
 	return m, nil
@@ -172,9 +187,12 @@ func (m *settingsModel) selectCurrent() {
 	}
 }
 
-type voicePreviewDoneMsg struct{ message string }
+type voicePreviewDoneMsg struct {
+	voice   string
+	message string
+}
 
-func (m *settingsModel) previewVoice() tea.Cmd {
+func (m *settingsModel) previewVoice(ctx context.Context) tea.Cmd {
 	if m.cursor >= len(m.voiceItems) {
 		return nil
 	}
@@ -182,41 +200,52 @@ func (m *settingsModel) previewVoice() tea.Cmd {
 	m.previewing = voice.Name
 
 	return func() tea.Msg {
-		// Create a temporary TTS instance with this voice.
+		// A superseded preview (ctx cancelled) reports quietly so it doesn't
+		// clobber the newer preview's message or "playing" indicator.
+		quiet := voicePreviewDoneMsg{voice: voice.Name}
 		cfg := *m.cfg
 		cfg.TTSVoice = voice.Name
 
 		if err := config.EnsureRuntimeAssets(&cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
-			return voicePreviewDoneMsg{message: fmt.Sprintf("Asset error: %v", err)}
+			return voicePreviewDoneMsg{voice: voice.Name, message: fmt.Sprintf("Asset error: %v", err)}
 		}
 
 		ttsProvider, cleanup, err := tts.NewProvider(&cfg)
 		if err != nil {
-			return voicePreviewDoneMsg{message: fmt.Sprintf("TTS error: %v", err)}
+			return voicePreviewDoneMsg{voice: voice.Name, message: fmt.Sprintf("TTS error: %v", err)}
 		}
 		if cleanup != nil {
 			defer cleanup()
 		}
 
-		stream, err := ttsProvider.Synthesize(context.Background(), "Hi, I'm Samantha. This is how I sound.")
+		stream, err := ttsProvider.Synthesize(ctx, "Hi, I'm Samantha. This is how I sound.")
 		if err != nil {
-			return voicePreviewDoneMsg{message: fmt.Sprintf("Synthesize error: %v", err)}
+			if errors.Is(err, context.Canceled) {
+				return quiet
+			}
+			return voicePreviewDoneMsg{voice: voice.Name, message: fmt.Sprintf("Synthesize error: %v", err)}
 		}
 
 		player := audio.NewPlayer()
 		defer func() { _ = player.Close() }()
 
-		playback, err := player.PlayStream(context.Background(), stream)
+		playback, err := player.PlayStream(ctx, stream)
 		if err != nil {
-			return voicePreviewDoneMsg{message: fmt.Sprintf("Playback error: %v", err)}
+			if errors.Is(err, context.Canceled) {
+				return quiet
+			}
+			return voicePreviewDoneMsg{voice: voice.Name, message: fmt.Sprintf("Playback error: %v", err)}
 		}
 
 		result := <-playback.Done()
-		if result.Err != nil && !result.Interrupted {
-			return voicePreviewDoneMsg{message: fmt.Sprintf("Playback error: %v", result.Err)}
+		if result.Interrupted || errors.Is(result.Err, context.Canceled) {
+			return quiet
+		}
+		if result.Err != nil {
+			return voicePreviewDoneMsg{voice: voice.Name, message: fmt.Sprintf("Playback error: %v", result.Err)}
 		}
 
-		return voicePreviewDoneMsg{message: fmt.Sprintf("Previewed %s", voice.Name)}
+		return voicePreviewDoneMsg{voice: voice.Name, message: fmt.Sprintf("Previewed %s", voice.Name)}
 	}
 }
 
