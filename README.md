@@ -137,6 +137,29 @@ go test ./...                  # Plain Go test fallback
 
 Integration tests expect `bin/linux/samantha` to exist. The build dashboard creates it for the integration workflow.
 
+#### Voice smoke tests (opt-in, require local models)
+
+The STT provider loops (`internal/stt`) are covered by deterministic unit tests
+that use fakes, so they run without model files. Real end-to-end voice behavior
+depends on local STT/VAD/TTS models and is therefore opt-in. When the models are
+installed (`samantha models ensure`, once available), run the smoke plan:
+
+| Scenario | Expectation |
+|----------|-------------|
+| Short utterance (`hello samantha`) | final transcript within ~2s; finalizes on the source's EOF/silence, not a phrase timeout |
+| Long utterance | partial/final transcript; caps at the max-utterance length |
+| Silence only | times out with no final transcript |
+| Finite fixture EOF | terminates promptly on the explicit final frame, no hang |
+
+```bash
+# Deterministic, no models needed:
+go test ./internal/stt ./internal/endpoint ./internal/audio
+
+# Real-provider smoke (needs models + whisper.cpp binary for that provider):
+go test -tags integration ./tests/voiceflow      # fixture-driven pipeline flow
+samantha listen                                  # manual: speak a short command
+```
+
 ### Voice Utilities
 
 ```bash

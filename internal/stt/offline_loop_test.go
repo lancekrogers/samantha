@@ -198,6 +198,32 @@ func TestOfflineLoopLiveNoSpeechStartTimeout(t *testing.T) {
 	}
 }
 
+// TestOfflineLoopShortCommandFinalizesOnFrameEOF is the short-command regression
+// guard for the frame-contract migration: a finite source that speaks only the
+// frame contract (scriptedFrames implements FrameSource but not the legacy
+// finiteAudioSource interface) must finalize promptly on its Final frame, with no
+// spurious Timeout. The pre-migration loop detected EOF via sourceExhausted() and
+// would not have recognized this source's end — it would wait for a timeout.
+func TestOfflineLoopShortCommandFinalizesOnFrameEOF(t *testing.T) {
+	deps := offlineLoopDeps{
+		frames:     &scriptedFrames{chunks: [][]float32{make([]float32, 1600), make([]float32, 1600), make([]float32, 1600)}},
+		seg:        &fakeSegmenter{speech: true, flushSeg: longSpeech()},
+		policy:     endpoint.Policy{FinalizeOnEOF: true, MinSpeech: 200 * time.Millisecond},
+		transcribe: func([]float32) (string, error) { return "hello samantha", nil },
+	}
+
+	got := runLoop(context.Background(), deps)
+	for _, e := range got {
+		if _, ok := e.(Timeout); ok {
+			t.Fatalf("emitted Timeout for a short fixture command; events = %v", got)
+		}
+	}
+	final, ok := terminal(got).(FinalTranscript)
+	if !ok || final.Text != "hello samantha" {
+		t.Fatalf("terminal = %v, want FinalTranscript{\"hello samantha\"}", terminal(got))
+	}
+}
+
 func TestOfflineLoopTranscribeErrorFails(t *testing.T) {
 	wantErr := errors.New("decode failed")
 	deps := offlineLoopDeps{
