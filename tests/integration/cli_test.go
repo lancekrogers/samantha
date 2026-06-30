@@ -100,3 +100,21 @@ func TestCLI_ModelsStatusJSON(t *testing.T) {
 		t.Errorf("models status --json should emit an installed field, got: %s", output)
 	}
 }
+
+func TestCLI_Doctor(t *testing.T) {
+	tc := GetSharedContainer(t)
+
+	// The container has the default config (sherpa + kokoro) but no model
+	// assets, so doctor must report missing assets as warnings — and exit 0,
+	// read-only, with no network — since warnings are not errors.
+	output, err := tc.RunSamantha("doctor")
+	if err != nil {
+		t.Fatalf("samantha doctor failed (warnings should exit 0): %v", err)
+	}
+
+	for _, want := range []string{"Samantha Doctor", "WARN", "models ensure"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("doctor output should contain %q, got: %s", want, output)
+		}
+	}
+}
