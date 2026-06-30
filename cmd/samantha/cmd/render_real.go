@@ -15,19 +15,16 @@ import (
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/render"
+	"github.com/lancekrogers/samantha/internal/render/extractors"
 	"github.com/lancekrogers/samantha/internal/tts"
 )
 
-// runRenderText is the real batch render runner: it reads text/stdin input,
-// constructs the TTS provider (the only heavy dependency batch rendering needs —
-// no STT, brain, microphone, or playback), and writes a WAV file. Document
-// formats other than plain text are added in later tasks.
+// runRenderText is the real batch render runner: it extracts the input text
+// (plain text or Markdown for now), constructs the TTS provider (the only heavy
+// dependency batch rendering needs — no STT, brain, microphone, or playback),
+// and writes a WAV file. HTML/URL/EPUB formats are added in later tasks.
 func runRenderText(cmd *cobra.Command, opts render.Options) error {
-	if f := opts.ResolveFormat(); f != render.FormatText {
-		return fmt.Errorf("render: --format %s is not implemented yet", f)
-	}
-
-	text, err := readRenderInput(cmd, opts)
+	text, err := extractRenderText(cmd, &opts)
 	if err != nil {
 		return err
 	}
@@ -92,20 +89,55 @@ func runRenderText(cmd *cobra.Command, opts render.Options) error {
 	return nil
 }
 
-// readRenderInput returns the input text from stdin or the input file.
-func readRenderInput(cmd *cobra.Command, opts render.Options) (string, error) {
+// extractRenderText reads the input and converts it to narration text according
+// to the resolved format. It may set opts.Title from the extracted document.
+func extractRenderText(cmd *cobra.Command, opts *render.Options) (string, error) {
+	switch f := opts.ResolveFormat(); f {
+	case render.FormatText:
+		data, err := readRenderBytes(cmd, *opts)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	case render.FormatMarkdown:
+		data, err := readRenderBytes(cmd, *opts)
+		if err != nil {
+			return "", err
+		}
+		doc, err := extractors.ExtractMarkdown(renderSource(*opts), data)
+		if err != nil {
+			return "", err
+		}
+		if opts.Title == "" {
+			opts.Title = doc.Title
+		}
+		return doc.Narration(), nil
+	default:
+		return "", fmt.Errorf("render: --format %s is not implemented yet", f)
+	}
+}
+
+// readRenderBytes returns the raw input from stdin or the input file.
+func readRenderBytes(cmd *cobra.Command, opts render.Options) ([]byte, error) {
 	if opts.Stdin {
 		data, err := io.ReadAll(cmd.InOrStdin())
 		if err != nil {
-			return "", fmt.Errorf("render: read stdin: %w", err)
+			return nil, fmt.Errorf("render: read stdin: %w", err)
 		}
-		return string(data), nil
+		return data, nil
 	}
 	data, err := os.ReadFile(opts.Input)
 	if err != nil {
-		return "", fmt.Errorf("render: read %s: %w", opts.Input, err)
+		return nil, fmt.Errorf("render: read %s: %w", opts.Input, err)
 	}
-	return string(data), nil
+	return data, nil
+}
+
+func renderSource(opts render.Options) string {
+	if opts.Stdin {
+		return "stdin"
+	}
+	return opts.Input
 }
 
 // ttsSynth adapts the cgo tts.Provider into the cgo-free render.Synthesizer by
