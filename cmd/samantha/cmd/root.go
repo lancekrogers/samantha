@@ -173,11 +173,16 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 
 	// Audio capture + VAD + STT (skip in text mode).
 	if !text {
-		frontend := audio.NewVoiceFrontend()
-		cleanups = append(cleanups, func() { _ = frontend.Close() })
+		var frontend *audio.VoiceFrontend
+		if cfg.VoiceFrontendEnabled {
+			frontend = audio.NewVoiceFrontend()
+			cleanups = append(cleanups, func() { _ = frontend.Close() })
+		}
 
 		capture := audio.NewCapture()
-		capture.SetFrontend(frontend)
+		if frontend != nil {
+			capture.SetFrontend(frontend)
+		}
 		if err := capture.Start(ctx); err != nil {
 			cleanup()
 			return nil, nil, fmt.Errorf("start capture: %w", err)
@@ -185,7 +190,7 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 		cleanups = append(cleanups, capture.Stop)
 		p.Capture = capture
 
-		if !silent {
+		if !silent && frontend != nil {
 			if player, ok := p.Player.(*audio.Player); ok {
 				player.SetFrontend(frontend)
 			}
