@@ -237,6 +237,81 @@ func TestRunTurnReturnsBrainStreamError(t *testing.T) {
 	}
 }
 
+func TestRunTurnEmitsSingleTerminalMetricsAfterResponse(t *testing.T) {
+	// The state machine owns the single terminal metrics emission, and it must
+	// land after ResponseReady so benchmarks see the final response first.
+	bus := events.NewBus()
+	var mu sync.Mutex
+	var order []string
+	events.Subscribe(bus, func(events.ResponseReady) {
+		mu.Lock()
+		order = append(order, "response")
+		mu.Unlock()
+	})
+	events.Subscribe(bus, func(events.TurnMetrics) {
+		mu.Lock()
+		order = append(order, "metrics")
+		mu.Unlock()
+	})
+
+	p := &Pipeline{
+		STT:    &fakeSTT{text: "hello"},
+		Brain:  &fakeBrain{chunks: []string{"Hi there."}},
+		Events: bus,
+	}
+	if _, err := p.RunTurn(context.Background()); err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 2 || order[0] != "response" || order[1] != "metrics" {
+		t.Fatalf("event order = %v, want exactly [response metrics]", order)
+	}
+}
+
+func TestRunTurnNoSpeechEmitsSingleMetrics(t *testing.T) {
+	bus := events.NewBus()
+	var metricsCount, responseCount atomic.Int32
+	events.Subscribe(bus, func(events.TurnMetrics) { metricsCount.Add(1) })
+	events.Subscribe(bus, func(events.ResponseReady) { responseCount.Add(1) })
+
+	p := &Pipeline{STT: &fakeSTT{text: ""}, Brain: &fakeBrain{}, Events: bus}
+	text, err := p.RunTurn(context.Background())
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if text != "" {
+		t.Fatalf("RunTurn() text = %q, want empty (no speech)", text)
+	}
+	if got := metricsCount.Load(); got != 1 {
+		t.Fatalf("TurnMetrics emitted %d times, want exactly 1", got)
+	}
+	if got := responseCount.Load(); got != 0 {
+		t.Fatalf("ResponseReady emitted %d times, want 0 on no-speech turn", got)
+	}
+}
+
+func TestRunTurnBrainErrorEmitsSingleMetrics(t *testing.T) {
+	// Regression guard: error paths previously emitted zero terminal metrics.
+	// With the state machine owning emission, every terminal path emits one.
+	bus := events.NewBus()
+	var metricsCount atomic.Int32
+	events.Subscribe(bus, func(events.TurnMetrics) { metricsCount.Add(1) })
+
+	p := &Pipeline{
+		STT:    &fakeSTT{text: "hello"},
+		Brain:  &fakeBrain{streamErr: errors.New("boom")},
+		Events: bus,
+	}
+	if _, err := p.RunTurn(context.Background()); err == nil {
+		t.Fatal("RunTurn() error = nil, want brain error")
+	}
+	if got := metricsCount.Load(); got != 1 {
+		t.Fatalf("TurnMetrics emitted %d times on brain error, want exactly 1", got)
+	}
+}
+
 type fakeSTT struct {
 	text string
 }

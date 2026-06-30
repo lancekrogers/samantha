@@ -109,24 +109,61 @@ func (m *turnMetrics) elapsed(ts time.Time) time.Duration {
 	return ts.Sub(m.start)
 }
 
+// turnConductor bridges the turn state machine into the live pipeline: stages
+// report state transitions and it guarantees exactly one terminal TurnMetrics
+// emission per turn, regardless of which return path ends the turn.
+type turnConductor struct {
+	p        *Pipeline
+	machine  *turnMachine
+	metrics  *turnMetrics
+	finished bool
+}
+
+func (p *Pipeline) newTurnConductor(metrics *turnMetrics) *turnConductor {
+	return &turnConductor{p: p, machine: newTurnMachine(), metrics: metrics}
+}
+
+// to advances the lifecycle state, ignoring illegal or out-of-order transitions
+// so a late stage signal cannot corrupt the turn outcome.
+func (c *turnConductor) to(state TurnState) { c.machine.To(state) }
+
+// finish moves the machine to its terminal state and emits the single terminal
+// metrics event. Later calls are no-ops, so every return path can call it.
+func (c *turnConductor) finish(terminal TurnState) {
+	if c.finished {
+		return
+	}
+	c.finished = true
+	c.machine.To(terminal)
+	c.p.emit(events.TurnMetrics(c.metrics.snapshot()))
+}
+
 // RunTurn executes one conversational turn with streaming TTS.
 // Returns the user's input text, or empty string if no speech was detected.
 func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 	metrics := newTurnMetrics()
+	turn := p.newTurnConductor(metrics)
 
 	if p.Player != nil {
 		p.Player.Stop()
 	}
 
-	text, err := p.transcribeTurn(ctx, metrics)
+	turn.to(TurnListening)
+	text, err := p.transcribeTurn(ctx, metrics, turn)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			turn.finish(TurnInterrupted)
+		} else {
+			turn.finish(TurnFailed)
+		}
 		return "", err
 	}
 	if text == "" {
-		p.emit(events.TurnMetrics(metrics.snapshot()))
+		turn.finish(TurnTimedOut)
 		return "", nil
 	}
 
+	turn.to(TurnThinking)
 	p.emit(events.UserInput{Text: text})
 	p.emit(events.ThinkingStarted{})
 
@@ -140,11 +177,17 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 		ToolsEnabled: p.VoiceToolsEnabled,
 	})
 	if err != nil {
+		turn.finish(TurnFailed)
 		return text, fmt.Errorf("brain: %w", err)
 	}
 
-	fullResponse, interrupted, err := p.streamResponse(turnCtx, brainStream, true, metrics)
+	fullResponse, interrupted, err := p.streamResponse(turnCtx, brainStream, true, metrics, turn)
 	if err != nil {
+		if interrupted || errors.Is(err, context.Canceled) {
+			turn.finish(TurnInterrupted)
+		} else {
+			turn.finish(TurnFailed)
+		}
 		return text, err
 	}
 
@@ -152,7 +195,11 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 		Response:    fullResponse,
 		Interrupted: interrupted,
 	})
-	p.emit(events.TurnMetrics(metrics.snapshot()))
+	if interrupted {
+		turn.finish(TurnInterrupted)
+	} else {
+		turn.finish(TurnCompleted)
+	}
 
 	if p.OnTurn != nil {
 		p.OnTurn()
@@ -164,13 +211,16 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 // RunTurnTextMode runs a turn with text input instead of mic.
 func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	metrics := newTurnMetrics()
+	turn := p.newTurnConductor(metrics)
 
+	turn.to(TurnThinking)
 	p.emit(events.UserInput{Text: input})
 	p.emit(events.ThinkingStarted{})
 	thinkingStarted := time.Now()
 
 	response, err := p.Brain.ThinkFull(ctx, input)
 	if err != nil {
+		turn.finish(TurnFailed)
 		return fmt.Errorf("brain: %w", err)
 	}
 
@@ -184,6 +234,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	})
 
 	if p.TTS != nil && p.Player != nil && p.TTS.Available() {
+		turn.to(TurnSpeaking)
 		if metrics.firstSegment.IsZero() {
 			metrics.firstSegment = time.Now()
 		}
@@ -193,9 +244,11 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 		synthStarted := time.Now()
 		stream, err := p.TTS.Synthesize(ctx, response)
 		if err != nil {
+			// Voice is best-effort in text mode: the text response still
+			// completed, so the turn is completed (degraded), not failed.
 			p.emit(events.Error{Stage: "tts", Message: fmt.Sprintf("TTS: %v", err)})
 			p.emit(events.ResponseReady{Response: response})
-			p.emit(events.TurnMetrics(metrics.snapshot()))
+			turn.finish(TurnCompleted)
 			return nil
 		}
 
@@ -203,7 +256,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 		if err != nil {
 			p.emit(events.Error{Stage: "playback", Message: fmt.Sprintf("playback: %v", err)})
 			p.emit(events.ResponseReady{Response: response})
-			p.emit(events.TurnMetrics(metrics.snapshot()))
+			turn.finish(TurnCompleted)
 			return nil
 		}
 
@@ -211,7 +264,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	}
 
 	p.emit(events.ResponseReady{Response: response})
-	p.emit(events.TurnMetrics(metrics.snapshot()))
+	turn.finish(TurnCompleted)
 
 	if p.OnTurn != nil {
 		p.OnTurn()
@@ -220,7 +273,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	return nil
 }
 
-func (p *Pipeline) transcribeTurn(ctx context.Context, metrics *turnMetrics) (string, error) {
+func (p *Pipeline) transcribeTurn(ctx context.Context, metrics *turnMetrics, turn *turnConductor) (string, error) {
 	if p.STT == nil {
 		return "", errors.New("STT provider is not configured")
 	}
@@ -242,6 +295,9 @@ func (p *Pipeline) transcribeTurn(ctx context.Context, metrics *turnMetrics) (st
 
 			switch e := event.(type) {
 			case stt.PhaseEvent:
+				if e.Phase == "transcribing" {
+					turn.to(TurnTranscribing)
+				}
 				p.emit(events.STTPhase{
 					Phase:   e.Phase,
 					Elapsed: time.Duration(e.Elapsed),
@@ -265,7 +321,7 @@ func (p *Pipeline) transcribeTurn(ctx context.Context, metrics *turnMetrics) (st
 	}
 }
 
-func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, allowBargeIn bool, metrics *turnMetrics) (string, bool, error) {
+func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, allowBargeIn bool, metrics *turnMetrics, turn *turnConductor) (string, bool, error) {
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -314,6 +370,7 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 			interrupted = true
 			metrics.interrupted = true
 			metrics.bargeIn = time.Now()
+			turn.to(TurnInterrupted)
 			cancel()
 			if p.Player != nil {
 				p.Player.Stop()
@@ -357,6 +414,7 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 				continue
 			}
 
+			turn.to(TurnSpeaking)
 			if metrics.firstSegment.IsZero() {
 				metrics.firstSegment = time.Now()
 			}
