@@ -47,6 +47,19 @@ macOS users may need to grant microphone permission to the terminal app used to 
 
 ## Install
 
+### Homebrew (macOS)
+
+```bash
+brew install --HEAD lancekrogers/tap/samantha
+```
+
+Builds from source and bundles the sherpa-onnx/onnxruntime native libraries so
+the binary is self-contained. `--HEAD` tracks the latest `main`; once a version
+is tagged it installs without it. Grant your terminal microphone access under
+System Settings → Privacy & Security → Microphone.
+
+### From source
+
 ```bash
 just install    # Build, sign on macOS when possible, and install to $GOBIN
 ```
