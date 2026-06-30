@@ -72,6 +72,22 @@ func TestModelsStatusReportsInstalled(t *testing.T) {
 	}
 }
 
+func TestModelsEnsureReportsAllPresentWhenNothingNeeded(t *testing.T) {
+	// A config that requires no managed assets (no sherpa/whispercpp STT, no
+	// Kokoro TTS, VAD off) must report all-present and download nothing.
+	cfg := &config.Config{STTProvider: "none", TTSProvider: "none", VADEnabled: false}
+
+	cmd := &cobra.Command{}
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := runModelsEnsure(cmd, cfg); err != nil {
+		t.Fatalf("runModelsEnsure() error = %v", err)
+	}
+	if !contains(buf.String(), "already present") {
+		t.Errorf("ensure with nothing to do should report all present:\n%s", buf.String())
+	}
+}
+
 func contains(s, sub string) bool {
 	return bytes.Contains([]byte(s), []byte(sub))
 }

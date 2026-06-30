@@ -38,14 +38,20 @@ type AssetRequest struct {
 // (ManifestFor), so URLs, file names, and extraction targets have a single
 // source of truth; this function only performs the downloads.
 func EnsureRuntimeAssets(cfg *Config, req AssetRequest, onProgress func(name string, pct float64)) error {
-	dir := ModelsDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create models dir: %w", err)
-	}
-
 	manifest, err := ManifestFor(cfg, req)
 	if err != nil {
 		return err
+	}
+	return ensureManifest(manifest, ModelsDir(), onProgress)
+}
+
+// ensureManifest downloads every missing file and archive in the manifest into
+// dir. It is the parameterized core of EnsureRuntimeAssets, so it can be tested
+// against a temp dir and a fake HTTP server. Already-present files and
+// already-extracted archives are skipped (no re-download).
+func ensureManifest(manifest AssetManifest, dir string, onProgress func(name string, pct float64)) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create models dir: %w", err)
 	}
 
 	// Individual file downloads.

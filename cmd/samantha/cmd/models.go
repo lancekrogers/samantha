@@ -68,8 +68,46 @@ func runModelsStatus(cmd *cobra.Command, cfg *config.Config, modelsDir string, a
 	return nil
 }
 
+var modelsEnsureCmd = &cobra.Command{
+	Use:   "ensure",
+	Short: "Download any missing model assets for the current configuration",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		return runModelsEnsure(cmd, cfg)
+	},
+}
+
+// runModelsEnsure downloads the missing assets for cfg, reporting each asset as
+// it begins and a final status line. It returns an actionable error naming the
+// failing asset if a download fails.
+func runModelsEnsure(cmd *cobra.Command, cfg *config.Config) error {
+	out := cmd.OutOrStdout()
+
+	started := map[string]bool{}
+	err := config.EnsureModels(cfg, func(name string, pct float64) {
+		if !started[name] {
+			started[name] = true
+			fmt.Fprintf(out, "  downloading %s ...\n", name)
+		}
+	})
+	if err != nil {
+		return fmt.Errorf("models ensure: %w", err)
+	}
+
+	if len(started) == 0 {
+		fmt.Fprintln(out, "  All required model assets are already present.")
+	} else {
+		fmt.Fprintf(out, "  Done — %d asset(s) ensured.\n", len(started))
+	}
+	return nil
+}
+
 func init() {
 	modelsStatusCmd.Flags().BoolVar(&modelsStatusJSON, "json", false, "Output machine-readable JSON")
 	modelsCmd.AddCommand(modelsStatusCmd)
+	modelsCmd.AddCommand(modelsEnsureCmd)
 	rootCmd.AddCommand(modelsCmd)
 }
