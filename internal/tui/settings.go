@@ -119,13 +119,15 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 		case "enter":
 			m.selectCurrent()
 		case "p":
-			if m.section == sectionVoice {
+			if m.section == sectionVoice && m.cursor < len(m.voiceItems) {
 				if m.previewCancel != nil {
 					m.previewCancel()
 				}
+				voice := m.voiceItems[m.cursor]
+				m.previewing = voice.Name
 				ctx, cancel := context.WithCancel(context.Background())
 				m.previewCancel = cancel
-				return m, m.previewVoice(ctx)
+				return m, m.previewVoice(ctx, voice)
 			}
 		case "esc", "q":
 			if m.previewCancel != nil {
@@ -192,13 +194,7 @@ type voicePreviewDoneMsg struct {
 	message string
 }
 
-func (m *settingsModel) previewVoice(ctx context.Context) tea.Cmd {
-	if m.cursor >= len(m.voiceItems) {
-		return nil
-	}
-	voice := m.voiceItems[m.cursor]
-	m.previewing = voice.Name
-
+func (m settingsModel) previewVoice(ctx context.Context, voice tts.Voice) tea.Cmd {
 	return func() tea.Msg {
 		// A superseded preview (ctx cancelled) reports quietly so it doesn't
 		// clobber the newer preview's message or "playing" indicator.
