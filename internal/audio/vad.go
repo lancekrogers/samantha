@@ -24,7 +24,11 @@ type VAD struct {
 
 // NewVAD creates a VAD instance with the Silero model.
 func NewVAD(cfg *config.Config) (*VAD, error) {
-	return newVAD(cfg, vadThreshold)
+	threshold := float32(vadThreshold)
+	if cfg.VADThreshold > 0 {
+		threshold = float32(cfg.VADThreshold)
+	}
+	return newVAD(cfg, threshold)
 }
 
 // NewBargeInVAD creates a VAD tuned for interrupt detection with a stricter
@@ -36,9 +40,14 @@ func NewBargeInVAD(cfg *config.Config) (*VAD, error) {
 func newVAD(cfg *config.Config, threshold float32) (*VAD, error) {
 	modelPath := filepath.Join(config.ModelsDir(), "silero_vad.onnx")
 
+	minSpeech := float32(vadMinSpeechDuration)
+	if cfg.VADMinSpeechDuration > 0 {
+		minSpeech = float32(cfg.VADMinSpeechDuration)
+	}
+
 	sileroConfig := sherpa.SileroVadModelConfig{
 		Model:              modelPath,
-		MinSpeechDuration:  vadMinSpeechDuration,
+		MinSpeechDuration:  minSpeech,
 		MinSilenceDuration: float32(cfg.VADSilenceDuration),
 		Threshold:          threshold,
 	}
