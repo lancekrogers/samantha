@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lancekrogers/grok-go-sdk/pkg/grok"
 	"github.com/ollama/ollama/api"
 
 	"github.com/lancekrogers/samantha/internal/config"
@@ -24,6 +25,7 @@ type ProviderInfo struct {
 func DiscoverProviders(cfg *config.Config) []ProviderInfo {
 	return []ProviderInfo{
 		discoverClaude(),
+		discoverGrok(),
 		discoverOllama(cfg),
 	}
 }
@@ -32,6 +34,15 @@ func discoverClaude() ProviderInfo {
 	_, err := exec.LookPath("claude")
 	return ProviderInfo{
 		Name:      "claude",
+		Available: err == nil,
+		Models:    []string{"default"},
+	}
+}
+
+func discoverGrok() ProviderInfo {
+	_, err := grok.LocateBinary()
+	return ProviderInfo{
+		Name:      "grok",
 		Available: err == nil,
 		Models:    []string{"default"},
 	}
