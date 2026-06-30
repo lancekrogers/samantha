@@ -41,39 +41,64 @@ func RenderChapters(ctx context.Context, opts Options, chapters []RenderChapter,
 
 	segs := make([]ManifestSegment, 0, len(chapters))
 	sampleRate := 0
+	var firstErr error
+	failed := 0
 	for i, ch := range chapters {
+		// Cancellation stops promptly but still returns the chapters completed so
+		// far, so the caller can persist a partial manifest and resume later.
 		if err := ctx.Err(); err != nil {
-			return RenderManifest{}, err
+			return chapterManifest(opts, segs, sampleRate), err
 		}
 		name := chapterFilename(i+1, ch)
 		outPath := filepath.Join(opts.OutDir, name)
 		hash := textHash(ch.Text)
 		key := resumeKey(opts, synthID, ch.Text, name)
+		base := ManifestSegment{
+			Index: i + 1, ID: chapterID(ch, i+1), Title: ch.Title,
+			TextSHA256: hash, ResumeKey: key, Output: name,
+		}
 
 		if p, ok := prior[name]; ok && resumable(p, key, outPath) {
-			segs = append(segs, ManifestSegment{
-				Index: i + 1, ID: chapterID(ch, i+1), Title: ch.Title,
-				TextSHA256: hash, ResumeKey: key, Output: name, DurationMS: p.DurationMS, Status: StatusSkipped,
-			})
+			base.DurationMS = p.DurationMS
+			base.Status = StatusSkipped
+			segs = append(segs, base)
 			continue
 		}
 
 		samples, rate, err := synthSegments(ctx, SegmentText(ch.Text, defaultMaxSegmentChars), synth)
+		if err == nil {
+			err = writeWAV(outPath, rate, samples)
+		}
 		if err != nil {
-			return RenderManifest{}, fmt.Errorf("render: chapter %d (%s): %w", i+1, name, err)
+			// One bad chapter is recorded as failed and kept visible; the rest of
+			// a long render still proceeds. Failed chapters carry no resume key, so
+			// they are always retried on --resume.
+			if firstErr == nil {
+				firstErr = fmt.Errorf("render: chapter %d (%s): %w", i+1, name, err)
+			}
+			failed++
+			base.ResumeKey = ""
+			base.Status = StatusFailed
+			segs = append(segs, base)
+			continue
 		}
 		if sampleRate == 0 {
 			sampleRate = rate
 		}
-		if err := writeWAV(outPath, rate, samples); err != nil {
-			return RenderManifest{}, fmt.Errorf("render: write %s: %w", outPath, err)
-		}
-		segs = append(segs, ManifestSegment{
-			Index: i + 1, ID: chapterID(ch, i+1), Title: ch.Title,
-			TextSHA256: hash, ResumeKey: key, Output: name, DurationMS: samplesDurationMS(len(samples), rate), Status: StatusComplete,
-		})
+		base.DurationMS = samplesDurationMS(len(samples), rate)
+		base.Status = StatusComplete
+		segs = append(segs, base)
 	}
 
+	manifest := chapterManifest(opts, segs, sampleRate)
+	if failed > 0 {
+		return manifest, fmt.Errorf("render: %d of %d chapter(s) failed: %w", failed, len(chapters), firstErr)
+	}
+	return manifest, nil
+}
+
+// chapterManifest assembles the render manifest from the per-chapter segments.
+func chapterManifest(opts Options, segs []ManifestSegment, sampleRate int) RenderManifest {
 	return RenderManifest{
 		Schema:       RenderSchema,
 		Title:        opts.Title,
@@ -83,7 +108,7 @@ func RenderChapters(ctx context.Context, opts Options, chapters []RenderChapter,
 		SpeechSpeed:  opts.Speed,
 		SampleRate:   sampleRate,
 		Segments:     segs,
-	}, nil
+	}
 }
 
 // synthSegments synthesizes and concatenates the given text segments.

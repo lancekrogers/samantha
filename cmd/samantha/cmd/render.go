@@ -30,7 +30,18 @@ URL articles, or EPUB and writes WAV files plus a manifest.
 Examples:
   samantha render article.md --out out/article.wav
   cat notes.txt | samantha render --stdin --out notes.wav
-  samantha render book.epub --out-dir out/book --json`,
+  samantha render book.epub --out-dir out/book --json
+
+Scripting:
+  WAV is always written and is the source of truth. --audio-format mp3|m4a|m4b|
+  aac|opus additionally encodes via an external encoder (default ffmpeg); a
+  missing encoder fails before any synthesis. A failed chapter is recorded in the
+  manifest and the rest still render; rerun with --resume to retry only the
+  failed/changed chapters (unchanged outputs are skipped). With --json the
+  summary reports completed/skipped/failed counts and exits non-zero if any
+  chapter failed, e.g.:
+    samantha render book.epub --out-dir out/book --audio-format mp3 --json \
+      | jq '.failed'`,
 		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,

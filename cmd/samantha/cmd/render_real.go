@@ -137,10 +137,10 @@ func runRenderEPUB(cmd *cobra.Command, opts render.Options, synth render.Synthes
 		chapters = append(chapters, render.RenderChapter{ID: ch.ID, Title: title, Text: doc.Narration()})
 	}
 
-	manifest, err := render.RenderChapters(cmd.Context(), opts, chapters, synth, audio.WriteWAVFloat32)
-	if err != nil {
-		return err
-	}
+	// RenderChapters records failed chapters and returns the partial manifest
+	// even when some chapters fail or the render is cancelled, so the manifest is
+	// always persisted and the run stays resumable.
+	manifest, renderErr := render.RenderChapters(cmd.Context(), opts, chapters, synth, audio.WriteWAVFloat32)
 
 	manifestPath := opts.ManifestPath()
 	manifest.CreatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -148,20 +148,21 @@ func runRenderEPUB(cmd *cobra.Command, opts render.Options, synth render.Synthes
 		return err
 	}
 
-	// Post-processing: WAVs and the manifest are already on disk, so an encode
-	// failure leaves them inspectable.
+	// Post-process only a clean render: WAVs and the manifest are already on
+	// disk, so a partial/failed render is left for `--resume` to finish.
 	var encoded []string
-	if enc != nil {
-		encoded, err = render.EncodeWAVs(cmd.Context(), enc, render.CompletedWAVPaths(opts.OutDir, manifest))
+	if renderErr == nil && enc != nil {
+		out, err := render.EncodeWAVs(cmd.Context(), enc, render.CompletedWAVPaths(opts.OutDir, manifest))
 		if err != nil {
 			return fmt.Errorf("render: %w", err)
 		}
+		encoded = out
 	}
 
 	out := cmd.OutOrStdout()
 	complete, skipped, failed := manifest.Counts()
 	if opts.JSON {
-		return writeRenderJSON(out, map[string]any{
+		if err := writeRenderJSON(out, map[string]any{
 			"output_dir":  opts.OutDir,
 			"manifest":    manifestPath,
 			"segments":    len(manifest.Segments),
@@ -171,14 +172,17 @@ func runRenderEPUB(cmd *cobra.Command, opts render.Options, synth render.Synthes
 			"encoded":     encoded,
 			"sample_rate": manifest.SampleRate,
 			"duration_ms": manifest.TotalDurationMS(),
-		})
+		}); err != nil {
+			return err
+		}
+		return renderErr
 	}
-	fmt.Fprintf(out, "  Rendered %d chapter(s) to %s (%d skipped)\n", complete, opts.OutDir, skipped)
+	fmt.Fprintf(out, "  Rendered %d chapter(s) to %s (%d skipped, %d failed)\n", complete, opts.OutDir, skipped, failed)
 	fmt.Fprintf(out, "  Manifest: %s\n", manifestPath)
 	if len(encoded) > 0 {
 		fmt.Fprintf(out, "  Encoded:  %d file(s) to .%s\n", len(encoded), enc.Ext())
 	}
-	return nil
+	return renderErr
 }
 
 // newRenderSynth builds the TTS-backed synthesizer for batch rendering, applying
