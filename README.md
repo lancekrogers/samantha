@@ -160,6 +160,30 @@ go test -tags integration ./tests/voiceflow      # fixture-driven pipeline flow
 samantha listen                                  # manual: speak a short command
 ```
 
+#### Latency benchmarks (protect the sub-2s goal)
+
+The `samantha benchmark` command measures the perceived-latency milestones that
+protect the <2s end-to-end goal and emits them as both a summary and (with
+`--json`) a stable `TurnMetrics` record per turn: STT final, first model chunk,
+first segment, first audio ready, playback start, playback complete, and — on a
+barged-in turn — interruption latency. Threshold flags fail the run when a
+milestone regresses, so the benchmark can gate CI or a local check:
+
+```bash
+# Prompt latency with budgets (any breach exits non-zero):
+samantha benchmark --prompt "hello" \
+  --max-total 2s --max-first-model-chunk 500ms --max-playback-start 800ms
+
+# STT fixture latency + transcript accuracy:
+samantha benchmark --mode stt --max-stt-final 2s --min-transcript-score 0.8
+
+# Machine-readable output for tracking regressions over time:
+samantha benchmark --prompt "hello" --json bench.json
+```
+
+Interruption latency is reported only when a turn is interrupted; all milestones
+are always present in the `--json` output.
+
 ### Voice Utilities
 
 ```bash

@@ -408,6 +408,9 @@ func printBenchmarkSummary(results []benchmarkResult) {
 			fmt.Printf("    first audio ready: %s\n", formatMetric(result.Metrics.FirstAudioReadyElapsed))
 			fmt.Printf("    playback start: %s\n", formatMetric(result.Metrics.PlaybackStartElapsed))
 			fmt.Printf("    playback complete: %s\n", formatMetric(result.Metrics.PlaybackCompleteElapsed))
+			if result.Metrics.Interrupted || result.Metrics.BargeInElapsed > 0 {
+				fmt.Printf("    interruption: %s\n", formatMetric(result.Metrics.BargeInElapsed))
+			}
 		}
 
 		if len(result.Errors) > 0 {
