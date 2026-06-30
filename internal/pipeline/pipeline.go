@@ -425,64 +425,14 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 				watchdogArmed = true
 				go p.watchPlaybackStall(streamCtx, &audioStarted, cancel, stalled, p.stallTimeout())
 			}
-			p.emit(events.SpeechSegmentReady{Text: sentence})
-			p.emit(events.GeneratingVoice{Sentence: sentence})
 
-			synthStarted := time.Now()
-			stream, err := p.TTS.Synthesize(streamCtx, sentence)
-			if err != nil {
-				if interrupted || errors.Is(err, context.Canceled) {
-					continue
-				}
-				p.emit(events.Error{Stage: "tts", Message: fmt.Sprintf("TTS: %v", err)})
-				continue
+			if p.synthesizeSegment(streamCtx, sentence, &audioStarted, playbackEvents) {
+				pending++
 			}
-
-			playback, err := p.Player.PlayStream(streamCtx, stream)
-			if err != nil {
-				if interrupted || errors.Is(err, context.Canceled) {
-					continue
-				}
-				p.emit(events.Error{Stage: "playback", Message: fmt.Sprintf("playback: %v", err)})
-				continue
-			}
-
-			pending++
-			go watchPlayback(sentence, synthStarted, playback, &audioStarted, playbackEvents)
 
 		case event := <-playbackEvents:
-			switch event.kind {
-			case playbackStarted:
-				armAt.Store(time.Now().Add(bargeInArmDelay).UnixNano())
-				if metrics.firstAudioReady.IsZero() {
-					metrics.firstAudioReady = time.Now()
-				}
-				if metrics.playbackStart.IsZero() {
-					metrics.playbackStart = time.Now()
-				}
-				p.emit(events.VoiceGenerated{
-					Sentence: event.sentence,
-					Elapsed:  event.synthElapsed,
-				})
-				p.emit(events.SpeakingStarted{Text: event.sentence})
-
-			case playbackFinished:
+			if p.applyPlaybackEvent(event, metrics, &armAt) {
 				pending--
-				metrics.playbackComplete = time.Now()
-
-				if event.result.Interrupted {
-					p.emit(events.SpeakingComplete{
-						Elapsed:     event.playElapsed,
-						Interrupted: true,
-					})
-					continue
-				}
-
-				if event.result.Err != nil && !errors.Is(event.result.Err, context.Canceled) {
-					p.emit(events.Error{Stage: "playback", Message: fmt.Sprintf("playback: %v", event.result.Err)})
-				}
-
-				p.emit(events.SpeakingComplete{Elapsed: event.playElapsed})
 			}
 		}
 	}
@@ -497,6 +447,77 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 	}
 
 	return strings.TrimSpace(fullResponse.String()), interrupted, nil
+}
+
+// synthesizeSegment is the synth scheduler stage: it announces the segment,
+// synthesizes it, starts playback, and hands the playback to the watcher
+// goroutine, returning true when a playback was enqueued so the caller can track
+// it as pending. TTS/playback failures surface as Error events; failures after
+// the turn context is canceled (cancel or barge-in) are swallowed so teardown
+// stays quiet. It never blocks on a full queue — backpressure is the caller's
+// job via the pending count.
+func (p *Pipeline) synthesizeSegment(ctx context.Context, sentence string, audioStarted *atomic.Bool, out chan<- playbackEvent) bool {
+	p.emit(events.SpeechSegmentReady{Text: sentence})
+	p.emit(events.GeneratingVoice{Sentence: sentence})
+
+	synthStarted := time.Now()
+	stream, err := p.TTS.Synthesize(ctx, sentence)
+	if err != nil {
+		if ctx.Err() == nil {
+			p.emit(events.Error{Stage: "tts", Message: fmt.Sprintf("TTS: %v", err)})
+		}
+		return false
+	}
+
+	playback, err := p.Player.PlayStream(ctx, stream)
+	if err != nil {
+		if ctx.Err() == nil {
+			p.emit(events.Error{Stage: "playback", Message: fmt.Sprintf("playback: %v", err)})
+		}
+		return false
+	}
+
+	go watchPlayback(sentence, synthStarted, playback, audioStarted, out)
+	return true
+}
+
+// applyPlaybackEvent applies one playback lifecycle event (produced by the
+// watchPlayback watcher) to the turn's metrics and events. It returns true when
+// the event marks a finished playback so the caller can decrement its pending
+// count.
+func (p *Pipeline) applyPlaybackEvent(event playbackEvent, metrics *turnMetrics, armAt *atomic.Int64) (finished bool) {
+	switch event.kind {
+	case playbackStarted:
+		armAt.Store(time.Now().Add(bargeInArmDelay).UnixNano())
+		if metrics.firstAudioReady.IsZero() {
+			metrics.firstAudioReady = time.Now()
+		}
+		if metrics.playbackStart.IsZero() {
+			metrics.playbackStart = time.Now()
+		}
+		p.emit(events.VoiceGenerated{
+			Sentence: event.sentence,
+			Elapsed:  event.synthElapsed,
+		})
+		p.emit(events.SpeakingStarted{Text: event.sentence})
+		return false
+
+	case playbackFinished:
+		metrics.playbackComplete = time.Now()
+		if event.result.Interrupted {
+			p.emit(events.SpeakingComplete{
+				Elapsed:     event.playElapsed,
+				Interrupted: true,
+			})
+			return true
+		}
+		if event.result.Err != nil && !errors.Is(event.result.Err, context.Canceled) {
+			p.emit(events.Error{Stage: "playback", Message: fmt.Sprintf("playback: %v", event.result.Err)})
+		}
+		p.emit(events.SpeakingComplete{Elapsed: event.playElapsed})
+		return true
+	}
+	return false
 }
 
 func (p *Pipeline) handlePlaybackLifecycle(sentence string, synthStarted time.Time, playback *audio.Playback, metrics *turnMetrics) {
