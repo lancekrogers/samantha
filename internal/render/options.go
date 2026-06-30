@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/lancekrogers/samantha/internal/render/encoder"
 )
 
 // Format identifies the input document format.
@@ -24,18 +26,20 @@ const (
 
 // Options describes one `samantha render` invocation.
 type Options struct {
-	Input     string  // positional input path or URL (empty with Stdin)
-	Stdin     bool    // read input text from stdin
-	Format    Format  // input format (auto-detected when FormatAuto)
-	Out       string  // single-file output path
-	OutDir    string  // multi-file output directory (with a manifest)
-	Voice     string  // override the configured TTS voice
-	Speed     float64 // override the configured speech speed (0 = use config)
-	Title     string  // override the document title
-	Manifest  string  // manifest output path (default: OUT_DIR/manifest.json for multi-file)
-	JSON      bool    // print a machine-readable summary
-	Resume    bool    // skip completed manifest entries with matching text hash
-	Overwrite bool    // replace existing outputs
+	Input       string  // positional input path or URL (empty with Stdin)
+	Stdin       bool    // read input text from stdin
+	Format      Format  // input format (auto-detected when FormatAuto)
+	Out         string  // single-file output path
+	OutDir      string  // multi-file output directory (with a manifest)
+	Voice       string  // override the configured TTS voice
+	Speed       float64 // override the configured speech speed (0 = use config)
+	Title       string  // override the document title
+	Manifest    string  // manifest output path (default: OUT_DIR/manifest.json for multi-file)
+	JSON        bool    // print a machine-readable summary
+	Resume      bool    // skip completed manifest entries with matching text hash
+	Overwrite   bool    // replace existing outputs
+	AudioFormat string  // optional compressed output (mp3|m4b|...); WAV is always written
+	EncoderBin  string  // external encoder binary (default: ffmpeg)
 }
 
 // ManifestPath returns where the manifest should be written. Every render writes
@@ -84,6 +88,9 @@ func (o Options) Validate() error {
 
 	if o.Speed < 0 {
 		return fmt.Errorf("render: --speed must be >= 0, got %v", o.Speed)
+	}
+	if !encoder.Supported(o.AudioFormat) {
+		return fmt.Errorf("render: unsupported --audio-format %q (try one of: mp3, m4a, m4b, aac, opus)", o.AudioFormat)
 	}
 	return nil
 }

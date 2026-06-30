@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -16,6 +17,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/render"
+	"github.com/lancekrogers/samantha/internal/render/encoder"
 	"github.com/lancekrogers/samantha/internal/render/epub"
 	"github.com/lancekrogers/samantha/internal/render/extractors"
 	"github.com/lancekrogers/samantha/internal/tts"
@@ -26,6 +28,13 @@ import (
 // or playback) and renders the input to WAV. EPUB is rendered per chapter into a
 // directory; other formats render to a single WAV.
 func runRenderText(cmd *cobra.Command, opts render.Options) error {
+	// Preflight the optional encoder BEFORE constructing the synthesizer so an
+	// unavailable encoder fails fast — no model load, no synthesis, no audio.
+	enc, err := render.ResolveEncoder(cmd.Context(), opts, exec.LookPath)
+	if err != nil {
+		return err
+	}
+
 	synth, cleanup, err := newRenderSynth(opts)
 	if err != nil {
 		return err
@@ -33,7 +42,7 @@ func runRenderText(cmd *cobra.Command, opts render.Options) error {
 	defer cleanup()
 
 	if opts.ResolveFormat() == render.FormatEPUB {
-		return runRenderEPUB(cmd, opts, synth)
+		return runRenderEPUB(cmd, opts, synth, enc)
 	}
 
 	text, err := extractRenderText(cmd, &opts)
@@ -55,6 +64,16 @@ func runRenderText(cmd *cobra.Command, opts render.Options) error {
 		}
 	}
 
+	// Post-processing: WAV and manifest are already on disk, so an encode failure
+	// leaves them inspectable.
+	var encoded []string
+	if enc != nil {
+		encoded, err = render.EncodeWAVs(cmd.Context(), enc, []string{result.Output})
+		if err != nil {
+			return fmt.Errorf("render: %w", err)
+		}
+	}
+
 	out := cmd.OutOrStdout()
 	complete, skipped, failed := result.Manifest.Counts()
 	if opts.JSON {
@@ -65,6 +84,7 @@ func runRenderText(cmd *cobra.Command, opts render.Options) error {
 			"completed":   complete,
 			"skipped":     skipped,
 			"failed":      failed,
+			"encoded":     encoded,
 			"sample_rate": result.SampleRate,
 			"duration_ms": result.Duration.Milliseconds(),
 		})
@@ -73,12 +93,15 @@ func runRenderText(cmd *cobra.Command, opts render.Options) error {
 	if manifestPath != "" {
 		fmt.Fprintf(out, "  Manifest: %s\n", manifestPath)
 	}
+	for _, e := range encoded {
+		fmt.Fprintf(out, "  Encoded:  %s\n", e)
+	}
 	return nil
 }
 
 // runRenderEPUB renders an EPUB's chapters (in spine order) into per-chapter WAV
 // files plus a manifest under --out-dir.
-func runRenderEPUB(cmd *cobra.Command, opts render.Options, synth render.Synthesizer) error {
+func runRenderEPUB(cmd *cobra.Command, opts render.Options, synth render.Synthesizer, enc encoder.Encoder) error {
 	if opts.OutDir == "" {
 		return fmt.Errorf("render: EPUB rendering requires --out-dir DIR")
 	}
@@ -125,6 +148,16 @@ func runRenderEPUB(cmd *cobra.Command, opts render.Options, synth render.Synthes
 		return err
 	}
 
+	// Post-processing: WAVs and the manifest are already on disk, so an encode
+	// failure leaves them inspectable.
+	var encoded []string
+	if enc != nil {
+		encoded, err = render.EncodeWAVs(cmd.Context(), enc, render.CompletedWAVPaths(opts.OutDir, manifest))
+		if err != nil {
+			return fmt.Errorf("render: %w", err)
+		}
+	}
+
 	out := cmd.OutOrStdout()
 	complete, skipped, failed := manifest.Counts()
 	if opts.JSON {
@@ -135,12 +168,16 @@ func runRenderEPUB(cmd *cobra.Command, opts render.Options, synth render.Synthes
 			"completed":   complete,
 			"skipped":     skipped,
 			"failed":      failed,
+			"encoded":     encoded,
 			"sample_rate": manifest.SampleRate,
 			"duration_ms": manifest.TotalDurationMS(),
 		})
 	}
 	fmt.Fprintf(out, "  Rendered %d chapter(s) to %s (%d skipped)\n", complete, opts.OutDir, skipped)
 	fmt.Fprintf(out, "  Manifest: %s\n", manifestPath)
+	if len(encoded) > 0 {
+		fmt.Fprintf(out, "  Encoded:  %d file(s) to .%s\n", len(encoded), enc.Ext())
+	}
 	return nil
 }
 

@@ -57,6 +57,8 @@ Examples:
 	f.BoolVar(&opts.JSON, "json", false, "Print a machine-readable summary")
 	f.BoolVar(&opts.Resume, "resume", false, "Skip completed manifest entries with matching text hash")
 	f.BoolVar(&opts.Overwrite, "overwrite", false, "Replace existing outputs")
+	f.StringVar(&opts.AudioFormat, "audio-format", "", "Also encode output to mp3|m4a|m4b|aac|opus via an external encoder (WAV is always written)")
+	f.StringVar(&opts.EncoderBin, "encoder", "", "External encoder binary to use (default: ffmpeg)")
 
 	return cmd
 }
