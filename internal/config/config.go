@@ -29,6 +29,10 @@ type Config struct {
 	VADEnabled         bool    `mapstructure:"vad_enabled"`
 	VADSilenceDuration float64 `mapstructure:"vad_silence_duration"`
 
+	// Barge-in (interrupt TTS when the user starts speaking). Off by default
+	// until the echo-canceller is strong enough to avoid self-interruption.
+	BargeInEnabled bool `mapstructure:"barge_in_enabled"`
+
 	// Brain
 	BrainProvider     string `mapstructure:"brain_provider"`
 	OllamaModel       string `mapstructure:"ollama_model"`
@@ -82,6 +86,7 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("vad_enabled", true)
 	v.SetDefault("vad_silence_duration", 0.5)
+	v.SetDefault("barge_in_enabled", false)
 
 	v.SetDefault("brain_provider", "claude")
 	v.SetDefault("ollama_model", "")
@@ -129,6 +134,7 @@ func Load() (*Config, error) {
 		"ollama_model":           "OLLAMA_MODEL",
 		"ollama_host":            "OLLAMA_HOST",
 		"voice_tools_enabled":    "VOICE_TOOLS_ENABLED",
+		"barge_in_enabled":       "BARGE_IN_ENABLED",
 	}
 	for key, env := range bindings {
 		_ = v.BindEnv(key, env)

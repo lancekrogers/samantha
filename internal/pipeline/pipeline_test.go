@@ -126,7 +126,8 @@ func TestRunTurnBargeInInterruptsPlayback(t *testing.T) {
 	ttsProvider := &fakeTTS{
 		delay: time.Millisecond * 10,
 	}
-	player := newFakePlayer(500 * time.Millisecond)
+	// Play longer than bargeInArmDelay so barge-in is still armed when speech arrives.
+	player := newFakePlayer(2 * time.Second)
 	defer player.Close()
 
 	capture := newFakeCapture()
@@ -194,6 +195,25 @@ func TestRunTurnBargeInInterruptsPlayback(t *testing.T) {
 	}
 	if capture.ResetCount() != 0 {
 		t.Fatalf("capture.Reset() called %d times, want 0 on interruption", capture.ResetCount())
+	}
+}
+
+func TestWatchBargeInDisabledWhenVADNil(t *testing.T) {
+	// With barge-in disabled (BargeInVAD nil), watchBargeIn must not subscribe to
+	// capture or return a trigger channel.
+	capture := newFakeCapture()
+	p := &Pipeline{
+		Player:  newFakePlayer(time.Second),
+		Capture: capture,
+	}
+	defer p.Player.(*fakePlayer).Close()
+
+	var armAt atomic.Int64
+	if ch := p.watchBargeIn(context.Background(), &armAt); ch != nil {
+		t.Fatal("watchBargeIn returned a non-nil channel with BargeInVAD nil")
+	}
+	if got := len(capture.subs); got != 0 {
+		t.Fatalf("capture subscriptions = %d, want 0 when barge-in disabled", got)
 	}
 }
 
