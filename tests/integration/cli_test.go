@@ -101,6 +101,30 @@ func TestCLI_ModelsStatusJSON(t *testing.T) {
 	}
 }
 
+func TestCLI_RenderHelp(t *testing.T) {
+	tc := GetSharedContainer(t)
+
+	output, err := tc.RunSamantha("render", "--help")
+	if err != nil {
+		t.Fatalf("samantha render --help failed: %v", err)
+	}
+	for _, want := range []string{"render", "--stdin", "--out"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("render --help should document %q, got: %s", want, output)
+		}
+	}
+}
+
+func TestCLI_RenderRequiresOutput(t *testing.T) {
+	tc := GetSharedContainer(t)
+
+	// --stdin with no --out/--out-dir is an invalid combination; the command
+	// must fail before doing any work.
+	if _, err := tc.RunSamantha("render", "--stdin"); err == nil {
+		t.Fatal("samantha render --stdin without an output should fail")
+	}
+}
+
 func TestCLI_Doctor(t *testing.T) {
 	tc := GetSharedContainer(t)
 
