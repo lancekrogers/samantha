@@ -313,7 +313,9 @@ func TestRunTurnBrainErrorEmitsSingleMetrics(t *testing.T) {
 }
 
 type fakeSTT struct {
-	text string
+	text  string
+	err   error // emit a Failure event instead of a final transcript
+	stall bool  // leave the session open and silent until the context is canceled
 }
 
 type fakeSTTSession struct {
@@ -324,9 +326,17 @@ func (s *fakeSTTSession) Events() <-chan stt.Event { return s.events }
 func (s *fakeSTTSession) Close() error             { return nil }
 
 func (f *fakeSTT) Start(ctx context.Context) (stt.Session, error) {
-	eventsCh := make(chan stt.Event, 2)
+	eventsCh := make(chan stt.Event, 3)
 	eventsCh <- stt.PhaseEvent{Phase: "listening"}
-	eventsCh <- stt.FinalTranscript{Text: f.text}
+	switch {
+	case f.stall:
+		// Open but silent: the caller blocks until ctx cancellation.
+		return &fakeSTTSession{events: eventsCh}, nil
+	case f.err != nil:
+		eventsCh <- stt.Failure{Err: f.err}
+	default:
+		eventsCh <- stt.FinalTranscript{Text: f.text}
+	}
 	close(eventsCh)
 	return &fakeSTTSession{events: eventsCh}, nil
 }
@@ -336,6 +346,7 @@ func (f *fakeSTT) Available() bool { return true }
 type fakeBrain struct {
 	chunks    []string
 	streamErr error
+	fullErr   error // ThinkFull error for text-mode tests
 }
 
 func (f *fakeBrain) ThinkStream(ctx context.Context, input string, opts brain.StreamOptions) (*brain.Stream, error) {
@@ -358,6 +369,9 @@ func (f *fakeBrain) ThinkStream(ctx context.Context, input string, opts brain.St
 }
 
 func (f *fakeBrain) ThinkFull(ctx context.Context, input string) (string, error) {
+	if f.fullErr != nil {
+		return "", f.fullErr
+	}
 	if len(f.chunks) == 0 {
 		return "", nil
 	}
