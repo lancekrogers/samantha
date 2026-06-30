@@ -92,12 +92,12 @@ func ensureManifest(manifest AssetManifest, dir string, onProgress func(name str
 			onProgress(a.Name, 0)
 		}
 
-		if err := downloadAndExtractArchive(targetDir, a.URL, func(pct float64) {
+		if err := downloadAndExtractArchive(targetDir, a.URL, a.Name, a.CheckFiles, func(pct float64) {
 			if onProgress != nil {
 				onProgress(a.Name, pct)
 			}
 		}); err != nil {
-			return fmt.Errorf("download %s: %w", a.Name, err)
+			return err
 		}
 	}
 
@@ -122,15 +122,20 @@ func archiveExtracted(dir string, checkFiles []string) bool {
 
 // downloadAndExtractArchive downloads a tar.bz2 and extracts to dir,
 // stripping the top-level directory prefix.
-func downloadAndExtractArchive(dir, url string, onProgress func(float64)) error {
+// downloadAndExtractArchive downloads a tar.bz2 from url and extracts it into
+// dir. The archive is decompressed and handed to extractTarStream, which
+// extracts into a temp dir, verifies the check files, then atomically promotes
+// the result — so a partial or malicious archive never lands at dir. name labels
+// the asset in error messages.
+func downloadAndExtractArchive(dir, url, name string, checkFiles []string, onProgress func(float64)) error {
 	resp, err := http.Get(url)
 	if err != nil {
-		return err
+		return fmt.Errorf("download %s: %w", name, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d for %s", resp.StatusCode, url)
+		return fmt.Errorf("download %s: HTTP %d for %s", name, resp.StatusCode, url)
 	}
 
 	// Wrap body in a progress-tracking reader.
@@ -146,10 +151,61 @@ func downloadAndExtractArchive(dir, url string, onProgress func(float64)) error 
 		},
 	}
 
-	bzReader := bzip2.NewReader(progressReader)
-	tr := tar.NewReader(bzReader)
+	return extractTarStream(bzip2.NewReader(progressReader), dir, name, checkFiles)
+}
 
-	// Detect and strip top-level directory prefix.
+// extractTarStream extracts a decompressed tar stream into dir. It extracts into
+// a temp directory inside dir, verifies that every check file is present, then
+// promotes each top-level entry into dir, so dir is never left with a partial or
+// rejected extraction. It is the testable core (no bzip2/HTTP).
+func extractTarStream(r io.Reader, dir, name string, checkFiles []string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("extract %s: %w", name, err)
+	}
+	tmpDir, err := os.MkdirTemp(dir, ".extract-*")
+	if err != nil {
+		return fmt.Errorf("extract %s: %w", name, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			os.RemoveAll(tmpDir)
+		}
+	}()
+
+	if err := extractTar(tar.NewReader(r), tmpDir, name); err != nil {
+		return err
+	}
+	if !archiveExtracted(tmpDir, checkFiles) {
+		return fmt.Errorf("extract %s: archive missing expected files after extraction", name)
+	}
+
+	// Promote each top-level entry into the final directory, replacing any stale
+	// partial from a previous run.
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		return fmt.Errorf("extract %s: %w", name, err)
+	}
+	for _, e := range entries {
+		src := filepath.Join(tmpDir, e.Name())
+		dst := filepath.Join(dir, e.Name())
+		if err := os.RemoveAll(dst); err != nil {
+			return fmt.Errorf("extract %s: clear %s: %w", name, e.Name(), err)
+		}
+		if err := os.Rename(src, dst); err != nil {
+			return fmt.Errorf("extract %s: promote %s: %w", name, e.Name(), err)
+		}
+	}
+
+	committed = true
+	os.RemoveAll(tmpDir)
+	return nil
+}
+
+// extractTar extracts every entry of tr into dir, stripping the archive's
+// top-level directory prefix. It rejects unsafe paths (absolute or escaping the
+// root) and link entries (symlinks/hardlinks), and ignores other special types.
+func extractTar(tr *tar.Reader, dir, name string) error {
 	var prefix string
 	for {
 		header, err := tr.Next()
@@ -157,52 +213,73 @@ func downloadAndExtractArchive(dir, url string, onProgress func(float64)) error 
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("reading archive: %w", err)
+			return fmt.Errorf("extract %s: reading archive: %w", name, err)
 		}
 
-		name := header.Name
+		// Reject absolute entry names before any prefix stripping can mask them.
+		if strings.HasPrefix(header.Name, "/") || filepath.IsAbs(header.Name) {
+			return fmt.Errorf("extract %s: refusing absolute path %q in archive", name, header.Name)
+		}
 
-		// Detect prefix from first entry.
+		// Detect the top-level prefix from the first entry, then strip it.
 		if prefix == "" {
-			parts := strings.SplitN(name, "/", 2)
-			if len(parts) > 1 {
+			if parts := strings.SplitN(header.Name, "/", 2); len(parts) > 1 {
 				prefix = parts[0] + "/"
 			}
 		}
-
-		// Strip prefix.
-		rel := strings.TrimPrefix(name, prefix)
+		rel := strings.TrimPrefix(header.Name, prefix)
 		if rel == "" || rel == "." {
 			continue
 		}
 
-		target := filepath.Join(dir, rel)
+		switch header.Typeflag {
+		case tar.TypeSymlink, tar.TypeLink:
+			return fmt.Errorf("extract %s: refusing link entry %q", name, rel)
+		}
+
+		target, err := safeJoin(dir, rel)
+		if err != nil {
+			return fmt.Errorf("extract %s: %w", name, err)
+		}
 
 		switch header.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, 0o755); err != nil {
-				return fmt.Errorf("create dir %s: %w", rel, err)
+				return fmt.Errorf("extract %s: create dir %s: %w", name, rel, err)
 			}
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return fmt.Errorf("create parent dir for %s: %w", rel, err)
+				return fmt.Errorf("extract %s: create parent dir for %s: %w", name, rel, err)
 			}
 			f, err := os.Create(target)
 			if err != nil {
-				return fmt.Errorf("create file %s: %w", rel, err)
+				return fmt.Errorf("extract %s: create file %s: %w", name, rel, err)
 			}
 			if _, err := io.Copy(f, tr); err != nil {
 				f.Close()
-				return fmt.Errorf("write file %s: %w", rel, err)
+				return fmt.Errorf("extract %s: write file %s: %w", name, rel, err)
 			}
 			f.Close()
 			if err := os.Chmod(target, os.FileMode(header.Mode)); err != nil {
-				return fmt.Errorf("chmod %s: %w", rel, err)
+				return fmt.Errorf("extract %s: chmod %s: %w", name, rel, err)
 			}
 		}
 	}
-
 	return nil
+}
+
+// safeJoin joins rel under dir, rejecting absolute paths and any path that would
+// escape dir via "..".
+func safeJoin(dir, rel string) (string, error) {
+	if filepath.IsAbs(rel) {
+		return "", fmt.Errorf("unsafe absolute path %q in archive", rel)
+	}
+	target := filepath.Join(dir, rel)
+	within, err := filepath.Rel(dir, target)
+	if err != nil || within == ".." || strings.HasPrefix(within, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("unsafe path %q escapes archive root", rel)
+	}
+	return target, nil
 }
 
 type progressReaderWrapper struct {
