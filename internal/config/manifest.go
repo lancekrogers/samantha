@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -240,6 +241,73 @@ func (m AssetManifest) ModelFiles() []ModelFile {
 		}
 	}
 	return files
+}
+
+// DefaultAssetRequest returns the asset request the default setup/startup path
+// uses for cfg — the same provider selection EnsureModels applies.
+func DefaultAssetRequest(cfg *Config) AssetRequest {
+	return AssetRequest{
+		NeedSTT: strings.EqualFold(cfg.STTProvider, "sherpa") ||
+			strings.EqualFold(cfg.STTProvider, "sherpa-streaming") ||
+			strings.EqualFold(cfg.STTProvider, "sherpa-offline") ||
+			strings.EqualFold(cfg.STTProvider, "whispercpp"),
+		NeedTTS: strings.EqualFold(cfg.TTSProvider, "kokoro"),
+		NeedVAD: cfg.VADEnabled,
+	}
+}
+
+// AssetStatus reports the on-disk installation state of one asset.
+type AssetStatus struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Provider  string    `json:"provider"`
+	Mode      string    `json:"mode,omitempty"`
+	Kind      AssetKind `json:"kind"`
+	Installed bool      `json:"installed"`
+	Missing   []string  `json:"missing,omitempty"`
+}
+
+// installPaths returns the absolute paths that must exist for the asset to be
+// considered installed under modelsDir.
+func (a Asset) installPaths(modelsDir string) []string {
+	if a.IsArchive() {
+		target := modelsDir
+		if a.TargetDir != "" {
+			target = filepath.Join(modelsDir, a.TargetDir)
+		}
+		paths := make([]string, 0, len(a.CheckFiles))
+		for _, cf := range a.CheckFiles {
+			paths = append(paths, filepath.Join(target, cf))
+		}
+		return paths
+	}
+	paths := make([]string, 0, len(a.Files))
+	for _, f := range a.Files {
+		paths = append(paths, filepath.Join(modelsDir, f.Path))
+	}
+	return paths
+}
+
+// Status resolves the installation state of every asset in the manifest under
+// modelsDir. It only reads the filesystem and never downloads.
+func (m AssetManifest) Status(modelsDir string) []AssetStatus {
+	out := make([]AssetStatus, 0, len(m.Assets))
+	for _, a := range m.Assets {
+		st := AssetStatus{ID: a.ID, Name: a.Name, Provider: a.Provider, Mode: a.Mode, Kind: a.Kind}
+		for _, p := range a.installPaths(modelsDir) {
+			if !pathExists(p) {
+				st.Missing = append(st.Missing, p)
+			}
+		}
+		st.Installed = len(st.Missing) == 0
+		out = append(out, st)
+	}
+	return out
+}
+
+func pathExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }
 
 // ModelArchives returns the archive downloads in this manifest (the legacy

@@ -97,14 +97,7 @@ func EnsureRuntimeAssets(cfg *Config, req AssetRequest, onProgress func(name str
 
 // EnsureModels preserves the old behavior for callers that still need the default asset set.
 func EnsureModels(cfg *Config, onProgress func(name string, pct float64)) error {
-	return EnsureRuntimeAssets(cfg, AssetRequest{
-		NeedSTT: strings.EqualFold(cfg.STTProvider, "sherpa") ||
-			strings.EqualFold(cfg.STTProvider, "sherpa-streaming") ||
-			strings.EqualFold(cfg.STTProvider, "sherpa-offline") ||
-			strings.EqualFold(cfg.STTProvider, "whispercpp"),
-		NeedTTS: strings.EqualFold(cfg.TTSProvider, "kokoro"),
-		NeedVAD: cfg.VADEnabled,
-	}, onProgress)
+	return EnsureRuntimeAssets(cfg, DefaultAssetRequest(cfg), onProgress)
 }
 
 // archiveExtracted checks if all expected files/dirs exist.

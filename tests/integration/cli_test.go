@@ -70,3 +70,33 @@ func TestCLI_Providers(t *testing.T) {
 		t.Errorf("providers output should mention kokoro, got: %s", output)
 	}
 }
+
+func TestCLI_ModelsStatus(t *testing.T) {
+	tc := GetSharedContainer(t)
+
+	// models status is read-only and offline: in the container the models are
+	// absent, so it must report them missing without attempting a download.
+	output, err := tc.RunSamantha("models", "status")
+	if err != nil {
+		t.Fatalf("samantha models status failed: %v", err)
+	}
+
+	for _, want := range []string{"Model assets", "missing"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("models status output should contain %q, got: %s", want, output)
+		}
+	}
+}
+
+func TestCLI_ModelsStatusJSON(t *testing.T) {
+	tc := GetSharedContainer(t)
+
+	output, err := tc.RunSamantha("models", "status", "--json")
+	if err != nil {
+		t.Fatalf("samantha models status --json failed: %v", err)
+	}
+
+	if !strings.Contains(output, "\"installed\"") {
+		t.Errorf("models status --json should emit an installed field, got: %s", output)
+	}
+}
