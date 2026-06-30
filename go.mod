@@ -9,7 +9,8 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/gen2brain/malgo v0.11.24
 	github.com/k2-fsa/sherpa-onnx-go v1.12.29
-	github.com/lancekrogers/claude-code-go v1.0.2
+	github.com/lancekrogers/claude-code-go v1.2.1
+	github.com/lancekrogers/grok-go-sdk v0.1.0
 	github.com/ollama/ollama v0.18.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
