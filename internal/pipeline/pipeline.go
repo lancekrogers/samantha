@@ -325,6 +325,9 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// Two narrow upstream stages feed the turn loop: the model observer forwards
+	// brain chunks (stamping first-chunk metrics), then the segmenter turns that
+	// chunk stream into voice-ready sentences. Both are testable in isolation.
 	streamedChunks := p.observeStream(streamCtx, stream, metrics)
 	sentences := brain.ChunkSentences(streamedChunks)
 
@@ -541,6 +544,13 @@ func (p *Pipeline) handlePlaybackLifecycle(sentence string, synthStarted time.Ti
 	})
 }
 
+// observeStream is the model-observer stage. It is the sole consumer of
+// stream.Chunks, forwarding each chunk to a fresh channel and stamping the
+// first-model-chunk metric (with a ResponseStreamingStarted event) on the first
+// one. The terminal result path (stream.Done) is owned separately by
+// streamResponse. The forwarding send is cancellation-safe: on ctx cancellation
+// the stage returns instead of blocking on a downstream that has stopped
+// reading, so it cannot wedge teardown, model completion, or barge-in.
 func (p *Pipeline) observeStream(ctx context.Context, stream *brain.Stream, metrics *turnMetrics) <-chan string {
 	out := make(chan string, 8)
 
@@ -560,7 +570,11 @@ func (p *Pipeline) observeStream(ctx context.Context, stream *brain.Stream, metr
 					metrics.firstModelChunk = time.Now()
 					p.emit(events.ResponseStreamingStarted{Elapsed: metrics.elapsed(metrics.firstModelChunk)})
 				}
-				out <- chunk
+				select {
+				case <-ctx.Done():
+					return
+				case out <- chunk:
+				}
 			}
 		}
 	}()
