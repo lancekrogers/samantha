@@ -48,6 +48,19 @@ macOS users may need to grant microphone permission to the terminal app used to 
 
 ## Install
 
+### Homebrew (macOS)
+
+```bash
+brew install --HEAD lancekrogers/tap/samantha
+```
+
+Builds from source and bundles the sherpa-onnx/onnxruntime native libraries so
+the binary is self-contained. `--HEAD` tracks the latest `main`; once a version
+is tagged it installs without it. Grant your terminal microphone access under
+System Settings → Privacy & Security → Microphone.
+
+### From source
+
 ```bash
 just install    # Build, sign on macOS when possible, and install to $GOBIN
 ```
@@ -132,15 +145,16 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `whispercpp_model` | `base.en` | `WHISPERCPP_MODEL` | Downloadable whisper.cpp model name |
 | `whispercpp_model_path` | `~/.cache/samantha/models/whispercpp/ggml-base.en.bin` | `WHISPERCPP_MODEL_PATH` | whisper.cpp model path |
 | `vad_enabled` | `true` | | Enable voice activity detection |
-| `vad_silence_duration` | `0.5` | | Seconds of silence before ending speech |
+| `vad_silence_duration` | `0.5` | | Seconds of silence before ending speech (raise to stop being cut off) |
+| `vad_threshold` | `0.6` | `VAD_THRESHOLD` | Speech-detection confidence (raise to ignore background noise) |
+| `vad_min_speech_duration` | `0.25` | `VAD_MIN_SPEECH_DURATION` | Minimum speech length in seconds (raise to ignore brief noises) |
+| `voice_frontend_enabled` | `true` | `VOICE_FRONTEND_ENABLED` | Local AEC/NS/AGC on mic input (disable to send raw audio to the recognizer) |
 | `agent_name` | `Samantha` | | Display name |
 | `models_dir` | `~/.cache/samantha/models` | `MODELS_DIR` | Model download directory |
 | `language` | `en-US` | | Recognition language |
 | `max_history` | `10` | | Saved conversation history length |
 | `listen_timeout` | `10` | | Listen timeout in seconds |
 | `phrase_time_limit` | `30` | | Maximum phrase length in seconds |
-
-Legacy Claude and Fish Audio keys still exist in config for compatibility, but the implemented providers are the ones listed above.
 
 ## Development
 

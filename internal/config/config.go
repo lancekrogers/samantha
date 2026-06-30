@@ -26,8 +26,14 @@ type Config struct {
 	WhisperCPPModelPath  string `mapstructure:"whispercpp_model_path"`
 
 	// VAD
-	VADEnabled         bool    `mapstructure:"vad_enabled"`
-	VADSilenceDuration float64 `mapstructure:"vad_silence_duration"`
+	VADEnabled           bool    `mapstructure:"vad_enabled"`
+	VADSilenceDuration   float64 `mapstructure:"vad_silence_duration"`
+	VADThreshold         float64 `mapstructure:"vad_threshold"`
+	VADMinSpeechDuration float64 `mapstructure:"vad_min_speech_duration"`
+
+	// VoiceFrontend runs local AEC/NS/AGC on the mic before STT. Disable to feed
+	// raw audio to the recognizer (often more accurate for whisper).
+	VoiceFrontendEnabled bool `mapstructure:"voice_frontend_enabled"`
 
 	// Barge-in (interrupt TTS when the user starts speaking). Off by default
 	// until the echo-canceller is strong enough to avoid self-interruption.
@@ -35,17 +41,10 @@ type Config struct {
 
 	// Brain
 	BrainProvider     string `mapstructure:"brain_provider"`
+	GrokModel         string `mapstructure:"grok_model"`
 	OllamaModel       string `mapstructure:"ollama_model"`
 	OllamaHost        string `mapstructure:"ollama_host"`
 	VoiceToolsEnabled bool   `mapstructure:"voice_tools_enabled"`
-
-	// Claude (legacy, kept for override)
-	ClaudeModel        string `mapstructure:"claude_model"`
-	ClaudeModelComplex string `mapstructure:"claude_model_complex"`
-
-	// Fish Audio (optional)
-	FishAPIKey     string `mapstructure:"fish_api_key"`
-	FishVoiceModel string `mapstructure:"fish_voice_model_id"`
 
 	// Paths
 	ModelsDir string `mapstructure:"models_dir"`
@@ -86,18 +85,16 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("vad_enabled", true)
 	v.SetDefault("vad_silence_duration", 0.5)
+	v.SetDefault("vad_threshold", 0.6)
+	v.SetDefault("vad_min_speech_duration", 0.25)
+	v.SetDefault("voice_frontend_enabled", true)
 	v.SetDefault("barge_in_enabled", false)
 
 	v.SetDefault("brain_provider", "claude")
+	v.SetDefault("grok_model", "")
 	v.SetDefault("ollama_model", "")
 	v.SetDefault("ollama_host", "http://localhost:11434")
 	v.SetDefault("voice_tools_enabled", false)
-
-	v.SetDefault("claude_model", "")
-	v.SetDefault("claude_model_complex", "")
-
-	v.SetDefault("fish_api_key", "")
-	v.SetDefault("fish_voice_model_id", "474887f7949b4d1ab3e626cddf82613a")
 
 	v.SetDefault("agent_name", "Samantha")
 	v.SetDefault("models_dir", filepath.Join(homeDir(), ".cache", "samantha", "models"))
@@ -120,21 +117,24 @@ func Load() (*Config, error) {
 
 	// Explicit env bindings
 	bindings := map[string]string{
-		"tts_provider":           "TTS_PROVIDER",
-		"tts_voice":              "TTS_VOICE",
-		"stt_provider":           "STT_PROVIDER",
-		"sherpa_streaming_model": "SHERPA_STREAMING_MODEL",
-		"whisper_model":          "WHISPER_MODEL",
-		"whispercpp_binary":      "WHISPERCPP_BINARY",
-		"whispercpp_model":       "WHISPERCPP_MODEL",
-		"whispercpp_model_path":  "WHISPERCPP_MODEL_PATH",
-		"fish_api_key":           "FISH_API_KEY",
-		"models_dir":             "MODELS_DIR",
-		"brain_provider":         "BRAIN_PROVIDER",
-		"ollama_model":           "OLLAMA_MODEL",
-		"ollama_host":            "OLLAMA_HOST",
-		"voice_tools_enabled":    "VOICE_TOOLS_ENABLED",
-		"barge_in_enabled":       "BARGE_IN_ENABLED",
+		"tts_provider":            "TTS_PROVIDER",
+		"tts_voice":               "TTS_VOICE",
+		"stt_provider":            "STT_PROVIDER",
+		"sherpa_streaming_model":  "SHERPA_STREAMING_MODEL",
+		"whisper_model":           "WHISPER_MODEL",
+		"whispercpp_binary":       "WHISPERCPP_BINARY",
+		"whispercpp_model":        "WHISPERCPP_MODEL",
+		"whispercpp_model_path":   "WHISPERCPP_MODEL_PATH",
+		"models_dir":              "MODELS_DIR",
+		"brain_provider":          "BRAIN_PROVIDER",
+		"grok_model":              "GROK_MODEL",
+		"ollama_model":            "OLLAMA_MODEL",
+		"ollama_host":             "OLLAMA_HOST",
+		"voice_tools_enabled":     "VOICE_TOOLS_ENABLED",
+		"barge_in_enabled":        "BARGE_IN_ENABLED",
+		"vad_threshold":           "VAD_THRESHOLD",
+		"vad_min_speech_duration": "VAD_MIN_SPEECH_DURATION",
+		"voice_frontend_enabled":  "VOICE_FRONTEND_ENABLED",
 	}
 	for key, env := range bindings {
 		_ = v.BindEnv(key, env)
@@ -147,11 +147,6 @@ func Load() (*Config, error) {
 				return nil, fmt.Errorf("reading config: %w", err)
 			}
 		}
-	}
-
-	// Migrate old Python keys: voice_model_id -> fish_voice_model_id
-	if v.IsSet("voice_model_id") {
-		v.Set("fish_voice_model_id", v.GetString("voice_model_id"))
 	}
 
 	var cfg Config

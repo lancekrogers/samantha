@@ -55,6 +55,15 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.BargeInEnabled {
 		t.Error("BargeInEnabled = true, want false")
 	}
+	if cfg.VADThreshold != 0.6 {
+		t.Errorf("VADThreshold = %v, want 0.6", cfg.VADThreshold)
+	}
+	if cfg.VADMinSpeechDuration != 0.25 {
+		t.Errorf("VADMinSpeechDuration = %v, want 0.25", cfg.VADMinSpeechDuration)
+	}
+	if !cfg.VoiceFrontendEnabled {
+		t.Error("VoiceFrontendEnabled = false, want true")
+	}
 }
 
 func TestBargeInEnvOverride(t *testing.T) {
@@ -122,19 +131,41 @@ func TestEnvOverride(t *testing.T) {
 	defer func() { configFile = orig }()
 
 	setDefaults(v)
-	t.Setenv("TTS_PROVIDER", "fish")
-	t.Setenv("FISH_API_KEY", "sk-test-123")
+	t.Setenv("BRAIN_PROVIDER", "ollama")
+	t.Setenv("OLLAMA_MODEL", "test-model-xyz")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	if cfg.TTSProvider != "fish" {
-		t.Errorf("TTSProvider = %q, want fish (from env)", cfg.TTSProvider)
+	if cfg.BrainProvider != "ollama" {
+		t.Errorf("BrainProvider = %q, want ollama (from env)", cfg.BrainProvider)
 	}
-	if cfg.FishAPIKey != "sk-test-123" {
-		t.Errorf("FishAPIKey = %q, want sk-test-123", cfg.FishAPIKey)
+	if cfg.OllamaModel != "test-model-xyz" {
+		t.Errorf("OllamaModel = %q, want test-model-xyz (from env)", cfg.OllamaModel)
+	}
+}
+
+func TestGrokModelEnvOverride(t *testing.T) {
+	orig := configFile
+	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")
+	defer func() { configFile = orig }()
+
+	setDefaults(v)
+	t.Setenv("BRAIN_PROVIDER", "grok")
+	t.Setenv("GROK_MODEL", "grok-test-xyz")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.BrainProvider != "grok" {
+		t.Errorf("BrainProvider = %q, want grok (from env)", cfg.BrainProvider)
+	}
+	if cfg.GrokModel != "grok-test-xyz" {
+		t.Errorf("GrokModel = %q, want grok-test-xyz (from env)", cfg.GrokModel)
 	}
 }
 
@@ -153,31 +184,6 @@ func TestVoiceToolsEnvOverride(t *testing.T) {
 
 	if !cfg.VoiceToolsEnabled {
 		t.Error("VoiceToolsEnabled = false, want true from env")
-	}
-}
-
-func TestMigratePythonKeys(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	// Python version used voice_model_id instead of fish_voice_model_id
-	content := `voice_model_id: old-model-id-123
-`
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	orig := configFile
-	configFile = path
-	defer func() { configFile = orig }()
-
-	setDefaults(v)
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() error: %v", err)
-	}
-
-	if cfg.FishVoiceModel != "old-model-id-123" {
-		t.Errorf("FishVoiceModel = %q, want old-model-id-123 (migrated)", cfg.FishVoiceModel)
 	}
 }
 
