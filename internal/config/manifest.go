@@ -237,7 +237,7 @@ func (m AssetManifest) ModelFiles() []ModelFile {
 			continue
 		}
 		for _, f := range a.Files {
-			files = append(files, ModelFile{Name: f.Path, URL: f.URL, Size: f.Size})
+			files = append(files, ModelFile{Name: f.Path, URL: f.URL, Size: f.Size, SHA256: f.SHA256})
 		}
 	}
 	return files

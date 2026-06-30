@@ -226,7 +226,7 @@ func TestDownloadFileCreatesNestedParentDir(t *testing.T) {
 	defer server.Close()
 
 	path := filepath.Join(t.TempDir(), "whispercpp", "ggml-base.en.bin")
-	if err := downloadFile(path, server.URL, nil); err != nil {
+	if err := downloadFile(path, server.URL, "ggml-base.en.bin", 0, "", nil); err != nil {
 		t.Fatalf("downloadFile() error = %v", err)
 	}
 

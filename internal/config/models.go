@@ -3,6 +3,8 @@ package config
 import (
 	"archive/tar"
 	"compress/bzip2"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,9 +15,10 @@ import (
 
 // ModelFile describes a required model file (individual download).
 type ModelFile struct {
-	Name string
-	URL  string
-	Size int64 // expected size in bytes (0 = skip check)
+	Name   string
+	URL    string
+	Size   int64  // expected size in bytes (0 = skip check)
+	SHA256 string // expected hex checksum (empty = skip check)
 }
 
 // ModelArchive describes a tar.bz2 archive to download and extract.
@@ -65,12 +68,12 @@ func ensureManifest(manifest AssetManifest, dir string, onProgress func(name str
 			onProgress(m.Name, 0)
 		}
 
-		if err := downloadFile(path, m.URL, func(pct float64) {
+		if err := downloadFile(path, m.URL, m.Name, m.Size, m.SHA256, func(pct float64) {
 			if onProgress != nil {
 				onProgress(m.Name, pct)
 			}
 		}); err != nil {
-			return fmt.Errorf("download %s: %w", m.Name, err)
+			return err
 		}
 	}
 
@@ -226,36 +229,54 @@ func fileExists(path string, expectedSize int64) bool {
 	return true
 }
 
-func downloadFile(path, url string, onProgress func(float64)) error {
+// downloadFile downloads url into path. It writes to a temp file in the target
+// directory, verifies the expected size and checksum when known, and atomically
+// renames into place on success. The temp file is removed on any failure, so a
+// partial or corrupt download never lands at path. file names the asset in
+// error messages.
+func downloadFile(path, url, file string, size int64, sha256Hex string, onProgress func(float64)) error {
 	resp, err := http.Get(url)
 	if err != nil {
-		return err
+		return fmt.Errorf("download %s: %w", file, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d for %s", resp.StatusCode, url)
+		return fmt.Errorf("download %s: HTTP %d for %s", file, resp.StatusCode, url)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create parent dir: %w", err)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("download %s: create parent dir: %w", file, err)
 	}
 
-	f, err := os.Create(path + ".tmp")
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.part")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	tmpName := tmp.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			tmp.Close()
+			os.Remove(tmpName)
+		}
+	}()
+
+	hasher := sha256.New()
+	var sink io.Writer = tmp
+	if sha256Hex != "" {
+		sink = io.MultiWriter(tmp, hasher)
+	}
 
 	total := resp.ContentLength
 	var written int64
-
 	buf := make([]byte, 32*1024)
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
-			if _, err := f.Write(buf[:n]); err != nil {
-				return err
+			if _, werr := sink.Write(buf[:n]); werr != nil {
+				return werr
 			}
 			written += int64(n)
 			if total > 0 && onProgress != nil {
@@ -266,10 +287,26 @@ func downloadFile(path, url string, onProgress func(float64)) error {
 			break
 		}
 		if readErr != nil {
-			return readErr
+			return fmt.Errorf("download %s: %w", file, readErr)
 		}
 	}
 
-	f.Close()
-	return os.Rename(path+".tmp", path)
+	if size > 0 && written != size {
+		return fmt.Errorf("download %s: size mismatch, got %d bytes want %d", file, written, size)
+	}
+	if sha256Hex != "" {
+		got := hex.EncodeToString(hasher.Sum(nil))
+		if !strings.EqualFold(got, sha256Hex) {
+			return fmt.Errorf("download %s: checksum mismatch, got %s want %s", file, got, sha256Hex)
+		}
+	}
+
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
