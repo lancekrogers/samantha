@@ -40,12 +40,30 @@ func discoverClaude() ProviderInfo {
 }
 
 func discoverGrok() ProviderInfo {
-	_, err := grok.LocateBinary()
-	return ProviderInfo{
-		Name:      "grok",
-		Available: err == nil,
-		Models:    []string{"default"},
+	info := ProviderInfo{Name: "grok"}
+
+	binPath, err := grok.LocateBinary()
+	if err != nil {
+		return info
 	}
+	info.Available = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	models, err := grok.NewClient(binPath).Models(ctx)
+	if err != nil {
+		info.Models = []string{"default"}
+		return info
+	}
+	for _, mod := range models {
+		info.Models = append(info.Models, mod.ID)
+	}
+	if len(info.Models) == 0 {
+		info.Models = []string{"default"}
+	}
+
+	return info
 }
 
 func discoverOllama(cfg *config.Config) ProviderInfo {

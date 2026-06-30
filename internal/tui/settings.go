@@ -85,8 +85,15 @@ func (m *settingsModel) buildVoiceItems() {
 }
 
 func (m settingsModel) activeModel() string {
-	if m.cfg.BrainProvider == "ollama" && m.cfg.OllamaModel != "" {
-		return m.cfg.OllamaModel
+	switch m.cfg.BrainProvider {
+	case "ollama":
+		if m.cfg.OllamaModel != "" {
+			return m.cfg.OllamaModel
+		}
+	case "grok":
+		if m.cfg.GrokModel != "" {
+			return m.cfg.GrokModel
+		}
 	}
 	return "default"
 }
@@ -173,9 +180,13 @@ func (m *settingsModel) selectCurrent() {
 	case sectionModel:
 		if m.cursor < len(m.modelItems) {
 			model := m.modelItems[m.cursor]
-			if m.cfg.BrainProvider == "ollama" {
+			switch m.cfg.BrainProvider {
+			case "ollama":
 				m.cfg.OllamaModel = model
 				_ = config.SetAndSave("ollama_model", model)
+			case "grok":
+				m.cfg.GrokModel = model
+				_ = config.SetAndSave("grok_model", model)
 			}
 			m.message = fmt.Sprintf("Model set to %s", model)
 		}
