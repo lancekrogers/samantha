@@ -42,6 +42,9 @@ func ExtractHTML(source string, data []byte) (render.Document, error) {
 	for _, tag := range boilerplate {
 		s = dropBlock(s, tag)
 	}
+	// Prefer the main content region when present: this drops social/share,
+	// comment, and related-links boilerplate that lives outside <article>/<main>.
+	s = mainRegion(s)
 
 	doc := render.Document{Source: source, Format: render.FormatHTML, Title: title}
 	var sections []render.DocumentSection
@@ -147,6 +150,25 @@ func ExtractHTML(source string, data []byte) (render.Document, error) {
 		}
 	}
 	return doc, nil
+}
+
+var (
+	articleRE = regexp.MustCompile(`(?is)<article\b[^>]*>(.*)</article>`)
+	mainRE    = regexp.MustCompile(`(?is)<main\b[^>]*>(.*)</main>`)
+)
+
+// mainRegion returns the content of the first <article> (or, failing that,
+// <main>) region when present; otherwise it returns s unchanged. Using a greedy
+// match keeps nested content. This is a simple readability heuristic that
+// excludes page chrome outside the main content.
+func mainRegion(s string) string {
+	if m := articleRE.FindStringSubmatch(s); m != nil {
+		return m[1]
+	}
+	if m := mainRE.FindStringSubmatch(s); m != nil {
+		return m[1]
+	}
+	return s
 }
 
 // dropBlock removes every <tag ...>...</tag> block (case-insensitive). RE2 has
