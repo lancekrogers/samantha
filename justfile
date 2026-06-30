@@ -15,6 +15,9 @@ mod test '.justfiles/test.just'
 [doc('Voice & audio setup')]
 mod voice '.justfiles/voice.just'
 
+[doc('Release (tag, publish, formula sha)')]
+mod release '.justfiles/release.just'
+
 # Flat dev utilities
 import '.justfiles/dev.just'
 
