@@ -325,6 +325,15 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// loopDone closes when this function returns — the moment the loop stops
+	// draining playbackEvents. Playback watchers select on it so their sends
+	// cannot block (and leak) after an early return (ctx cancel, stall, or brain
+	// error). It is distinct from streamCtx on purpose: a barge-in cancels
+	// streamCtx but the loop keeps reading playbackEvents to drain pending
+	// playbacks, so watchers must still deliver their finished events.
+	loopDone := make(chan struct{})
+	defer close(loopDone)
+
 	// Two narrow upstream stages feed the turn loop: the model observer forwards
 	// brain chunks (stamping first-chunk metrics), then the segmenter turns that
 	// chunk stream into voice-ready sentences. Both are testable in isolation.
@@ -426,7 +435,7 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 				go p.watchPlaybackStall(streamCtx, &audioStarted, cancel, stalled, p.stallTimeout())
 			}
 
-			if p.synthesizeSegment(streamCtx, sentence, &audioStarted, playbackEvents) {
+			if p.synthesizeSegment(streamCtx, loopDone, sentence, &audioStarted, playbackEvents) {
 				pending++
 			}
 
@@ -456,7 +465,7 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 // the turn context is canceled (cancel or barge-in) are swallowed so teardown
 // stays quiet. It never blocks on a full queue — backpressure is the caller's
 // job via the pending count.
-func (p *Pipeline) synthesizeSegment(ctx context.Context, sentence string, audioStarted *atomic.Bool, out chan<- playbackEvent) bool {
+func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct{}, sentence string, audioStarted *atomic.Bool, out chan<- playbackEvent) bool {
 	p.emit(events.SpeechSegmentReady{Text: sentence})
 	p.emit(events.GeneratingVoice{Sentence: sentence})
 
@@ -477,7 +486,7 @@ func (p *Pipeline) synthesizeSegment(ctx context.Context, sentence string, audio
 		return false
 	}
 
-	go watchPlayback(sentence, synthStarted, playback, audioStarted, out)
+	go watchPlayback(loopDone, sentence, synthStarted, playback, audioStarted, out)
 	return true
 }
 
@@ -670,37 +679,64 @@ func (p *Pipeline) emit(event events.Event) {
 	}
 }
 
-func watchPlayback(sentence string, synthStarted time.Time, playback *audio.Playback, started *atomic.Bool, out chan<- playbackEvent) {
+// watchPlayback is the playback watcher: it turns one playback's lifecycle into
+// playbackStarted/playbackFinished events on out. Every send selects on loopDone
+// (closed when streamResponse stops draining) so a watcher can never block — and
+// leak — after the loop has returned on cancel, stall, or model error. loopDone
+// is deliberately not the turn context: a barge-in cancels the turn context but
+// the loop keeps consuming, so finished events must still be delivered to drain
+// the pending count.
+func watchPlayback(loopDone <-chan struct{}, sentence string, synthStarted time.Time, playback *audio.Playback, started *atomic.Bool, out chan<- playbackEvent) {
 	startedAt := time.Time{}
 
 	select {
+	case <-loopDone:
+		return
 	case <-playback.Started():
 		started.Store(true)
 		startedAt = time.Now()
-		out <- playbackEvent{
+		if !sendPlaybackEvent(loopDone, out, playbackEvent{
 			kind:         playbackStarted,
 			sentence:     sentence,
 			synthElapsed: time.Since(synthStarted),
+		}) {
+			return
 		}
 	case result := <-playback.Done():
-		out <- playbackEvent{
+		sendPlaybackEvent(loopDone, out, playbackEvent{
 			kind:     playbackFinished,
 			sentence: sentence,
 			result:   result,
-		}
+		})
 		return
 	}
 
-	result := <-playback.Done()
+	var result audio.PlaybackResult
+	select {
+	case <-loopDone:
+		return
+	case result = <-playback.Done():
+	}
 	elapsed := time.Duration(0)
 	if !startedAt.IsZero() {
 		elapsed = time.Since(startedAt)
 	}
 
-	out <- playbackEvent{
+	sendPlaybackEvent(loopDone, out, playbackEvent{
 		kind:        playbackFinished,
 		sentence:    sentence,
 		playElapsed: elapsed,
 		result:      result,
+	})
+}
+
+// sendPlaybackEvent delivers ev unless the loop has stopped consuming, returning
+// false if it abandoned the send.
+func sendPlaybackEvent(loopDone <-chan struct{}, out chan<- playbackEvent, ev playbackEvent) bool {
+	select {
+	case <-loopDone:
+		return false
+	case out <- ev:
+		return true
 	}
 }

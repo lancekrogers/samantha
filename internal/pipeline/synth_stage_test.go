@@ -49,7 +49,7 @@ func TestSynthesizeSegmentEnqueuesPlayback(t *testing.T) {
 	var audioStarted atomic.Bool
 	out := make(chan playbackEvent, 4)
 
-	if !p.synthesizeSegment(context.Background(), "hello world", &audioStarted, out) {
+	if !p.synthesizeSegment(context.Background(), make(chan struct{}), "hello world", &audioStarted, out) {
 		t.Fatal("synthesizeSegment returned false, want true (playback enqueued)")
 	}
 	if !sawSegment.Load() || !sawGen.Load() {
@@ -79,7 +79,7 @@ func TestSynthesizeSegmentTTSErrorEmitsErrorAndSkips(t *testing.T) {
 
 	var audioStarted atomic.Bool
 	out := make(chan playbackEvent, 1)
-	if p.synthesizeSegment(context.Background(), "hi", &audioStarted, out) {
+	if p.synthesizeSegment(context.Background(), make(chan struct{}), "hi", &audioStarted, out) {
 		t.Fatal("synthesizeSegment returned true on TTS error, want false")
 	}
 	if !sawErr || errEvent.Stage != "tts" {
@@ -103,7 +103,7 @@ func TestSynthesizeSegmentPlaybackErrorEmitsError(t *testing.T) {
 
 	var audioStarted atomic.Bool
 	out := make(chan playbackEvent, 1)
-	if p.synthesizeSegment(context.Background(), "hi", &audioStarted, out) {
+	if p.synthesizeSegment(context.Background(), make(chan struct{}), "hi", &audioStarted, out) {
 		t.Fatal("synthesizeSegment returned true on playback error, want false")
 	}
 	if !sawErr || errEvent.Stage != "playback" {
@@ -126,7 +126,7 @@ func TestSynthesizeSegmentSuppressesErrorsAfterCancel(t *testing.T) {
 
 	var audioStarted atomic.Bool
 	out := make(chan playbackEvent, 1)
-	if p.synthesizeSegment(ctx, "hi", &audioStarted, out) {
+	if p.synthesizeSegment(ctx, make(chan struct{}), "hi", &audioStarted, out) {
 		t.Fatal("synthesizeSegment returned true with canceled ctx, want false")
 	}
 	if sawErr {
