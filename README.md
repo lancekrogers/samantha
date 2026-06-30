@@ -13,6 +13,7 @@ It captures speech, transcribes it locally, streams the prompt through an AI cod
 - Voice activity detection with Silero.
 - Streaming playback, barge-in handling, and session resume.
 - Local benchmark command for prompt and STT fixture measurements.
+- Batch narration: render text, Markdown, HTML, URL articles, and EPUB to WAV (and optional MP3/M4B/...) with a resumable manifest — scriptable, no microphone.
 
 ## Architecture
 
@@ -79,6 +80,35 @@ samantha test                           # Test microphone and speaker
 samantha benchmark --prompt "hello"     # Run a local benchmark
 samantha resume <session-id>            # Resume a saved session
 samantha continue                       # Continue the most recent session
+samantha doctor                         # Diagnose config, assets, and binaries (read-only)
+samantha models status                  # Which model assets are installed vs missing
+samantha render notes.txt --out a.wav   # Batch-render a document to audio
+```
+
+### Batch narration (audiobooks)
+
+`samantha render` turns documents into audio files and a manifest without the
+live voice pipeline (no microphone). It reads text, Markdown, HTML, URL articles,
+or EPUB, segments the text, synthesizes with the configured TTS, and always
+writes WAV (the source of truth).
+
+```bash
+# Single file (format auto-detected from the extension; --stdin reads text):
+samantha render article.md --out out/article.wav
+cat notes.txt | samantha render --stdin --out out/notes.wav
+samantha render https://example.com/post --out out/post.wav   # URL article
+
+# EPUB -> one WAV per chapter (spine order) + a manifest:
+samantha render book.epub --out-dir out/book
+
+# Optional compressed output via an external encoder (default ffmpeg); WAV is
+# still written. A missing encoder fails before any synthesis:
+samantha render book.epub --out-dir out/book --audio-format mp3
+
+# Resume a long render: unchanged chapters are skipped, changed/failed ones
+# rebuild. --json prints completed/skipped/failed counts and exits non-zero if
+# any chapter failed, so scripts can branch:
+samantha render book.epub --out-dir out/book --resume --json | jq '.failed'
 ```
 
 ## Configuration
