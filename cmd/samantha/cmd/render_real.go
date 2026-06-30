@@ -105,16 +105,41 @@ func extractRenderText(cmd *cobra.Command, opts *render.Options) (string, error)
 			return "", err
 		}
 		doc, err := extractors.ExtractMarkdown(renderSource(*opts), data)
+		return narrationFromDoc(opts, doc, err)
+	case render.FormatHTML:
+		data, err := readRenderBytes(cmd, *opts)
 		if err != nil {
 			return "", err
 		}
-		if opts.Title == "" {
-			opts.Title = doc.Title
+		doc, err := extractors.ExtractHTML(renderSource(*opts), data)
+		if err != nil {
+			return "", err
 		}
-		return doc.Narration(), nil
+		return narrationFromDoc(opts, doc, nil)
+	case render.FormatURL:
+		data, err := extractors.FetchArticle(cmd.Context(), nil, opts.Input, extractors.FetchOptions{})
+		if err != nil {
+			return "", err
+		}
+		doc, err := extractors.ExtractHTML(opts.Input, data)
+		if err != nil {
+			return "", err
+		}
+		return narrationFromDoc(opts, doc, nil)
 	default:
 		return "", fmt.Errorf("render: --format %s is not implemented yet", f)
 	}
+}
+
+// narrationFromDoc returns the document's narration text, adopting its title.
+func narrationFromDoc(opts *render.Options, doc render.Document, err error) (string, error) {
+	if err != nil {
+		return "", err
+	}
+	if opts.Title == "" {
+		opts.Title = doc.Title
+	}
+	return doc.Narration(), nil
 }
 
 // readRenderBytes returns the raw input from stdin or the input file.
