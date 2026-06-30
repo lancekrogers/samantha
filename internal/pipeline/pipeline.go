@@ -15,16 +15,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/tts"
 )
 
-const (
-	voiceQueueDepth = 2
-	// bargeInArmDelay holds off interrupt detection after playback starts so the
-	// echo of Samantha's own first words doesn't trip barge-in.
-	bargeInArmDelay = 600 * time.Millisecond
-	// bargeInMinSpeechChunks requires sustained speech before interrupting, so a
-	// brief burst of residual echo isn't mistaken for the user.
-	bargeInMinSpeechChunks = 6
-	bargeInBufferSize      = 8
-)
+const voiceQueueDepth = 2
 
 type captureMonitor interface {
 	Subscribe(buffer int) (int, <-chan []float32)
@@ -343,12 +334,12 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 	var fullResponse strings.Builder
 	var interrupted bool
 	var pending int
-	var bargeIn <-chan struct{}
+	var bargeIn <-chan interruptRequest
 	var armAt atomic.Int64
 	armAt.Store(time.Now().Add(24 * time.Hour).UnixNano())
 
 	if allowBargeIn {
-		bargeIn = p.watchBargeIn(streamCtx, &armAt)
+		bargeIn = p.newInterruptController().watch(streamCtx, &armAt)
 	}
 
 	playbackEvents := make(chan playbackEvent, voiceQueueDepth*2)
@@ -375,20 +366,20 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 		case <-stalled:
 			return strings.TrimSpace(fullResponse.String()), interrupted, errPlaybackStalled
 
-		case <-bargeIn:
+		case req := <-bargeIn:
 			if interrupted {
 				continue
 			}
 			interrupted = true
 			metrics.interrupted = true
-			metrics.bargeIn = time.Now()
+			metrics.bargeIn = req.At
 			turn.to(TurnInterrupted)
 			cancel()
 			if p.Player != nil {
 				p.Player.Stop()
 			}
-			p.emit(events.SpeakingInterrupted{Reason: "barge_in"})
-			p.emit(events.TurnInterrupted{Reason: "barge_in"})
+			p.emit(events.SpeakingInterrupted{Reason: req.Reason})
+			p.emit(events.TurnInterrupted{Reason: req.Reason})
 
 		case result, ok := <-modelDone:
 			if !ok {
@@ -610,55 +601,6 @@ func (p *Pipeline) observeStream(ctx context.Context, stream *brain.Stream, metr
 	}()
 
 	return out
-}
-
-func (p *Pipeline) watchBargeIn(ctx context.Context, armAt *atomic.Int64) <-chan struct{} {
-	if p.Capture == nil || p.BargeInVAD == nil || p.Player == nil {
-		return nil
-	}
-
-	triggered := make(chan struct{}, 1)
-	subscriptionID, chunks := p.Capture.Subscribe(bargeInBufferSize)
-
-	go func() {
-		defer p.Capture.Unsubscribe(subscriptionID)
-		defer p.BargeInVAD.Clear()
-
-		consecutiveSpeech := 0
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case samples, ok := <-chunks:
-				if !ok {
-					return
-				}
-
-				if !p.Player.IsPlaying() || time.Now().UnixNano() < armAt.Load() {
-					consecutiveSpeech = 0
-					p.BargeInVAD.Clear()
-					continue
-				}
-
-				p.BargeInVAD.AcceptWaveform(samples)
-				if p.BargeInVAD.IsSpeech() {
-					consecutiveSpeech++
-				} else {
-					consecutiveSpeech = 0
-				}
-
-				if p.BargeInVAD.IsSpeechDetected() || consecutiveSpeech >= bargeInMinSpeechChunks {
-					select {
-					case triggered <- struct{}{}:
-					default:
-					}
-					return
-				}
-			}
-		}
-	}()
-
-	return triggered
 }
 
 func (p *Pipeline) resetEchoState() {

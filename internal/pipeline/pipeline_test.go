@@ -199,8 +199,8 @@ func TestRunTurnBargeInInterruptsPlayback(t *testing.T) {
 }
 
 func TestWatchBargeInDisabledWhenVADNil(t *testing.T) {
-	// With barge-in disabled (BargeInVAD nil), watchBargeIn must not subscribe to
-	// capture or return a trigger channel.
+	// With barge-in disabled (BargeInVAD nil), the interrupt controller must not
+	// subscribe to capture or return a trigger channel.
 	capture := newFakeCapture()
 	p := &Pipeline{
 		Player:  newFakePlayer(time.Second),
@@ -209,8 +209,8 @@ func TestWatchBargeInDisabledWhenVADNil(t *testing.T) {
 	defer p.Player.(*fakePlayer).Close()
 
 	var armAt atomic.Int64
-	if ch := p.watchBargeIn(context.Background(), &armAt); ch != nil {
-		t.Fatal("watchBargeIn returned a non-nil channel with BargeInVAD nil")
+	if ch := p.newInterruptController().watch(context.Background(), &armAt); ch != nil {
+		t.Fatal("interrupt controller returned a non-nil channel with BargeInVAD nil")
 	}
 	if got := len(capture.subs); got != 0 {
 		t.Fatalf("capture subscriptions = %d, want 0 when barge-in disabled", got)
@@ -673,6 +673,12 @@ func (c *fakeCapture) ResetCount() int {
 	return c.resetCount
 }
 
+func (c *fakeCapture) subCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.subs)
+}
+
 type fakeVAD struct {
 	mu      sync.Mutex
 	speech  bool
@@ -707,4 +713,10 @@ func (v *fakeVAD) Clear() {
 	v.speech = false
 	v.cleared++
 	v.mu.Unlock()
+}
+
+func (v *fakeVAD) clearedCount() int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.cleared
 }
