@@ -184,6 +184,35 @@ samantha benchmark --prompt "hello" --json bench.json
 Interruption latency is reported only when a turn is interrupted; all milestones
 are always present in the `--json` output.
 
+### Model Assets And Readiness
+
+Local model assets are described by an asset manifest and managed by three
+commands:
+
+```bash
+samantha models status        # read-only: which assets are installed vs missing
+samantha models status --json # machine-readable for scripts
+samantha models ensure        # download any missing assets (atomic + verified)
+samantha doctor               # diagnose config, assets, and external binaries
+```
+
+`models status` and `doctor` are read-only and safe offline; `doctor` exits
+non-zero only on errors (a missing asset is a warning that points you to
+`models ensure`). Downloads are reliable by construction: each file is written to
+a temp file, size/checksum-verified when known, and atomically renamed; archives
+are extracted into a temp directory, verified, then promoted — so an interrupted
+or corrupt download never lands a partial asset, and **re-running
+`models ensure` cleanly recovers**.
+
+Automated tests cover download/extraction reliability with fake HTTP servers (no
+network). To verify the **real** assets manually:
+
+```bash
+samantha models status        # confirm what's missing
+samantha models ensure        # download from the real release URLs
+samantha doctor               # confirm everything reports OK
+```
+
 ### Voice Utilities
 
 ```bash
