@@ -18,7 +18,7 @@ type streamingRecognizer interface {
 	Partial() string          // current partial transcript
 	IsEndpoint() bool         // recognizer-signalled endpoint
 	Finalize() string         // flush remaining audio and return the final transcript
-	Reset()                   // start a fresh utterance after a false-positive finalize
+	Reset() error             // start a fresh utterance after a false-positive finalize
 }
 
 // streamingLoopDeps are the injected seams the streaming STT loop drives.
@@ -50,6 +50,7 @@ func runStreamingLoop(ctx context.Context, deps streamingLoopDeps, events chan<-
 	transcribing := false
 	start := time.Now()
 	var speechSeen time.Duration
+	var trailingSilence time.Duration
 	lastPartial := ""
 
 	markSpeech := func() {
@@ -91,12 +92,14 @@ func runStreamingLoop(ctx context.Context, deps streamingLoopDeps, events chan<-
 		}
 
 		if len(frame.Samples) > 0 {
+			frameDuration := samplesDuration(len(frame.Samples))
 			deps.seg.AcceptWaveform(frame.Samples)
 			if deps.seg.IsSpeech() {
 				markSpeech()
-			}
-			if speechDetected {
-				speechSeen += samplesDuration(len(frame.Samples))
+				speechSeen += frameDuration
+				trailingSilence = 0
+			} else if speechDetected {
+				trailingSilence += frameDuration
 			}
 
 			deps.rec.Accept(frame.Samples)
@@ -123,11 +126,12 @@ func runStreamingLoop(ctx context.Context, deps streamingLoopDeps, events chan<-
 
 		providerEnd := deps.rec.IsEndpoint()
 		decision := deps.policy.Decide(endpoint.Observation{
-			HasSpeech:   speechDetected,
-			SpeechSeen:  speechSeen,
-			Elapsed:     time.Since(start),
-			ProviderEnd: providerEnd,
-			SourceFinal: eof,
+			HasSpeech:       speechDetected,
+			SpeechSeen:      speechSeen,
+			TrailingSilence: trailingSilence,
+			Elapsed:         time.Since(start),
+			ProviderEnd:     providerEnd,
+			SourceFinal:     eof,
 		})
 
 		switch decision.Kind {
@@ -158,10 +162,14 @@ func runStreamingLoop(ctx context.Context, deps streamingLoopDeps, events chan<-
 
 		// False positive or empty decode: reset and keep listening.
 		deps.seg.Reset()
-		deps.rec.Reset()
+		if err := deps.rec.Reset(); err != nil {
+			events <- Failure{Err: err}
+			return
+		}
 		speechDetected = false
 		transcribing = false
 		speechSeen = 0
+		trailingSilence = 0
 		lastPartial = ""
 		start = time.Now()
 		emitPhase("listening")

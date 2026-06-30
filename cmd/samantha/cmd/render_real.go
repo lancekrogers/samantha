@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -211,13 +212,16 @@ func newRenderSynth(opts render.Options) (render.Synthesizer, func(), error) {
 	return &ttsSynth{provider: provider, id: synthIdentityFor(cfg)}, cleanup, nil
 }
 
-// synthIdentityFor describes the TTS engine for resume keys: the provider plus
-// any provider-specific model selection. Voice and speed are already part of the
-// resume key (from the render options), so they are intentionally omitted here.
+// synthIdentityFor describes the TTS engine for resume keys: the provider,
+// output-affecting provider settings, and the effective voice/speed after config
+// plus CLI overrides have been resolved.
 func synthIdentityFor(cfg *config.Config) string {
 	id := cfg.TTSProvider
-	if cfg.FishVoiceModel != "" {
-		id += "/" + cfg.FishVoiceModel
+	if cfg.TTSVoice != "" {
+		id += "/voice=" + cfg.TTSVoice
+	}
+	if cfg.SpeechSpeed > 0 {
+		id += "/speed=" + strconv.FormatFloat(cfg.SpeechSpeed, 'f', -1, 64)
 	}
 	return id
 }

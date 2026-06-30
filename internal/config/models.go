@@ -27,6 +27,7 @@ type ModelFile struct {
 type ModelArchive struct {
 	Name       string   // display name for progress
 	URL        string   // tar.bz2 URL
+	SHA256     string   // expected hex checksum of compressed archive (empty = skip check)
 	TargetDir  string   // extraction target directory (defaults to ModelsDir)
 	CheckFiles []string // paths relative to TargetDir to verify extraction
 }
@@ -47,7 +48,16 @@ func EnsureRuntimeAssets(cfg *Config, req AssetRequest, onProgress func(name str
 	if err != nil {
 		return err
 	}
-	return ensureManifest(manifest, ModelsDir(), onProgress)
+	dir := ModelsDir()
+	if err := ensureManifest(manifest, dir, onProgress); err != nil {
+		return err
+	}
+	if req.NeedTTS && strings.EqualFold(cfg.TTSProvider, "kokoro") {
+		if err := sanitizeKokoroLexicons(dir); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not sanitize kokoro lexicons: %v\n", err)
+		}
+	}
+	return nil
 }
 
 // ensureManifest downloads every missing file and archive in the manifest into
@@ -94,18 +104,12 @@ func ensureManifest(manifest AssetManifest, dir string, onProgress func(name str
 			onProgress(a.Name, 0)
 		}
 
-		if err := downloadAndExtractArchive(targetDir, a.URL, a.Name, a.CheckFiles, func(pct float64) {
+		if err := downloadAndExtractArchive(targetDir, a.URL, a.Name, a.CheckFiles, a.SHA256, func(pct float64) {
 			if onProgress != nil {
 				onProgress(a.Name, pct)
 			}
 		}); err != nil {
 			return err
-		}
-	}
-
-	if req.NeedTTS && strings.EqualFold(cfg.TTSProvider, "kokoro") {
-		if err := sanitizeKokoroLexicons(dir); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not sanitize kokoro lexicons: %v\n", err)
 		}
 	}
 
@@ -169,7 +173,7 @@ func sanitizeKokoroLexicon(path string) error {
 // extracts into a temp dir, verifies the check files, then atomically promotes
 // the result — so a partial or malicious archive never lands at dir. name labels
 // the asset in error messages.
-func downloadAndExtractArchive(dir, url, name string, checkFiles []string, onProgress func(float64)) error {
+func downloadAndExtractArchive(dir, url, name string, checkFiles []string, sha256Hex string, onProgress func(float64)) error {
 	resp, err := http.Get(url)
 	if err != nil {
 		return fmt.Errorf("download %s: %w", name, err)
@@ -180,20 +184,57 @@ func downloadAndExtractArchive(dir, url, name string, checkFiles []string, onPro
 		return fmt.Errorf("download %s: HTTP %d for %s", name, resp.StatusCode, url)
 	}
 
-	// Wrap body in a progress-tracking reader.
-	total := resp.ContentLength
-	var read int64
-	progressReader := &progressReaderWrapper{
-		r: resp.Body,
-		onRead: func(n int) {
-			read += int64(n)
-			if total > 0 && onProgress != nil {
-				onProgress(float64(read) / float64(total) * 100)
-			}
-		},
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("download %s: create target dir: %w", name, err)
+	}
+	tmp, err := os.CreateTemp(dir, ".archive-*.tar.bz2.part")
+	if err != nil {
+		return fmt.Errorf("download %s: %w", name, err)
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		tmp.Close()
+		os.Remove(tmpName)
+	}()
+
+	hasher := sha256.New()
+	var sink io.Writer = tmp
+	if sha256Hex != "" {
+		sink = io.MultiWriter(tmp, hasher)
 	}
 
-	return extractTarStream(bzip2.NewReader(progressReader), dir, name, checkFiles)
+	total := resp.ContentLength
+	var written int64
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := sink.Write(buf[:n]); werr != nil {
+				return fmt.Errorf("download %s: %w", name, werr)
+			}
+			written += int64(n)
+			if total > 0 && onProgress != nil {
+				onProgress(float64(written) / float64(total) * 100)
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return fmt.Errorf("download %s: %w", name, readErr)
+		}
+	}
+	if sha256Hex != "" {
+		got := hex.EncodeToString(hasher.Sum(nil))
+		if !strings.EqualFold(got, sha256Hex) {
+			return fmt.Errorf("download %s: checksum mismatch, got %s want %s", name, got, sha256Hex)
+		}
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("extract %s: %w", name, err)
+	}
+
+	return extractTarStream(bzip2.NewReader(tmp), dir, name, checkFiles)
 }
 
 // extractTarStream extracts a decompressed tar stream into dir. It extracts into
@@ -322,19 +363,6 @@ func safeJoin(dir, rel string) (string, error) {
 		return "", fmt.Errorf("unsafe path %q escapes archive root", rel)
 	}
 	return target, nil
-}
-
-type progressReaderWrapper struct {
-	r      io.Reader
-	onRead func(int)
-}
-
-func (p *progressReaderWrapper) Read(buf []byte) (int, error) {
-	n, err := p.r.Read(buf)
-	if n > 0 {
-		p.onRead(n)
-	}
-	return n, err
 }
 
 func fileExists(path string, expectedSize int64) bool {

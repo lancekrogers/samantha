@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -106,6 +107,13 @@ func TestParseEPUBReadChapter(t *testing.T) {
 	}
 	if !bytes.Contains(data, []byte("First chapter body")) {
 		t.Errorf("chapter content = %q, want first chapter body", data)
+	}
+}
+
+func TestReadZipReaderRejectsOversizedEntry(t *testing.T) {
+	_, err := readZipReader(strings.NewReader("chapter"), 3)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("error = %v, want oversized entry rejection", err)
 	}
 }
 

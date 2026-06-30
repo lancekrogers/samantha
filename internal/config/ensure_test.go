@@ -107,3 +107,28 @@ func TestEnsureManifestFileDownloadErrorNamesAsset(t *testing.T) {
 		t.Fatalf("error = %v, want it to name the failing asset file", err)
 	}
 }
+
+func TestEnsureManifestArchiveChecksumMismatchLeavesMissing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("not-the-expected-archive"))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	m := AssetManifest{
+		Schema: AssetSchema,
+		Assets: []Asset{{
+			ID: "tts.kokoro", Provider: "kokoro", Kind: AssetKindTTS, Name: "kokoro-tts",
+			Archive:    &AssetArchive{URL: srv.URL, SHA256: "deadbeef", StripPrefix: true},
+			CheckFiles: []string{"model.onnx"},
+		}},
+	}
+
+	err := ensureManifest(m, dir, nil)
+	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("error = %v, want archive checksum mismatch", err)
+	}
+	if m.Status(dir)[0].Installed {
+		t.Fatal("a failed checksum must leave the archive asset missing")
+	}
+}

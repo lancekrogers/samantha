@@ -17,6 +17,7 @@ type fakeStreamingRec struct {
 	finals        []string // consumed in order, one per Finalize() call
 	finalIdx      int
 	resets        int
+	resetErr      error
 }
 
 func (f *fakeStreamingRec) Accept([]float32) { f.accepts++ }
@@ -51,7 +52,10 @@ func (f *fakeStreamingRec) Finalize() string {
 	return ""
 }
 
-func (f *fakeStreamingRec) Reset() { f.resets++ }
+func (f *fakeStreamingRec) Reset() error {
+	f.resets++
+	return f.resetErr
+}
 
 func runStreaming(ctx context.Context, deps streamingLoopDeps) []Event {
 	events := make(chan Event, 128)
@@ -115,6 +119,27 @@ func TestStreamingLoopProviderEndpointFinalizes(t *testing.T) {
 	}
 }
 
+func TestStreamingLoopPolicyTrailingSilenceFinalizes(t *testing.T) {
+	deps := streamingLoopDeps{
+		frames: &scriptedFrames{chunks: [][]float32{
+			make([]float32, 1600), // 100ms speech
+			make([]float32, 1600), // 100ms trailing silence
+		}},
+		seg:    &fakeSegmenter{speechSeq: []bool{true, false}},
+		rec:    &fakeStreamingRec{finals: []string{"silence finalized"}},
+		policy: endpoint.Policy{MinSpeech: 100 * time.Millisecond, MinSilence: 100 * time.Millisecond},
+	}
+
+	got := runStreaming(context.Background(), deps)
+	final, ok := terminal(got).(FinalTranscript)
+	if !ok {
+		t.Fatalf("terminal event = %T, want FinalTranscript", terminal(got))
+	}
+	if final.Text != "silence finalized" {
+		t.Fatalf("FinalTranscript.Text = %q, want silence finalized", final.Text)
+	}
+}
+
 func TestStreamingLoopNoSpeechTimesOut(t *testing.T) {
 	deps := streamingLoopDeps{
 		frames: noFrames{},
@@ -173,5 +198,30 @@ func TestStreamingLoopEmptyFinalizeResetsThenRecovers(t *testing.T) {
 	}
 	if rec.resets != 1 {
 		t.Errorf("recognizer resets = %d, want 1", rec.resets)
+	}
+}
+
+func TestStreamingLoopResetFailureEmitsFailure(t *testing.T) {
+	resetErr := errors.New("new stream failed")
+	rec := &fakeStreamingRec{
+		partials:      []string{"x"},
+		endpointAfter: 1,
+		finals:        []string{""},
+		resetErr:      resetErr,
+	}
+	deps := streamingLoopDeps{
+		frames: &scriptedFrames{chunks: [][]float32{make([]float32, 1600), make([]float32, 1600)}},
+		seg:    &fakeSegmenter{speech: true},
+		rec:    rec,
+		policy: endpoint.Policy{AllowProviderEnd: true, MinSpeech: 50 * time.Millisecond},
+	}
+
+	got := runStreaming(context.Background(), deps)
+	fail, ok := terminal(got).(Failure)
+	if !ok {
+		t.Fatalf("terminal event = %T, want Failure", terminal(got))
+	}
+	if !errors.Is(fail.Err, resetErr) {
+		t.Fatalf("Failure.Err = %v, want %v", fail.Err, resetErr)
 	}
 }

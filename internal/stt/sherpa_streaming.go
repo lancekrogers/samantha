@@ -128,9 +128,14 @@ func (o *onlineRec) Finalize() string {
 	return o.recognizer.GetResult(o.stream).Text
 }
 
-func (o *onlineRec) Reset() {
+func (o *onlineRec) Reset() error {
+	stream := sherpa.NewOnlineStream(o.recognizer)
+	if stream == nil {
+		return fmt.Errorf("failed to create streaming sherpa stream")
+	}
 	sherpa.DeleteOnlineStream(o.stream)
-	o.stream = sherpa.NewOnlineStream(o.recognizer)
+	o.stream = stream
+	return nil
 }
 
 func (o *onlineRec) close() {

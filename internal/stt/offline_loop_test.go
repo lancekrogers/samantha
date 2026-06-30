@@ -51,14 +51,25 @@ func (noFrames) Close() error { return nil }
 // fakeSegmenter is a scriptable segmenter: speech toggles IsSpeech, segments is
 // the mid-stream finalized queue, and flushSeg is appended on Flush (EOF).
 type fakeSegmenter struct {
-	speech   bool
-	segments [][]float32
-	flushSeg []float32
+	speech    bool
+	speechSeq []bool
+	accepts   int
+	segments  [][]float32
+	flushSeg  []float32
 }
 
-func (f *fakeSegmenter) AcceptWaveform([]float32) {}
-func (f *fakeSegmenter) IsSpeech() bool           { return f.speech }
-func (f *fakeSegmenter) HasSegments() bool        { return len(f.segments) > 0 }
+func (f *fakeSegmenter) AcceptWaveform([]float32) {
+	if len(f.speechSeq) > 0 {
+		i := f.accepts
+		if i >= len(f.speechSeq) {
+			i = len(f.speechSeq) - 1
+		}
+		f.speech = f.speechSeq[i]
+	}
+	f.accepts++
+}
+func (f *fakeSegmenter) IsSpeech() bool    { return f.speech }
+func (f *fakeSegmenter) HasSegments() bool { return len(f.segments) > 0 }
 
 func (f *fakeSegmenter) NextSegment() ([]float32, bool) {
 	if len(f.segments) == 0 {
@@ -160,6 +171,27 @@ func TestOfflineLoopMidStreamSegmentFinalizes(t *testing.T) {
 	}
 	if final.Text != "what time is it" {
 		t.Errorf("FinalTranscript.Text = %q, want %q", final.Text, "what time is it")
+	}
+}
+
+func TestOfflineLoopPolicyTrailingSilenceFinalizes(t *testing.T) {
+	deps := offlineLoopDeps{
+		frames: &scriptedFrames{chunks: [][]float32{
+			make([]float32, 1600), // 100ms speech
+			make([]float32, 1600), // 100ms trailing silence
+		}},
+		seg:        &fakeSegmenter{speechSeq: []bool{true, false}, flushSeg: longSpeech()},
+		policy:     endpoint.Policy{MinSpeech: 100 * time.Millisecond, MinSilence: 100 * time.Millisecond},
+		transcribe: func([]float32) (string, error) { return "silence finalized", nil },
+	}
+
+	got := runLoop(context.Background(), deps)
+	final, ok := terminal(got).(FinalTranscript)
+	if !ok {
+		t.Fatalf("terminal event = %T, want FinalTranscript", terminal(got))
+	}
+	if final.Text != "silence finalized" {
+		t.Fatalf("FinalTranscript.Text = %q, want silence finalized", final.Text)
 	}
 }
 

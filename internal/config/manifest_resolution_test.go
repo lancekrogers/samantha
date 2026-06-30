@@ -110,6 +110,22 @@ func TestManifestForUnsupportedProviderSkipsSTT(t *testing.T) {
 	}
 }
 
+func TestModelArchivesPropagatesChecksum(t *testing.T) {
+	m := AssetManifest{Schema: AssetSchema, Assets: []Asset{{
+		ID: "tts.kokoro", Provider: "kokoro", Kind: AssetKindTTS, Name: "kokoro-tts",
+		Archive:    &AssetArchive{URL: "https://example/archive.tar.bz2", SHA256: "abc123", StripPrefix: true},
+		CheckFiles: []string{"model.onnx"},
+	}}}
+
+	archives := m.ModelArchives("/models")
+	if len(archives) != 1 {
+		t.Fatalf("ModelArchives() = %d, want 1", len(archives))
+	}
+	if archives[0].SHA256 != "abc123" {
+		t.Fatalf("archive SHA256 = %q, want abc123", archives[0].SHA256)
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

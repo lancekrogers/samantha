@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -87,6 +88,16 @@ func TestWriteManifestRoundTrips(t *testing.T) {
 	}
 	if got.TotalDurationMS() != 1500 {
 		t.Errorf("total duration = %d, want 1500", got.TotalDurationMS())
+	}
+
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("read manifest dir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".tmp") {
+			t.Fatalf("leftover manifest temp file %q", entry.Name())
+		}
 	}
 }
 

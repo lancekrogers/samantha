@@ -21,6 +21,11 @@ var (
 	ErrEncrypted   = errors.New("epub: encrypted/DRM-protected EPUBs are not supported")
 )
 
+const (
+	maxMetadataEntryBytes = 16 << 20
+	maxChapterEntryBytes  = 64 << 20
+)
+
 // Metadata holds package-level publication metadata.
 type Metadata struct {
 	Title    string
@@ -119,7 +124,7 @@ func ReadChapter(zr *zip.Reader, href string) ([]byte, error) {
 		return nil, fmt.Errorf("epub: open chapter %q: %w", href, err)
 	}
 	defer rc.Close()
-	return io.ReadAll(rc)
+	return readZipReader(rc, maxChapterEntryBytes)
 }
 
 // ReadChapter on the Book reads from its zip reader.
@@ -308,12 +313,26 @@ func openZipFile(zr *zip.Reader, name string) (*zip.File, error) {
 }
 
 func readZipFile(f *zip.File) ([]byte, error) {
+	if f.UncompressedSize64 > maxMetadataEntryBytes {
+		return nil, fmt.Errorf("epub: entry %q is too large (%d bytes)", f.Name, f.UncompressedSize64)
+	}
 	rc, err := f.Open()
 	if err != nil {
 		return nil, err
 	}
 	defer rc.Close()
-	return io.ReadAll(rc)
+	return readZipReader(rc, maxMetadataEntryBytes)
+}
+
+func readZipReader(r io.Reader, maxBytes int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("epub: entry exceeds %d bytes", maxBytes)
+	}
+	return data, nil
 }
 
 func readNamed(zr *zip.Reader, name string) ([]byte, error) {

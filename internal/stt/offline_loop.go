@@ -71,6 +71,8 @@ func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Eve
 
 	speechDetected := false
 	start := time.Now()
+	var speechSeen time.Duration
+	var trailingSilence time.Duration
 
 	// finalize collects buffered segments and transcribes them. It returns true
 	// when the session is resolved (final transcript, timeout, or failure). When
@@ -104,6 +106,9 @@ func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Eve
 			return true
 		}
 		speechDetected = false
+		speechSeen = 0
+		trailingSilence = 0
+		start = time.Now()
 		emitPhase("listening")
 		return false
 	}
@@ -139,10 +144,17 @@ func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Eve
 		}
 
 		if len(frame.Samples) > 0 {
+			frameDuration := samplesDuration(len(frame.Samples))
 			deps.seg.AcceptWaveform(frame.Samples)
-			if !speechDetected && deps.seg.IsSpeech() {
-				speechDetected = true
-				emitPhase("hearing")
+			if deps.seg.IsSpeech() {
+				if !speechDetected {
+					speechDetected = true
+					emitPhase("hearing")
+				}
+				speechSeen += frameDuration
+				trailingSilence = 0
+			} else if speechDetected {
+				trailingSilence += frameDuration
 			}
 		}
 
@@ -156,8 +168,22 @@ func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Eve
 			return
 		}
 
-		// Cap an over-long utterance per the endpoint policy.
-		if speechDetected && deps.policy.MaxUtterance > 0 && time.Since(start) >= deps.policy.MaxUtterance {
+		decision := deps.policy.Decide(endpoint.Observation{
+			HasSpeech:       speechDetected,
+			SpeechSeen:      speechSeen,
+			TrailingSilence: trailingSilence,
+			Elapsed:         time.Since(start),
+		})
+		if decision.Kind == endpoint.TooShort {
+			deps.seg.Reset()
+			speechDetected = false
+			speechSeen = 0
+			trailingSilence = 0
+			start = time.Now()
+			emitPhase("listening")
+			continue
+		}
+		if decision.Kind == endpoint.Finalize {
 			deps.seg.Flush()
 			finalize(true)
 			return

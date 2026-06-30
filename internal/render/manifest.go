@@ -104,16 +104,41 @@ func priorSegmentsByOutput(path string) map[string]ManifestSegment {
 
 // WriteManifest writes m to path as indented JSON, creating parent directories.
 func WriteManifest(path string, m RenderManifest) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("manifest: %w", err)
 	}
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return fmt.Errorf("manifest: %w", err)
 	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return fmt.Errorf("manifest: write %s: %w", path, err)
 	}
+	tmpName := tmp.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			tmp.Close()
+			os.Remove(tmpName)
+		}
+	}()
+
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		return fmt.Errorf("manifest: write %s: %w", path, err)
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		return fmt.Errorf("manifest: write %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("manifest: write %s: %w", path, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("manifest: write %s: %w", path, err)
+	}
+	committed = true
 	return nil
 }
 

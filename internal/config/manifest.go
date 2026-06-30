@@ -325,6 +325,7 @@ func (m AssetManifest) ModelArchives(base string) []ModelArchive {
 		archives = append(archives, ModelArchive{
 			Name:       a.Name,
 			URL:        a.Archive.URL,
+			SHA256:     a.Archive.SHA256,
 			TargetDir:  targetDir,
 			CheckFiles: a.CheckFiles,
 		})
