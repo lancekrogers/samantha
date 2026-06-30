@@ -147,6 +147,28 @@ func TestEnvOverride(t *testing.T) {
 	}
 }
 
+func TestGrokModelEnvOverride(t *testing.T) {
+	orig := configFile
+	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")
+	defer func() { configFile = orig }()
+
+	setDefaults(v)
+	t.Setenv("BRAIN_PROVIDER", "grok")
+	t.Setenv("GROK_MODEL", "grok-test-xyz")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.BrainProvider != "grok" {
+		t.Errorf("BrainProvider = %q, want grok (from env)", cfg.BrainProvider)
+	}
+	if cfg.GrokModel != "grok-test-xyz" {
+		t.Errorf("GrokModel = %q, want grok-test-xyz (from env)", cfg.GrokModel)
+	}
+}
+
 func TestVoiceToolsEnvOverride(t *testing.T) {
 	orig := configFile
 	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")

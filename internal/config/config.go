@@ -41,6 +41,7 @@ type Config struct {
 
 	// Brain
 	BrainProvider     string `mapstructure:"brain_provider"`
+	GrokModel         string `mapstructure:"grok_model"`
 	OllamaModel       string `mapstructure:"ollama_model"`
 	OllamaHost        string `mapstructure:"ollama_host"`
 	VoiceToolsEnabled bool   `mapstructure:"voice_tools_enabled"`
@@ -90,6 +91,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("barge_in_enabled", false)
 
 	v.SetDefault("brain_provider", "claude")
+	v.SetDefault("grok_model", "")
 	v.SetDefault("ollama_model", "")
 	v.SetDefault("ollama_host", "http://localhost:11434")
 	v.SetDefault("voice_tools_enabled", false)
@@ -125,6 +127,7 @@ func Load() (*Config, error) {
 		"whispercpp_model_path":   "WHISPERCPP_MODEL_PATH",
 		"models_dir":              "MODELS_DIR",
 		"brain_provider":          "BRAIN_PROVIDER",
+		"grok_model":              "GROK_MODEL",
 		"ollama_model":            "OLLAMA_MODEL",
 		"ollama_host":             "OLLAMA_HOST",
 		"voice_tools_enabled":     "VOICE_TOOLS_ENABLED",

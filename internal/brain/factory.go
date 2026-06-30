@@ -15,6 +15,7 @@ type ProviderSpec struct {
 
 var providerSpecs = []ProviderSpec{
 	{Name: "claude", Description: "Claude CLI"},
+	{Name: "grok", Description: "Grok CLI"},
 	{Name: "ollama", Description: "Local Ollama server"},
 }
 
@@ -30,6 +31,8 @@ func NewProvider(cfg *config.Config) (Provider, error) {
 	switch normalizeProvider(cfg.BrainProvider) {
 	case "", "claude":
 		return New(cfg)
+	case "grok":
+		return NewGrok(cfg)
 	case "ollama":
 		return NewOllama(cfg)
 	default:
