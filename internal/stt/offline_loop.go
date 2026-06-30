@@ -16,6 +16,15 @@ const minSpeechSamples = 4800
 // has no audio buffered yet.
 const noFramePoll = 10 * time.Millisecond
 
+// samplesDuration returns the wall-time a chunk of n mono samples represents at
+// the capture sample rate, derived from the sample count (no wall clock).
+func samplesDuration(n int) time.Duration {
+	if audio.SampleRate <= 0 || n <= 0 {
+		return 0
+	}
+	return time.Duration(float64(n) / float64(audio.SampleRate) * float64(time.Second))
+}
+
 // segmenter abstracts the voice-activity detector the offline STT loop drives,
 // so the loop can be exercised with a deterministic fake instead of the cgo
 // Silero VAD. The production implementation is vadSegmenter.
