@@ -163,7 +163,7 @@ func EnsureRuntimeAssets(cfg *Config, req AssetRequest, onProgress func(name str
 
 	if req.NeedTTS && strings.EqualFold(cfg.TTSProvider, "kokoro") {
 		if err := sanitizeKokoroLexicons(dir); err != nil {
-			return fmt.Errorf("sanitize kokoro lexicons: %w", err)
+			fmt.Fprintf(os.Stderr, "warning: could not sanitize kokoro lexicons: %v\n", err)
 		}
 	}
 
