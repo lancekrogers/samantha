@@ -95,6 +95,24 @@ func TestLegacyFrameSourceLiveReportsNoFrameReady(t *testing.T) {
 	}
 }
 
+// dualSource implements both the legacy audioSource and the native FrameSource.
+type dualSource struct{}
+
+func (dualSource) Read() []float32 { return nil }
+func (dualSource) ReadFrame(context.Context) (audio.Frame, error) {
+	return audio.Frame{}, audio.ErrNoFrameReady
+}
+func (dualSource) Close() error { return nil }
+
+func TestAsFrameSourceUsesNativeOrWrapsLegacy(t *testing.T) {
+	if _, ok := asFrameSource(dualSource{}).(dualSource); !ok {
+		t.Error("asFrameSource(native) should return the native FrameSource unchanged")
+	}
+	if _, ok := asFrameSource(liveOnly{}).(*legacyFrameSource); !ok {
+		t.Error("asFrameSource(legacy) should wrap in *legacyFrameSource")
+	}
+}
+
 func TestLegacyFrameSourceCancellation(t *testing.T) {
 	src := newLegacyFrameSource(liveOnly{})
 	ctx, cancel := context.WithCancel(context.Background())
