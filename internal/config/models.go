@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/lancekrogers/samantha/internal/textclean"
 )
 
 // ModelFile describes a required model file (individual download).
@@ -159,6 +161,12 @@ func EnsureRuntimeAssets(cfg *Config, req AssetRequest, onProgress func(name str
 		}
 	}
 
+	if req.NeedTTS && strings.EqualFold(cfg.TTSProvider, "kokoro") {
+		if err := sanitizeKokoroLexicons(dir); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not sanitize kokoro lexicons: %v\n", err)
+		}
+	}
+
 	return nil
 }
 
@@ -183,6 +191,40 @@ func archiveExtracted(dir string, checkFiles []string) bool {
 		}
 	}
 	return true
+}
+
+func sanitizeKokoroLexicons(dir string) error {
+	paths, err := filepath.Glob(filepath.Join(dir, "lexicon*.txt"))
+	if err != nil {
+		return err
+	}
+
+	for _, path := range paths {
+		if err := sanitizeKokoroLexicon(path); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func sanitizeKokoroLexicon(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	cleaned := textclean.StripUnsupportedKokoroMarks(string(data))
+	if cleaned == string(data) {
+		return nil
+	}
+
+	return os.WriteFile(path, []byte(cleaned), info.Mode().Perm())
 }
 
 // downloadAndExtractArchive downloads a tar.bz2 and extracts to dir,
