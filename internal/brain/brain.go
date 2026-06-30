@@ -10,6 +10,7 @@ import (
 	"github.com/lancekrogers/claude-code-go/pkg/claude"
 
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/textclean"
 )
 
 // Brain manages conversation with Claude via claude-code-go.
@@ -211,11 +212,6 @@ func cleanForVoice(s string) string {
 		"Haha", "", "haha", "", "Heh", "", "heh", "",
 		"Uhh", "", "uhh", "", "Umm", "", "umm", "",
 		"Ahh", "", "ahh", "",
-		// Strip unicode combining characters that cause sherpa phoneme warnings.
-		"\u0329", "", // combining vertical line below
-		"\u0300", "", // combining grave accent
-		"\u0301", "", // combining acute accent
-		"\u0327", "", // combining cedilla
 	)
-	return strings.TrimSpace(r.Replace(s))
+	return strings.TrimSpace(textclean.StripUnsupportedKokoroMarks(r.Replace(s)))
 }
