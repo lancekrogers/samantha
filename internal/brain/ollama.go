@@ -227,6 +227,21 @@ func modelRejectedTools(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "does not support tools")
 }
 
+// Warmup preloads the model into memory with a minimal request so the user's
+// first real turn doesn't pay the cold-start (model-load) cost. Best-effort:
+// it caps generation, sends no tools, and ignores all errors so it can never
+// block or disrupt startup.
+func (o *OllamaBrain) Warmup(ctx context.Context) {
+	stream := false
+	req := &api.ChatRequest{
+		Model:    o.model,
+		Messages: []api.Message{{Role: "user", Content: "hi"}},
+		Stream:   &stream,
+		Options:  map[string]any{"num_predict": 1},
+	}
+	_ = o.client.Chat(ctx, req, func(api.ChatResponse) error { return nil })
+}
+
 // ClearHistory wipes conversation history.
 func (o *OllamaBrain) ClearHistory() {
 	o.history = nil
