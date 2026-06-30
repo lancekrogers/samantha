@@ -10,6 +10,7 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/textclean"
 )
 
 // langMap maps voice name prefixes to locales.
@@ -114,7 +115,7 @@ func (k *KokoroTTS) Synthesize(ctx context.Context, text string) (*audio.PCMStre
 			return
 		}
 
-		audioResult := k.tts.Generate(text, k.sid, k.speed)
+		audioResult := k.tts.Generate(textclean.StripUnsupportedKokoroMarks(text), k.sid, k.speed)
 		if audioResult == nil {
 			stream.CloseWithError(fmt.Errorf("TTS generation returned nil"))
 			return
