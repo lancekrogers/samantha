@@ -110,8 +110,6 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `listen_timeout` | `10` | | Listen timeout in seconds |
 | `phrase_time_limit` | `30` | | Maximum phrase length in seconds |
 
-Legacy Claude and Fish Audio keys still exist in config for compatibility, but the implemented providers are the ones listed above.
-
 ## Development
 
 ```bash
