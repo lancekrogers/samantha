@@ -171,13 +171,13 @@ func (s *SherpaOfflineSTT) runSession(ctx context.Context, events chan<- Event) 
 			result := stream.GetResult()
 			sherpa.DeleteOfflineStream(stream)
 
-			text := strings.TrimSpace(result.Text)
+			text := normalizeTranscript(strings.TrimSpace(result.Text))
 			if text != "" {
 				events <- FinalTranscript{Text: text}
 				return
 			}
 
-			// Empty transcription — keep listening
+			// Empty or non-speech transcription — keep listening
 			if exhausted {
 				events <- Timeout{}
 				return
