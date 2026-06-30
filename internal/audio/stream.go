@@ -9,6 +9,7 @@ import (
 // PCMStream carries synthesized mono PCM frames for playback.
 type PCMStream struct {
 	mu         sync.Mutex
+	ctx        context.Context
 	sampleRate int
 	err        error
 	closed     bool
@@ -16,9 +17,15 @@ type PCMStream struct {
 	frames     chan []float32
 }
 
-// NewPCMStream creates a new PCM stream.
-func NewPCMStream() *PCMStream {
+// NewPCMStream creates a new PCM stream bound to ctx. A blocked Write unblocks
+// and returns ctx.Err() when ctx is cancelled, so a cancelled turn never leaks
+// the producing synth goroutine on the frames send.
+func NewPCMStream(ctx context.Context) *PCMStream {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return &PCMStream{
+		ctx:    ctx,
 		ready:  make(chan struct{}),
 		frames: make(chan []float32, 8),
 	}
@@ -92,8 +99,12 @@ func (s *PCMStream) Write(samples []float32) error {
 	chunk := make([]float32, len(samples))
 	copy(chunk, samples)
 
-	s.frames <- chunk
-	return nil
+	select {
+	case s.frames <- chunk:
+		return nil
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
 }
 
 // Close marks the stream complete.

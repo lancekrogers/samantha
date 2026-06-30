@@ -304,7 +304,7 @@ func (f *fakeTTS) Synthesize(ctx context.Context, text string) (*audio.PCMStream
 	f.callTimes = append(f.callTimes, time.Now())
 	f.mu.Unlock()
 
-	stream := audio.NewPCMStream()
+	stream := audio.NewPCMStream(ctx)
 	go func() {
 		defer func() {
 			if ctx.Err() != nil {

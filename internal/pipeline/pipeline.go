@@ -51,6 +51,9 @@ type Pipeline struct {
 	Events            *events.Bus
 	VoiceToolsEnabled bool
 	OnTurn            func() // called after each completed turn for session auto-save
+
+	// PlaybackStallTimeout overrides the watchdog timeout; zero uses the default.
+	PlaybackStallTimeout time.Duration
 }
 
 type playbackEventType int
@@ -127,7 +130,12 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 	p.emit(events.UserInput{Text: text})
 	p.emit(events.ThinkingStarted{})
 
-	brainStream, err := p.Brain.ThinkStream(ctx, text, brain.StreamOptions{
+	// turnCtx scopes the whole turn so the playback watchdog can abort the brain
+	// stream too — not just the derived playback context.
+	turnCtx, turnCancel := context.WithCancel(ctx)
+	defer turnCancel()
+
+	brainStream, err := p.Brain.ThinkStream(turnCtx, text, brain.StreamOptions{
 		VoiceMode:    true,
 		ToolsEnabled: p.VoiceToolsEnabled,
 	})
@@ -135,7 +143,7 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 		return text, fmt.Errorf("brain: %w", err)
 	}
 
-	fullResponse, interrupted, err := p.streamResponse(ctx, brainStream, true, metrics)
+	fullResponse, interrupted, err := p.streamResponse(turnCtx, brainStream, true, metrics)
 	if err != nil {
 		return text, err
 	}
@@ -279,6 +287,10 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 	modelDone := stream.Done
 	modelFinished := false
 
+	var audioStarted atomic.Bool
+	stalled := make(chan struct{})
+	watchdogArmed := false
+
 	for sentences != nil || pending > 0 || modelDone != nil {
 		// Pause sentence intake while the playback queue is full so the loop
 		// always returns to select and can drain playbackEvents. Blocking here
@@ -291,6 +303,9 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 		select {
 		case <-ctx.Done():
 			return strings.TrimSpace(fullResponse.String()), interrupted, ctx.Err()
+
+		case <-stalled:
+			return strings.TrimSpace(fullResponse.String()), interrupted, errPlaybackStalled
 
 		case <-bargeIn:
 			if interrupted {
@@ -345,6 +360,10 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 			if metrics.firstSegment.IsZero() {
 				metrics.firstSegment = time.Now()
 			}
+			if !watchdogArmed {
+				watchdogArmed = true
+				go p.watchPlaybackStall(streamCtx, &audioStarted, cancel, stalled, p.stallTimeout())
+			}
 			p.emit(events.SpeechSegmentReady{Text: sentence})
 			p.emit(events.GeneratingVoice{Sentence: sentence})
 
@@ -368,7 +387,7 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 			}
 
 			pending++
-			go watchPlayback(sentence, synthStarted, playback, playbackEvents)
+			go watchPlayback(sentence, synthStarted, playback, &audioStarted, playbackEvents)
 
 		case event := <-playbackEvents:
 			switch event.kind {
@@ -558,11 +577,12 @@ func (p *Pipeline) emit(event events.Event) {
 	}
 }
 
-func watchPlayback(sentence string, synthStarted time.Time, playback *audio.Playback, out chan<- playbackEvent) {
+func watchPlayback(sentence string, synthStarted time.Time, playback *audio.Playback, started *atomic.Bool, out chan<- playbackEvent) {
 	startedAt := time.Time{}
 
 	select {
 	case <-playback.Started():
+		started.Store(true)
 		startedAt = time.Now()
 		out <- playbackEvent{
 			kind:         playbackStarted,
