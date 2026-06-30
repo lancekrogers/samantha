@@ -100,7 +100,7 @@ func NewKokoroTTS(cfg *config.Config) (*KokoroTTS, error) {
 
 // Synthesize streams synthesized PCM frames for the given text.
 func (k *KokoroTTS) Synthesize(ctx context.Context, text string) (*audio.PCMStream, error) {
-	stream := audio.NewPCMStream()
+	stream := audio.NewPCMStream(ctx)
 
 	go func() {
 		defer func() {

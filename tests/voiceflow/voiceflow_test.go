@@ -274,7 +274,7 @@ func (f *fixtureBrain) LoadHistory(turns []brain.Turn) {}
 type fixtureTTS struct{}
 
 func (f *fixtureTTS) Synthesize(ctx context.Context, text string) (*audio.PCMStream, error) {
-	stream := audio.NewPCMStream()
+	stream := audio.NewPCMStream(ctx)
 	go func() {
 		_ = stream.SetSampleRate(audio.SampleRate)
 		_ = stream.Write(make([]float32, audio.SampleRate/8))
