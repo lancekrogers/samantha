@@ -200,8 +200,9 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 			cleanups = append(cleanups, vad.Delete)
 			p.VAD = vad
 
-			if !silent {
-				bargeInVAD, err := audio.NewVAD(cfg)
+			// Barge-in stays nil (watchBargeIn no-ops) unless explicitly enabled.
+			if !silent && cfg.BargeInEnabled {
+				bargeInVAD, err := audio.NewBargeInVAD(cfg)
 				if err != nil {
 					cleanup()
 					return nil, nil, fmt.Errorf("init barge-in VAD: %w", err)
