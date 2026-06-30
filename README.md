@@ -115,7 +115,10 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `whispercpp_model` | `base.en` | `WHISPERCPP_MODEL` | Downloadable whisper.cpp model name |
 | `whispercpp_model_path` | `~/.cache/samantha/models/whispercpp/ggml-base.en.bin` | `WHISPERCPP_MODEL_PATH` | whisper.cpp model path |
 | `vad_enabled` | `true` | | Enable voice activity detection |
-| `vad_silence_duration` | `0.5` | | Seconds of silence before ending speech |
+| `vad_silence_duration` | `0.5` | | Seconds of silence before ending speech (raise to stop being cut off) |
+| `vad_threshold` | `0.6` | `VAD_THRESHOLD` | Speech-detection confidence (raise to ignore background noise) |
+| `vad_min_speech_duration` | `0.25` | `VAD_MIN_SPEECH_DURATION` | Minimum speech length in seconds (raise to ignore brief noises) |
+| `voice_frontend_enabled` | `true` | `VOICE_FRONTEND_ENABLED` | Local AEC/NS/AGC on mic input (disable to send raw audio to the recognizer) |
 | `agent_name` | `Samantha` | | Display name |
 | `models_dir` | `~/.cache/samantha/models` | `MODELS_DIR` | Model download directory |
 | `language` | `en-US` | | Recognition language |
