@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/charmbracelet/fang"
 	"github.com/spf13/cobra"
 
 	"github.com/lancekrogers/samantha/internal/app"
@@ -70,7 +71,7 @@ func init() {
 
 // Execute runs the root command.
 func Execute() error {
-	return rootCmd.Execute()
+	return fang.Execute(context.Background(), rootCmd)
 }
 
 func startPipeline(cfg *config.Config, resumeSession *session.Session) error {
