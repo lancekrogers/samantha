@@ -39,14 +39,6 @@ type Config struct {
 	OllamaHost        string `mapstructure:"ollama_host"`
 	VoiceToolsEnabled bool   `mapstructure:"voice_tools_enabled"`
 
-	// Claude (legacy, kept for override)
-	ClaudeModel        string `mapstructure:"claude_model"`
-	ClaudeModelComplex string `mapstructure:"claude_model_complex"`
-
-	// Fish Audio (optional)
-	FishAPIKey     string `mapstructure:"fish_api_key"`
-	FishVoiceModel string `mapstructure:"fish_voice_model_id"`
-
 	// Paths
 	ModelsDir string `mapstructure:"models_dir"`
 
@@ -93,12 +85,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ollama_host", "http://localhost:11434")
 	v.SetDefault("voice_tools_enabled", false)
 
-	v.SetDefault("claude_model", "")
-	v.SetDefault("claude_model_complex", "")
-
-	v.SetDefault("fish_api_key", "")
-	v.SetDefault("fish_voice_model_id", "474887f7949b4d1ab3e626cddf82613a")
-
 	v.SetDefault("agent_name", "Samantha")
 	v.SetDefault("models_dir", filepath.Join(homeDir(), ".cache", "samantha", "models"))
 
@@ -128,7 +114,6 @@ func Load() (*Config, error) {
 		"whispercpp_binary":      "WHISPERCPP_BINARY",
 		"whispercpp_model":       "WHISPERCPP_MODEL",
 		"whispercpp_model_path":  "WHISPERCPP_MODEL_PATH",
-		"fish_api_key":           "FISH_API_KEY",
 		"models_dir":             "MODELS_DIR",
 		"brain_provider":         "BRAIN_PROVIDER",
 		"ollama_model":           "OLLAMA_MODEL",
@@ -147,11 +132,6 @@ func Load() (*Config, error) {
 				return nil, fmt.Errorf("reading config: %w", err)
 			}
 		}
-	}
-
-	// Migrate old Python keys: voice_model_id -> fish_voice_model_id
-	if v.IsSet("voice_model_id") {
-		v.Set("fish_voice_model_id", v.GetString("voice_model_id"))
 	}
 
 	var cfg Config
