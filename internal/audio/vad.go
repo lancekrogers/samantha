@@ -22,23 +22,33 @@ type VAD struct {
 	detector *sherpa.VoiceActivityDetector
 }
 
-// NewVAD creates a VAD instance with the Silero model.
+// NewVAD creates the capture VAD, honoring the configurable threshold and
+// minimum speech duration.
 func NewVAD(cfg *config.Config) (*VAD, error) {
-	return newVAD(cfg, vadThreshold)
+	threshold := float32(vadThreshold)
+	if cfg.VADThreshold > 0 {
+		threshold = float32(cfg.VADThreshold)
+	}
+	minSpeech := float32(vadMinSpeechDuration)
+	if cfg.VADMinSpeechDuration > 0 {
+		minSpeech = float32(cfg.VADMinSpeechDuration)
+	}
+	return newVAD(cfg, threshold, minSpeech)
 }
 
 // NewBargeInVAD creates a VAD tuned for interrupt detection with a stricter
-// speech threshold than the capture VAD.
+// speech threshold than the capture VAD. It keeps the default tuning so the
+// capture VAD's configurable values don't bleed into barge-in.
 func NewBargeInVAD(cfg *config.Config) (*VAD, error) {
-	return newVAD(cfg, bargeInVADThreshold)
+	return newVAD(cfg, bargeInVADThreshold, vadMinSpeechDuration)
 }
 
-func newVAD(cfg *config.Config, threshold float32) (*VAD, error) {
+func newVAD(cfg *config.Config, threshold, minSpeech float32) (*VAD, error) {
 	modelPath := filepath.Join(config.ModelsDir(), "silero_vad.onnx")
 
 	sileroConfig := sherpa.SileroVadModelConfig{
 		Model:              modelPath,
-		MinSpeechDuration:  vadMinSpeechDuration,
+		MinSpeechDuration:  minSpeech,
 		MinSilenceDuration: float32(cfg.VADSilenceDuration),
 		Threshold:          threshold,
 	}
