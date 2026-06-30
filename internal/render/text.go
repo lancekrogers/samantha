@@ -46,6 +46,19 @@ func RenderText(ctx context.Context, opts Options, text string, synth Synthesize
 		return Result{}, fmt.Errorf("render: input contains no renderable text")
 	}
 
+	// A single-file render is one output, so resume keys on the whole document
+	// plus the render-affecting settings. An unchanged output whose file still
+	// exists is skipped without synthesizing.
+	synthID := synthIdentity(synth)
+	key := resumeKey(opts, synthID, text, opts.Out)
+	if opts.Resume && !opts.Overwrite {
+		if prevM, ok := loadPriorManifest(opts.ManifestPath()); ok {
+			if p, found := segmentForOutput(prevM, opts.Out); found && resumable(p, key, opts.Out) {
+				return skippedTextResult(opts, key, text, prevM, p), nil
+			}
+		}
+	}
+
 	var all []float32
 	sampleRate := 0
 	manifestSegs := make([]ManifestSegment, 0, len(segments))
@@ -65,6 +78,7 @@ func RenderText(ctx context.Context, opts Options, text string, synth Synthesize
 			Index:      i + 1,
 			ID:         fmt.Sprintf("seg-%03d", i+1),
 			TextSHA256: textHash(seg),
+			ResumeKey:  key,
 			Output:     opts.Out,
 			DurationMS: samplesDurationMS(len(samples), rate),
 			Status:     StatusComplete,
@@ -97,6 +111,48 @@ func RenderText(ctx context.Context, opts Options, text string, synth Synthesize
 		Duration:   dur,
 		Manifest:   manifest,
 	}, nil
+}
+
+// segmentForOutput returns the first manifest segment whose output matches.
+func segmentForOutput(m RenderManifest, output string) (ManifestSegment, bool) {
+	for _, s := range m.Segments {
+		if s.Output == output {
+			return s, true
+		}
+	}
+	return ManifestSegment{}, false
+}
+
+// skippedTextResult builds the result for a single-file render that resume
+// skipped: the output already matches the current key, so the manifest records
+// one skipped segment and reuses the prior sample rate and duration.
+func skippedTextResult(opts Options, key, text string, prevM RenderManifest, prior ManifestSegment) Result {
+	dur := time.Duration(prior.DurationMS) * time.Millisecond
+	manifest := RenderManifest{
+		Schema:       RenderSchema,
+		Title:        opts.Title,
+		Source:       sourceLabel(opts),
+		SourceFormat: opts.ResolveFormat(),
+		Voice:        opts.Voice,
+		SpeechSpeed:  opts.Speed,
+		SampleRate:   prevM.SampleRate,
+		Segments: []ManifestSegment{{
+			Index:      1,
+			ID:         "seg-001",
+			TextSHA256: textHash(text),
+			ResumeKey:  key,
+			Output:     opts.Out,
+			DurationMS: prior.DurationMS,
+			Status:     StatusSkipped,
+		}},
+	}
+	return Result{
+		Output:     opts.Out,
+		Segments:   0,
+		SampleRate: prevM.SampleRate,
+		Duration:   dur,
+		Manifest:   manifest,
+	}
 }
 
 // samplesDurationMS converts a sample count to milliseconds at rate.

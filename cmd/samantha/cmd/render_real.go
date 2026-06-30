@@ -167,7 +167,18 @@ func newRenderSynth(opts render.Options) (render.Synthesizer, func(), error) {
 	if cleanup == nil {
 		cleanup = func() {}
 	}
-	return &ttsSynth{provider: provider}, cleanup, nil
+	return &ttsSynth{provider: provider, id: synthIdentityFor(cfg)}, cleanup, nil
+}
+
+// synthIdentityFor describes the TTS engine for resume keys: the provider plus
+// any provider-specific model selection. Voice and speed are already part of the
+// resume key (from the render options), so they are intentionally omitted here.
+func synthIdentityFor(cfg *config.Config) string {
+	id := cfg.TTSProvider
+	if cfg.FishVoiceModel != "" {
+		id += "/" + cfg.FishVoiceModel
+	}
+	return id
 }
 
 func writeRenderJSON(out io.Writer, payload map[string]any) error {
@@ -253,8 +264,15 @@ func renderSource(opts render.Options) string {
 }
 
 // ttsSynth adapts the cgo tts.Provider into the cgo-free render.Synthesizer by
-// draining the PCM stream into a sample slice.
-type ttsSynth struct{ provider tts.Provider }
+// draining the PCM stream into a sample slice. It carries an id so resume keys
+// can invalidate when the underlying TTS engine changes.
+type ttsSynth struct {
+	provider tts.Provider
+	id       string
+}
+
+// Identity implements render.SynthIdentity so resume keys fold in the TTS engine.
+func (s *ttsSynth) Identity() string { return s.id }
 
 func (s *ttsSynth) Synthesize(ctx context.Context, text string) ([]float32, int, error) {
 	stream, err := s.provider.Synthesize(ctx, text)

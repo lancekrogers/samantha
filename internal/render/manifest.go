@@ -25,6 +25,7 @@ type ManifestSegment struct {
 	ID         string `json:"id"`
 	Title      string `json:"title,omitempty"`
 	TextSHA256 string `json:"text_sha256"`
+	ResumeKey  string `json:"resume_key,omitempty"`
 	Output     string `json:"output"`
 	DurationMS int64  `json:"duration_ms"`
 	Status     string `json:"status"`
@@ -69,20 +70,30 @@ func (m RenderManifest) TotalDurationMS() int64 {
 	return total
 }
 
-// priorSegmentsByOutput loads an existing manifest at path (if any) and returns
-// its segments keyed by output filename, for resume decisions. A missing or
-// unreadable manifest yields an empty map.
-func priorSegmentsByOutput(path string) map[string]ManifestSegment {
-	out := map[string]ManifestSegment{}
+// loadPriorManifest reads an existing manifest at path for resume decisions. A
+// missing, empty, or unreadable manifest yields ok=false (resume then treats
+// every segment as new).
+func loadPriorManifest(path string) (RenderManifest, bool) {
 	if path == "" {
-		return out
+		return RenderManifest{}, false
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return out
+		return RenderManifest{}, false
 	}
 	var m RenderManifest
 	if err := json.Unmarshal(data, &m); err != nil {
+		return RenderManifest{}, false
+	}
+	return m, true
+}
+
+// priorSegmentsByOutput returns the prior manifest's segments keyed by output
+// filename, for per-output resume decisions.
+func priorSegmentsByOutput(path string) map[string]ManifestSegment {
+	out := map[string]ManifestSegment{}
+	m, ok := loadPriorManifest(path)
+	if !ok {
 		return out
 	}
 	for _, s := range m.Segments {

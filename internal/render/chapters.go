@@ -37,6 +37,7 @@ func RenderChapters(ctx context.Context, opts Options, chapters []RenderChapter,
 	if opts.Resume && !opts.Overwrite {
 		prior = priorSegmentsByOutput(opts.ManifestPath())
 	}
+	synthID := synthIdentity(synth)
 
 	segs := make([]ManifestSegment, 0, len(chapters))
 	sampleRate := 0
@@ -47,11 +48,12 @@ func RenderChapters(ctx context.Context, opts Options, chapters []RenderChapter,
 		name := chapterFilename(i+1, ch)
 		outPath := filepath.Join(opts.OutDir, name)
 		hash := textHash(ch.Text)
+		key := resumeKey(opts, synthID, ch.Text, name)
 
-		if p, ok := prior[name]; ok && p.TextSHA256 == hash && pathExists(outPath) {
+		if p, ok := prior[name]; ok && resumable(p, key, outPath) {
 			segs = append(segs, ManifestSegment{
 				Index: i + 1, ID: chapterID(ch, i+1), Title: ch.Title,
-				TextSHA256: hash, Output: name, DurationMS: p.DurationMS, Status: StatusSkipped,
+				TextSHA256: hash, ResumeKey: key, Output: name, DurationMS: p.DurationMS, Status: StatusSkipped,
 			})
 			continue
 		}
@@ -68,7 +70,7 @@ func RenderChapters(ctx context.Context, opts Options, chapters []RenderChapter,
 		}
 		segs = append(segs, ManifestSegment{
 			Index: i + 1, ID: chapterID(ch, i+1), Title: ch.Title,
-			TextSHA256: hash, Output: name, DurationMS: samplesDurationMS(len(samples), rate), Status: StatusComplete,
+			TextSHA256: hash, ResumeKey: key, Output: name, DurationMS: samplesDurationMS(len(samples), rate), Status: StatusComplete,
 		})
 	}
 
