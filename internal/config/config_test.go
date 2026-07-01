@@ -61,8 +61,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.VADMinSpeechDuration != 0.25 {
 		t.Errorf("VADMinSpeechDuration = %v, want 0.25", cfg.VADMinSpeechDuration)
 	}
-	if !cfg.VoiceFrontendEnabled {
-		t.Error("VoiceFrontendEnabled = false, want true")
+	if cfg.VoiceFrontendEnabled {
+		t.Error("VoiceFrontendEnabled = true, want false (frontend over-suppresses normal speech)")
 	}
 }
 

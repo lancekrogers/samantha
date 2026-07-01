@@ -71,10 +71,7 @@ func (m launcherModel) View() string {
 		}
 	}
 
-	model := "default"
-	if m.cfg.BrainProvider == "ollama" && m.cfg.OllamaModel != "" {
-		model = m.cfg.OllamaModel
-	}
+	model := m.activeModel()
 
 	b.WriteString(dimStyle.Render(fmt.Sprintf("  Brain: %s  Model: %s  Voice: %s", brainStatus, model, m.cfg.TTSVoice)))
 	b.WriteString("\n\n")
@@ -95,4 +92,18 @@ func (m launcherModel) View() string {
 	b.WriteString("\n")
 
 	return b.String()
+}
+
+func (m launcherModel) activeModel() string {
+	switch m.cfg.BrainProvider {
+	case "ollama":
+		if m.cfg.OllamaModel != "" {
+			return m.cfg.OllamaModel
+		}
+	case "grok":
+		if m.cfg.GrokModel != "" {
+			return m.cfg.GrokModel
+		}
+	}
+	return "default"
 }
