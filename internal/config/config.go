@@ -87,7 +87,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("vad_silence_duration", 0.8)
 	v.SetDefault("vad_threshold", 0.6)
 	v.SetDefault("vad_min_speech_duration", 0.25)
-	v.SetDefault("voice_frontend_enabled", true)
+	// Off by default: the frontend's noise suppressor over-suppresses normal-volume
+	// speech (gates it below the VAD threshold — see voice_frontend_test.go), which
+	// left voice mode stuck on "listening" until the user spoke loudly. Re-enabling
+	// needs the suppressor re-tuned against real mic input. Its main consumer, AEC
+	// for barge-in, is also off by default.
+	v.SetDefault("voice_frontend_enabled", false)
 	v.SetDefault("barge_in_enabled", false)
 
 	v.SetDefault("brain_provider", "claude")
