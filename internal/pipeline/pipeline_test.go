@@ -193,8 +193,46 @@ func TestRunTurnBargeInInterruptsPlayback(t *testing.T) {
 	if player.StopCount() == 0 {
 		t.Fatal("player Stop() was not called during barge-in")
 	}
-	if capture.ResetCount() != 0 {
-		t.Fatalf("capture.Reset() called %d times, want 0 on interruption", capture.ResetCount())
+	// One reset from the listen-start drain; the barge-in itself must add none,
+	// and it arms keepCapture so the next turn preserves the user's in-progress
+	// audio instead of draining it.
+	if capture.ResetCount() != 1 {
+		t.Fatalf("capture.Reset() count = %d, want 1 (listen drain only)", capture.ResetCount())
+	}
+	if !p.keepCapture {
+		t.Fatal("barge-in should arm keepCapture so the next turn preserves the user's audio")
+	}
+}
+
+func TestTranscribeTurnDrainsCaptureExceptAfterBargeIn(t *testing.T) {
+	capture := newFakeCapture()
+	p := &Pipeline{
+		STT:     &fakeSTT{text: "hello"},
+		Brain:   &fakeBrain{chunks: []string{"hi there"}},
+		VAD:     &fakeVAD{},
+		Capture: capture,
+		Events:  events.NewBus(),
+		// No TTS/Player: the speak path is skipped, isolating the listen drain.
+	}
+
+	// A normal turn drains the stale capture buffer exactly once before listening.
+	if _, err := p.RunTurn(context.Background()); err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if capture.ResetCount() != 1 {
+		t.Fatalf("capture.Reset() count = %d, want 1 after a normal turn", capture.ResetCount())
+	}
+
+	// Simulate a prior barge-in: the next listen must preserve the buffer.
+	p.keepCapture = true
+	if _, err := p.RunTurn(context.Background()); err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if capture.ResetCount() != 1 {
+		t.Fatalf("capture.Reset() count = %d, want 1 (drain skipped after barge-in)", capture.ResetCount())
+	}
+	if p.keepCapture {
+		t.Fatal("keepCapture should clear after the preserved turn")
 	}
 }
 

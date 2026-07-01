@@ -96,8 +96,8 @@ func (s *SherpaOfflineSTT) Start(ctx context.Context) (Session, error) {
 func (s *SherpaOfflineSTT) runSession(ctx context.Context, events chan<- Event) {
 	defer close(events)
 
-	// Flush stale VAD segments from previous turn.
-	// Do NOT reset capture — the user may already be speaking.
+	// Reset VAD state for the new turn. The pipeline drains the capture buffer
+	// before starting the session, so stale inter-turn audio is already gone.
 	s.vad.Clear()
 	lastPhaseAt := time.Now()
 	emitPhase := func(phase string) {
