@@ -32,19 +32,19 @@ var testCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Printf("\n  Samantha Audio Test\n")
-		fmt.Printf("  TTS: %s | STT: %s\n\n", cfg.TTSProvider, cfg.STTProvider)
+		fmt.Printf("\n  %s\n", titleStyle.Render("Samantha Audio Test"))
+		fmt.Printf("  %s\n\n", dimStyle.Render(fmt.Sprintf("TTS: %s | STT: %s", cfg.TTSProvider, cfg.STTProvider)))
 
 		// TTS test
-		fmt.Println("  1. Testing speaker (TTS)...")
+		fmt.Printf("  %s %s\n", sectionStyle.Render("1."), "Testing speaker (TTS)...")
 		if err := config.EnsureRuntimeAssets(cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
-			fmt.Printf("  FAIL: %v\n\n", err)
+			fmt.Printf("  %s %v\n\n", failStyle.Render("FAIL:"), err)
 			return nil
 		}
 
 		ttsProvider, cleanup, err := tts.NewProvider(cfg)
 		if err != nil {
-			fmt.Printf("  FAIL: %v\n\n", err)
+			fmt.Printf("  %s %v\n\n", failStyle.Render("FAIL:"), err)
 		} else {
 			if cleanup != nil {
 				defer cleanup()
@@ -55,27 +55,27 @@ var testCmd = &cobra.Command{
 
 			stream, err := ttsProvider.Synthesize(context.Background(), "Hello! I'm Samantha. Your speaker is working.")
 			if err != nil {
-				fmt.Printf("  FAIL: %v\n\n", err)
+				fmt.Printf("  %s %v\n\n", failStyle.Render("FAIL:"), err)
 			} else {
 				playback, err := player.PlayStream(context.Background(), stream)
 				if err != nil {
-					fmt.Printf("  FAIL: %v\n\n", err)
+					fmt.Printf("  %s %v\n\n", failStyle.Render("FAIL:"), err)
 				} else {
 					result := <-playback.Done()
 					if result.Err != nil && !result.Interrupted {
-						fmt.Printf("  FAIL: %v\n\n", result.Err)
+						fmt.Printf("  %s %v\n\n", failStyle.Render("FAIL:"), result.Err)
 					} else {
-						fmt.Printf("  PASS: Played speaker test clip\n\n")
+						fmt.Printf("  %s Played speaker test clip\n\n", okStyle.Render("PASS:"))
 					}
 				}
 			}
 		}
 
 		// STT test placeholder
-		fmt.Println("  2. Testing microphone (STT)...")
-		fmt.Println("  (mic test requires full pipeline — use 'samantha' to test)")
+		fmt.Printf("  %s %s\n", sectionStyle.Render("2."), "Testing microphone (STT)...")
+		fmt.Println(dimStyle.Render("  (mic test requires full pipeline — use 'samantha' to test)"))
 		fmt.Println()
-		fmt.Println("  Test complete.")
+		fmt.Println(okStyle.Render("  Test complete."))
 		fmt.Println()
 		return nil
 	},
@@ -90,7 +90,7 @@ var voicesCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Printf("\n  Voices for: %s\n\n", cfg.TTSProvider)
+		fmt.Printf("\n  %s %s\n\n", titleStyle.Render("Voices for:"), sectionStyle.Render(cfg.TTSProvider))
 
 		if err := config.EnsureRuntimeAssets(cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
 			return err
@@ -106,14 +106,18 @@ var voicesCmd = &cobra.Command{
 
 		voices := ttsProvider.ListVoices(voiceLocale, voiceGender)
 		if len(voices) == 0 {
-			fmt.Println("  No voices found.")
+			fmt.Println(dimStyle.Render("  No voices found."))
 			return nil
 		}
 
 		for _, v := range voices {
-			fmt.Printf("  %-16s %s  %s / %s\n", v.Name, v.FriendlyName, v.Gender, v.Locale)
+			active := ""
+			if v.Name == cfg.TTSVoice {
+				active = " " + activeStyle.Render("●")
+			}
+			fmt.Printf("  %s %s  %s\n", keyStyle.Render(fmt.Sprintf("%-16s", v.Name)), v.FriendlyName, dimStyle.Render(fmt.Sprintf("%s / %s", v.Gender, v.Locale))+active)
 		}
-		fmt.Printf("\n  %d voices found.\n\n", len(voices))
+		fmt.Printf("\n  %s\n\n", dimStyle.Render(fmt.Sprintf("%d voices found.", len(voices))))
 		return nil
 	},
 }
@@ -128,43 +132,43 @@ var providersCmd = &cobra.Command{
 		}
 
 		fmt.Println()
-		fmt.Println("  Providers")
-		fmt.Println("  Brain:")
+		fmt.Printf("  %s\n", titleStyle.Render("Providers"))
+		fmt.Printf("  %s\n", sectionStyle.Render("Brain:"))
 		brainActive := strings.TrimSpace(cfg.BrainProvider)
 		if brainActive == "" {
 			brainActive = "claude"
 		}
 		for _, spec := range brain.Providers() {
-			fmt.Printf("    [%s] %s — %s\n", activeTag(brainActive == spec.Name), spec.Name, spec.Description)
+			printProvider(brainActive == spec.Name, spec.Name, spec.Description)
 		}
 		if !brainImplemented(brainActive) {
-			fmt.Printf("    [config] %s — configured but not implemented in this build\n", brainActive)
+			fmt.Printf("    %s %s\n", dimStyle.Render("[config]"), dimStyle.Render(brainActive+" — configured but not implemented in this build"))
 		}
 
 		fmt.Println()
-		fmt.Println("  TTS (text-to-speech):")
+		fmt.Printf("  %s\n", sectionStyle.Render("TTS (text-to-speech):"))
 		ttsActive := cfg.TTSProvider
 		if ttsActive == "" {
 			ttsActive = "kokoro"
 		}
 		for _, spec := range tts.Providers() {
-			fmt.Printf("    [%s] %s — %s\n", activeTag(ttsActive == spec.Name), spec.Name, spec.Description)
+			printProvider(ttsActive == spec.Name, spec.Name, spec.Description)
 		}
 		if !ttsImplemented(ttsActive) {
-			fmt.Printf("    [config] %s — configured but not implemented in this build\n", ttsActive)
+			fmt.Printf("    %s %s\n", dimStyle.Render("[config]"), dimStyle.Render(ttsActive+" — configured but not implemented in this build"))
 		}
 
 		fmt.Println()
-		fmt.Println("  STT (speech-to-text):")
+		fmt.Printf("  %s\n", sectionStyle.Render("STT (speech-to-text):"))
 		sttActive := cfg.STTProvider
 		if sttActive == "" {
 			sttActive = "sherpa"
 		}
 		for _, spec := range stt.Providers() {
-			fmt.Printf("    [%s] %s — %s\n", activeTag(sttActive == spec.Name), spec.Name, spec.Description)
+			printProvider(sttActive == spec.Name, spec.Name, spec.Description)
 		}
 		if !sttImplemented(sttActive) {
-			fmt.Printf("    [config] %s — configured but not implemented in this build\n", sttActive)
+			fmt.Printf("    %s %s\n", dimStyle.Render("[config]"), dimStyle.Render(sttActive+" — configured but not implemented in this build"))
 		}
 		fmt.Println()
 		return nil
@@ -194,13 +198,12 @@ var resumeCmd = &cobra.Command{
 		// List sessions and let user pick.
 		sessions := session.List()
 		if len(sessions) == 0 {
-			fmt.Println("  No saved sessions.")
+			fmt.Println(dimStyle.Render("  No saved sessions."))
 			return nil
 		}
 
 		fmt.Println()
-		fmt.Println("  Recent sessions:")
-		fmt.Println()
+		fmt.Printf("  %s\n\n", titleStyle.Render("Recent sessions"))
 		max := 10
 		if len(sessions) < max {
 			max = len(sessions)
@@ -208,11 +211,15 @@ var resumeCmd = &cobra.Command{
 		for i, s := range sessions[:max] {
 			turns := len(s.Turns)
 			age := fmtAge(s.UpdatedAt)
-			fmt.Printf("  %2d. [%s] %s — %d turns, %s ago\n", i+1, s.ID, s.Summary, turns, age)
+			meta := dimStyle.Render(fmt.Sprintf("%d turns, %s ago", turns, age))
+			fmt.Printf("  %s %s %s %s\n",
+				dimStyle.Render(fmt.Sprintf("%2d.", i+1)),
+				sectionStyle.Render(s.ID),
+				s.Summary,
+				dimStyle.Render("— ")+meta)
 		}
 		fmt.Println()
-		fmt.Println("  Usage: samantha resume <session-id>")
-		fmt.Println()
+		fmt.Printf("  %s\n\n", dimStyle.Render("Usage: samantha resume <session-id>"))
 		return nil
 	},
 }
@@ -229,7 +236,7 @@ var continueCmd = &cobra.Command{
 
 		sess := session.Latest()
 		if sess == nil {
-			fmt.Println("  No saved sessions to continue.")
+			fmt.Println(dimStyle.Render("  No saved sessions to continue."))
 			return nil
 		}
 
@@ -251,11 +258,16 @@ func fmtAge(t time.Time) string {
 	}
 }
 
-func activeTag(active bool) string {
+// printProvider renders one provider row with a green marker when it is the
+// active provider.
+func printProvider(active bool, name, desc string) {
+	marker := "  "
+	style := keyStyle
 	if active {
-		return "active"
+		marker = activeStyle.Render("●") + " "
+		style = activeStyle
 	}
-	return "      "
+	fmt.Printf("    %s%s %s\n", marker, style.Render(name), dimStyle.Render("— "+desc))
 }
 
 func brainImplemented(name string) bool {

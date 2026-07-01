@@ -92,7 +92,7 @@ var benchmarkCmd = &cobra.Command{
 			if err := writeBenchmarkJSON(benchmarkJSONOutput, results); err != nil {
 				return err
 			}
-			fmt.Printf("\n  Wrote benchmark JSON to %s\n\n", benchmarkJSONOutput)
+			fmt.Printf("\n  %s %s\n\n", okStyle.Render("Wrote benchmark JSON to"), benchmarkJSONOutput)
 		}
 
 		failures := countViolations(results)
@@ -385,29 +385,29 @@ func countViolations(results []benchmarkResult) int {
 
 func printBenchmarkSummary(results []benchmarkResult) {
 	fmt.Println()
-	fmt.Println("  Samantha Benchmark")
+	fmt.Printf("  %s\n", titleStyle.Render("Samantha Benchmark"))
 	fmt.Println()
 
 	for _, result := range results {
 		switch result.Mode {
 		case "stt":
-			fmt.Printf("  [%d] %s :: %s\n", result.Iteration, result.Provider, filepath.Base(result.Fixture))
-			fmt.Printf("    stt final: %s\n", formatMetric(result.Metrics.STTFinalElapsed))
+			fmt.Printf("  %s %s\n", sectionStyle.Render(fmt.Sprintf("[%d]", result.Iteration)), fmt.Sprintf("%s :: %s", result.Provider, filepath.Base(result.Fixture)))
+			printMetric("stt final", formatMetric(result.Metrics.STTFinalElapsed))
 			if result.Expected != "" {
-				fmt.Printf("    transcript score: %.2f\n", result.TranscriptScore)
+				printMetric("transcript score", fmt.Sprintf("%.2f", result.TranscriptScore))
 			}
 			if result.Transcript != "" {
-				fmt.Printf("    transcript: %s\n", result.Transcript)
+				printMetric("transcript", result.Transcript)
 			}
 		default:
-			fmt.Printf("  [%d] %s\n", result.Iteration, result.Prompt)
-			fmt.Printf("    total: %s\n", result.Elapsed.Round(time.Millisecond))
-			fmt.Printf("    first model chunk: %s\n", formatMetric(result.Metrics.FirstModelChunkElapsed))
-			fmt.Printf("    model complete: %s\n", formatMetric(result.Metrics.ModelCompleteElapsed))
-			fmt.Printf("    first segment: %s\n", formatMetric(result.Metrics.FirstSegmentElapsed))
-			fmt.Printf("    first audio ready: %s\n", formatMetric(result.Metrics.FirstAudioReadyElapsed))
-			fmt.Printf("    playback start: %s\n", formatMetric(result.Metrics.PlaybackStartElapsed))
-			fmt.Printf("    playback complete: %s\n", formatMetric(result.Metrics.PlaybackCompleteElapsed))
+			fmt.Printf("  %s %s\n", sectionStyle.Render(fmt.Sprintf("[%d]", result.Iteration)), result.Prompt)
+			printMetric("total", result.Elapsed.Round(time.Millisecond).String())
+			printMetric("first model chunk", formatMetric(result.Metrics.FirstModelChunkElapsed))
+			printMetric("model complete", formatMetric(result.Metrics.ModelCompleteElapsed))
+			printMetric("first segment", formatMetric(result.Metrics.FirstSegmentElapsed))
+			printMetric("first audio ready", formatMetric(result.Metrics.FirstAudioReadyElapsed))
+			printMetric("playback start", formatMetric(result.Metrics.PlaybackStartElapsed))
+			printMetric("playback complete", formatMetric(result.Metrics.PlaybackCompleteElapsed))
 		}
 
 		if len(result.Errors) > 0 {
@@ -416,16 +416,22 @@ func printBenchmarkSummary(results []benchmarkResult) {
 				if stage == "" {
 					stage = "runtime"
 				}
-				fmt.Printf("    error [%s]: %s\n", stage, err.Message)
+				fmt.Printf("    %s %s\n", failStyle.Render(fmt.Sprintf("error [%s]:", stage)), err.Message)
 			}
 		}
 		if len(result.Violations) > 0 {
 			for _, violation := range result.Violations {
-				fmt.Printf("    violation: %s\n", violation)
+				fmt.Printf("    %s %s\n", failStyle.Render("violation:"), violation)
 			}
 		}
 		fmt.Println()
 	}
+}
+
+// printMetric renders one indented "label: value" benchmark metric line with a
+// dimmed label.
+func printMetric(label, value string) {
+	fmt.Printf("    %s %s\n", dimStyle.Render(label+":"), value)
 }
 
 func writeBenchmarkJSON(path string, results []benchmarkResult) error {

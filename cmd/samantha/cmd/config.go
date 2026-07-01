@@ -17,12 +17,12 @@ var configCmd = &cobra.Command{
 		switch len(args) {
 		case 0:
 			// Show all config
-			fmt.Printf("\n  Samantha Configuration\n")
-			fmt.Printf("  Config file: %s\n\n", config.ConfigFile())
+			fmt.Printf("\n  %s\n", titleStyle.Render("Samantha Configuration"))
+			fmt.Printf("  %s\n\n", dimStyle.Render("Config file: "+config.ConfigFile()))
 			for _, key := range config.AllKeys() {
 				val := config.Get(key)
 				display := maskSecret(key, fmt.Sprint(val))
-				fmt.Printf("  %s = %s\n", key, display)
+				fmt.Printf("  %s %s %s\n", keyStyle.Render(key), dimStyle.Render("="), valueStyle.Render(display))
 			}
 			fmt.Println()
 		case 1:
@@ -32,13 +32,13 @@ var configCmd = &cobra.Command{
 				return fmt.Errorf("unknown key: %s", args[0])
 			}
 			display := maskSecret(args[0], fmt.Sprint(val))
-			fmt.Printf("  %s = %s\n", args[0], display)
+			fmt.Printf("  %s %s %s\n", keyStyle.Render(args[0]), dimStyle.Render("="), valueStyle.Render(display))
 		case 2:
 			// Set value
 			if err := config.SetAndSave(args[0], args[1]); err != nil {
 				return err
 			}
-			fmt.Printf("  Set %s = %s\n", args[0], maskSecret(args[0], args[1]))
+			fmt.Printf("  %s %s %s %s\n", dimStyle.Render("Set"), keyStyle.Render(args[0]), dimStyle.Render("="), valueStyle.Render(maskSecret(args[0], args[1])))
 		}
 		return nil
 	},
