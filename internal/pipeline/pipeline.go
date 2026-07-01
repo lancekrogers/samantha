@@ -15,16 +15,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/tts"
 )
 
-const (
-	voiceQueueDepth = 2
-	// bargeInArmDelay holds off interrupt detection after playback starts so the
-	// echo of Samantha's own first words doesn't trip barge-in.
-	bargeInArmDelay = 600 * time.Millisecond
-	// bargeInMinSpeechChunks requires sustained speech before interrupting, so a
-	// brief burst of residual echo isn't mistaken for the user.
-	bargeInMinSpeechChunks = 6
-	bargeInBufferSize      = 8
-)
+const voiceQueueDepth = 2
 
 type captureMonitor interface {
 	Subscribe(buffer int) (int, <-chan []float32)
@@ -113,24 +104,61 @@ func (m *turnMetrics) elapsed(ts time.Time) time.Duration {
 	return ts.Sub(m.start)
 }
 
+// turnConductor bridges the turn state machine into the live pipeline: stages
+// report state transitions and it guarantees exactly one terminal TurnMetrics
+// emission per turn, regardless of which return path ends the turn.
+type turnConductor struct {
+	p        *Pipeline
+	machine  *turnMachine
+	metrics  *turnMetrics
+	finished bool
+}
+
+func (p *Pipeline) newTurnConductor(metrics *turnMetrics) *turnConductor {
+	return &turnConductor{p: p, machine: newTurnMachine(), metrics: metrics}
+}
+
+// to advances the lifecycle state, ignoring illegal or out-of-order transitions
+// so a late stage signal cannot corrupt the turn outcome.
+func (c *turnConductor) to(state TurnState) { c.machine.To(state) }
+
+// finish moves the machine to its terminal state and emits the single terminal
+// metrics event. Later calls are no-ops, so every return path can call it.
+func (c *turnConductor) finish(terminal TurnState) {
+	if c.finished {
+		return
+	}
+	c.finished = true
+	c.machine.To(terminal)
+	c.p.emit(events.TurnMetrics(c.metrics.snapshot()))
+}
+
 // RunTurn executes one conversational turn with streaming TTS.
 // Returns the user's input text, or empty string if no speech was detected.
 func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 	metrics := newTurnMetrics()
+	turn := p.newTurnConductor(metrics)
 
 	if p.Player != nil {
 		p.Player.Stop()
 	}
 
-	text, err := p.transcribeTurn(ctx, metrics)
+	turn.to(TurnListening)
+	text, err := p.transcribeTurn(ctx, metrics, turn)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			turn.finish(TurnInterrupted)
+		} else {
+			turn.finish(TurnFailed)
+		}
 		return "", err
 	}
 	if text == "" {
-		p.emit(events.TurnMetrics(metrics.snapshot()))
+		turn.finish(TurnTimedOut)
 		return "", nil
 	}
 
+	turn.to(TurnThinking)
 	p.emit(events.UserInput{Text: text})
 	p.emit(events.ThinkingStarted{})
 
@@ -144,11 +172,17 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 		ToolsEnabled: p.VoiceToolsEnabled,
 	})
 	if err != nil {
+		turn.finish(TurnFailed)
 		return text, fmt.Errorf("brain: %w", err)
 	}
 
-	fullResponse, interrupted, err := p.streamResponse(turnCtx, brainStream, true, metrics)
+	fullResponse, interrupted, err := p.streamResponse(turnCtx, turnCancel, brainStream, true, metrics, turn)
 	if err != nil {
+		if interrupted || errors.Is(err, context.Canceled) {
+			turn.finish(TurnInterrupted)
+		} else {
+			turn.finish(TurnFailed)
+		}
 		return text, err
 	}
 
@@ -160,7 +194,11 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 		Response:    fullResponse,
 		Interrupted: interrupted,
 	})
-	p.emit(events.TurnMetrics(metrics.snapshot()))
+	if interrupted {
+		turn.finish(TurnInterrupted)
+	} else {
+		turn.finish(TurnCompleted)
+	}
 
 	if p.OnTurn != nil {
 		p.OnTurn()
@@ -172,13 +210,16 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 // RunTurnTextMode runs a turn with text input instead of mic.
 func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	metrics := newTurnMetrics()
+	turn := p.newTurnConductor(metrics)
 
+	turn.to(TurnThinking)
 	p.emit(events.UserInput{Text: input})
 	p.emit(events.ThinkingStarted{})
 	thinkingStarted := time.Now()
 
 	response, err := p.Brain.ThinkFull(ctx, input)
 	if err != nil {
+		turn.finish(TurnFailed)
 		return fmt.Errorf("brain: %w", err)
 	}
 
@@ -192,6 +233,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	})
 
 	if p.TTS != nil && p.Player != nil && p.TTS.Available() {
+		turn.to(TurnSpeaking)
 		if metrics.firstSegment.IsZero() {
 			metrics.firstSegment = time.Now()
 		}
@@ -201,9 +243,11 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 		synthStarted := time.Now()
 		stream, err := p.TTS.Synthesize(ctx, response)
 		if err != nil {
+			// Voice is best-effort in text mode: the text response still
+			// completed, so the turn is completed (degraded), not failed.
 			p.emit(events.Error{Stage: "tts", Message: fmt.Sprintf("TTS: %v", err)})
 			p.emit(events.ResponseReady{Response: response})
-			p.emit(events.TurnMetrics(metrics.snapshot()))
+			turn.finish(TurnCompleted)
 			return nil
 		}
 
@@ -211,7 +255,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 		if err != nil {
 			p.emit(events.Error{Stage: "playback", Message: fmt.Sprintf("playback: %v", err)})
 			p.emit(events.ResponseReady{Response: response})
-			p.emit(events.TurnMetrics(metrics.snapshot()))
+			turn.finish(TurnCompleted)
 			return nil
 		}
 
@@ -219,7 +263,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	}
 
 	p.emit(events.ResponseReady{Response: response})
-	p.emit(events.TurnMetrics(metrics.snapshot()))
+	turn.finish(TurnCompleted)
 
 	if p.OnTurn != nil {
 		p.OnTurn()
@@ -228,7 +272,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	return nil
 }
 
-func (p *Pipeline) transcribeTurn(ctx context.Context, metrics *turnMetrics) (string, error) {
+func (p *Pipeline) transcribeTurn(ctx context.Context, metrics *turnMetrics, turn *turnConductor) (string, error) {
 	if p.STT == nil {
 		return "", errors.New("STT provider is not configured")
 	}
@@ -259,6 +303,9 @@ func (p *Pipeline) transcribeTurn(ctx context.Context, metrics *turnMetrics) (st
 
 			switch e := event.(type) {
 			case stt.PhaseEvent:
+				if e.Phase == "transcribing" {
+					turn.to(TurnTranscribing)
+				}
 				p.emit(events.STTPhase{
 					Phase:   e.Phase,
 					Elapsed: time.Duration(e.Elapsed),
@@ -282,22 +329,44 @@ func (p *Pipeline) transcribeTurn(ctx context.Context, metrics *turnMetrics) (st
 	}
 }
 
-func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, allowBargeIn bool, metrics *turnMetrics) (string, bool, error) {
+func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.CancelFunc, stream *brain.Stream, allowBargeIn bool, metrics *turnMetrics, turn *turnConductor) (string, bool, error) {
 	streamCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
-	streamedChunks := p.observeStream(streamCtx, stream, metrics)
+	// loopDone closes when this function returns — the moment the loop stops
+	// draining playbackEvents. Playback watchers select on it so their sends
+	// cannot block (and leak) after an early return (ctx cancel, stall, or brain
+	// error). It is distinct from streamCtx on purpose: a barge-in cancels
+	// streamCtx but the loop keeps reading playbackEvents to drain pending
+	// playbacks, so watchers must still deliver their finished events.
+	loopDone := make(chan struct{})
+	defer close(loopDone)
+
+	// Two narrow upstream stages feed the turn loop: the model observer forwards
+	// brain chunks (stamping first-chunk metrics), then the segmenter turns that
+	// chunk stream into voice-ready sentences. Both are testable in isolation.
+	streamedChunks, observeDone := p.observeStream(streamCtx, stream, metrics)
+	// Join the observer before returning: it stamps firstModelChunk, which the
+	// caller reads via snapshot() in finish(). Cancel first so the goroutine
+	// unblocks, then wait for it to exit. cancel is idempotent — the barge-in and
+	// normal-completion paths also call it. This runs after close(loopDone).
+	defer func() {
+		cancel()
+		<-observeDone
+	}()
 	sentences := brain.ChunkSentences(streamedChunks)
 
 	var fullResponse strings.Builder
 	var interrupted bool
 	var pending int
-	var bargeIn <-chan struct{}
+	var bargeIn <-chan interruptRequest
+	var bargeDone <-chan struct{}
 	var armAt atomic.Int64
 	armAt.Store(time.Now().Add(24 * time.Hour).UnixNano())
 
 	if allowBargeIn {
-		bargeIn = p.watchBargeIn(streamCtx, &armAt)
+		watch := p.newInterruptController().watchWithDone(streamCtx, &armAt)
+		bargeIn = watch.requests
+		bargeDone = watch.done
 	}
 
 	playbackEvents := make(chan playbackEvent, voiceQueueDepth*2)
@@ -319,24 +388,31 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 
 		select {
 		case <-ctx.Done():
+			if interrupted {
+				return strings.TrimSpace(fullResponse.String()), interrupted, nil
+			}
 			return strings.TrimSpace(fullResponse.String()), interrupted, ctx.Err()
 
 		case <-stalled:
 			return strings.TrimSpace(fullResponse.String()), interrupted, errPlaybackStalled
 
-		case <-bargeIn:
+		case req := <-bargeIn:
 			if interrupted {
 				continue
 			}
 			interrupted = true
 			metrics.interrupted = true
-			metrics.bargeIn = time.Now()
+			metrics.bargeIn = req.At
+			turn.to(TurnInterrupted)
 			cancel()
+			if cancelTurn != nil {
+				cancelTurn()
+			}
 			if p.Player != nil {
 				p.Player.Stop()
 			}
-			p.emit(events.SpeakingInterrupted{Reason: "barge_in"})
-			p.emit(events.TurnInterrupted{Reason: "barge_in"})
+			p.emit(events.SpeakingInterrupted{Reason: req.Reason})
+			p.emit(events.TurnInterrupted{Reason: req.Reason})
 
 		case result, ok := <-modelDone:
 			if !ok {
@@ -374,6 +450,7 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 				continue
 			}
 
+			turn.to(TurnSpeaking)
 			if metrics.firstSegment.IsZero() {
 				metrics.firstSegment = time.Now()
 			}
@@ -381,64 +458,14 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 				watchdogArmed = true
 				go p.watchPlaybackStall(streamCtx, &audioStarted, cancel, stalled, p.stallTimeout())
 			}
-			p.emit(events.SpeechSegmentReady{Text: sentence})
-			p.emit(events.GeneratingVoice{Sentence: sentence})
 
-			synthStarted := time.Now()
-			stream, err := p.TTS.Synthesize(streamCtx, sentence)
-			if err != nil {
-				if interrupted || errors.Is(err, context.Canceled) {
-					continue
-				}
-				p.emit(events.Error{Stage: "tts", Message: fmt.Sprintf("TTS: %v", err)})
-				continue
+			if p.synthesizeSegment(streamCtx, loopDone, sentence, &audioStarted, playbackEvents) {
+				pending++
 			}
-
-			playback, err := p.Player.PlayStream(streamCtx, stream)
-			if err != nil {
-				if interrupted || errors.Is(err, context.Canceled) {
-					continue
-				}
-				p.emit(events.Error{Stage: "playback", Message: fmt.Sprintf("playback: %v", err)})
-				continue
-			}
-
-			pending++
-			go watchPlayback(sentence, synthStarted, playback, &audioStarted, playbackEvents)
 
 		case event := <-playbackEvents:
-			switch event.kind {
-			case playbackStarted:
-				armAt.Store(time.Now().Add(bargeInArmDelay).UnixNano())
-				if metrics.firstAudioReady.IsZero() {
-					metrics.firstAudioReady = time.Now()
-				}
-				if metrics.playbackStart.IsZero() {
-					metrics.playbackStart = time.Now()
-				}
-				p.emit(events.VoiceGenerated{
-					Sentence: event.sentence,
-					Elapsed:  event.synthElapsed,
-				})
-				p.emit(events.SpeakingStarted{Text: event.sentence})
-
-			case playbackFinished:
+			if p.applyPlaybackEvent(event, metrics, &armAt) {
 				pending--
-				metrics.playbackComplete = time.Now()
-
-				if event.result.Interrupted {
-					p.emit(events.SpeakingComplete{
-						Elapsed:     event.playElapsed,
-						Interrupted: true,
-					})
-					continue
-				}
-
-				if event.result.Err != nil && !errors.Is(event.result.Err, context.Canceled) {
-					p.emit(events.Error{Stage: "playback", Message: fmt.Sprintf("playback: %v", event.result.Err)})
-				}
-
-				p.emit(events.SpeakingComplete{Elapsed: event.playElapsed})
 			}
 		}
 	}
@@ -449,10 +476,85 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 	}
 
 	if !interrupted {
+		cancel()
+		if bargeDone != nil {
+			<-bargeDone
+		}
 		p.resetEchoState()
 	}
 
 	return strings.TrimSpace(fullResponse.String()), interrupted, nil
+}
+
+// synthesizeSegment is the synth scheduler stage: it announces the segment,
+// synthesizes it, starts playback, and hands the playback to the watcher
+// goroutine, returning true when a playback was enqueued so the caller can track
+// it as pending. TTS/playback failures surface as Error events; failures after
+// the turn context is canceled (cancel or barge-in) are swallowed so teardown
+// stays quiet. It never blocks on a full queue — backpressure is the caller's
+// job via the pending count.
+func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct{}, sentence string, audioStarted *atomic.Bool, out chan<- playbackEvent) bool {
+	p.emit(events.SpeechSegmentReady{Text: sentence})
+	p.emit(events.GeneratingVoice{Sentence: sentence})
+
+	synthStarted := time.Now()
+	stream, err := p.TTS.Synthesize(ctx, sentence)
+	if err != nil {
+		if ctx.Err() == nil {
+			p.emit(events.Error{Stage: "tts", Message: fmt.Sprintf("TTS: %v", err)})
+		}
+		return false
+	}
+
+	playback, err := p.Player.PlayStream(ctx, stream)
+	if err != nil {
+		if ctx.Err() == nil {
+			p.emit(events.Error{Stage: "playback", Message: fmt.Sprintf("playback: %v", err)})
+		}
+		return false
+	}
+
+	go watchPlayback(loopDone, sentence, synthStarted, playback, audioStarted, out)
+	return true
+}
+
+// applyPlaybackEvent applies one playback lifecycle event (produced by the
+// watchPlayback watcher) to the turn's metrics and events. It returns true when
+// the event marks a finished playback so the caller can decrement its pending
+// count.
+func (p *Pipeline) applyPlaybackEvent(event playbackEvent, metrics *turnMetrics, armAt *atomic.Int64) (finished bool) {
+	switch event.kind {
+	case playbackStarted:
+		armAt.Store(time.Now().Add(bargeInArmDelay).UnixNano())
+		if metrics.firstAudioReady.IsZero() {
+			metrics.firstAudioReady = time.Now()
+		}
+		if metrics.playbackStart.IsZero() {
+			metrics.playbackStart = time.Now()
+		}
+		p.emit(events.VoiceGenerated{
+			Sentence: event.sentence,
+			Elapsed:  event.synthElapsed,
+		})
+		p.emit(events.SpeakingStarted{Text: event.sentence})
+		return false
+
+	case playbackFinished:
+		metrics.playbackComplete = time.Now()
+		if event.result.Interrupted {
+			p.emit(events.SpeakingComplete{
+				Elapsed:     event.playElapsed,
+				Interrupted: true,
+			})
+			return true
+		}
+		if event.result.Err != nil && !errors.Is(event.result.Err, context.Canceled) {
+			p.emit(events.Error{Stage: "playback", Message: fmt.Sprintf("playback: %v", event.result.Err)})
+		}
+		p.emit(events.SpeakingComplete{Elapsed: event.playElapsed})
+		return true
+	}
+	return false
 }
 
 func (p *Pipeline) handlePlaybackLifecycle(sentence string, synthStarted time.Time, playback *audio.Playback, metrics *turnMetrics) {
@@ -500,10 +602,22 @@ func (p *Pipeline) handlePlaybackLifecycle(sentence string, synthStarted time.Ti
 	})
 }
 
-func (p *Pipeline) observeStream(ctx context.Context, stream *brain.Stream, metrics *turnMetrics) <-chan string {
+// observeStream is the model-observer stage. It is the sole consumer of
+// stream.Chunks, forwarding each chunk to a fresh channel and stamping the
+// first-model-chunk metric (with a ResponseStreamingStarted event) on the first
+// one. The terminal result path (stream.Done) is owned separately by
+// streamResponse. The forwarding send is cancellation-safe: on ctx cancellation
+// the stage returns instead of blocking on a downstream that has stopped
+// reading, so it cannot wedge teardown, model completion, or barge-in.
+// The returned done channel closes once the goroutine has fully exited, so a
+// caller can join it before reading metrics (it stamps firstModelChunk) and
+// avoid racing snapshot() on an early return.
+func (p *Pipeline) observeStream(ctx context.Context, stream *brain.Stream, metrics *turnMetrics) (<-chan string, <-chan struct{}) {
 	out := make(chan string, 8)
+	done := make(chan struct{})
 
 	go func() {
+		defer close(done)
 		defer close(out)
 		first := true
 		for {
@@ -519,61 +633,16 @@ func (p *Pipeline) observeStream(ctx context.Context, stream *brain.Stream, metr
 					metrics.firstModelChunk = time.Now()
 					p.emit(events.ResponseStreamingStarted{Elapsed: metrics.elapsed(metrics.firstModelChunk)})
 				}
-				out <- chunk
-			}
-		}
-	}()
-
-	return out
-}
-
-func (p *Pipeline) watchBargeIn(ctx context.Context, armAt *atomic.Int64) <-chan struct{} {
-	if p.Capture == nil || p.BargeInVAD == nil || p.Player == nil {
-		return nil
-	}
-
-	triggered := make(chan struct{}, 1)
-	subscriptionID, chunks := p.Capture.Subscribe(bargeInBufferSize)
-
-	go func() {
-		defer p.Capture.Unsubscribe(subscriptionID)
-		defer p.BargeInVAD.Clear()
-
-		consecutiveSpeech := 0
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case samples, ok := <-chunks:
-				if !ok {
+				select {
+				case <-ctx.Done():
 					return
-				}
-
-				if !p.Player.IsPlaying() || time.Now().UnixNano() < armAt.Load() {
-					consecutiveSpeech = 0
-					p.BargeInVAD.Clear()
-					continue
-				}
-
-				p.BargeInVAD.AcceptWaveform(samples)
-				if p.BargeInVAD.IsSpeech() {
-					consecutiveSpeech++
-				} else {
-					consecutiveSpeech = 0
-				}
-
-				if p.BargeInVAD.IsSpeechDetected() || consecutiveSpeech >= bargeInMinSpeechChunks {
-					select {
-					case triggered <- struct{}{}:
-					default:
-					}
-					return
+				case out <- chunk:
 				}
 			}
 		}
 	}()
 
-	return triggered
+	return out, done
 }
 
 func (p *Pipeline) resetEchoState() {
@@ -593,37 +662,64 @@ func (p *Pipeline) emit(event events.Event) {
 	}
 }
 
-func watchPlayback(sentence string, synthStarted time.Time, playback *audio.Playback, started *atomic.Bool, out chan<- playbackEvent) {
+// watchPlayback is the playback watcher: it turns one playback's lifecycle into
+// playbackStarted/playbackFinished events on out. Every send selects on loopDone
+// (closed when streamResponse stops draining) so a watcher can never block — and
+// leak — after the loop has returned on cancel, stall, or model error. loopDone
+// is deliberately not the turn context: a barge-in cancels the turn context but
+// the loop keeps consuming, so finished events must still be delivered to drain
+// the pending count.
+func watchPlayback(loopDone <-chan struct{}, sentence string, synthStarted time.Time, playback *audio.Playback, started *atomic.Bool, out chan<- playbackEvent) {
 	startedAt := time.Time{}
 
 	select {
+	case <-loopDone:
+		return
 	case <-playback.Started():
 		started.Store(true)
 		startedAt = time.Now()
-		out <- playbackEvent{
+		if !sendPlaybackEvent(loopDone, out, playbackEvent{
 			kind:         playbackStarted,
 			sentence:     sentence,
 			synthElapsed: time.Since(synthStarted),
+		}) {
+			return
 		}
 	case result := <-playback.Done():
-		out <- playbackEvent{
+		sendPlaybackEvent(loopDone, out, playbackEvent{
 			kind:     playbackFinished,
 			sentence: sentence,
 			result:   result,
-		}
+		})
 		return
 	}
 
-	result := <-playback.Done()
+	var result audio.PlaybackResult
+	select {
+	case <-loopDone:
+		return
+	case result = <-playback.Done():
+	}
 	elapsed := time.Duration(0)
 	if !startedAt.IsZero() {
 		elapsed = time.Since(startedAt)
 	}
 
-	out <- playbackEvent{
+	sendPlaybackEvent(loopDone, out, playbackEvent{
 		kind:        playbackFinished,
 		sentence:    sentence,
 		playElapsed: elapsed,
 		result:      result,
+	})
+}
+
+// sendPlaybackEvent delivers ev unless the loop has stopped consuming, returning
+// false if it abandoned the send.
+func sendPlaybackEvent(loopDone <-chan struct{}, out chan<- playbackEvent, ev playbackEvent) bool {
+	select {
+	case <-loopDone:
+		return false
+	case out <- ev:
+		return true
 	}
 }

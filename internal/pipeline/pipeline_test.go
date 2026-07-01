@@ -237,8 +237,8 @@ func TestTranscribeTurnDrainsCaptureExceptAfterBargeIn(t *testing.T) {
 }
 
 func TestWatchBargeInDisabledWhenVADNil(t *testing.T) {
-	// With barge-in disabled (BargeInVAD nil), watchBargeIn must not subscribe to
-	// capture or return a trigger channel.
+	// With barge-in disabled (BargeInVAD nil), the interrupt controller must not
+	// subscribe to capture or return a trigger channel.
 	capture := newFakeCapture()
 	p := &Pipeline{
 		Player:  newFakePlayer(time.Second),
@@ -247,11 +247,63 @@ func TestWatchBargeInDisabledWhenVADNil(t *testing.T) {
 	defer p.Player.(*fakePlayer).Close()
 
 	var armAt atomic.Int64
-	if ch := p.watchBargeIn(context.Background(), &armAt); ch != nil {
-		t.Fatal("watchBargeIn returned a non-nil channel with BargeInVAD nil")
+	if ch := p.newInterruptController().watch(context.Background(), &armAt); ch != nil {
+		t.Fatal("interrupt controller returned a non-nil channel with BargeInVAD nil")
 	}
 	if got := len(capture.subs); got != 0 {
 		t.Fatalf("capture subscriptions = %d, want 0 when barge-in disabled", got)
+	}
+}
+
+func TestRunTurnBargeInCancelsBrainProducer(t *testing.T) {
+	player := newFakePlayer(2 * time.Second)
+	defer player.Close()
+	capture := newFakeCapture()
+	vad := &fakeVAD{}
+	brainProvider := &bargeCancelBrain{ctxCanceled: make(chan struct{})}
+
+	p := &Pipeline{
+		STT:        &fakeSTT{text: "hello"},
+		Brain:      brainProvider,
+		TTS:        &fakeTTS{delay: time.Millisecond},
+		Player:     player,
+		Capture:    capture,
+		VAD:        &fakeVAD{},
+		BargeInVAD: vad,
+		Events:     events.NewBus(),
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.RunTurn(context.Background())
+		done <- err
+	}()
+
+	select {
+	case <-player.StartedSignal():
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for playback to start")
+	}
+
+	time.Sleep(bargeInArmDelay + 80*time.Millisecond)
+	for range bargeInMinSpeechChunks {
+		capture.Publish([]float32{0.9, 0.9, 0.9})
+		time.Sleep(60 * time.Millisecond)
+	}
+
+	select {
+	case <-brainProvider.ctxCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("barge-in did not cancel the brain producer context")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunTurn() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunTurn did not return after barge-in canceled the brain producer")
 	}
 }
 
@@ -275,8 +327,85 @@ func TestRunTurnReturnsBrainStreamError(t *testing.T) {
 	}
 }
 
+func TestRunTurnEmitsSingleTerminalMetricsAfterResponse(t *testing.T) {
+	// The state machine owns the single terminal metrics emission, and it must
+	// land after ResponseReady so benchmarks see the final response first.
+	bus := events.NewBus()
+	var mu sync.Mutex
+	var order []string
+	events.Subscribe(bus, func(events.ResponseReady) {
+		mu.Lock()
+		order = append(order, "response")
+		mu.Unlock()
+	})
+	events.Subscribe(bus, func(events.TurnMetrics) {
+		mu.Lock()
+		order = append(order, "metrics")
+		mu.Unlock()
+	})
+
+	p := &Pipeline{
+		STT:    &fakeSTT{text: "hello"},
+		Brain:  &fakeBrain{chunks: []string{"Hi there."}},
+		Events: bus,
+	}
+	if _, err := p.RunTurn(context.Background()); err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 2 || order[0] != "response" || order[1] != "metrics" {
+		t.Fatalf("event order = %v, want exactly [response metrics]", order)
+	}
+}
+
+func TestRunTurnNoSpeechEmitsSingleMetrics(t *testing.T) {
+	bus := events.NewBus()
+	var metricsCount, responseCount atomic.Int32
+	events.Subscribe(bus, func(events.TurnMetrics) { metricsCount.Add(1) })
+	events.Subscribe(bus, func(events.ResponseReady) { responseCount.Add(1) })
+
+	p := &Pipeline{STT: &fakeSTT{text: ""}, Brain: &fakeBrain{}, Events: bus}
+	text, err := p.RunTurn(context.Background())
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if text != "" {
+		t.Fatalf("RunTurn() text = %q, want empty (no speech)", text)
+	}
+	if got := metricsCount.Load(); got != 1 {
+		t.Fatalf("TurnMetrics emitted %d times, want exactly 1", got)
+	}
+	if got := responseCount.Load(); got != 0 {
+		t.Fatalf("ResponseReady emitted %d times, want 0 on no-speech turn", got)
+	}
+}
+
+func TestRunTurnBrainErrorEmitsSingleMetrics(t *testing.T) {
+	// Regression guard: error paths previously emitted zero terminal metrics.
+	// With the state machine owning emission, every terminal path emits one.
+	bus := events.NewBus()
+	var metricsCount atomic.Int32
+	events.Subscribe(bus, func(events.TurnMetrics) { metricsCount.Add(1) })
+
+	p := &Pipeline{
+		STT:    &fakeSTT{text: "hello"},
+		Brain:  &fakeBrain{streamErr: errors.New("boom")},
+		Events: bus,
+	}
+	if _, err := p.RunTurn(context.Background()); err == nil {
+		t.Fatal("RunTurn() error = nil, want brain error")
+	}
+	if got := metricsCount.Load(); got != 1 {
+		t.Fatalf("TurnMetrics emitted %d times on brain error, want exactly 1", got)
+	}
+}
+
 type fakeSTT struct {
-	text string
+	text  string
+	err   error // emit a Failure event instead of a final transcript
+	stall bool  // leave the session open and silent until the context is canceled
 }
 
 type fakeSTTSession struct {
@@ -287,9 +416,17 @@ func (s *fakeSTTSession) Events() <-chan stt.Event { return s.events }
 func (s *fakeSTTSession) Close() error             { return nil }
 
 func (f *fakeSTT) Start(ctx context.Context) (stt.Session, error) {
-	eventsCh := make(chan stt.Event, 2)
+	eventsCh := make(chan stt.Event, 3)
 	eventsCh <- stt.PhaseEvent{Phase: "listening"}
-	eventsCh <- stt.FinalTranscript{Text: f.text}
+	switch {
+	case f.stall:
+		// Open but silent: the caller blocks until ctx cancellation.
+		return &fakeSTTSession{events: eventsCh}, nil
+	case f.err != nil:
+		eventsCh <- stt.Failure{Err: f.err}
+	default:
+		eventsCh <- stt.FinalTranscript{Text: f.text}
+	}
 	close(eventsCh)
 	return &fakeSTTSession{events: eventsCh}, nil
 }
@@ -299,6 +436,7 @@ func (f *fakeSTT) Available() bool { return true }
 type fakeBrain struct {
 	chunks    []string
 	streamErr error
+	fullErr   error // ThinkFull error for text-mode tests
 }
 
 func (f *fakeBrain) ThinkStream(ctx context.Context, input string, opts brain.StreamOptions) (*brain.Stream, error) {
@@ -321,6 +459,9 @@ func (f *fakeBrain) ThinkStream(ctx context.Context, input string, opts brain.St
 }
 
 func (f *fakeBrain) ThinkFull(ctx context.Context, input string) (string, error) {
+	if f.fullErr != nil {
+		return "", f.fullErr
+	}
 	if len(f.chunks) == 0 {
 		return "", nil
 	}
@@ -330,6 +471,29 @@ func (f *fakeBrain) ThinkFull(ctx context.Context, input string) (string, error)
 func (f *fakeBrain) ClearHistory()            {}
 func (f *fakeBrain) History() []brain.Turn    { return nil }
 func (f *fakeBrain) LoadHistory([]brain.Turn) {}
+
+type bargeCancelBrain struct {
+	ctxCanceled chan struct{}
+}
+
+func (b *bargeCancelBrain) ThinkStream(ctx context.Context, input string, opts brain.StreamOptions) (*brain.Stream, error) {
+	out := make(chan string, 1)
+	done := make(chan brain.StreamResult, 1)
+	go func() {
+		defer close(out)
+		defer close(done)
+		out <- "This response starts. It keeps running until barge-in cancels the producer context."
+		<-ctx.Done()
+		close(b.ctxCanceled)
+		done <- brain.StreamResult{Err: ctx.Err()}
+	}()
+	return &brain.Stream{Chunks: out, Done: done}, nil
+}
+
+func (b *bargeCancelBrain) ThinkFull(context.Context, string) (string, error) { return "", nil }
+func (b *bargeCancelBrain) ClearHistory()                                     {}
+func (b *bargeCancelBrain) History() []brain.Turn                             { return nil }
+func (b *bargeCancelBrain) LoadHistory([]brain.Turn)                          {}
 
 type fakeTTS struct {
 	mu        sync.Mutex
@@ -622,6 +786,12 @@ func (c *fakeCapture) ResetCount() int {
 	return c.resetCount
 }
 
+func (c *fakeCapture) subCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.subs)
+}
+
 type fakeVAD struct {
 	mu      sync.Mutex
 	speech  bool
@@ -656,4 +826,10 @@ func (v *fakeVAD) Clear() {
 	v.speech = false
 	v.cleared++
 	v.mu.Unlock()
+}
+
+func (v *fakeVAD) clearedCount() int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.cleared
 }

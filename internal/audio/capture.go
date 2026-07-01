@@ -28,6 +28,7 @@ type Capture struct {
 	running  bool
 	subs     map[int]chan []float32
 	nextSub  int
+	frameSeq int64
 }
 
 // NewCapture creates a new mic capture instance.
@@ -114,6 +115,35 @@ func (c *Capture) Stop() {
 // Returns nil if no data is available yet.
 func (c *Capture) Read() []float32 {
 	return c.buf.Read(ChunkSize)
+}
+
+// ReadFrame implements FrameSource for live capture: it returns the next chunk
+// as a SourceLive frame, ErrNoFrameReady when no audio is buffered yet, and
+// never sets Final. A live source ends only when ctx is canceled or Close is
+// called, never on ordinary silence.
+func (c *Capture) ReadFrame(ctx context.Context) (Frame, error) {
+	if err := ctx.Err(); err != nil {
+		return Frame{}, err
+	}
+	samples := c.buf.Read(ChunkSize)
+	if samples == nil {
+		return Frame{}, ErrNoFrameReady
+	}
+	c.frameSeq++
+	return Frame{
+		Samples:    samples,
+		SampleRate: SampleRate,
+		Channels:   Channels,
+		Duration:   frameDuration(len(samples)),
+		Sequence:   c.frameSeq,
+		SourceKind: SourceLive,
+	}, nil
+}
+
+// Close implements FrameSource by stopping capture and releasing the device.
+func (c *Capture) Close() error {
+	c.Stop()
+	return nil
 }
 
 // Reset drains the ring buffer to discard stale audio between turns.
