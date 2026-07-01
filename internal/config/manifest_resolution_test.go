@@ -113,7 +113,7 @@ func TestManifestForUnsupportedProviderSkipsSTT(t *testing.T) {
 func TestModelArchivesPropagatesChecksum(t *testing.T) {
 	m := AssetManifest{Schema: AssetSchema, Assets: []Asset{{
 		ID: "tts.kokoro", Provider: "kokoro", Kind: AssetKindTTS, Name: "kokoro-tts",
-		Archive:    &AssetArchive{URL: "https://example/archive.tar.bz2", SHA256: "abc123", StripPrefix: true},
+		Archive:    &AssetArchive{URL: "https://example/archive.tar.bz2", SHA256: "abc123"},
 		CheckFiles: []string{"model.onnx"},
 	}}}
 

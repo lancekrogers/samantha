@@ -50,9 +50,13 @@ func TestResumeKeyDistinguishesRenderInputs(t *testing.T) {
 		}
 	}
 
-	// Whitespace-only differences normalize away (same audio, same key).
+	// Whitespace-only differences inside a paragraph normalize away (same audio,
+	// same key).
 	if got := resumeKey(base, "kokoro", "Chapter   text.", "001.wav"); got != key {
 		t.Error("whitespace normalization should not change the resume key")
+	}
+	if got := resumeKey(base, "kokoro", "Chapter\n\ntext.", "001.wav"); got == key {
+		t.Error("paragraph boundary change should alter the resume key")
 	}
 }
 

@@ -20,7 +20,7 @@ func TestFetchArticleSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	body, err := FetchArticle(context.Background(), srv.Client(), srv.URL, FetchOptions{})
+	body, err := FetchArticle(context.Background(), srv.Client(), srv.URL, FetchOptions{AllowPrivateHosts: true})
 	if err != nil {
 		t.Fatalf("FetchArticle() error = %v", err)
 	}
@@ -36,7 +36,7 @@ func TestFetchArticleRejectsNonHTMLContentType(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := FetchArticle(context.Background(), srv.Client(), srv.URL, FetchOptions{})
+	_, err := FetchArticle(context.Background(), srv.Client(), srv.URL, FetchOptions{AllowPrivateHosts: true})
 	if err == nil || !strings.Contains(err.Error(), "content-type") {
 		t.Fatalf("error = %v, want a content-type rejection", err)
 	}
@@ -49,7 +49,7 @@ func TestFetchArticleEnforcesSizeLimit(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := FetchArticle(context.Background(), srv.Client(), srv.URL, FetchOptions{MaxBytes: 100})
+	_, err := FetchArticle(context.Background(), srv.Client(), srv.URL, FetchOptions{MaxBytes: 100, AllowPrivateHosts: true})
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("error = %v, want a size-limit error", err)
 	}
@@ -61,7 +61,7 @@ func TestFetchArticleHTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := FetchArticle(context.Background(), srv.Client(), srv.URL, FetchOptions{})
+	_, err := FetchArticle(context.Background(), srv.Client(), srv.URL, FetchOptions{AllowPrivateHosts: true})
 	if err == nil || !strings.Contains(err.Error(), "HTTP 404") {
 		t.Fatalf("error = %v, want an HTTP error", err)
 	}
@@ -75,8 +75,27 @@ func TestFetchArticleCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	_, err := FetchArticle(ctx, srv.Client(), srv.URL, FetchOptions{})
+	_, err := FetchArticle(ctx, srv.Client(), srv.URL, FetchOptions{AllowPrivateHosts: true})
 	if err == nil {
 		t.Fatal("expected a cancellation/timeout error")
+	}
+}
+
+func TestFetchArticleRejectsPrivateHostsByDefault(t *testing.T) {
+	_, err := FetchArticle(context.Background(), nil, "http://127.0.0.1/article", FetchOptions{})
+	if err == nil || !strings.Contains(err.Error(), "disallowed") {
+		t.Fatalf("error = %v, want private-host rejection", err)
+	}
+}
+
+func TestFetchArticleRejectsPrivateRedirect(t *testing.T) {
+	client := newFetchClient(DefaultFetchTimeout, false)
+	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1/secret", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.CheckRedirect(req, []*http.Request{{}})
+	if err == nil || !strings.Contains(err.Error(), "disallowed") {
+		t.Fatalf("error = %v, want private redirect rejection", err)
 	}
 }

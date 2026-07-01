@@ -172,7 +172,7 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 		return text, fmt.Errorf("brain: %w", err)
 	}
 
-	fullResponse, interrupted, err := p.streamResponse(turnCtx, brainStream, true, metrics, turn)
+	fullResponse, interrupted, err := p.streamResponse(turnCtx, turnCancel, brainStream, true, metrics, turn)
 	if err != nil {
 		if interrupted || errors.Is(err, context.Canceled) {
 			turn.finish(TurnInterrupted)
@@ -312,7 +312,7 @@ func (p *Pipeline) transcribeTurn(ctx context.Context, metrics *turnMetrics, tur
 	}
 }
 
-func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, allowBargeIn bool, metrics *turnMetrics, turn *turnConductor) (string, bool, error) {
+func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.CancelFunc, stream *brain.Stream, allowBargeIn bool, metrics *turnMetrics, turn *turnConductor) (string, bool, error) {
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -335,11 +335,14 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 	var interrupted bool
 	var pending int
 	var bargeIn <-chan interruptRequest
+	var bargeDone <-chan struct{}
 	var armAt atomic.Int64
 	armAt.Store(time.Now().Add(24 * time.Hour).UnixNano())
 
 	if allowBargeIn {
-		bargeIn = p.newInterruptController().watch(streamCtx, &armAt)
+		watch := p.newInterruptController().watchWithDone(streamCtx, &armAt)
+		bargeIn = watch.requests
+		bargeDone = watch.done
 	}
 
 	playbackEvents := make(chan playbackEvent, voiceQueueDepth*2)
@@ -361,6 +364,9 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 
 		select {
 		case <-ctx.Done():
+			if interrupted {
+				return strings.TrimSpace(fullResponse.String()), interrupted, nil
+			}
 			return strings.TrimSpace(fullResponse.String()), interrupted, ctx.Err()
 
 		case <-stalled:
@@ -375,6 +381,9 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 			metrics.bargeIn = req.At
 			turn.to(TurnInterrupted)
 			cancel()
+			if cancelTurn != nil {
+				cancelTurn()
+			}
 			if p.Player != nil {
 				p.Player.Stop()
 			}
@@ -443,6 +452,10 @@ func (p *Pipeline) streamResponse(ctx context.Context, stream *brain.Stream, all
 	}
 
 	if !interrupted {
+		cancel()
+		if bargeDone != nil {
+			<-bargeDone
+		}
 		p.resetEchoState()
 	}
 

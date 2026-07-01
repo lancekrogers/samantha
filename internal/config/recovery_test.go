@@ -70,7 +70,7 @@ func TestRecoveryArchiveDownloadFailureLeavesMissing(t *testing.T) {
 
 	m := AssetManifest{Schema: AssetSchema, Assets: []Asset{{
 		ID: "tts.kokoro", Provider: "kokoro", Kind: AssetKindTTS, Name: "kokoro-tts",
-		Archive:    &AssetArchive{URL: srv.URL, StripPrefix: true},
+		Archive:    &AssetArchive{URL: srv.URL},
 		CheckFiles: []string{"model.onnx"},
 	}}}
 
@@ -94,7 +94,7 @@ func TestRecoveryCorruptArchiveLeavesMissing(t *testing.T) {
 
 	m := AssetManifest{Schema: AssetSchema, Assets: []Asset{{
 		ID: "tts.kokoro", Provider: "kokoro", Kind: AssetKindTTS, Name: "kokoro-tts",
-		Archive:    &AssetArchive{URL: srv.URL, StripPrefix: true},
+		Archive:    &AssetArchive{URL: srv.URL},
 		CheckFiles: []string{"model.onnx"},
 	}}}
 

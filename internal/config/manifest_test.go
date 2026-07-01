@@ -30,7 +30,7 @@ func sampleManifest() AssetManifest {
 				Mode:       "offline",
 				Kind:       AssetKindSTT,
 				Name:       "whisper-base.en",
-				Archive:    &AssetArchive{URL: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.en.tar.bz2", StripPrefix: true},
+				Archive:    &AssetArchive{URL: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.en.tar.bz2"},
 				CheckFiles: []string{"base.en-encoder.onnx", "base.en-decoder.onnx"},
 			},
 			{
@@ -40,7 +40,7 @@ func sampleManifest() AssetManifest {
 				Kind:      AssetKindSTT,
 				Name:      "sherpa-streaming-en",
 				TargetDir: "sherpa-onnx-streaming-zipformer-en-2023-06-26",
-				Archive:   &AssetArchive{URL: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-2023-06-26.tar.bz2", StripPrefix: true},
+				Archive:   &AssetArchive{URL: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-2023-06-26.tar.bz2"},
 				CheckFiles: []string{
 					"encoder-epoch-99-avg-1-chunk-16-left-128.onnx",
 					"decoder-epoch-99-avg-1-chunk-16-left-128.onnx",
@@ -64,7 +64,7 @@ func sampleManifest() AssetManifest {
 				Provider:   "kokoro",
 				Kind:       AssetKindTTS,
 				Name:       "kokoro-tts",
-				Archive:    &AssetArchive{URL: "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2", StripPrefix: true},
+				Archive:    &AssetArchive{URL: "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2"},
 				CheckFiles: []string{"model.onnx", "voices.bin", "tokens.txt", "espeak-ng-data"},
 			},
 		},
@@ -125,7 +125,7 @@ func TestAssetValidateFileAsset(t *testing.T) {
 func TestAssetValidateArchiveAsset(t *testing.T) {
 	good := Asset{
 		ID: "a", Provider: "p", Kind: AssetKindTTS,
-		Archive:    &AssetArchive{URL: "https://example/a.tar.bz2", StripPrefix: true},
+		Archive:    &AssetArchive{URL: "https://example/a.tar.bz2"},
 		CheckFiles: []string{"model.onnx"},
 	}
 	if err := good.Validate(); err != nil {

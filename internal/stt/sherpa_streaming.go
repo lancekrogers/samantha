@@ -87,7 +87,7 @@ func (s *SherpaStreamingSTT) Start(ctx context.Context) (Session, error) {
 
 		stream := sherpa.NewOnlineStream(s.recognizer)
 		if stream == nil {
-			session.events <- Failure{Err: fmt.Errorf("failed to create streaming sherpa stream")}
+			sendEvent(sessionCtx, session.events, Failure{Err: fmt.Errorf("failed to create streaming sherpa stream")})
 			return
 		}
 		rec := &onlineRec{recognizer: s.recognizer, stream: stream}

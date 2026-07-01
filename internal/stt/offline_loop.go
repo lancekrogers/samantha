@@ -25,6 +25,20 @@ func samplesDuration(n int) time.Duration {
 	return time.Duration(float64(n) / float64(audio.SampleRate) * float64(time.Second))
 }
 
+func sendEvent(ctx context.Context, events chan<- Event, event Event) bool {
+	select {
+	case events <- event:
+		return true
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case events <- event:
+		return true
+	}
+}
+
 // segmenter abstracts the voice-activity detector the offline STT loop drives,
 // so the loop can be exercised with a deterministic fake instead of the cgo
 // Silero VAD. The production implementation is vadSegmenter.
@@ -60,14 +74,19 @@ type offlineLoopDeps struct {
 // a finite source's Final frame instead of inferring EOF from empty reads.
 func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Event) {
 	lastPhaseAt := time.Now()
-	emitPhase := func(phase string) {
+	emitPhase := func(phase string) bool {
 		now := time.Now()
-		events <- PhaseEvent{Phase: phase, Elapsed: now.Sub(lastPhaseAt).Nanoseconds()}
+		if !sendEvent(ctx, events, PhaseEvent{Phase: phase, Elapsed: now.Sub(lastPhaseAt).Nanoseconds()}) {
+			return false
+		}
 		lastPhaseAt = now
+		return true
 	}
 
 	deps.seg.Reset()
-	emitPhase("listening")
+	if !emitPhase("listening") {
+		return
+	}
 
 	speechDetected := false
 	start := time.Now()
@@ -78,7 +97,9 @@ func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Eve
 	// when the session is resolved (final transcript, timeout, or failure). When
 	// final is false (mid-stream, too short, or empty), it returns to listening.
 	finalize := func(final bool) bool {
-		emitPhase("transcribing")
+		if !emitPhase("transcribing") {
+			return true
+		}
 
 		var samples []float32
 		for {
@@ -92,30 +113,32 @@ func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Eve
 		if len(samples) >= minSpeechSamples {
 			text, err := deps.transcribe(samples)
 			if err != nil {
-				events <- Failure{Err: err}
+				sendEvent(ctx, events, Failure{Err: err})
 				return true
 			}
 			if text != "" {
-				events <- FinalTranscript{Text: text}
+				sendEvent(ctx, events, FinalTranscript{Text: text})
 				return true
 			}
 		}
 
 		if final {
-			events <- Timeout{}
+			sendEvent(ctx, events, Timeout{})
 			return true
 		}
 		speechDetected = false
 		speechSeen = 0
 		trailingSilence = 0
 		start = time.Now()
-		emitPhase("listening")
+		if !emitPhase("listening") {
+			return true
+		}
 		return false
 	}
 
 	for {
 		if err := ctx.Err(); err != nil {
-			events <- Failure{Err: err}
+			sendEvent(ctx, events, Failure{Err: err})
 			return
 		}
 
@@ -127,7 +150,7 @@ func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Eve
 			if !speechDetected {
 				d := deps.policy.Decide(endpoint.Observation{Elapsed: time.Since(start)})
 				if d.Kind == endpoint.Timeout {
-					events <- Timeout{}
+					sendEvent(ctx, events, Timeout{})
 					return
 				}
 			}
@@ -136,10 +159,10 @@ func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Eve
 		case errors.Is(err, audio.ErrSourceClosed):
 			frame = audio.Frame{Final: true}
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-			events <- Failure{Err: err}
+			sendEvent(ctx, events, Failure{Err: err})
 			return
 		default:
-			events <- Failure{Err: err}
+			sendEvent(ctx, events, Failure{Err: err})
 			return
 		}
 
@@ -149,7 +172,9 @@ func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Eve
 			if deps.seg.IsSpeech() {
 				if !speechDetected {
 					speechDetected = true
-					emitPhase("hearing")
+					if !emitPhase("hearing") {
+						return
+					}
 				}
 				speechSeen += frameDuration
 				trailingSilence = 0
@@ -161,7 +186,7 @@ func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Eve
 		if frame.Final {
 			deps.seg.Flush()
 			if !speechDetected && !deps.seg.HasSegments() {
-				events <- Timeout{}
+				sendEvent(ctx, events, Timeout{})
 				return
 			}
 			finalize(true)
@@ -180,7 +205,9 @@ func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Eve
 			speechSeen = 0
 			trailingSilence = 0
 			start = time.Now()
-			emitPhase("listening")
+			if !emitPhase("listening") {
+				return
+			}
 			continue
 		}
 		if decision.Kind == endpoint.Finalize {

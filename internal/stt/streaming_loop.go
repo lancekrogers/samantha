@@ -37,14 +37,19 @@ type streamingLoopDeps struct {
 // tested with fakes; it does not close events.
 func runStreamingLoop(ctx context.Context, deps streamingLoopDeps, events chan<- Event) {
 	lastPhaseAt := time.Now()
-	emitPhase := func(phase string) {
+	emitPhase := func(phase string) bool {
 		now := time.Now()
-		events <- PhaseEvent{Phase: phase, Elapsed: now.Sub(lastPhaseAt).Nanoseconds()}
+		if !sendEvent(ctx, events, PhaseEvent{Phase: phase, Elapsed: now.Sub(lastPhaseAt).Nanoseconds()}) {
+			return false
+		}
 		lastPhaseAt = now
+		return true
 	}
 
 	deps.seg.Reset()
-	emitPhase("listening")
+	if !emitPhase("listening") {
+		return
+	}
 
 	speechDetected := false
 	transcribing := false
@@ -62,13 +67,13 @@ func runStreamingLoop(ctx context.Context, deps streamingLoopDeps, events chan<-
 
 	for {
 		if err := ctx.Err(); err != nil {
-			events <- Failure{Err: err}
+			sendEvent(ctx, events, Failure{Err: err})
 			return
 		}
 
 		if !speechDetected {
 			if deps.policy.Decide(endpoint.Observation{Elapsed: time.Since(start)}).Kind == endpoint.Timeout {
-				events <- Timeout{}
+				sendEvent(ctx, events, Timeout{})
 				return
 			}
 		}
@@ -84,10 +89,10 @@ func runStreamingLoop(ctx context.Context, deps streamingLoopDeps, events chan<-
 		case errors.Is(err, audio.ErrSourceClosed):
 			eof = true
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-			events <- Failure{Err: err}
+			sendEvent(ctx, events, Failure{Err: err})
 			return
 		default:
-			events <- Failure{Err: err}
+			sendEvent(ctx, events, Failure{Err: err})
 			return
 		}
 
@@ -108,10 +113,14 @@ func runStreamingLoop(ctx context.Context, deps streamingLoopDeps, events chan<-
 				markSpeech()
 				if !transcribing {
 					transcribing = true
-					emitPhase("transcribing")
+					if !emitPhase("transcribing") {
+						return
+					}
 				}
 				if partial != lastPartial {
-					events <- PartialTranscript{Text: partial}
+					if !sendEvent(ctx, events, PartialTranscript{Text: partial}) {
+						return
+					}
 					lastPartial = partial
 				}
 			}
@@ -136,7 +145,7 @@ func runStreamingLoop(ctx context.Context, deps streamingLoopDeps, events chan<-
 
 		switch decision.Kind {
 		case endpoint.Timeout, endpoint.SourceExhausted:
-			events <- Timeout{}
+			sendEvent(ctx, events, Timeout{})
 			return
 		}
 
@@ -147,23 +156,25 @@ func runStreamingLoop(ctx context.Context, deps streamingLoopDeps, events chan<-
 
 		if !transcribing {
 			transcribing = true
-			emitPhase("transcribing")
+			if !emitPhase("transcribing") {
+				return
+			}
 		}
 
 		finalText := normalizeTranscript(strings.TrimSpace(deps.rec.Finalize()))
 		if finalText != "" {
-			events <- FinalTranscript{Text: finalText}
+			sendEvent(ctx, events, FinalTranscript{Text: finalText})
 			return
 		}
 		if eof {
-			events <- Timeout{}
+			sendEvent(ctx, events, Timeout{})
 			return
 		}
 
 		// False positive or empty decode: reset and keep listening.
 		deps.seg.Reset()
 		if err := deps.rec.Reset(); err != nil {
-			events <- Failure{Err: err}
+			sendEvent(ctx, events, Failure{Err: err})
 			return
 		}
 		speechDetected = false
@@ -172,6 +183,8 @@ func runStreamingLoop(ctx context.Context, deps streamingLoopDeps, events chan<-
 		trailingSilence = 0
 		lastPartial = ""
 		start = time.Now()
-		emitPhase("listening")
+		if !emitPhase("listening") {
+			return
+		}
 	}
 }

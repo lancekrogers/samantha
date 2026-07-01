@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strconv"
+	"strings"
 )
 
 // RendererVersion identifies output-affecting renderer behavior (text
@@ -31,7 +32,7 @@ func synthIdentity(s Synthesizer) string {
 // resumeKey is the stable fingerprint of a single rendered output. It folds in
 // every input that changes the produced audio: renderer version, source
 // identity, format, voice, speed, synthesizer identity (provider/model), the
-// output path, and the normalized text. A prior segment whose key matches a
+// output path, and the paragraph-aware text fingerprint. A prior segment whose key matches a
 // freshly computed key — and whose output file still exists — may be skipped on
 // resume. Fields are domain-separated so distinct field boundaries cannot
 // collide.
@@ -45,7 +46,7 @@ func resumeKey(opts Options, synthID, text, output string) string {
 		"speed=" + strconv.FormatFloat(opts.Speed, 'f', -1, 64),
 		"synth=" + synthID,
 		"out=" + output,
-		"text=" + normalizeWhitespace(text),
+		"text=" + resumeTextFingerprint(text),
 	} {
 		h.Write([]byte(field))
 		h.Write([]byte{0})
@@ -58,4 +59,12 @@ func resumeKey(opts Options, synthID, text, output string) string {
 // failed segment. Failed outputs stay visible and are always retried.
 func resumable(prior ManifestSegment, key, outPath string) bool {
 	return prior.ResumeKey == key && prior.Status != StatusFailed && pathExists(outPath)
+}
+
+func resumeTextFingerprint(text string) string {
+	paras := splitParagraphs(text)
+	for i := range paras {
+		paras[i] = normalizeWhitespace(paras[i])
+	}
+	return strings.Join(paras, "\n\n")
 }

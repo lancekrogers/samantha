@@ -44,6 +44,11 @@ type interruptController struct {
 	bufferSize int
 }
 
+type interruptWatch struct {
+	requests <-chan interruptRequest
+	done     <-chan struct{}
+}
+
 // newInterruptController builds the controller from the pipeline's collaborators
 // and the package barge-in tuning constants.
 func (p *Pipeline) newInterruptController() *interruptController {
@@ -68,14 +73,20 @@ func (c *interruptController) enabled() bool {
 // disabled. The goroutine always unsubscribes from capture and clears the VAD on
 // exit, and stops promptly on ctx cancellation.
 func (c *interruptController) watch(ctx context.Context, armAt *atomic.Int64) <-chan interruptRequest {
+	return c.watchWithDone(ctx, armAt).requests
+}
+
+func (c *interruptController) watchWithDone(ctx context.Context, armAt *atomic.Int64) interruptWatch {
 	if !c.enabled() {
-		return nil
+		return interruptWatch{}
 	}
 
 	out := make(chan interruptRequest, 1)
+	done := make(chan struct{})
 	subscriptionID, chunks := c.capture.Subscribe(c.bufferSize)
 
 	go func() {
+		defer close(done)
 		defer c.capture.Unsubscribe(subscriptionID)
 		defer c.vad.Clear()
 
@@ -115,5 +126,5 @@ func (c *interruptController) watch(ctx context.Context, armAt *atomic.Int64) <-
 		}
 	}()
 
-	return out
+	return interruptWatch{requests: out, done: done}
 }

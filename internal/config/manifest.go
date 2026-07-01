@@ -44,9 +44,8 @@ type AssetFile struct {
 // AssetArchive is a single archive downloaded and extracted into the asset's
 // target directory. SHA256 is optional during migration.
 type AssetArchive struct {
-	URL         string `json:"url"`
-	SHA256      string `json:"sha256,omitempty"`
-	StripPrefix bool   `json:"strip_prefix"`
+	URL    string `json:"url"`
+	SHA256 string `json:"sha256,omitempty"`
 }
 
 // Asset describes one model asset. It installs from either a set of individual
@@ -170,7 +169,7 @@ func ManifestFor(cfg *Config, req AssetRequest) (AssetManifest, error) {
 			Provider:   "kokoro",
 			Kind:       AssetKindTTS,
 			Name:       "kokoro-tts",
-			Archive:    &AssetArchive{URL: kokoroArchiveURL, StripPrefix: true},
+			Archive:    &AssetArchive{URL: kokoroArchiveURL},
 			CheckFiles: kokoroCheckFiles,
 		})
 	}
@@ -194,18 +193,21 @@ func sttAsset(cfg *Config, norm NormalizedSTT) (*Asset, error) {
 			Kind:       AssetKindSTT,
 			Name:       s.Name,
 			TargetDir:  s.DirName,
-			Archive:    &AssetArchive{URL: s.URL, StripPrefix: true},
+			Archive:    &AssetArchive{URL: s.URL},
 			CheckFiles: s.RequiredFiles(cfg.WhisperQuantized),
 		}, nil
 	case norm.Provider == STTProviderSherpa && norm.Mode == STTModeOffline:
-		model := cfg.WhisperModel
+		model, err := SherpaOfflineWhisperModel(cfg.WhisperModel)
+		if err != nil {
+			return nil, err
+		}
 		return &Asset{
 			ID:       "stt.sherpa.offline.whisper-" + model,
 			Provider: "sherpa",
 			Mode:     "offline",
 			Kind:     AssetKindSTT,
 			Name:     "whisper-" + model,
-			Archive:  &AssetArchive{URL: sherpaWhisperOfflineURL(model), StripPrefix: true},
+			Archive:  &AssetArchive{URL: sherpaWhisperOfflineURL(model)},
 			CheckFiles: []string{
 				model + "-encoder.onnx",
 				model + "-decoder.onnx",

@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -19,9 +21,10 @@ const (
 
 // FetchOptions configures article fetching safeguards.
 type FetchOptions struct {
-	Timeout   time.Duration
-	MaxBytes  int64
-	UserAgent string
+	Timeout           time.Duration
+	MaxBytes          int64
+	UserAgent         string
+	AllowPrivateHosts bool
 }
 
 func (o FetchOptions) withDefaults() FetchOptions {
@@ -40,6 +43,10 @@ func (o FetchOptions) withDefaults() FetchOptions {
 // NewFetchClient returns an *http.Client with the timeout and a redirect limit
 // applied. Tests can pass their own client to FetchArticle instead.
 func NewFetchClient(timeout time.Duration) *http.Client {
+	return newFetchClient(timeout, false)
+}
+
+func newFetchClient(timeout time.Duration, allowPrivateHosts bool) *http.Client {
 	if timeout <= 0 {
 		timeout = DefaultFetchTimeout
 	}
@@ -48,6 +55,9 @@ func NewFetchClient(timeout time.Duration) *http.Client {
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= maxFetchRedirects {
 				return fmt.Errorf("fetch: stopped after %d redirects", maxFetchRedirects)
+			}
+			if err := validateFetchURL(req.URL.String(), allowPrivateHosts); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -60,8 +70,11 @@ func NewFetchClient(timeout time.Duration) *http.Client {
 // without network.
 func FetchArticle(ctx context.Context, client *http.Client, rawURL string, opts FetchOptions) ([]byte, error) {
 	opts = opts.withDefaults()
+	if err := validateFetchURL(rawURL, opts.AllowPrivateHosts); err != nil {
+		return nil, err
+	}
 	if client == nil {
-		client = NewFetchClient(opts.Timeout)
+		client = newFetchClient(opts.Timeout, opts.AllowPrivateHosts)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
@@ -94,4 +107,43 @@ func FetchArticle(ctx context.Context, client *http.Client, rawURL string, opts 
 		return nil, fmt.Errorf("fetch %s: body exceeds %d byte limit", rawURL, opts.MaxBytes)
 	}
 	return body, nil
+}
+
+func validateFetchURL(rawURL string, allowPrivateHosts bool) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("fetch %s: %w", rawURL, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("fetch %s: unsupported URL scheme %q", rawURL, u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("fetch %s: missing host", rawURL)
+	}
+	if allowPrivateHosts {
+		return nil
+	}
+	if strings.EqualFold(host, "localhost") {
+		return fmt.Errorf("fetch %s: host %q is not allowed", rawURL, host)
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("fetch %s: resolve host: %w", rawURL, err)
+	}
+	for _, ip := range ips {
+		if isPrivateFetchIP(ip) {
+			return fmt.Errorf("fetch %s: host %q resolves to disallowed address %s", rawURL, host, ip)
+		}
+	}
+	return nil
+}
+
+func isPrivateFetchIP(ip net.IP) bool {
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast()
 }

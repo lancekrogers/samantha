@@ -217,6 +217,58 @@ func TestWatchBargeInDisabledWhenVADNil(t *testing.T) {
 	}
 }
 
+func TestRunTurnBargeInCancelsBrainProducer(t *testing.T) {
+	player := newFakePlayer(2 * time.Second)
+	defer player.Close()
+	capture := newFakeCapture()
+	vad := &fakeVAD{}
+	brainProvider := &bargeCancelBrain{ctxCanceled: make(chan struct{})}
+
+	p := &Pipeline{
+		STT:        &fakeSTT{text: "hello"},
+		Brain:      brainProvider,
+		TTS:        &fakeTTS{delay: time.Millisecond},
+		Player:     player,
+		Capture:    capture,
+		VAD:        &fakeVAD{},
+		BargeInVAD: vad,
+		Events:     events.NewBus(),
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.RunTurn(context.Background())
+		done <- err
+	}()
+
+	select {
+	case <-player.StartedSignal():
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for playback to start")
+	}
+
+	time.Sleep(bargeInArmDelay + 80*time.Millisecond)
+	for range bargeInMinSpeechChunks {
+		capture.Publish([]float32{0.9, 0.9, 0.9})
+		time.Sleep(60 * time.Millisecond)
+	}
+
+	select {
+	case <-brainProvider.ctxCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("barge-in did not cancel the brain producer context")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunTurn() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunTurn did not return after barge-in canceled the brain producer")
+	}
+}
+
 func TestRunTurnReturnsBrainStreamError(t *testing.T) {
 	bus := events.NewBus()
 	sttProvider := &fakeSTT{text: "hello"}
@@ -381,6 +433,29 @@ func (f *fakeBrain) ThinkFull(ctx context.Context, input string) (string, error)
 func (f *fakeBrain) ClearHistory()            {}
 func (f *fakeBrain) History() []brain.Turn    { return nil }
 func (f *fakeBrain) LoadHistory([]brain.Turn) {}
+
+type bargeCancelBrain struct {
+	ctxCanceled chan struct{}
+}
+
+func (b *bargeCancelBrain) ThinkStream(ctx context.Context, input string, opts brain.StreamOptions) (*brain.Stream, error) {
+	out := make(chan string, 1)
+	done := make(chan brain.StreamResult, 1)
+	go func() {
+		defer close(out)
+		defer close(done)
+		out <- "This response starts. It keeps running until barge-in cancels the producer context."
+		<-ctx.Done()
+		close(b.ctxCanceled)
+		done <- brain.StreamResult{Err: ctx.Err()}
+	}()
+	return &brain.Stream{Chunks: out, Done: done}, nil
+}
+
+func (b *bargeCancelBrain) ThinkFull(context.Context, string) (string, error) { return "", nil }
+func (b *bargeCancelBrain) ClearHistory()                                     {}
+func (b *bargeCancelBrain) History() []brain.Turn                             { return nil }
+func (b *bargeCancelBrain) LoadHistory([]brain.Turn)                          {}
 
 type fakeTTS struct {
 	mu        sync.Mutex

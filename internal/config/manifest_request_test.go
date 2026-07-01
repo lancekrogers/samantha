@@ -83,6 +83,12 @@ func TestManifestForUnsupportedModelsError(t *testing.T) {
 		!strings.Contains(err.Error(), "whisper.cpp") || !strings.Contains(err.Error(), "bogus") {
 		t.Errorf("whisper.cpp unsupported error = %v, want it to name the provider and model", err)
 	}
+
+	offline := &Config{STTProvider: "sherpa", WhisperModel: "../evil"}
+	if _, err := ManifestFor(offline, AssetRequest{NeedSTT: true}); err == nil ||
+		!strings.Contains(err.Error(), "sherpa offline whisper") || !strings.Contains(err.Error(), "../evil") {
+		t.Errorf("sherpa offline unsupported error = %v, want it to name the provider and model", err)
+	}
 }
 
 // TestManifestResolvedPathsUnderModelsDir proves every resolved download target

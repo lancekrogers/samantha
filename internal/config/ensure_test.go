@@ -87,7 +87,7 @@ func TestEnsureManifestSkipsExtractedArchive(t *testing.T) {
 		Schema: AssetSchema,
 		Assets: []Asset{{
 			ID: "tts.kokoro", Provider: "kokoro", Kind: AssetKindTTS, Name: "kokoro-tts",
-			Archive:    &AssetArchive{URL: srv.URL, StripPrefix: true},
+			Archive:    &AssetArchive{URL: srv.URL},
 			CheckFiles: []string{"model.onnx"},
 		}},
 	}
@@ -119,7 +119,7 @@ func TestEnsureManifestArchiveChecksumMismatchLeavesMissing(t *testing.T) {
 		Schema: AssetSchema,
 		Assets: []Asset{{
 			ID: "tts.kokoro", Provider: "kokoro", Kind: AssetKindTTS, Name: "kokoro-tts",
-			Archive:    &AssetArchive{URL: srv.URL, SHA256: "deadbeef", StripPrefix: true},
+			Archive:    &AssetArchive{URL: srv.URL, SHA256: "deadbeef"},
 			CheckFiles: []string{"model.onnx"},
 		}},
 	}
