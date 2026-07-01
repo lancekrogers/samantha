@@ -45,6 +45,10 @@ type Pipeline struct {
 
 	// PlaybackStallTimeout overrides the watchdog timeout; zero uses the default.
 	PlaybackStallTimeout time.Duration
+
+	// keepCapture preserves the capture buffer into the next turn after a
+	// barge-in, where the buffered audio is the user already mid-utterance.
+	keepCapture bool
 }
 
 type playbackEventType int
@@ -182,6 +186,10 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 		return text, err
 	}
 
+	// On a barge-in the user is already speaking their next turn into the mic;
+	// keep that audio instead of draining it when the next listen begins.
+	p.keepCapture = interrupted
+
 	p.emit(events.ResponseReady{
 		Response:    fullResponse,
 		Interrupted: interrupted,
@@ -268,6 +276,15 @@ func (p *Pipeline) transcribeTurn(ctx context.Context, metrics *turnMetrics, tur
 	if p.STT == nil {
 		return "", errors.New("STT provider is not configured")
 	}
+
+	// Drain echo and silence captured while Samantha spoke — including the tail
+	// that keeps hitting the mic after playback stops — so this turn hears live
+	// speech, not stale audio. Skip right after a barge-in, where the buffered
+	// audio is the user already mid-utterance.
+	if p.Capture != nil && !p.keepCapture {
+		p.Capture.Reset()
+	}
+	p.keepCapture = false
 
 	session, err := p.STT.Start(ctx)
 	if err != nil {
@@ -617,9 +634,8 @@ func (p *Pipeline) observeStream(ctx context.Context, stream *brain.Stream, metr
 }
 
 func (p *Pipeline) resetEchoState() {
-	if p.Capture != nil {
-		p.Capture.Reset()
-	}
+	// The capture buffer is drained at the start of the next listen (see
+	// transcribeTurn), which also catches echo arriving after playback stops.
 	if p.VAD != nil {
 		p.VAD.Clear()
 	}

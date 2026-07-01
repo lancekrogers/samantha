@@ -84,7 +84,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("whispercpp_model_path", filepath.Join(homeDir(), ".cache", "samantha", "models", "whispercpp", "ggml-base.en.bin"))
 
 	v.SetDefault("vad_enabled", true)
-	v.SetDefault("vad_silence_duration", 0.5)
+	v.SetDefault("vad_silence_duration", 0.8)
 	v.SetDefault("vad_threshold", 0.6)
 	v.SetDefault("vad_min_speech_duration", 0.25)
 	v.SetDefault("voice_frontend_enabled", true)

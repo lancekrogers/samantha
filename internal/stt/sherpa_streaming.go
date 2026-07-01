@@ -158,6 +158,7 @@ func (s *SherpaStreamingSTT) Delete() {
 }
 
 func normalizeTranscript(text string) string {
+	text = stripNonSpeechTags(text)
 	text = strings.Join(strings.Fields(text), " ")
 	if text == "" {
 		return ""

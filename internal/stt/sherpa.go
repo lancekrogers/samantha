@@ -41,7 +41,10 @@ func (s *sherpaSession) Close() error {
 // NewSherpaOfflineSTT creates a new sherpa-onnx whisper STT provider.
 func NewSherpaOfflineSTT(cfg *config.Config, capture audioSource, vad *audio.VAD) (*SherpaOfflineSTT, error) {
 	modelsDir := config.ModelsDir()
-	model := cfg.WhisperModel
+	model, err := config.SherpaOfflineWhisperModel(cfg.WhisperModel)
+	if err != nil {
+		return nil, err
+	}
 
 	suffix := ".onnx"
 	if cfg.WhisperQuantized {
@@ -106,11 +109,14 @@ func (s *SherpaOfflineSTT) Start(ctx context.Context) (Session, error) {
 // recognizer. It is the production transcribeFunc seam for runOfflineLoop.
 func (s *SherpaOfflineSTT) transcribe(samples []float32) (string, error) {
 	stream := sherpa.NewOfflineStream(s.recognizer)
+	if stream == nil {
+		return "", fmt.Errorf("failed to create whisper stream")
+	}
 	defer sherpa.DeleteOfflineStream(stream)
 
 	stream.AcceptWaveform(audio.SampleRate, samples)
 	s.recognizer.Decode(stream)
-	return strings.TrimSpace(stream.GetResult().Text), nil
+	return normalizeTranscript(strings.TrimSpace(stream.GetResult().Text)), nil
 }
 
 // vadSegmenter adapts the cgo Silero *audio.VAD to the segmenter seam so the
