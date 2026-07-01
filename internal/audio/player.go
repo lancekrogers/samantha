@@ -7,12 +7,14 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gen2brain/malgo"
 )
 
 const (
 	playbackChannels         = 1
+	initialPlaybackBuffer    = 120 * time.Millisecond
 	playbackCompactionFrames = 4096
 )
 
@@ -164,11 +166,7 @@ func (p *Player) pumpSegment(ctx context.Context, segment *playbackSegment, stre
 		return
 	}
 
-	// Kokoro currently generates a whole sentence before exposing samples. Wait
-	// until that sentence is fully buffered before handing it to the hardware
-	// callback, so playback reads an immutable buffer instead of racing a live
-	// append path under real-time audio deadlines.
-	segment.setReadyFrames(0)
+	segment.setReadyFrames(int(float64(outputRate) * initialPlaybackBuffer.Seconds()))
 
 	for {
 		select {
@@ -341,6 +339,9 @@ func (s *playbackSegment) setReadyFrames(frames int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if frames <= 0 {
+		frames = 1
+	}
 	s.readyFrames = frames
 	s.maybeReadyLocked()
 }
@@ -483,7 +484,7 @@ func (s *playbackSegment) maybeReadyLocked() {
 
 	pending := s.pendingLocked()
 	switch {
-	case pending > 0 && s.readyFrames > 0 && pending >= s.readyFrames:
+	case pending > 0 && (s.readyFrames == 0 || pending >= s.readyFrames):
 		s.readyClosed = true
 		close(s.ready)
 	case s.inputDone:
