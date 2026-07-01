@@ -248,11 +248,12 @@ func (m AssetManifest) ModelFiles() []ModelFile {
 // DefaultAssetRequest returns the asset request the default setup/startup path
 // uses for cfg — the same provider selection EnsureModels applies.
 func DefaultAssetRequest(cfg *Config) AssetRequest {
+	// Route through NormalizeSTT so this agrees with ManifestFor on every alias
+	// (including the empty default, which normalizes to sherpa-offline); an
+	// unrecognized provider needs no STT asset, matching the resolver.
+	_, sttOK := NormalizeSTT(cfg.STTProvider)
 	return AssetRequest{
-		NeedSTT: strings.EqualFold(cfg.STTProvider, "sherpa") ||
-			strings.EqualFold(cfg.STTProvider, "sherpa-streaming") ||
-			strings.EqualFold(cfg.STTProvider, "sherpa-offline") ||
-			strings.EqualFold(cfg.STTProvider, "whispercpp"),
+		NeedSTT: sttOK,
 		NeedTTS: strings.EqualFold(cfg.TTSProvider, "kokoro"),
 		NeedVAD: cfg.VADEnabled,
 	}

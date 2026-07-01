@@ -65,7 +65,20 @@ func RenderChapters(ctx context.Context, opts Options, chapters []RenderChapter,
 			continue
 		}
 
-		samples, rate, err := synthSegments(ctx, SegmentText(ch.Text, defaultMaxSegmentChars), synth)
+		textSegments := SegmentText(ch.Text, defaultMaxSegmentChars)
+		if len(textSegments) == 0 {
+			// A chapter with no narratable text (an image-only or fully
+			// boilerplate-stripped page) produces no audio. Record it as skipped
+			// with no output instead of writing a malformed zero-rate WAV that
+			// would look complete and be resume-skipped forever.
+			base.Status = StatusSkipped
+			base.Output = ""
+			base.ResumeKey = ""
+			segs = append(segs, base)
+			continue
+		}
+
+		samples, rate, err := synthSegments(ctx, textSegments, synth)
 		if err == nil {
 			err = writeWAV(outPath, rate, samples)
 		}

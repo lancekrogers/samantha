@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // defaultMaxSegmentChars caps the text handed to a single TTS request.
@@ -237,7 +238,16 @@ func splitLong(p string, maxChars int) []string {
 	for len(p) > maxChars {
 		cut := lastSentenceBreak(p[:maxChars])
 		if cut <= 0 {
-			cut = maxChars // no sentence boundary; hard split
+			// No sentence boundary; hard split at the limit, backed up to a
+			// rune boundary so multibyte text (CJK, emoji) is never cut mid-rune
+			// into invalid UTF-8.
+			cut = maxChars
+			for cut > 0 && !utf8.RuneStart(p[cut]) {
+				cut--
+			}
+			if cut == 0 {
+				cut = maxChars // degenerate: a single rune longer than the cap
+			}
 		}
 		chunks = append(chunks, strings.TrimSpace(p[:cut]))
 		p = strings.TrimSpace(p[cut:])

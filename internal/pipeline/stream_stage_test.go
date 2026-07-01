@@ -60,7 +60,8 @@ func TestObserveStreamForwardsChunksAndMarksFirstChunk(t *testing.T) {
 	metrics := newTurnMetrics()
 	stream := scriptedStream(context.Background(), []string{"Hello ", "there. ", "How are you?"}, nil)
 
-	got := collect(t, p.observeStream(context.Background(), stream, metrics))
+	chunks, _ := p.observeStream(context.Background(), stream, metrics)
+	got := collect(t, chunks)
 
 	want := []string{"Hello ", "there. ", "How are you?"}
 	if len(got) != len(want) {
@@ -87,7 +88,7 @@ func TestObserveStreamClosesOnStreamCompletion(t *testing.T) {
 	metrics := newTurnMetrics()
 	stream := scriptedStream(context.Background(), []string{"done."}, nil)
 
-	out := p.observeStream(context.Background(), stream, metrics)
+	out, _ := p.observeStream(context.Background(), stream, metrics)
 	_ = collect(t, out) // drain to completion
 
 	// A second receive on a drained, closed channel must not block.
@@ -108,7 +109,8 @@ func TestObserveStreamModelErrorClosesObserver(t *testing.T) {
 	metrics := newTurnMetrics()
 	stream := scriptedStream(context.Background(), []string{"partial"}, context.DeadlineExceeded)
 
-	got := collect(t, p.observeStream(context.Background(), stream, metrics))
+	chunks, _ := p.observeStream(context.Background(), stream, metrics)
+	got := collect(t, chunks)
 	if len(got) != 1 || got[0] != "partial" {
 		t.Fatalf("observeStream forwarded %v, want [partial] before the model error", got)
 	}
@@ -125,7 +127,7 @@ func TestObserveStreamCancellationClosesPromptly(t *testing.T) {
 	for i := range manyChunks {
 		manyChunks[i] = "x"
 	}
-	out := p.observeStream(ctx, scriptedStream(ctx, manyChunks, nil), metrics)
+	out, _ := p.observeStream(ctx, scriptedStream(ctx, manyChunks, nil), metrics)
 
 	cancel()
 
@@ -148,7 +150,7 @@ func TestSegmentStageProducesSentencesWithoutPlayback(t *testing.T) {
 	metrics := newTurnMetrics()
 	stream := scriptedStream(context.Background(), []string{"First sentence. Second one! ", "Third?"}, nil)
 
-	chunks := p.observeStream(context.Background(), stream, metrics)
+	chunks, _ := p.observeStream(context.Background(), stream, metrics)
 	sentences := collect(t, brain.ChunkSentences(chunks))
 
 	want := []string{"First sentence.", "Second one!", "Third?"}
@@ -162,6 +164,26 @@ func TestSegmentStageProducesSentencesWithoutPlayback(t *testing.T) {
 	}
 }
 
+// TestStreamResponseNoRaceOnFirstChunkCancel guards the fix for the data race
+// between observeStream stamping metrics.firstModelChunk and finish()/snapshot()
+// reading it: streamResponse must join the observer before returning, so a
+// cancellation landing exactly as the first chunk arrives cannot leave the
+// goroutine writing after the caller reads. Run under -race to detect a
+// regression.
+func TestStreamResponseNoRaceOnFirstChunkCancel(t *testing.T) {
+	for range 200 {
+		p := &Pipeline{Events: events.NewBus()}
+		metrics := newTurnMetrics()
+		turn := p.newTurnConductor(metrics)
+		ctx, cancel := context.WithCancel(context.Background())
+
+		stream := scriptedStream(ctx, []string{"hello", "there"}, nil)
+		go cancel() // cancel concurrently with the first chunk
+		_, _, _ = p.streamResponse(ctx, cancel, stream, false, metrics, turn)
+		_ = metrics.snapshot() // reads firstModelChunk after streamResponse returned
+	}
+}
+
 func TestSegmentStageFlushesTrailingPartialSentence(t *testing.T) {
 	// A sentence split across chunks with no terminal punctuation must still be
 	// flushed as the final segment.
@@ -169,7 +191,7 @@ func TestSegmentStageFlushesTrailingPartialSentence(t *testing.T) {
 	metrics := newTurnMetrics()
 	stream := scriptedStream(context.Background(), []string{"a trailing ", "thought with no period"}, nil)
 
-	chunks := p.observeStream(context.Background(), stream, metrics)
+	chunks, _ := p.observeStream(context.Background(), stream, metrics)
 	sentences := collect(t, brain.ChunkSentences(chunks))
 
 	if len(sentences) != 1 || sentences[0] != "a trailing thought with no period" {

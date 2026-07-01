@@ -199,6 +199,13 @@ func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Eve
 			TrailingSilence: trailingSilence,
 			Elapsed:         time.Since(start),
 		})
+		if decision.Kind == endpoint.Timeout {
+			// No-speech start-timeout: enforce it here too, not only in the
+			// ErrNoFrameReady branch, so a source that streams frames back to
+			// back (no ready-gap) still times out instead of listening forever.
+			sendEvent(ctx, events, Timeout{})
+			return
+		}
 		if decision.Kind == endpoint.TooShort {
 			deps.seg.Reset()
 			speechDetected = false

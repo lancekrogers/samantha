@@ -331,7 +331,6 @@ func (p *Pipeline) transcribeTurn(ctx context.Context, metrics *turnMetrics, tur
 
 func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.CancelFunc, stream *brain.Stream, allowBargeIn bool, metrics *turnMetrics, turn *turnConductor) (string, bool, error) {
 	streamCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
 	// loopDone closes when this function returns — the moment the loop stops
 	// draining playbackEvents. Playback watchers select on it so their sends
@@ -345,7 +344,15 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 	// Two narrow upstream stages feed the turn loop: the model observer forwards
 	// brain chunks (stamping first-chunk metrics), then the segmenter turns that
 	// chunk stream into voice-ready sentences. Both are testable in isolation.
-	streamedChunks := p.observeStream(streamCtx, stream, metrics)
+	streamedChunks, observeDone := p.observeStream(streamCtx, stream, metrics)
+	// Join the observer before returning: it stamps firstModelChunk, which the
+	// caller reads via snapshot() in finish(). Cancel first so the goroutine
+	// unblocks, then wait for it to exit. cancel is idempotent — the barge-in and
+	// normal-completion paths also call it. This runs after close(loopDone).
+	defer func() {
+		cancel()
+		<-observeDone
+	}()
 	sentences := brain.ChunkSentences(streamedChunks)
 
 	var fullResponse strings.Builder
@@ -602,10 +609,15 @@ func (p *Pipeline) handlePlaybackLifecycle(sentence string, synthStarted time.Ti
 // streamResponse. The forwarding send is cancellation-safe: on ctx cancellation
 // the stage returns instead of blocking on a downstream that has stopped
 // reading, so it cannot wedge teardown, model completion, or barge-in.
-func (p *Pipeline) observeStream(ctx context.Context, stream *brain.Stream, metrics *turnMetrics) <-chan string {
+// The returned done channel closes once the goroutine has fully exited, so a
+// caller can join it before reading metrics (it stamps firstModelChunk) and
+// avoid racing snapshot() on an early return.
+func (p *Pipeline) observeStream(ctx context.Context, stream *brain.Stream, metrics *turnMetrics) (<-chan string, <-chan struct{}) {
 	out := make(chan string, 8)
+	done := make(chan struct{})
 
 	go func() {
+		defer close(done)
 		defer close(out)
 		first := true
 		for {
@@ -630,7 +642,7 @@ func (p *Pipeline) observeStream(ctx context.Context, stream *brain.Stream, metr
 		}
 	}()
 
-	return out
+	return out, done
 }
 
 func (p *Pipeline) resetEchoState() {

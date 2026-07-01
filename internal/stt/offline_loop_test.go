@@ -48,6 +48,26 @@ func (noFrames) ReadFrame(ctx context.Context) (audio.Frame, error) {
 
 func (noFrames) Close() error { return nil }
 
+// busyFrames is a live test FrameSource that always has a non-speech data frame
+// ready: it never reports ErrNoFrameReady and never sets Final, so a start
+// timeout must be enforced by the main-loop endpoint decision rather than the
+// no-frame-ready branch.
+type busyFrames struct{}
+
+func (busyFrames) ReadFrame(ctx context.Context) (audio.Frame, error) {
+	if err := ctx.Err(); err != nil {
+		return audio.Frame{}, err
+	}
+	return audio.Frame{
+		Samples:    make([]float32, 1600),
+		SampleRate: audio.SampleRate,
+		Channels:   1,
+		SourceKind: audio.SourceLive,
+	}, nil
+}
+
+func (busyFrames) Close() error { return nil }
+
 // fakeSegmenter is a scriptable segmenter: speech toggles IsSpeech, segments is
 // the mid-stream finalized queue, and flushSeg is appended on Flush (EOF).
 type fakeSegmenter struct {
@@ -227,6 +247,27 @@ func TestOfflineLoopLiveNoSpeechStartTimeout(t *testing.T) {
 	got := runLoop(context.Background(), deps)
 	if _, ok := terminal(got).(Timeout); !ok {
 		t.Fatalf("terminal event = %T, want Timeout", terminal(got))
+	}
+}
+
+func TestOfflineLoopBusyNoSpeechStartTimeout(t *testing.T) {
+	// A live source streaming non-speech frames back to back (never
+	// ErrNoFrameReady, never Final) must still hit the no-speech start timeout
+	// through the main-loop endpoint decision rather than listening forever. The
+	// context deadline is only a safety net: on success the loop times out well
+	// before it fires.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	deps := offlineLoopDeps{
+		frames:     busyFrames{},
+		seg:        &fakeSegmenter{speech: false},
+		policy:     endpoint.Policy{StartTimeout: time.Millisecond},
+		transcribe: func([]float32) (string, error) { return "", nil },
+	}
+
+	got := runLoop(ctx, deps)
+	if _, ok := terminal(got).(Timeout); !ok {
+		t.Fatalf("terminal event = %T, want Timeout (start timeout via main loop)", terminal(got))
 	}
 }
 

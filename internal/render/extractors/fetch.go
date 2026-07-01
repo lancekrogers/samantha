@@ -50,8 +50,11 @@ func newFetchClient(timeout time.Duration, allowPrivateHosts bool) *http.Client 
 	if timeout <= 0 {
 		timeout = DefaultFetchTimeout
 	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = safeDialContext(allowPrivateHosts)
 	return &http.Client{
-		Timeout: timeout,
+		Timeout:   timeout,
+		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= maxFetchRedirects {
 				return fmt.Errorf("fetch: stopped after %d redirects", maxFetchRedirects)
@@ -61,6 +64,43 @@ func newFetchClient(timeout time.Duration, allowPrivateHosts bool) *http.Client 
 			}
 			return nil
 		},
+	}
+}
+
+// safeDialContext resolves the host itself and dials one of the validated IPs
+// directly, so a DNS name that passes validateFetchURL cannot be re-resolved to
+// a private address at connect time (DNS-rebinding TOCTOU). TLS SNI is unchanged
+// because http.Transport derives the server name from the request URL, not the
+// dial address.
+func safeDialContext(allowPrivateHosts bool) func(context.Context, string, string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if allowPrivateHosts {
+			return dialer.DialContext(ctx, network, addr)
+		}
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := net.LookupIP(host)
+		if err != nil {
+			return nil, fmt.Errorf("fetch: resolve %s: %w", host, err)
+		}
+		var lastErr error
+		for _, ip := range ips {
+			if isPrivateFetchIP(ip) {
+				return nil, fmt.Errorf("fetch: host %q resolves to disallowed address %s", host, ip)
+			}
+		}
+		for _, ip := range ips {
+			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			return conn, nil
+		}
+		return nil, lastErr
 	}
 }
 
@@ -139,11 +179,17 @@ func validateFetchURL(rawURL string, allowPrivateHosts bool) error {
 	return nil
 }
 
+// cgnatRange is RFC 6598 carrier-grade NAT space (100.64.0.0/10), which
+// net.IP.IsPrivate does not cover but which should not be reachable from a
+// document fetch.
+var cgnatRange = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+
 func isPrivateFetchIP(ip net.IP) bool {
 	return ip.IsLoopback() ||
 		ip.IsPrivate() ||
 		ip.IsUnspecified() ||
 		ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() ||
-		ip.IsMulticast()
+		ip.IsMulticast() ||
+		cgnatRange.Contains(ip)
 }

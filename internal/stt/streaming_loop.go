@@ -133,13 +133,12 @@ func runStreamingLoop(ctx context.Context, deps streamingLoopDeps, events chan<-
 			}
 		}
 
-		providerEnd := deps.rec.IsEndpoint()
 		decision := deps.policy.Decide(endpoint.Observation{
 			HasSpeech:       speechDetected,
 			SpeechSeen:      speechSeen,
 			TrailingSilence: trailingSilence,
 			Elapsed:         time.Since(start),
-			ProviderEnd:     providerEnd,
+			ProviderEnd:     deps.rec.IsEndpoint(),
 			SourceFinal:     eof,
 		})
 
@@ -149,7 +148,11 @@ func runStreamingLoop(ctx context.Context, deps streamingLoopDeps, events chan<-
 			return
 		}
 
-		shouldFinalize := speechDetected && (eof || providerEnd || deps.seg.HasSegments() || decision.Kind == endpoint.Finalize)
+		// The provider-end fact reaches the decision through the policy's
+		// AllowProviderEnd gate (decision.Kind == Finalize); it is deliberately
+		// not consulted raw here, so an ungated recognizer endpoint cannot
+		// finalize on its own.
+		shouldFinalize := speechDetected && (eof || deps.seg.HasSegments() || decision.Kind == endpoint.Finalize)
 		if !shouldFinalize {
 			continue
 		}

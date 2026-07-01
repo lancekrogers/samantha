@@ -399,7 +399,7 @@ func downloadFile(path, url, file string, size int64, sha256Hex string, onProgre
 
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.part")
 	if err != nil {
-		return err
+		return fmt.Errorf("download %s: create temp file: %w", file, err)
 	}
 	tmpName := tmp.Name()
 	committed := false
@@ -423,7 +423,7 @@ func downloadFile(path, url, file string, size int64, sha256Hex string, onProgre
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
 			if _, werr := sink.Write(buf[:n]); werr != nil {
-				return werr
+				return fmt.Errorf("download %s: %w", file, werr)
 			}
 			written += int64(n)
 			if total > 0 && onProgress != nil {
@@ -449,10 +449,10 @@ func downloadFile(path, url, file string, size int64, sha256Hex string, onProgre
 	}
 
 	if err := tmp.Close(); err != nil {
-		return err
+		return fmt.Errorf("download %s: close temp file: %w", file, err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		return err
+		return fmt.Errorf("download %s: finalize: %w", file, err)
 	}
 	committed = true
 	return nil

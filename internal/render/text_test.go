@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // fakeSynth produces deterministic samples: one sample per character, at a fixed
@@ -41,6 +42,21 @@ func TestSegmentTextSplitsByCap(t *testing.T) {
 	segs := SegmentText(text, 20) // each paragraph ~17 chars, so one per segment
 	if len(segs) != 3 {
 		t.Fatalf("segments = %d, want 3\n%v", len(segs), segs)
+	}
+}
+
+func TestSegmentTextHardSplitsMultibyteOnRuneBoundary(t *testing.T) {
+	// A long paragraph of multibyte runes with no ASCII sentence break must be
+	// hard-split on rune boundaries, never mid-rune into invalid UTF-8.
+	text := strings.Repeat("あ", 800) // 2400 bytes, no ". " break
+	segs := SegmentText(text, 1501)
+	if len(segs) < 2 {
+		t.Fatalf("expected the over-long paragraph to split, got %d segment(s)", len(segs))
+	}
+	for i, s := range segs {
+		if !utf8.ValidString(s) {
+			t.Errorf("segment %d is not valid UTF-8 (cut mid-rune): %x", i, s)
+		}
 	}
 }
 

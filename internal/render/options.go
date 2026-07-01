@@ -86,6 +86,16 @@ func (o Options) Validate() error {
 		return fmt.Errorf("render: --format %s cannot read from --stdin", o.Format)
 	}
 
+	// Cross-check the resolved format against the output mode so a mismatch fails
+	// fast here, before any TTS model is loaded. EPUB is inherently multi-file;
+	// every other format is single-file.
+	switch {
+	case o.ResolveFormat() == FormatEPUB && o.Out != "":
+		return fmt.Errorf("render: --format epub writes multiple files; use --out-dir DIR")
+	case o.ResolveFormat() != FormatEPUB && o.OutDir != "":
+		return fmt.Errorf("render: --format %s writes a single file; use --out FILE", o.ResolveFormat())
+	}
+
 	if o.Speed < 0 {
 		return fmt.Errorf("render: --speed must be >= 0, got %v", o.Speed)
 	}

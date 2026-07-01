@@ -24,6 +24,35 @@ func recordingWriter(written *[]string) WAVWriter {
 	}
 }
 
+func TestRenderChaptersSkipsEmptyChapterWithoutWritingWAV(t *testing.T) {
+	dir := t.TempDir()
+	opts := Options{OutDir: dir, Format: FormatEPUB, Title: "Book"}
+	synth := &fakeSynth{rate: 24000}
+	var written []string
+
+	chapters := []RenderChapter{
+		{ID: "ch1", Title: "Cover", Text: "   "}, // no narratable text
+		{ID: "ch2", Title: "Body", Text: "Real content here."},
+	}
+	m, err := RenderChapters(context.Background(), opts, chapters, synth, recordingWriter(&written))
+	if err != nil {
+		t.Fatalf("RenderChapters() error = %v", err)
+	}
+	if len(written) != 1 {
+		t.Fatalf("wrote %d WAV(s), want 1 (empty chapter must not be written): %v", len(written), written)
+	}
+	if len(m.Segments) != 2 {
+		t.Fatalf("segments = %d, want 2", len(m.Segments))
+	}
+	empty := m.Segments[0]
+	if empty.Status != StatusSkipped || empty.Output != "" || empty.ResumeKey != "" {
+		t.Errorf("empty chapter segment = %+v, want skipped with no output/resume key", empty)
+	}
+	if m.Segments[1].Status != StatusComplete {
+		t.Errorf("second chapter status = %q, want complete", m.Segments[1].Status)
+	}
+}
+
 func TestRenderChaptersWritesPerChapterFilesAndManifest(t *testing.T) {
 	dir := t.TempDir()
 	opts := Options{OutDir: dir, Format: FormatEPUB, Voice: "af_bella", Title: "Book"}
