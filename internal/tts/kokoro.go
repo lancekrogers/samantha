@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 
@@ -46,6 +47,7 @@ func init() {
 
 // KokoroTTS implements TTS using sherpa-onnx Kokoro.
 type KokoroTTS struct {
+	mu    sync.Mutex
 	tts   *sherpa.OfflineTts
 	voice string
 	speed float32
@@ -115,7 +117,7 @@ func (k *KokoroTTS) Synthesize(ctx context.Context, text string) (*audio.PCMStre
 			return
 		}
 
-		audioResult := k.tts.Generate(textclean.StripUnsupportedKokoroMarks(text), k.sid, k.speed)
+		audioResult := k.generate(textclean.StripUnsupportedKokoroMarks(text))
 		if audioResult == nil {
 			stream.CloseWithError(fmt.Errorf("TTS generation returned nil"))
 			return
@@ -148,6 +150,12 @@ func (k *KokoroTTS) Synthesize(ctx context.Context, text string) (*audio.PCMStre
 	}()
 
 	return stream, nil
+}
+
+func (k *KokoroTTS) generate(text string) *sherpa.GeneratedAudio {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.tts.Generate(text, k.sid, k.speed)
 }
 
 // Available returns true if TTS is ready.
