@@ -162,3 +162,7 @@ just voice providers
 ## License
 
 Samantha is released under the MIT License. See [LICENSE](LICENSE).
+
+---
+
+Built by [Obedience Corp](https://obediencecorp.com) · [GitHub](https://github.com/Obedience-Corp)
