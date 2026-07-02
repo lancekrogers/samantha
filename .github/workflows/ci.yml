@@ -40,7 +40,4 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Voiceflow (advisory)
-        run: |
-          if ! go test -race -tags integration ./tests/voiceflow/...; then
-            echo "::warning::voiceflow suite failed (advisory until PR #27 merges)"
-          fi
+        run: just test voiceflow
