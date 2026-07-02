@@ -103,7 +103,9 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 				if resp.Message.Content != "" {
 					textBuf.WriteString(resp.Message.Content)
 					if !opts.ToolsEnabled {
-						out <- resp.Message.Content
+						if err := sendChunk(ctx, out, resp.Message.Content); err != nil {
+							return err
+						}
 					}
 				}
 				if len(resp.Message.ToolCalls) > 0 {
@@ -140,7 +142,10 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 			response := textBuf.String()
 			if response != "" {
 				if opts.ToolsEnabled {
-					out <- response
+					if err := sendChunk(ctx, out, response); err != nil {
+						done <- StreamResult{Err: err}
+						return
+					}
 				}
 				response = cleanForVoice(response)
 				o.history = append(o.history, api.Message{Role: "assistant", Content: response})
@@ -150,11 +155,23 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 			return
 		}
 
-		out <- "I seem to be going in circles with my tools. Let me just answer directly."
+		if err := sendChunk(ctx, out, "I seem to be going in circles with my tools. Let me just answer directly."); err != nil {
+			done <- StreamResult{Err: err}
+			return
+		}
 		done <- StreamResult{}
 	}()
 
 	return &Stream{Chunks: out, Done: done}, nil
+}
+
+func sendChunk(ctx context.Context, out chan<- string, chunk string) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case out <- chunk:
+		return nil
+	}
 }
 
 // ThinkFull sends input and waits for the complete response.

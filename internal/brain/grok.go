@@ -59,7 +59,10 @@ func (g *GrokBrain) ThinkStream(ctx context.Context, input string, _ StreamOptio
 			case grok.EventText:
 				if text := ev.Content(); text != "" {
 					fullResponse.WriteString(text)
-					out <- text
+					if err := sendChunk(ctx, out, text); err != nil {
+						done <- StreamResult{Err: err}
+						return
+					}
 				}
 			case grok.EventError:
 				if streamErr == nil {
