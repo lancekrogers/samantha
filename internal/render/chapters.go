@@ -34,8 +34,14 @@ func RenderChapters(ctx context.Context, opts Options, chapters []RenderChapter,
 	}
 
 	prior := map[string]ManifestSegment{}
+	priorRate := 0
 	if opts.Resume && !opts.Overwrite {
-		prior = priorSegmentsByOutput(opts.ManifestPath())
+		if m, ok := loadPriorManifest(opts.ManifestPath()); ok {
+			for _, s := range m.Segments {
+				prior[s.Output] = s
+			}
+			priorRate = m.SampleRate
+		}
 	}
 	synthID := synthIdentity(synth)
 
@@ -47,60 +53,33 @@ func RenderChapters(ctx context.Context, opts Options, chapters []RenderChapter,
 		// Cancellation stops promptly but still returns the chapters completed so
 		// far, so the caller can persist a partial manifest and resume later.
 		if err := ctx.Err(); err != nil {
+			if sampleRate == 0 {
+				sampleRate = priorRate
+			}
 			return chapterManifest(opts, segs, sampleRate), err
 		}
-		name := chapterFilename(i+1, ch)
-		outPath := filepath.Join(opts.OutDir, name)
-		hash := textHash(ch.Text)
-		key := resumeKey(opts, synthID, ch.Text, name)
-		base := ManifestSegment{
-			Index: i + 1, ID: chapterID(ch, i+1), Title: ch.Title,
-			TextSHA256: hash, ResumeKey: key, Output: name,
-		}
 
-		if p, ok := prior[name]; ok && resumable(p, key, outPath) {
-			base.DurationMS = p.DurationMS
-			base.Status = StatusSkipped
-			segs = append(segs, base)
-			continue
-		}
-
-		textSegments := SegmentText(ch.Text, defaultMaxSegmentChars)
-		if len(textSegments) == 0 {
-			// A chapter with no narratable text (an image-only or fully
-			// boilerplate-stripped page) produces no audio. Record it as skipped
-			// with no output instead of writing a malformed zero-rate WAV that
-			// would look complete and be resume-skipped forever.
-			base.Status = StatusSkipped
-			base.Output = ""
-			base.ResumeKey = ""
-			segs = append(segs, base)
-			continue
-		}
-
-		samples, rate, err := synthSegments(ctx, textSegments, synth)
-		if err == nil {
-			err = writeWAV(outPath, rate, samples)
-		}
+		seg, rate, err := renderChapter(ctx, opts, i, ch, synthID, prior, synth, writeWAV)
 		if err != nil {
 			// One bad chapter is recorded as failed and kept visible; the rest of
 			// a long render still proceeds. Failed chapters carry no resume key, so
 			// they are always retried on --resume.
 			if firstErr == nil {
-				firstErr = fmt.Errorf("render: chapter %d (%s): %w", i+1, name, err)
+				firstErr = err
 			}
 			failed++
-			base.ResumeKey = ""
-			base.Status = StatusFailed
-			segs = append(segs, base)
-			continue
 		}
 		if sampleRate == 0 {
 			sampleRate = rate
 		}
-		base.DurationMS = samplesDurationMS(len(samples), rate)
-		base.Status = StatusComplete
-		segs = append(segs, base)
+		segs = append(segs, seg)
+	}
+
+	// An all-skipped resume synthesizes nothing; carry the prior run's rate
+	// forward instead of rewriting the manifest with sample_rate 0. Fresh audio
+	// always wins when any chapter was synthesized.
+	if sampleRate == 0 {
+		sampleRate = priorRate
 	}
 
 	manifest := chapterManifest(opts, segs, sampleRate)
@@ -108,6 +87,51 @@ func RenderChapters(ctx context.Context, opts Options, chapters []RenderChapter,
 		return manifest, fmt.Errorf("render: %d of %d chapter(s) failed: %w", failed, len(chapters), firstErr)
 	}
 	return manifest, nil
+}
+
+// renderChapter renders one chapter to its WAV (or skips it via resume /
+// empty-narration rules) and returns its manifest segment plus the synthesized
+// sample rate (0 when nothing was synthesized). A synthesis or write failure is
+// returned as an error alongside a failed segment carrying no resume key.
+func renderChapter(ctx context.Context, opts Options, i int, ch RenderChapter, synthID string, prior map[string]ManifestSegment, synth Synthesizer, writeWAV WAVWriter) (ManifestSegment, int, error) {
+	name := chapterFilename(i+1, ch)
+	outPath := filepath.Join(opts.OutDir, name)
+	base := ManifestSegment{
+		Index: i + 1, ID: chapterID(ch, i+1), Title: ch.Title,
+		TextSHA256: textHash(ch.Text), ResumeKey: resumeKey(opts, synthID, ch.Text, name), Output: name,
+	}
+
+	if p, ok := prior[name]; ok && resumable(p, base.ResumeKey, outPath) {
+		base.DurationMS = p.DurationMS
+		base.Status = StatusSkipped
+		return base, 0, nil
+	}
+
+	textSegments := SegmentText(ch.Text, defaultMaxSegmentChars)
+	if len(textSegments) == 0 {
+		// A chapter with no narratable text (an image-only or fully
+		// boilerplate-stripped page) produces no audio. Record it as skipped
+		// with no output instead of writing a malformed zero-rate WAV that
+		// would look complete and be resume-skipped forever.
+		base.Status = StatusSkipped
+		base.Output = ""
+		base.ResumeKey = ""
+		return base, 0, nil
+	}
+
+	samples, rate, err := synthSegments(ctx, textSegments, synth)
+	if err == nil {
+		err = writeWAV(outPath, rate, samples)
+	}
+	if err != nil {
+		base.ResumeKey = ""
+		base.Status = StatusFailed
+		return base, 0, fmt.Errorf("render: chapter %d (%s): %w", i+1, name, err)
+	}
+
+	base.DurationMS = samplesDurationMS(len(samples), rate)
+	base.Status = StatusComplete
+	return base, rate, nil
 }
 
 // chapterManifest assembles the render manifest from the per-chapter segments.
@@ -152,9 +176,9 @@ func chapterID(ch RenderChapter, index int) string {
 }
 
 func chapterFilename(index int, ch RenderChapter) string {
-	slug := slugify(ch.Title)
+	slug := Slugify(ch.Title)
 	if slug == "" {
-		slug = slugify(ch.ID)
+		slug = Slugify(ch.ID)
 	}
 	if slug == "" {
 		return fmt.Sprintf("%03d.wav", index)
@@ -164,7 +188,11 @@ func chapterFilename(index int, ch RenderChapter) string {
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
 
-func slugify(s string) string {
+// Slugify lowercases s and reduces it to a filesystem/ID-safe dash-separated
+// slug capped at 40 characters. It is the single source of the slug rules used
+// for chapter filenames and extracted section IDs, which must stay in step for
+// manifest-to-file correspondence.
+func Slugify(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	s = nonSlug.ReplaceAllString(s, "-")
 	s = strings.Trim(s, "-")

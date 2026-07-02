@@ -2,8 +2,6 @@ package pipeline
 
 import (
 	"slices"
-
-	"github.com/lancekrogers/samantha/internal/events"
 )
 
 // TurnState is an explicit lifecycle state for one interactive voice turn.
@@ -127,41 +125,4 @@ func (m *turnMachine) Terminal() (TurnState, bool) {
 		return m.state, true
 	}
 	return TurnIdle, false
-}
-
-// stateForEvent maps an emitted bus event to the turn state it signals entry
-// into. It returns ok=false for events that do not advance lifecycle state
-// (partials, per-segment progress, voice generation, metrics, info). This is
-// the bridge that lets the state machine ride the existing event stream without
-// renaming any event.
-//
-// The no-speech/timeout and pre-speech cancellation terminals have no
-// distinguishing event today; the pipeline drives those directly (see
-// turnMachine.To) when transcription returns empty or the context is canceled.
-func stateForEvent(e events.Event) (TurnState, bool) {
-	switch ev := e.(type) {
-	case events.STTPhase:
-		switch ev.Phase {
-		case "listening", "hearing":
-			return TurnListening, true
-		case "transcribing":
-			return TurnTranscribing, true
-		}
-		return TurnIdle, false
-	case events.UserInput, events.ThinkingStarted:
-		return TurnThinking, true
-	case events.SpeechSegmentReady, events.GeneratingVoice, events.SpeakingStarted:
-		return TurnSpeaking, true
-	case events.SpeakingInterrupted, events.TurnInterrupted:
-		return TurnInterrupted, true
-	case events.Error:
-		return TurnFailed, true
-	case events.ResponseReady:
-		if ev.Interrupted {
-			return TurnInterrupted, true
-		}
-		return TurnCompleted, true
-	default:
-		return TurnIdle, false
-	}
 }

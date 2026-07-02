@@ -134,7 +134,7 @@ func (c *Capture) ReadFrame(ctx context.Context) (Frame, error) {
 		Samples:    samples,
 		SampleRate: SampleRate,
 		Channels:   Channels,
-		Duration:   frameDuration(len(samples)),
+		Duration:   SamplesDuration(len(samples)),
 		Sequence:   c.frameSeq,
 		SourceKind: SourceLive,
 	}, nil

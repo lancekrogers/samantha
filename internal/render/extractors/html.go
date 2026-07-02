@@ -7,13 +7,6 @@ import (
 	"github.com/lancekrogers/samantha/internal/render"
 )
 
-// DocumentExtractor is the boundary for structure-aware extraction. HTML/URL
-// share one extractor so a future readability-style implementation can replace
-// it without changing render orchestration.
-type DocumentExtractor interface {
-	Extract(source string, data []byte) (render.Document, error)
-}
-
 // HTML handling (conservative first pass, no parser dependency): comments and
 // script/style/nav/header/footer/aside/form blocks are removed, <title> becomes
 // the document title, headings (h1-6) start sections, p/li/blockquote/br mark
@@ -171,14 +164,26 @@ func mainRegion(s string) string {
 	return s
 }
 
-// dropBlock removes every <tag ...>...</tag> block (case-insensitive). RE2 has
-// no backreferences, so this is built per tag.
+// boilerplateRE holds each boilerplate tag's block/bare regex pair, compiled
+// once at init — RE2 has no backreferences so every tag needs its own pair, and
+// ExtractHTML runs once per chapter of a book.
+var boilerplateRE = func() map[string][2]*regexp.Regexp {
+	m := make(map[string][2]*regexp.Regexp, len(boilerplate))
+	for _, tag := range boilerplate {
+		m[tag] = [2]*regexp.Regexp{
+			regexp.MustCompile(`(?is)<` + tag + `\b[^>]*>.*?</` + tag + `\s*>`),
+			regexp.MustCompile(`(?is)<` + tag + `\b[^>]*/?>`),
+		}
+	}
+	return m
+}()
+
+// dropBlock removes every <tag ...>...</tag> block (case-insensitive), plus any
+// self-closing or unmatched opener.
 func dropBlock(s, tag string) string {
-	re := regexp.MustCompile(`(?is)<` + tag + `\b[^>]*>.*?</` + tag + `\s*>`)
-	s = re.ReplaceAllString(s, " ")
-	// Self-closing or unmatched opener: also strip a bare leading tag.
-	bare := regexp.MustCompile(`(?is)<` + tag + `\b[^>]*/?>`)
-	return bare.ReplaceAllString(s, " ")
+	res := boilerplateRE[tag]
+	s = res[0].ReplaceAllString(s, " ")
+	return res[1].ReplaceAllString(s, " ")
 }
 
 func tagInfo(tag string) (name string, closing bool) {

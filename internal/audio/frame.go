@@ -67,10 +67,10 @@ var (
 	_ FrameSource = (*FixtureSource)(nil)
 )
 
-// frameDuration returns the wall-time a chunk of n mono samples represents at
+// SamplesDuration returns the wall-time a chunk of n mono samples represents at
 // the capture sample rate. It is derived from the sample count, so it stays
 // deterministic and independent of the wall clock.
-func frameDuration(n int) time.Duration {
+func SamplesDuration(n int) time.Duration {
 	if SampleRate <= 0 || n <= 0 {
 		return 0
 	}

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // AssetSchema identifies the asset manifest schema version.
@@ -163,7 +162,7 @@ func ManifestFor(cfg *Config, req AssetRequest) (AssetManifest, error) {
 		}
 	}
 
-	if req.NeedTTS && strings.EqualFold(cfg.TTSProvider, "kokoro") {
+	if req.NeedTTS && ManagedTTS(cfg) {
 		m.Assets = append(m.Assets, Asset{
 			ID:         "tts.kokoro.multi-lang-v1_0",
 			Provider:   "kokoro",
@@ -254,7 +253,7 @@ func DefaultAssetRequest(cfg *Config) AssetRequest {
 	_, sttOK := NormalizeSTT(cfg.STTProvider)
 	return AssetRequest{
 		NeedSTT: sttOK,
-		NeedTTS: strings.EqualFold(cfg.TTSProvider, "kokoro"),
+		NeedTTS: ManagedTTS(cfg),
 		NeedVAD: cfg.VADEnabled,
 	}
 }

@@ -56,48 +56,19 @@ func runRenderText(cmd *cobra.Command, opts render.Options) error {
 		return err
 	}
 
-	manifestPath := opts.ManifestPath()
-	if manifestPath != "" {
-		m := result.Manifest
-		m.CreatedAt = time.Now().UTC().Format(time.RFC3339)
-		if err := render.WriteManifest(manifestPath, m); err != nil {
-			return err
+	return finishRender(cmd, opts, result.Manifest, enc, renderReport{
+		outputKey: "output",
+		output:    result.Output,
+		wavs:      []string{result.Output},
+	}, nil, func(out io.Writer, manifestPath string, encoded []string) {
+		fmt.Fprintf(out, "  Rendered %s (%d segment(s), %s)\n", result.Output, result.Segments, result.Duration.Round(10_000_000))
+		if manifestPath != "" {
+			fmt.Fprintf(out, "  Manifest: %s\n", manifestPath)
 		}
-	}
-
-	// Post-processing: WAV and manifest are already on disk, so an encode failure
-	// leaves them inspectable.
-	var encoded []string
-	if enc != nil {
-		encoded, err = render.EncodeWAVs(cmd.Context(), enc, []string{result.Output})
-		if err != nil {
-			return fmt.Errorf("render: %w", err)
+		for _, e := range encoded {
+			fmt.Fprintf(out, "  Encoded:  %s\n", e)
 		}
-	}
-
-	out := cmd.OutOrStdout()
-	complete, skipped, failed := result.Manifest.Counts()
-	if opts.JSON {
-		return writeRenderJSON(out, map[string]any{
-			"output":      result.Output,
-			"manifest":    manifestPath,
-			"segments":    result.Segments,
-			"completed":   complete,
-			"skipped":     skipped,
-			"failed":      failed,
-			"encoded":     encoded,
-			"sample_rate": result.SampleRate,
-			"duration_ms": result.Duration.Milliseconds(),
-		})
-	}
-	fmt.Fprintf(out, "  Rendered %s (%d segment(s), %s)\n", result.Output, result.Segments, result.Duration.Round(10_000_000))
-	if manifestPath != "" {
-		fmt.Fprintf(out, "  Manifest: %s\n", manifestPath)
-	}
-	for _, e := range encoded {
-		fmt.Fprintf(out, "  Encoded:  %s\n", e)
-	}
-	return nil
+	})
 }
 
 // runRenderEPUB renders an EPUB's chapters (in spine order) into per-chapter WAV
@@ -143,47 +114,18 @@ func runRenderEPUB(cmd *cobra.Command, opts render.Options, synth render.Synthes
 	// always persisted and the run stays resumable.
 	manifest, renderErr := render.RenderChapters(cmd.Context(), opts, chapters, synth, audio.WriteWAVFloat32)
 
-	manifestPath := opts.ManifestPath()
-	manifest.CreatedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := render.WriteManifest(manifestPath, manifest); err != nil {
-		return err
-	}
-
-	// Post-process only a clean render: WAVs and the manifest are already on
-	// disk, so a partial/failed render is left for `--resume` to finish.
-	var encoded []string
-	if renderErr == nil && enc != nil {
-		out, err := render.EncodeWAVs(cmd.Context(), enc, render.CompletedWAVPaths(opts.OutDir, manifest))
-		if err != nil {
-			return fmt.Errorf("render: %w", err)
-		}
-		encoded = out
-	}
-
-	out := cmd.OutOrStdout()
 	complete, skipped, failed := manifest.Counts()
-	if opts.JSON {
-		if err := writeRenderJSON(out, map[string]any{
-			"output_dir":  opts.OutDir,
-			"manifest":    manifestPath,
-			"segments":    len(manifest.Segments),
-			"completed":   complete,
-			"skipped":     skipped,
-			"failed":      failed,
-			"encoded":     encoded,
-			"sample_rate": manifest.SampleRate,
-			"duration_ms": manifest.TotalDurationMS(),
-		}); err != nil {
-			return err
+	return finishRender(cmd, opts, manifest, enc, renderReport{
+		outputKey: "output_dir",
+		output:    opts.OutDir,
+		wavs:      render.CompletedWAVPaths(opts.OutDir, manifest),
+	}, renderErr, func(out io.Writer, manifestPath string, encoded []string) {
+		fmt.Fprintf(out, "  Rendered %d chapter(s) to %s (%d skipped, %d failed)\n", complete, opts.OutDir, skipped, failed)
+		fmt.Fprintf(out, "  Manifest: %s\n", manifestPath)
+		if len(encoded) > 0 {
+			fmt.Fprintf(out, "  Encoded:  %d file(s) to .%s\n", len(encoded), enc.Ext())
 		}
-		return renderErr
-	}
-	fmt.Fprintf(out, "  Rendered %d chapter(s) to %s (%d skipped, %d failed)\n", complete, opts.OutDir, skipped, failed)
-	fmt.Fprintf(out, "  Manifest: %s\n", manifestPath)
-	if len(encoded) > 0 {
-		fmt.Fprintf(out, "  Encoded:  %d file(s) to .%s\n", len(encoded), enc.Ext())
-	}
-	return renderErr
+	})
 }
 
 // newRenderSynth builds the TTS-backed synthesizer for batch rendering, applying
@@ -224,6 +166,62 @@ func synthIdentityFor(cfg *config.Config) string {
 		id += "/speed=" + strconv.FormatFloat(cfg.SpeechSpeed, 'f', -1, 64)
 	}
 	return id
+}
+
+// renderReport names the render's primary output for the shared summary.
+type renderReport struct {
+	outputKey string // "output" (single file) or "output_dir" (chaptered)
+	output    string
+	wavs      []string // encode candidates
+}
+
+// finishRender is the shared post-render tail for both render paths: persist
+// the manifest (stamping CreatedAt outside the deterministic core), run
+// optional encoding only on a clean render, and print one summary — so the
+// single-file and chaptered --json schemas cannot drift apart. renderErr is
+// returned after reporting so scripts get the counts alongside a non-zero exit.
+func finishRender(cmd *cobra.Command, opts render.Options, manifest render.RenderManifest, enc encoder.Encoder, rep renderReport, renderErr error, human func(out io.Writer, manifestPath string, encoded []string)) error {
+	manifestPath := opts.ManifestPath()
+	if manifestPath != "" {
+		m := manifest
+		m.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := render.WriteManifest(manifestPath, m); err != nil {
+			return err
+		}
+	}
+
+	// Post-process only a clean render: WAVs and the manifest are already on
+	// disk, so an encode failure or partial render leaves them inspectable and
+	// resumable.
+	var encoded []string
+	if renderErr == nil && enc != nil {
+		out, err := render.EncodeWAVs(cmd.Context(), enc, rep.wavs)
+		if err != nil {
+			return fmt.Errorf("render: %w", err)
+		}
+		encoded = out
+	}
+
+	out := cmd.OutOrStdout()
+	complete, skipped, failed := manifest.Counts()
+	if opts.JSON {
+		if err := writeRenderJSON(out, map[string]any{
+			rep.outputKey: rep.output,
+			"manifest":    manifestPath,
+			"segments":    len(manifest.Segments),
+			"completed":   complete,
+			"skipped":     skipped,
+			"failed":      failed,
+			"encoded":     encoded,
+			"sample_rate": manifest.SampleRate,
+			"duration_ms": manifest.TotalDurationMS(),
+		}); err != nil {
+			return err
+		}
+		return renderErr
+	}
+	human(out, manifestPath, encoded)
+	return renderErr
 }
 
 func writeRenderJSON(out io.Writer, payload map[string]any) error {

@@ -48,6 +48,28 @@ func (noFrames) ReadFrame(ctx context.Context) (audio.Frame, error) {
 
 func (noFrames) Close() error { return nil }
 
+// wedgedFrames is a live test FrameSource that delivers a few data frames and
+// then stalls: ErrNoFrameReady forever, never Final. It models a capture device
+// that stops mid-utterance (unplugged mic, wedged ring buffer).
+type wedgedFrames struct {
+	chunks [][]float32
+	index  int
+}
+
+func (w *wedgedFrames) ReadFrame(ctx context.Context) (audio.Frame, error) {
+	if err := ctx.Err(); err != nil {
+		return audio.Frame{}, err
+	}
+	if w.index < len(w.chunks) {
+		chunk := w.chunks[w.index]
+		w.index++
+		return audio.Frame{Samples: chunk, SampleRate: audio.SampleRate, SourceKind: audio.SourceLive}, nil
+	}
+	return audio.Frame{}, audio.ErrNoFrameReady
+}
+
+func (w *wedgedFrames) Close() error { return nil }
+
 // busyFrames is a live test FrameSource that always has a non-speech data frame
 // ready: it never reports ErrNoFrameReady and never sets Final, so a start
 // timeout must be enforced by the main-loop endpoint decision rather than the
@@ -247,6 +269,32 @@ func TestOfflineLoopLiveNoSpeechStartTimeout(t *testing.T) {
 	got := runLoop(context.Background(), deps)
 	if _, ok := terminal(got).(Timeout); !ok {
 		t.Fatalf("terminal event = %T, want Timeout", terminal(got))
+	}
+}
+
+// TestOfflineLoopWedgedSourceMidSpeechStillEnds is the mic-stall regression
+// guard: a live source that delivers speech and then stops producing frames
+// (ErrNoFrameReady forever) must still end the session via the endpoint policy
+// (utterance cap), not poll forever. Pre-fix this hung until ctx cancellation.
+func TestOfflineLoopWedgedSourceMidSpeechStillEnds(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	deps := offlineLoopDeps{
+		frames: &wedgedFrames{chunks: [][]float32{make([]float32, 1600), make([]float32, 1600)}},
+		seg:    &fakeSegmenter{speech: true, flushSeg: longSpeech()},
+		policy: endpoint.Policy{MinSpeech: 50 * time.Millisecond, MaxUtterance: 100 * time.Millisecond},
+		transcribe: func([]float32) (string, error) {
+			return "captured before the stall", nil
+		},
+	}
+
+	got := runLoop(ctx, deps)
+	final, ok := terminal(got).(FinalTranscript)
+	if !ok {
+		t.Fatalf("terminal event = %T, want FinalTranscript (utterance cap must fire while wedged)", terminal(got))
+	}
+	if final.Text != "captured before the stall" {
+		t.Errorf("FinalTranscript.Text = %q", final.Text)
 	}
 }
 

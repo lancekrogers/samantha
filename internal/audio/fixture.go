@@ -32,7 +32,7 @@ func NewFixtureSourceFromWAV(path string, chunkSize int, realtime bool) (*Fixtur
 
 	return &FixtureSource{
 		chunks:        ChunkSamples(samples, chunkSize),
-		chunkDuration: time.Duration(float64(chunkSize) / float64(SampleRate) * float64(time.Second)),
+		chunkDuration: SamplesDuration(chunkSize),
 		realtime:      realtime,
 		nextAt:        time.Now(),
 	}, nil
@@ -91,7 +91,7 @@ func (f *FixtureSource) ReadFrame(ctx context.Context) (Frame, error) {
 		Samples:    chunk,
 		SampleRate: SampleRate,
 		Channels:   Channels,
-		Duration:   frameDuration(len(chunk)),
+		Duration:   SamplesDuration(len(chunk)),
 		Sequence:   f.seq,
 		SourceKind: SourceFixture,
 	}, nil

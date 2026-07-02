@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"path"
 	"strings"
 )
@@ -46,22 +47,25 @@ type Book struct {
 	Metadata Metadata
 	Chapters []Chapter
 
-	zr *zip.Reader
+	idx zipIndex
 }
 
 // Parse reads the EPUB structure from a zip.Reader. It does not read chapter
 // text; use ReadChapter for that.
 func Parse(zr *zip.Reader) (*Book, error) {
-	if _, err := openZipFile(zr, "META-INF/encryption.xml"); err == nil {
+	// Index the archive once: chapter and metadata lookups are then O(1)
+	// instead of a linear scan per lookup across every zip entry.
+	idx := indexZip(zr)
+	if _, err := openZipFile(idx, "META-INF/encryption.xml"); err == nil {
 		return nil, ErrEncrypted
 	}
 
-	opfPath, err := containerOPFPath(zr)
+	opfPath, err := containerOPFPath(idx)
 	if err != nil {
 		return nil, err
 	}
 
-	pkg, err := readPackage(zr, opfPath)
+	pkg, err := readPackage(idx, opfPath)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +99,7 @@ func Parse(zr *zip.Reader) (*Book, error) {
 	}
 
 	// Titles from nav (EPUB3) or NCX (EPUB2).
-	titles := readTitles(zr, opfDir, pkg, byID2(pkg))
+	titles := readTitles(idx, opfDir, pkg, byID2(pkg))
 	for i := range chapters {
 		if t := titles[chapters[i].Href]; t != "" {
 			chapters[i].Title = t
@@ -109,13 +113,13 @@ func Parse(zr *zip.Reader) (*Book, error) {
 			Language: firstNonEmpty(pkg.Metadata.Language),
 		},
 		Chapters: chapters,
-		zr:       zr,
+		idx:      idx,
 	}, nil
 }
 
 // ReadChapter returns the raw bytes of a chapter's content file.
-func ReadChapter(zr *zip.Reader, href string) ([]byte, error) {
-	f, err := openZipFile(zr, href)
+func ReadChapter(idx zipIndex, href string) ([]byte, error) {
+	f, err := openZipFile(idx, href)
 	if err != nil {
 		return nil, fmt.Errorf("epub: read chapter %q: %w", href, err)
 	}
@@ -128,12 +132,12 @@ func ReadChapter(zr *zip.Reader, href string) ([]byte, error) {
 }
 
 // ReadChapter on the Book reads from its zip reader.
-func (b *Book) ReadChapter(href string) ([]byte, error) { return ReadChapter(b.zr, href) }
+func (b *Book) ReadChapter(href string) ([]byte, error) { return ReadChapter(b.idx, href) }
 
 // --- internals ---
 
-func containerOPFPath(zr *zip.Reader) (string, error) {
-	f, err := openZipFile(zr, "META-INF/container.xml")
+func containerOPFPath(idx zipIndex) (string, error) {
+	f, err := openZipFile(idx, "META-INF/container.xml")
 	if err != nil {
 		return "", ErrNoContainer
 	}
@@ -154,7 +158,8 @@ func containerOPFPath(zr *zip.Reader) (string, error) {
 	if len(c.Rootfiles.Rootfile) == 0 || c.Rootfiles.Rootfile[0].FullPath == "" {
 		return "", ErrNoPackage
 	}
-	return c.Rootfiles.Rootfile[0].FullPath, nil
+	// full-path is a URL path per OCF, so it needs the same decoding as hrefs.
+	return decodeHref(c.Rootfiles.Rootfile[0].FullPath), nil
 }
 
 type opfPackage struct {
@@ -180,8 +185,8 @@ type opfPackage struct {
 	} `xml:"spine"`
 }
 
-func readPackage(zr *zip.Reader, opfPath string) (*opfPackage, error) {
-	f, err := openZipFile(zr, opfPath)
+func readPackage(idx zipIndex, opfPath string) (*opfPackage, error) {
+	f, err := openZipFile(idx, opfPath)
 	if err != nil {
 		return nil, ErrNoPackage
 	}
@@ -206,11 +211,11 @@ func byID2(pkg *opfPackage) map[string]string {
 
 // readTitles returns a map from chapter href to title, using the EPUB3 nav
 // document or the EPUB2 NCX, whichever is available.
-func readTitles(zr *zip.Reader, opfDir string, pkg *opfPackage, hrefByID map[string]string) map[string]string {
+func readTitles(idx zipIndex, opfDir string, pkg *opfPackage, hrefByID map[string]string) map[string]string {
 	// EPUB3 nav: manifest item with properties containing "nav".
 	for _, it := range pkg.Manifest.Items {
 		if strings.Contains(it.Properties, "nav") {
-			if t := readNavTitles(zr, resolveHref(opfDir, it.Href)); len(t) > 0 {
+			if t := readNavTitles(idx, resolveHref(opfDir, it.Href)); len(t) > 0 {
 				return t
 			}
 		}
@@ -229,13 +234,13 @@ func readTitles(zr *zip.Reader, opfDir string, pkg *opfPackage, hrefByID map[str
 		}
 	}
 	if ncxHref != "" {
-		return readNCXTitles(zr, opfDir, resolveHref(opfDir, ncxHref))
+		return readNCXTitles(idx, opfDir, resolveHref(opfDir, ncxHref))
 	}
 	return map[string]string{}
 }
 
-func readNavTitles(zr *zip.Reader, navHref string) map[string]string {
-	data, err := readNamed(zr, navHref)
+func readNavTitles(idx zipIndex, navHref string) map[string]string {
+	data, err := readNamed(idx, navHref)
 	if err != nil {
 		return nil
 	}
@@ -264,8 +269,8 @@ func readNavTitles(zr *zip.Reader, navHref string) map[string]string {
 	return out
 }
 
-func readNCXTitles(zr *zip.Reader, opfDir, ncxHref string) map[string]string {
-	data, err := readNamed(zr, ncxHref)
+func readNCXTitles(idx zipIndex, opfDir, ncxHref string) map[string]string {
+	data, err := readNamed(idx, ncxHref)
 	if err != nil {
 		return map[string]string{}
 	}
@@ -303,11 +308,24 @@ type ncxNavPoint struct {
 
 // --- zip + path helpers ---
 
-func openZipFile(zr *zip.Reader, name string) (*zip.File, error) {
+// zipIndex maps entry names to files for O(1) lookups.
+type zipIndex map[string]*zip.File
+
+// indexZip builds the name index; the first entry wins on duplicates, matching
+// the previous linear-scan semantics.
+func indexZip(zr *zip.Reader) zipIndex {
+	m := make(zipIndex, len(zr.File))
 	for _, f := range zr.File {
-		if f.Name == name {
-			return f, nil
+		if _, ok := m[f.Name]; !ok {
+			m[f.Name] = f
 		}
+	}
+	return m
+}
+
+func openZipFile(idx zipIndex, name string) (*zip.File, error) {
+	if f, ok := idx[name]; ok {
+		return f, nil
 	}
 	return nil, fmt.Errorf("not found: %s", name)
 }
@@ -335,8 +353,8 @@ func readZipReader(r io.Reader, maxBytes int64) ([]byte, error) {
 	return data, nil
 }
 
-func readNamed(zr *zip.Reader, name string) ([]byte, error) {
-	f, err := openZipFile(zr, name)
+func readNamed(idx zipIndex, name string) ([]byte, error) {
+	f, err := openZipFile(idx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -344,11 +362,26 @@ func readNamed(zr *zip.Reader, name string) ([]byte, error) {
 }
 
 func resolveHref(dir, href string) string {
-	href = stripFragment(href)
+	href = decodeHref(stripFragment(href))
 	if dir == "" || dir == "." {
 		return path.Clean(href)
 	}
 	return path.Clean(path.Join(dir, href))
+}
+
+// decodeHref percent-decodes an OPF/nav/NCX href. Hrefs are URLs per the EPUB
+// spec, so a zip entry named "chapter 1.xhtml" is referenced as
+// "chapter%201.xhtml" — the raw string would never match the archive's entry
+// names. Undecodable strings are used verbatim.
+func decodeHref(s string) string {
+	if !strings.ContainsRune(s, '%') {
+		return s
+	}
+	decoded, err := url.PathUnescape(s)
+	if err != nil {
+		return s
+	}
+	return decoded
 }
 
 func stripFragment(s string) string {

@@ -44,7 +44,7 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 		})
 	}
 
-	if strings.EqualFold(cfg.TTSProvider, "kokoro") {
+	if ManagedTTS(cfg) {
 		diags = append(diags, Diagnostic{Name: "tts-provider", Severity: SeverityOK, Detail: "kokoro"})
 	} else {
 		diags = append(diags, Diagnostic{
@@ -52,6 +52,17 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 			Severity:    SeverityWarn,
 			Detail:      fmt.Sprintf("tts_provider %q is not a managed provider", cfg.TTSProvider),
 			Remediation: "set tts_provider=kokoro for managed TTS assets",
+		})
+	}
+
+	// Barge-in monitors the mic while Samantha speaks, so without the voice
+	// frontend's echo cancellation her own playback can trip it.
+	if cfg.BargeInEnabled && !cfg.VoiceFrontendEnabled {
+		diags = append(diags, Diagnostic{
+			Name:        "barge-in-echo",
+			Severity:    SeverityWarn,
+			Detail:      "barge_in_enabled without voice_frontend_enabled: playback echo may trigger barge-in",
+			Remediation: "set voice_frontend_enabled=true when using barge-in",
 		})
 	}
 

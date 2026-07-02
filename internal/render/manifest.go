@@ -88,20 +88,6 @@ func loadPriorManifest(path string) (RenderManifest, bool) {
 	return m, true
 }
 
-// priorSegmentsByOutput returns the prior manifest's segments keyed by output
-// filename, for per-output resume decisions.
-func priorSegmentsByOutput(path string) map[string]ManifestSegment {
-	out := map[string]ManifestSegment{}
-	m, ok := loadPriorManifest(path)
-	if !ok {
-		return out
-	}
-	for _, s := range m.Segments {
-		out[s.Output] = s
-	}
-	return out
-}
-
 // WriteManifest writes m to path as indented JSON, creating parent directories.
 func WriteManifest(path string, m RenderManifest) error {
 	dir := filepath.Dir(path)

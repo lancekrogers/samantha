@@ -2,7 +2,6 @@ package stt
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/lancekrogers/samantha/internal/audio"
@@ -15,29 +14,6 @@ const minSpeechSamples = 4800
 // noFramePoll is how long the loop waits before re-polling a live source that
 // has no audio buffered yet.
 const noFramePoll = 10 * time.Millisecond
-
-// samplesDuration returns the wall-time a chunk of n mono samples represents at
-// the capture sample rate, derived from the sample count (no wall clock).
-func samplesDuration(n int) time.Duration {
-	if audio.SampleRate <= 0 || n <= 0 {
-		return 0
-	}
-	return time.Duration(float64(n) / float64(audio.SampleRate) * float64(time.Second))
-}
-
-func sendEvent(ctx context.Context, events chan<- Event, event Event) bool {
-	select {
-	case events <- event:
-		return true
-	default:
-	}
-	select {
-	case <-ctx.Done():
-		return false
-	case events <- event:
-		return true
-	}
-}
 
 // segmenter abstracts the voice-activity detector the offline STT loop drives,
 // so the loop can be exercised with a deterministic fake instead of the cgo
@@ -68,30 +44,18 @@ type offlineLoopDeps struct {
 // the endpoint policy. It is free of cgo and model dependencies so it can be
 // tested with fakes. It does not close events; the caller owns that lifecycle.
 //
-// Behavior mirrors the previous capture.Read() loop: listen until the VAD
-// reports speech, transcribe finalized segments, reject speech shorter than
-// minSpeechSamples, time out per the endpoint policy, and finalize explicitly on
-// a finite source's Final frame instead of inferring EOF from empty reads.
+// The endpoint policy is evaluated exactly once per iteration — including
+// iterations where the source has no frame ready — so the start timeout and
+// the utterance cap are enforced even when a live source stalls mid-utterance.
 func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Event) {
-	lastPhaseAt := time.Now()
-	emitPhase := func(phase string) bool {
-		now := time.Now()
-		if !sendEvent(ctx, events, PhaseEvent{Phase: phase, Elapsed: now.Sub(lastPhaseAt).Nanoseconds()}) {
-			return false
-		}
-		lastPhaseAt = now
-		return true
-	}
+	emitPhase := newPhaseEmitter(ctx, events)
 
 	deps.seg.Reset()
 	if !emitPhase("listening") {
 		return
 	}
 
-	speechDetected := false
-	start := time.Now()
-	var speechSeen time.Duration
-	var trailingSilence time.Duration
+	track := newSpeechTracker()
 
 	// finalize collects buffered segments and transcribes them. It returns true
 	// when the session is resolved (final transcript, timeout, or failure). When
@@ -126,10 +90,7 @@ func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Eve
 			sendEvent(ctx, events, Timeout{})
 			return true
 		}
-		speechDetected = false
-		speechSeen = 0
-		trailingSilence = 0
-		start = time.Now()
+		track.reset()
 		if !emitPhase("listening") {
 			return true
 		}
@@ -142,50 +103,24 @@ func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Eve
 			return
 		}
 
-		frame, err := deps.frames.ReadFrame(ctx)
-		switch {
-		case err == nil:
-			// usable frame, possibly Final
-		case errors.Is(err, audio.ErrNoFrameReady):
-			if !speechDetected {
-				d := deps.policy.Decide(endpoint.Observation{Elapsed: time.Since(start)})
-				if d.Kind == endpoint.Timeout {
-					sendEvent(ctx, events, Timeout{})
+		read := readLoopFrame(ctx, deps.frames)
+		if read.err != nil {
+			sendEvent(ctx, events, Failure{Err: read.err})
+			return
+		}
+
+		if read.ready && len(read.frame.Samples) > 0 {
+			deps.seg.AcceptWaveform(read.frame.Samples)
+			if track.observe(deps.seg.IsSpeech(), frameDur(read.frame)) {
+				if !emitPhase("hearing") {
 					return
 				}
 			}
-			time.Sleep(noFramePoll)
-			continue
-		case errors.Is(err, audio.ErrSourceClosed):
-			frame = audio.Frame{Final: true}
-		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-			sendEvent(ctx, events, Failure{Err: err})
-			return
-		default:
-			sendEvent(ctx, events, Failure{Err: err})
-			return
 		}
 
-		if len(frame.Samples) > 0 {
-			frameDuration := samplesDuration(len(frame.Samples))
-			deps.seg.AcceptWaveform(frame.Samples)
-			if deps.seg.IsSpeech() {
-				if !speechDetected {
-					speechDetected = true
-					if !emitPhase("hearing") {
-						return
-					}
-				}
-				speechSeen += frameDuration
-				trailingSilence = 0
-			} else if speechDetected {
-				trailingSilence += frameDuration
-			}
-		}
-
-		if frame.Final {
+		if read.eof {
 			deps.seg.Flush()
-			if !speechDetected && !deps.seg.HasSegments() {
+			if !track.detected && !deps.seg.HasSegments() {
 				sendEvent(ctx, events, Timeout{})
 				return
 			}
@@ -193,31 +128,19 @@ func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Eve
 			return
 		}
 
-		decision := deps.policy.Decide(endpoint.Observation{
-			HasSpeech:       speechDetected,
-			SpeechSeen:      speechSeen,
-			TrailingSilence: trailingSilence,
-			Elapsed:         time.Since(start),
-		})
-		if decision.Kind == endpoint.Timeout {
-			// No-speech start-timeout: enforce it here too, not only in the
-			// ErrNoFrameReady branch, so a source that streams frames back to
-			// back (no ready-gap) still times out instead of listening forever.
+		decision := deps.policy.Decide(track.observation(false, false))
+		switch decision.Kind {
+		case endpoint.Timeout:
 			sendEvent(ctx, events, Timeout{})
 			return
-		}
-		if decision.Kind == endpoint.TooShort {
+		case endpoint.TooShort:
 			deps.seg.Reset()
-			speechDetected = false
-			speechSeen = 0
-			trailingSilence = 0
-			start = time.Now()
+			track.reset()
 			if !emitPhase("listening") {
 				return
 			}
 			continue
-		}
-		if decision.Kind == endpoint.Finalize {
+		case endpoint.Finalize:
 			deps.seg.Flush()
 			finalize(true)
 			return
@@ -227,6 +150,11 @@ func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Eve
 			if finalize(false) {
 				return
 			}
+			continue
+		}
+
+		if !read.ready {
+			time.Sleep(noFramePoll)
 		}
 	}
 }

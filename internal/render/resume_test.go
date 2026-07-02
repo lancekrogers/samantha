@@ -2,8 +2,11 @@ package render
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 // idSynth is a fake synthesizer that reports a TTS-engine identity (so resume
@@ -141,5 +144,68 @@ func TestRenderChaptersResumeInvalidatesOnProviderChange(t *testing.T) {
 	}
 	if synthB.calls == 0 {
 		t.Error("expected the new provider to be used")
+	}
+}
+
+// TestRenderTextResumeKeepsManifestShape guards the fresh-vs-resumed manifest
+// consistency: a resumed multi-segment render must report the same number of
+// segments, per-segment durations, and sample rate as the fresh run it skipped
+// — not collapse to a synthetic one-segment manifest.
+func TestRenderTextResumeKeepsManifestShape(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "doc.wav")
+	// Two paragraphs over the cap → two segments.
+	text := strings.Repeat("First paragraph sentence. ", 40) + "\n\n" + strings.Repeat("Second paragraph sentence. ", 40)
+	opts := Options{Out: out, Format: FormatText, Resume: true}
+	synth := &fakeSynth{rate: 24000}
+
+	fresh, err := RenderText(context.Background(), opts, text, synth, writeWAVFile)
+	if err != nil {
+		t.Fatalf("fresh RenderText() error = %v", err)
+	}
+	if len(fresh.Manifest.Segments) < 2 {
+		t.Fatalf("fresh segments = %d, want >= 2 (test needs a multi-segment doc)", len(fresh.Manifest.Segments))
+	}
+	if err := WriteManifest(opts.ManifestPath(), fresh.Manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed, err := RenderText(context.Background(), opts, text, synth, failingWAVWriter(t))
+	if err != nil {
+		t.Fatalf("resumed RenderText() error = %v", err)
+	}
+	if len(resumed.Manifest.Segments) != len(fresh.Manifest.Segments) {
+		t.Fatalf("resumed segments = %d, want %d (shape must match fresh run)",
+			len(resumed.Manifest.Segments), len(fresh.Manifest.Segments))
+	}
+	for i, s := range resumed.Manifest.Segments {
+		if s.Status != StatusSkipped {
+			t.Errorf("segment %d status = %q, want skipped", i, s.Status)
+		}
+		if s.DurationMS != fresh.Manifest.Segments[i].DurationMS {
+			t.Errorf("segment %d duration = %d, want %d", i, s.DurationMS, fresh.Manifest.Segments[i].DurationMS)
+		}
+	}
+	if resumed.Manifest.SampleRate != fresh.Manifest.SampleRate {
+		t.Errorf("resumed sample rate = %d, want %d", resumed.Manifest.SampleRate, fresh.Manifest.SampleRate)
+	}
+	// Duration is reconstructed from per-segment integer milliseconds, so
+	// compare at manifest granularity rather than raw sample math.
+	if resumed.Duration != time.Duration(fresh.Manifest.TotalDurationMS())*time.Millisecond {
+		t.Errorf("resumed duration = %v, want %v (sum of fresh manifest segments)",
+			resumed.Duration, time.Duration(fresh.Manifest.TotalDurationMS())*time.Millisecond)
+	}
+}
+
+// writeWAVFile touches the output so resume's existence check passes.
+func writeWAVFile(path string, rate int, samples []float32) error {
+	return os.WriteFile(path, []byte("wav"), 0o644)
+}
+
+// failingWAVWriter fails the test if a resumed render writes anything.
+func failingWAVWriter(t *testing.T) WAVWriter {
+	return func(path string, rate int, samples []float32) error {
+		t.Fatalf("resumed render wrote %s; want full skip", path)
+		return nil
 	}
 }

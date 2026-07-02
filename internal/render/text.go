@@ -55,7 +55,7 @@ func RenderText(ctx context.Context, opts Options, text string, synth Synthesize
 	if opts.Resume && !opts.Overwrite {
 		if prevM, ok := loadPriorManifest(opts.ManifestPath()); ok {
 			if p, found := segmentForOutput(prevM, opts.Out); found && resumable(p, key, opts.Out) {
-				return skippedTextResult(opts, key, text, prevM, p), nil
+				return skippedTextResult(opts, prevM), nil
 			}
 		}
 	}
@@ -125,10 +125,17 @@ func segmentForOutput(m RenderManifest, output string) (ManifestSegment, bool) {
 }
 
 // skippedTextResult builds the result for a single-file render that resume
-// skipped: the output already matches the current key, so the manifest records
-// one skipped segment and reuses the prior sample rate and duration.
-func skippedTextResult(opts Options, key, text string, prevM RenderManifest, prior ManifestSegment) Result {
-	dur := time.Duration(prior.DurationMS) * time.Millisecond
+// skipped: the prior manifest's segments are carried through verbatim (marked
+// skipped), so a resumed run reports the same manifest shape, per-segment
+// durations, and sample rate as the fresh run it skipped.
+func skippedTextResult(opts Options, prevM RenderManifest) Result {
+	segs := make([]ManifestSegment, len(prevM.Segments))
+	copy(segs, prevM.Segments)
+	var totalMS int64
+	for i := range segs {
+		segs[i].Status = StatusSkipped
+		totalMS += segs[i].DurationMS
+	}
 	manifest := RenderManifest{
 		Schema:       RenderSchema,
 		Title:        opts.Title,
@@ -137,21 +144,13 @@ func skippedTextResult(opts Options, key, text string, prevM RenderManifest, pri
 		Voice:        opts.Voice,
 		SpeechSpeed:  opts.Speed,
 		SampleRate:   prevM.SampleRate,
-		Segments: []ManifestSegment{{
-			Index:      1,
-			ID:         "seg-001",
-			TextSHA256: textHash(text),
-			ResumeKey:  key,
-			Output:     opts.Out,
-			DurationMS: prior.DurationMS,
-			Status:     StatusSkipped,
-		}},
+		Segments:     segs,
 	}
 	return Result{
 		Output:     opts.Out,
-		Segments:   0,
+		Segments:   len(segs),
 		SampleRate: prevM.SampleRate,
-		Duration:   dur,
+		Duration:   time.Duration(totalMS) * time.Millisecond,
 		Manifest:   manifest,
 	}
 }

@@ -155,3 +155,36 @@ func TestChapterFilenameFallbacks(t *testing.T) {
 		t.Errorf("index-only filename = %q", got)
 	}
 }
+
+// TestRenderChaptersAllSkippedResumeKeepsSampleRate guards the manifest rewrite
+// on an all-skipped --resume rerun: the prior run's sample rate must be carried
+// forward, not clobbered with 0.
+func TestRenderChaptersAllSkippedResumeKeepsSampleRate(t *testing.T) {
+	dir := t.TempDir()
+	opts := Options{OutDir: dir, Format: FormatEPUB, Resume: true}
+	synth := &fakeSynth{rate: 24000}
+	var written []string
+
+	m1, err := RenderChapters(context.Background(), opts, sampleChapters(), synth, recordingWriter(&written))
+	if err != nil {
+		t.Fatalf("fresh RenderChapters() error = %v", err)
+	}
+	if m1.SampleRate != 24000 {
+		t.Fatalf("fresh sample rate = %d, want 24000", m1.SampleRate)
+	}
+	if err := WriteManifest(opts.ManifestPath(), m1); err != nil {
+		t.Fatal(err)
+	}
+
+	m2, err := RenderChapters(context.Background(), opts, sampleChapters(), synth, recordingWriter(&written))
+	if err != nil {
+		t.Fatalf("resumed RenderChapters() error = %v", err)
+	}
+	complete, skipped, _ := m2.Counts()
+	if complete != 0 || skipped != 2 {
+		t.Fatalf("resume counts = %d complete / %d skipped, want 0/2", complete, skipped)
+	}
+	if m2.SampleRate != 24000 {
+		t.Fatalf("resumed sample rate = %d, want 24000 (prior rate must be preserved)", m2.SampleRate)
+	}
+}

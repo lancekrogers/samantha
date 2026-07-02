@@ -30,11 +30,30 @@ import (
 //	cancellation           -> TestTerminalCancellationInterruptsWithSingleMetrics
 //	barge-in               -> TestTerminalBargeInInterruptsWithSingleMetrics
 
-// countTurnMetrics subscribes a counter for terminal metrics events.
-func countTurnMetrics(bus *events.Bus) *atomic.Int32 {
-	var n atomic.Int32
-	events.Subscribe(bus, func(events.TurnMetrics) { n.Add(1) })
-	return &n
+// capturedMetrics counts terminal metrics events and records the last one so
+// tests can assert both exactly-once emission and the machine-decided Outcome.
+type capturedMetrics struct {
+	n    atomic.Int32
+	last atomic.Value // events.TurnMetrics
+}
+
+func (c *capturedMetrics) Load() int32 { return c.n.Load() }
+
+func (c *capturedMetrics) Outcome() string {
+	if v, ok := c.last.Load().(events.TurnMetrics); ok {
+		return v.Outcome
+	}
+	return ""
+}
+
+// countTurnMetrics subscribes a capture for terminal metrics events.
+func countTurnMetrics(bus *events.Bus) *capturedMetrics {
+	c := &capturedMetrics{}
+	events.Subscribe(bus, func(e events.TurnMetrics) {
+		c.n.Add(1)
+		c.last.Store(e)
+	})
+	return c
 }
 
 // failPlayer rejects every stream, modeling an unavailable output device.
@@ -77,6 +96,9 @@ func TestTerminalSuccessfulPlaybackCompletesWithSingleMetrics(t *testing.T) {
 	if got := metrics.Load(); got != 1 {
 		t.Fatalf("TurnMetrics emitted %d times, want exactly 1", got)
 	}
+	if got := metrics.Outcome(); got != "completed" {
+		t.Fatalf("TurnMetrics.Outcome = %q, want completed", got)
+	}
 }
 
 func TestTerminalTextResponseWithoutTTSCompletes(t *testing.T) {
@@ -97,6 +119,9 @@ func TestTerminalTextResponseWithoutTTSCompletes(t *testing.T) {
 	if got := metrics.Load(); got != 1 {
 		t.Fatalf("TurnMetrics emitted %d times, want exactly 1", got)
 	}
+	if got := metrics.Outcome(); got != "completed" {
+		t.Fatalf("TurnMetrics.Outcome = %q, want completed", got)
+	}
 }
 
 func TestTerminalSTTErrorFailsWithSingleMetrics(t *testing.T) {
@@ -112,6 +137,9 @@ func TestTerminalSTTErrorFailsWithSingleMetrics(t *testing.T) {
 	if got := metrics.Load(); got != 1 {
 		t.Fatalf("TurnMetrics emitted %d times, want exactly 1", got)
 	}
+	if got := metrics.Outcome(); got != "failed" {
+		t.Fatalf("TurnMetrics.Outcome = %q, want failed", got)
+	}
 }
 
 func TestTerminalTextModeBrainErrorFailsWithSingleMetrics(t *testing.T) {
@@ -126,6 +154,9 @@ func TestTerminalTextModeBrainErrorFailsWithSingleMetrics(t *testing.T) {
 	}
 	if got := metrics.Load(); got != 1 {
 		t.Fatalf("TurnMetrics emitted %d times, want exactly 1", got)
+	}
+	if got := metrics.Outcome(); got != "failed" {
+		t.Fatalf("TurnMetrics.Outcome = %q, want failed", got)
 	}
 }
 
@@ -157,6 +188,9 @@ func TestTerminalTextModePlaybackErrorCompletesDegraded(t *testing.T) {
 	if got := metrics.Load(); got != 1 {
 		t.Fatalf("TurnMetrics emitted %d times, want exactly 1", got)
 	}
+	if got := metrics.Outcome(); got != "completed" {
+		t.Fatalf("TurnMetrics.Outcome = %q, want completed", got)
+	}
 }
 
 func TestTerminalCancellationInterruptsWithSingleMetrics(t *testing.T) {
@@ -186,6 +220,9 @@ func TestTerminalCancellationInterruptsWithSingleMetrics(t *testing.T) {
 	}
 	if got := metrics.Load(); got != 1 {
 		t.Fatalf("TurnMetrics emitted %d times, want exactly 1", got)
+	}
+	if got := metrics.Outcome(); got != "interrupted" {
+		t.Fatalf("TurnMetrics.Outcome = %q, want interrupted", got)
 	}
 }
 
@@ -255,5 +292,8 @@ func TestTerminalBargeInInterruptsWithSingleMetrics(t *testing.T) {
 	}
 	if got := metrics.Load(); got != 1 {
 		t.Fatalf("TurnMetrics emitted %d times, want exactly 1", got)
+	}
+	if got := metrics.Outcome(); got != "interrupted" {
+		t.Fatalf("TurnMetrics.Outcome = %q, want interrupted", got)
 	}
 }

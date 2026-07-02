@@ -120,3 +120,31 @@ func TestDiagnoseNeverRequiresMicrophone(t *testing.T) {
 		t.Errorf("kokoro asset severity = %q, want ok", got)
 	}
 }
+
+func TestDiagnoseWarnsOnBargeInWithoutFrontend(t *testing.T) {
+	cfg := &Config{STTProvider: "sherpa", TTSProvider: "kokoro", BargeInEnabled: true, VoiceFrontendEnabled: false}
+	diags := Diagnose(cfg, t.TempDir(), func(string) (string, error) { return "", nil })
+	found := false
+	for _, d := range diags {
+		if d.Name == "barge-in-echo" {
+			found = true
+			if d.Severity != SeverityWarn {
+				t.Errorf("barge-in-echo severity = %q, want warn", d.Severity)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected a barge-in-echo warning when barge-in is on without the voice frontend")
+	}
+	if HasErrors(diags) {
+		t.Error("barge-in-echo must be a warning, not an error")
+	}
+
+	// With the frontend enabled (or barge-in off) there is no warning.
+	cfg.VoiceFrontendEnabled = true
+	for _, d := range Diagnose(cfg, t.TempDir(), func(string) (string, error) { return "", nil }) {
+		if d.Name == "barge-in-echo" {
+			t.Fatal("no barge-in-echo warning expected when the frontend is enabled")
+		}
+	}
+}

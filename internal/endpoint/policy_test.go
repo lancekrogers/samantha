@@ -63,8 +63,20 @@ func TestPolicyDecide(t *testing.T) {
 		{
 			name:   "live max utterance finalizes long speech",
 			policy: livePolicy(),
-			obs:    Observation{HasSpeech: true, SpeechSeen: 25 * time.Second, TrailingSilence: 0, Elapsed: 30 * time.Second},
+			obs:    Observation{HasSpeech: true, SpeechSeen: 25 * time.Second, TrailingSilence: 0, Elapsed: 39 * time.Second, SpeechElapsed: 30 * time.Second},
 			want:   Finalize,
+		},
+		{
+			name:   "max utterance anchored at speech onset, not listen start",
+			policy: livePolicy(),
+			obs:    Observation{HasSpeech: true, SpeechSeen: 20 * time.Second, TrailingSilence: 0, Elapsed: 31 * time.Second, SpeechElapsed: 22 * time.Second},
+			want:   Continue, // 9s of pre-speech silence must not eat the 30s budget
+		},
+		{
+			name:   "max utterance with too little speech rejects",
+			policy: livePolicy(),
+			obs:    Observation{HasSpeech: true, SpeechSeen: 100 * time.Millisecond, Elapsed: 31 * time.Second, SpeechElapsed: 30 * time.Second},
+			want:   TooShort,
 		},
 		{
 			name:   "provider endpoint finalizes when allowed",
@@ -109,9 +121,6 @@ func TestPolicyDecide(t *testing.T) {
 			got := tt.policy.Decide(tt.obs)
 			if got.Kind != tt.want {
 				t.Fatalf("Decide() = %s (%q), want %s", got.Kind, got.Reason, tt.want)
-			}
-			if got.AudioSeen != tt.obs.SpeechSeen {
-				t.Errorf("Decide().AudioSeen = %v, want %v", got.AudioSeen, tt.obs.SpeechSeen)
 			}
 			if got.Reason == "" {
 				t.Error("Decide().Reason is empty, want an explanation")
@@ -167,7 +176,6 @@ func TestFromConfigFallsBackOnZeroValues(t *testing.T) {
 func TestDecisionKindString(t *testing.T) {
 	cases := map[DecisionKind]string{
 		Continue:         "continue",
-		SpeechStarted:    "speech_started",
 		Finalize:         "finalize",
 		Timeout:          "timeout",
 		TooShort:         "too_short",

@@ -154,6 +154,58 @@ func TestStreamingLoopNoSpeechTimesOut(t *testing.T) {
 	}
 }
 
+// TestStreamingLoopSpuriousPartialResetsAndTimesOut is the TooShort-livelock
+// regression guard: a non-empty recognizer partial with no VAD speech (noise or
+// echo tail) marks speech, after which the start timeout can never fire. The
+// loop must handle the policy's TooShort by resetting to a fresh listening
+// window so the timeout recovers. Pre-fix this listened forever.
+func TestStreamingLoopSpuriousPartialResetsAndTimesOut(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	rec := &fakeStreamingRec{partials: []string{"x", ""}} // one spurious partial, then nothing
+	deps := streamingLoopDeps{
+		frames: busyFrames{}, // endless non-speech frames
+		seg:    &fakeSegmenter{speech: false},
+		rec:    rec,
+		policy: endpoint.Policy{
+			MinSpeech:    200 * time.Millisecond,
+			MinSilence:   100 * time.Millisecond,
+			StartTimeout: 150 * time.Millisecond,
+		},
+	}
+
+	got := runStreaming(ctx, deps)
+	if _, ok := terminal(got).(Timeout); !ok {
+		t.Fatalf("terminal event = %T, want Timeout (TooShort must reset the false speech mark)", terminal(got))
+	}
+	if rec.resets < 1 {
+		t.Errorf("recognizer resets = %d, want >= 1 (spurious partial discarded)", rec.resets)
+	}
+}
+
+// TestStreamingLoopWedgedSourceMidSpeechStillEnds mirrors the offline wedge
+// guard: speech marked, then the source stalls — the utterance cap must still
+// finalize through the recognizer instead of polling forever.
+func TestStreamingLoopWedgedSourceMidSpeechStillEnds(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	deps := streamingLoopDeps{
+		frames: &wedgedFrames{chunks: [][]float32{make([]float32, 1600), make([]float32, 1600)}},
+		seg:    &fakeSegmenter{speech: true},
+		rec:    &fakeStreamingRec{partials: []string{"partial words"}, finals: []string{"partial words"}},
+		policy: endpoint.Policy{MinSpeech: 50 * time.Millisecond, MaxUtterance: 100 * time.Millisecond},
+	}
+
+	got := runStreaming(ctx, deps)
+	final, ok := terminal(got).(FinalTranscript)
+	if !ok {
+		t.Fatalf("terminal event = %T, want FinalTranscript (utterance cap must fire while wedged)", terminal(got))
+	}
+	if final.Text != "partial words" {
+		t.Errorf("FinalTranscript.Text = %q", final.Text)
+	}
+}
+
 func TestStreamingLoopCancellationFails(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

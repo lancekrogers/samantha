@@ -52,7 +52,7 @@ func EnsureRuntimeAssets(cfg *Config, req AssetRequest, onProgress func(name str
 	if err := ensureManifest(manifest, dir, onProgress); err != nil {
 		return err
 	}
-	if req.NeedTTS && strings.EqualFold(cfg.TTSProvider, "kokoro") {
+	if req.NeedTTS && ManagedTTS(cfg) {
 		if err := sanitizeKokoroLexicons(dir); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not sanitize kokoro lexicons: %v\n", err)
 		}
@@ -197,38 +197,8 @@ func downloadAndExtractArchive(dir, url, name string, checkFiles []string, sha25
 		os.Remove(tmpName)
 	}()
 
-	hasher := sha256.New()
-	var sink io.Writer = tmp
-	if sha256Hex != "" {
-		sink = io.MultiWriter(tmp, hasher)
-	}
-
-	total := resp.ContentLength
-	var written int64
-	buf := make([]byte, 32*1024)
-	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			if _, werr := sink.Write(buf[:n]); werr != nil {
-				return fmt.Errorf("download %s: %w", name, werr)
-			}
-			written += int64(n)
-			if total > 0 && onProgress != nil {
-				onProgress(float64(written) / float64(total) * 100)
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return fmt.Errorf("download %s: %w", name, readErr)
-		}
-	}
-	if sha256Hex != "" {
-		got := hex.EncodeToString(hasher.Sum(nil))
-		if !strings.EqualFold(got, sha256Hex) {
-			return fmt.Errorf("download %s: checksum mismatch, got %s want %s", name, got, sha256Hex)
-		}
+	if _, err := copyBodyVerified(tmp, resp.Body, resp.ContentLength, name, sha256Hex, onProgress); err != nil {
+		return err
 	}
 	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("extract %s: %w", name, err)
@@ -376,6 +346,47 @@ func fileExists(path string, expectedSize int64) bool {
 	return true
 }
 
+// copyBodyVerified streams body into dst (hashing when sha256Hex is set),
+// reporting progress against total, and verifies the checksum after the copy.
+// It returns the byte count written. name labels the asset in error messages.
+// It is the single copy/verify core shared by file and archive downloads.
+func copyBodyVerified(dst io.Writer, body io.Reader, total int64, name, sha256Hex string, onProgress func(float64)) (int64, error) {
+	hasher := sha256.New()
+	sink := dst
+	if sha256Hex != "" {
+		sink = io.MultiWriter(dst, hasher)
+	}
+
+	var written int64
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := body.Read(buf)
+		if n > 0 {
+			if _, werr := sink.Write(buf[:n]); werr != nil {
+				return written, fmt.Errorf("download %s: %w", name, werr)
+			}
+			written += int64(n)
+			if total > 0 && onProgress != nil {
+				onProgress(float64(written) / float64(total) * 100)
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return written, fmt.Errorf("download %s: %w", name, readErr)
+		}
+	}
+
+	if sha256Hex != "" {
+		got := hex.EncodeToString(hasher.Sum(nil))
+		if !strings.EqualFold(got, sha256Hex) {
+			return written, fmt.Errorf("download %s: checksum mismatch, got %s want %s", name, got, sha256Hex)
+		}
+	}
+	return written, nil
+}
+
 // downloadFile downloads url into path. It writes to a temp file in the target
 // directory, verifies the expected size and checksum when known, and atomically
 // renames into place on success. The temp file is removed on any failure, so a
@@ -410,42 +421,12 @@ func downloadFile(path, url, file string, size int64, sha256Hex string, onProgre
 		}
 	}()
 
-	hasher := sha256.New()
-	var sink io.Writer = tmp
-	if sha256Hex != "" {
-		sink = io.MultiWriter(tmp, hasher)
+	written, err := copyBodyVerified(tmp, resp.Body, resp.ContentLength, file, sha256Hex, onProgress)
+	if err != nil {
+		return err
 	}
-
-	total := resp.ContentLength
-	var written int64
-	buf := make([]byte, 32*1024)
-	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			if _, werr := sink.Write(buf[:n]); werr != nil {
-				return fmt.Errorf("download %s: %w", file, werr)
-			}
-			written += int64(n)
-			if total > 0 && onProgress != nil {
-				onProgress(float64(written) / float64(total) * 100)
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return fmt.Errorf("download %s: %w", file, readErr)
-		}
-	}
-
 	if size > 0 && written != size {
 		return fmt.Errorf("download %s: size mismatch, got %d bytes want %d", file, written, size)
-	}
-	if sha256Hex != "" {
-		got := hex.EncodeToString(hasher.Sum(nil))
-		if !strings.EqualFold(got, sha256Hex) {
-			return fmt.Errorf("download %s: checksum mismatch, got %s want %s", file, got, sha256Hex)
-		}
 	}
 
 	if err := tmp.Close(); err != nil {

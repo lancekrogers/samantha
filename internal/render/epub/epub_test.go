@@ -169,3 +169,42 @@ func TestParseEPUBErrors(t *testing.T) {
 		t.Error("missing manifest item should error")
 	}
 }
+
+// TestParsePercentEncodedHrefs is the regression guard for spec-conforming
+// EPUBs whose hrefs are percent-encoded URLs: a manifest href of
+// "chapter%201.xhtml" must resolve to the zip entry "chapter 1.xhtml", and the
+// chapter must be readable. Pre-fix the exact-name lookup failed and the whole
+// render aborted.
+func TestParsePercentEncodedHrefs(t *testing.T) {
+	zr := buildEPUB(t, map[string]string{
+		"mimetype":               "application/epub+zip",
+		"META-INF/container.xml": containerXML,
+		"OEBPS/content.opf": `<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Spaced</dc:title></metadata>
+  <manifest>
+    <item id="c1" href="chapter%201.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="c1"/></spine>
+</package>`,
+		"OEBPS/chapter 1.xhtml": `<html><body><p>Hello spaced world.</p></body></html>`,
+	})
+
+	book, err := Parse(zr)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(book.Chapters) != 1 {
+		t.Fatalf("chapters = %d, want 1", len(book.Chapters))
+	}
+	if book.Chapters[0].Href != "OEBPS/chapter 1.xhtml" {
+		t.Fatalf("chapter href = %q, want decoded path", book.Chapters[0].Href)
+	}
+	data, err := book.ReadChapter(book.Chapters[0].Href)
+	if err != nil {
+		t.Fatalf("ReadChapter() error = %v", err)
+	}
+	if !strings.Contains(string(data), "Hello spaced world.") {
+		t.Fatalf("chapter content = %q", string(data))
+	}
+}

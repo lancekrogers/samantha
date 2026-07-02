@@ -184,21 +184,9 @@ func cleanInline(s string) string {
 
 // sectionID returns a stable, human-readable section id.
 func sectionID(index int, title string) string {
-	slug := slugify(title)
+	slug := render.Slugify(title)
 	if slug == "" {
 		return fmt.Sprintf("sec-%03d", index)
 	}
 	return fmt.Sprintf("sec-%03d-%s", index, slug)
-}
-
-var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
-
-func slugify(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	s = nonSlug.ReplaceAllString(s, "-")
-	s = strings.Trim(s, "-")
-	if len(s) > 40 {
-		s = strings.Trim(s[:40], "-")
-	}
-	return s
 }

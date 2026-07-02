@@ -80,6 +80,7 @@ func (l *legacyFrameSource) ReadFrame(ctx context.Context) (audio.Frame, error) 
 		Samples:    samples,
 		SampleRate: audio.SampleRate,
 		Channels:   audio.Channels,
+		Duration:   audio.SamplesDuration(len(samples)),
 		Sequence:   l.seq,
 		SourceKind: l.kind,
 	}, nil

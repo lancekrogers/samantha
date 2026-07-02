@@ -130,7 +130,17 @@ func (c *turnConductor) finish(terminal TurnState) {
 	}
 	c.finished = true
 	c.machine.To(terminal)
-	c.p.emit(events.TurnMetrics(c.metrics.snapshot()))
+	// The machine is the outcome authority: the emitted metrics carry the
+	// terminal state it settled on. A rejected transition (late or illegal
+	// signal) falls back to the caller's intent so the outcome is never a
+	// non-terminal state.
+	outcome, ok := c.machine.Terminal()
+	if !ok {
+		outcome = terminal
+	}
+	m := c.metrics.snapshot()
+	m.Outcome = outcome.String()
+	c.p.emit(m)
 }
 
 // RunTurn executes one conversational turn with streaming TTS.

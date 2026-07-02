@@ -2,8 +2,6 @@ package pipeline
 
 import (
 	"testing"
-
-	"github.com/lancekrogers/samantha/internal/events"
 )
 
 func TestTurnStateString(t *testing.T) {
@@ -158,103 +156,5 @@ func TestTurnMachineRejectsInvalidTransitions(t *testing.T) {
 		if m.State() != TurnTimedOut {
 			t.Fatalf("terminal state mutated to %s, want timed_out", m.State())
 		}
-	}
-}
-
-func TestStateForEventMapping(t *testing.T) {
-	cases := []struct {
-		name  string
-		event events.Event
-		want  TurnState
-		ok    bool
-	}{
-		{"stt listening", events.STTPhase{Phase: "listening"}, TurnListening, true},
-		{"stt hearing", events.STTPhase{Phase: "hearing"}, TurnListening, true},
-		{"stt transcribing", events.STTPhase{Phase: "transcribing"}, TurnTranscribing, true},
-		{"stt unknown phase", events.STTPhase{Phase: "weird"}, TurnIdle, false},
-		{"user input", events.UserInput{Text: "hi"}, TurnThinking, true},
-		{"thinking started", events.ThinkingStarted{}, TurnThinking, true},
-		{"segment ready", events.SpeechSegmentReady{Text: "x"}, TurnSpeaking, true},
-		{"generating voice", events.GeneratingVoice{Sentence: "x"}, TurnSpeaking, true},
-		{"speaking started", events.SpeakingStarted{Text: "x"}, TurnSpeaking, true},
-		{"speaking interrupted", events.SpeakingInterrupted{Reason: "barge_in"}, TurnInterrupted, true},
-		{"turn interrupted", events.TurnInterrupted{Reason: "barge_in"}, TurnInterrupted, true},
-		{"error", events.Error{Stage: "tts", Message: "boom"}, TurnFailed, true},
-		{"response ready", events.ResponseReady{Response: "hi"}, TurnCompleted, true},
-		{"response ready interrupted", events.ResponseReady{Interrupted: true}, TurnInterrupted, true},
-		{"transcript partial (no state)", events.TranscriptPartial{Text: "h"}, TurnIdle, false},
-		{"voice generated (no state)", events.VoiceGenerated{Sentence: "x"}, TurnIdle, false},
-		{"metrics (no state)", events.TurnMetrics{}, TurnIdle, false},
-		{"info (no state)", events.Info{Message: "x"}, TurnIdle, false},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, ok := stateForEvent(tc.event)
-			if got != tc.want || ok != tc.ok {
-				t.Errorf("stateForEvent(%T) = (%s, %v), want (%s, %v)", tc.event, got, ok, tc.want, tc.ok)
-			}
-		})
-	}
-}
-
-// driveEvents replays an event stream through the machine the way the pipeline
-// will: map each event to a state, attempt the transition, and silently ignore
-// events that do not advance state or whose transition is illegal.
-func driveEvents(stream ...events.Event) *turnMachine {
-	m := newTurnMachine()
-	for _, e := range stream {
-		if state, ok := stateForEvent(e); ok {
-			m.To(state)
-		}
-	}
-	return m
-}
-
-func TestStateForEventDrivesMachineToCompletion(t *testing.T) {
-	m := driveEvents(
-		events.STTPhase{Phase: "listening"},
-		events.STTPhase{Phase: "transcribing"},
-		events.UserInput{Text: "hello"},
-		events.ThinkingStarted{},
-		events.TranscriptPartial{Text: "hel"}, // ignored
-		events.SpeechSegmentReady{Text: "hi there"},
-		events.GeneratingVoice{Sentence: "hi there"}, // no-op self-loop
-		events.SpeakingStarted{Text: "hi there"},     // no-op self-loop
-		events.VoiceGenerated{Sentence: "hi there"},  // ignored
-		events.ResponseReady{Response: "hi there"},
-		events.TurnMetrics{}, // ignored terminal metrics marker
-	)
-	if got, ok := m.Terminal(); !ok || got != TurnCompleted {
-		t.Fatalf("Terminal() = (%s, %v), want (completed, true)", got, ok)
-	}
-}
-
-func TestStateForEventDrivesMachineToInterrupted(t *testing.T) {
-	m := driveEvents(
-		events.STTPhase{Phase: "listening"},
-		events.UserInput{Text: "hello"},
-		events.ThinkingStarted{},
-		events.SpeechSegmentReady{Text: "long answer"},
-		events.SpeakingStarted{Text: "long answer"},
-		events.SpeakingInterrupted{Reason: "barge_in"},
-		events.TurnInterrupted{Reason: "barge_in"},                // ignored: already terminal
-		events.ResponseReady{Response: "long", Interrupted: true}, // ignored: already terminal
-	)
-	if got, ok := m.Terminal(); !ok || got != TurnInterrupted {
-		t.Fatalf("Terminal() = (%s, %v), want (interrupted, true)", got, ok)
-	}
-}
-
-func TestStateForEventDrivesMachineToFailed(t *testing.T) {
-	m := driveEvents(
-		events.STTPhase{Phase: "listening"},
-		events.UserInput{Text: "hello"},
-		events.ThinkingStarted{},
-		events.SpeechSegmentReady{Text: "partial"},
-		events.Error{Stage: "playback", Message: "device lost"},
-	)
-	if got, ok := m.Terminal(); !ok || got != TurnFailed {
-		t.Fatalf("Terminal() = (%s, %v), want (failed, true)", got, ok)
 	}
 }

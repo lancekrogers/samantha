@@ -2,7 +2,6 @@ package stt
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"time"
 
@@ -31,38 +30,39 @@ type streamingLoopDeps struct {
 
 // runStreamingLoop drives streaming STT over the typed frame contract. It emits
 // partial transcripts as they arrive and finalizes when the source ends, the
-// recognizer signals an endpoint, the VAD finalizes a segment, or the endpoint
-// policy decides to. The recognizer's endpoint fact is fed into the shared
-// policy (which runs with AllowProviderEnd set). It is free of cgo so it can be
-// tested with fakes; it does not close events.
+// VAD finalizes a segment, or the endpoint policy decides to. The recognizer's
+// endpoint fact is fed into the shared policy (which runs with AllowProviderEnd
+// set). It is free of cgo so it can be tested with fakes; it does not close
+// events.
+//
+// Like the offline loop, the endpoint policy is evaluated exactly once per
+// iteration — including no-frame ticks — and every DecisionKind is handled, so
+// a false-positive speech mark (a spurious partial with no real speech) is
+// reset by TooShort instead of suppressing the timeouts forever.
 func runStreamingLoop(ctx context.Context, deps streamingLoopDeps, events chan<- Event) {
-	lastPhaseAt := time.Now()
-	emitPhase := func(phase string) bool {
-		now := time.Now()
-		if !sendEvent(ctx, events, PhaseEvent{Phase: phase, Elapsed: now.Sub(lastPhaseAt).Nanoseconds()}) {
-			return false
-		}
-		lastPhaseAt = now
-		return true
-	}
+	emitPhase := newPhaseEmitter(ctx, events)
 
 	deps.seg.Reset()
 	if !emitPhase("listening") {
 		return
 	}
 
-	speechDetected := false
+	track := newSpeechTracker()
 	transcribing := false
-	start := time.Now()
-	var speechSeen time.Duration
-	var trailingSilence time.Duration
 	lastPartial := ""
 
-	markSpeech := func() {
-		if !speechDetected {
-			speechDetected = true
-			emitPhase("hearing")
+	// resetListening discards a rejected or false-positive utterance and opens a
+	// fresh listening window. It returns false when the loop should stop.
+	resetListening := func() bool {
+		deps.seg.Reset()
+		if err := deps.rec.Reset(); err != nil {
+			sendEvent(ctx, events, Failure{Err: err})
+			return false
 		}
+		track.reset()
+		transcribing = false
+		lastPartial = ""
+		return emitPhase("listening")
 	}
 
 	for {
@@ -71,46 +71,29 @@ func runStreamingLoop(ctx context.Context, deps streamingLoopDeps, events chan<-
 			return
 		}
 
-		if !speechDetected {
-			if deps.policy.Decide(endpoint.Observation{Elapsed: time.Since(start)}).Kind == endpoint.Timeout {
-				sendEvent(ctx, events, Timeout{})
-				return
-			}
-		}
-
-		frame, err := deps.frames.ReadFrame(ctx)
-		eof := false
-		switch {
-		case err == nil:
-			eof = frame.Final
-		case errors.Is(err, audio.ErrNoFrameReady):
-			time.Sleep(noFramePoll)
-			continue
-		case errors.Is(err, audio.ErrSourceClosed):
-			eof = true
-		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-			sendEvent(ctx, events, Failure{Err: err})
-			return
-		default:
-			sendEvent(ctx, events, Failure{Err: err})
+		read := readLoopFrame(ctx, deps.frames)
+		if read.err != nil {
+			sendEvent(ctx, events, Failure{Err: read.err})
 			return
 		}
+		eof := read.eof
 
-		if len(frame.Samples) > 0 {
-			frameDuration := samplesDuration(len(frame.Samples))
-			deps.seg.AcceptWaveform(frame.Samples)
-			if deps.seg.IsSpeech() {
-				markSpeech()
-				speechSeen += frameDuration
-				trailingSilence = 0
-			} else if speechDetected {
-				trailingSilence += frameDuration
+		if read.ready && len(read.frame.Samples) > 0 {
+			deps.seg.AcceptWaveform(read.frame.Samples)
+			if track.observe(deps.seg.IsSpeech(), frameDur(read.frame)) {
+				if !emitPhase("hearing") {
+					return
+				}
 			}
 
-			deps.rec.Accept(frame.Samples)
+			deps.rec.Accept(read.frame.Samples)
 			partial := normalizeTranscript(strings.TrimSpace(deps.rec.Partial()))
 			if partial != "" {
-				markSpeech()
+				if track.markSpeech() {
+					if !emitPhase("hearing") {
+						return
+					}
+				}
 				if !transcribing {
 					transcribing = true
 					if !emitPhase("transcribing") {
@@ -129,31 +112,40 @@ func runStreamingLoop(ctx context.Context, deps streamingLoopDeps, events chan<-
 		if eof {
 			deps.seg.Flush()
 			if deps.seg.HasSegments() {
-				markSpeech()
+				track.markSpeech()
 			}
 		}
 
-		decision := deps.policy.Decide(endpoint.Observation{
-			HasSpeech:       speechDetected,
-			SpeechSeen:      speechSeen,
-			TrailingSilence: trailingSilence,
-			Elapsed:         time.Since(start),
-			ProviderEnd:     deps.rec.IsEndpoint(),
-			SourceFinal:     eof,
-		})
+		// The recognizer's endpoint fact only matters once speech was marked
+		// (the policy ignores it before then), so skip the cgo call while idle.
+		providerEnd := track.detected && deps.rec.IsEndpoint()
+		decision := deps.policy.Decide(track.observation(providerEnd, eof))
 
 		switch decision.Kind {
 		case endpoint.Timeout, endpoint.SourceExhausted:
 			sendEvent(ctx, events, Timeout{})
 			return
+		case endpoint.TooShort:
+			// A live rejection (spurious partial, sub-MinSpeech blip) resets to
+			// a fresh window; at EOF fall through so the recognizer still gets
+			// its Finalize chance on whatever was buffered.
+			if !eof {
+				if !resetListening() {
+					return
+				}
+				continue
+			}
 		}
 
 		// The provider-end fact reaches the decision through the policy's
 		// AllowProviderEnd gate (decision.Kind == Finalize); it is deliberately
 		// not consulted raw here, so an ungated recognizer endpoint cannot
 		// finalize on its own.
-		shouldFinalize := speechDetected && (eof || deps.seg.HasSegments() || decision.Kind == endpoint.Finalize)
+		shouldFinalize := track.detected && (eof || deps.seg.HasSegments() || decision.Kind == endpoint.Finalize)
 		if !shouldFinalize {
+			if !read.ready {
+				time.Sleep(noFramePoll)
+			}
 			continue
 		}
 
@@ -175,18 +167,7 @@ func runStreamingLoop(ctx context.Context, deps streamingLoopDeps, events chan<-
 		}
 
 		// False positive or empty decode: reset and keep listening.
-		deps.seg.Reset()
-		if err := deps.rec.Reset(); err != nil {
-			sendEvent(ctx, events, Failure{Err: err})
-			return
-		}
-		speechDetected = false
-		transcribing = false
-		speechSeen = 0
-		trailingSilence = 0
-		lastPartial = ""
-		start = time.Now()
-		if !emitPhase("listening") {
+		if !resetListening() {
 			return
 		}
 	}

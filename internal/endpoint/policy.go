@@ -16,9 +16,6 @@ type DecisionKind int
 const (
 	// Continue: keep listening; the utterance is not finished.
 	Continue DecisionKind = iota
-	// SpeechStarted: speech onset was detected (emitted by the caller on the VAD
-	// transition; Decide returns Continue while speech is ongoing).
-	SpeechStarted
 	// Finalize: the utterance is complete and should be transcribed.
 	Finalize
 	// Timeout: no speech arrived before the start timeout.
@@ -33,8 +30,6 @@ func (k DecisionKind) String() string {
 	switch k {
 	case Continue:
 		return "continue"
-	case SpeechStarted:
-		return "speech_started"
 	case Finalize:
 		return "finalize"
 	case Timeout:
@@ -74,15 +69,15 @@ type Observation struct {
 	SpeechSeen      time.Duration // cumulative speech duration
 	TrailingSilence time.Duration // silence since the last speech
 	Elapsed         time.Duration // since listening started
+	SpeechElapsed   time.Duration // since speech onset (0 until HasSpeech)
 	ProviderEnd     bool          // the provider signalled an endpoint
 	SourceFinal     bool          // a finite source reached EOF
 }
 
 // Decision is the result of evaluating a Policy against an Observation.
 type Decision struct {
-	Kind      DecisionKind
-	Reason    string
-	AudioSeen time.Duration
+	Kind   DecisionKind
+	Reason string
 }
 
 // Decide evaluates the policy against the current observation. Precedence:
@@ -91,7 +86,7 @@ type Decision struct {
 func (p Policy) Decide(o Observation) Decision {
 	seen := o.SpeechSeen
 	decide := func(k DecisionKind, reason string) Decision {
-		return Decision{Kind: k, Reason: reason, AudioSeen: seen}
+		return Decision{Kind: k, Reason: reason}
 	}
 
 	// 1. A finite source must end deterministically on EOF, not on silence.
@@ -116,8 +111,9 @@ func (p Policy) Decide(o Observation) Decision {
 		return decide(Continue, "waiting for speech")
 	}
 
-	// 3. Utterance length cap.
-	if p.MaxUtterance > 0 && o.Elapsed >= p.MaxUtterance {
+	// 3. Utterance length cap, anchored at speech onset so pre-speech silence
+	// does not deduct from the user's allowed utterance length.
+	if p.MaxUtterance > 0 && o.SpeechElapsed >= p.MaxUtterance {
 		if seen >= p.MinSpeech {
 			return decide(Finalize, "max utterance reached")
 		}

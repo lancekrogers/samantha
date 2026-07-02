@@ -363,7 +363,11 @@ func TestRunTurnEmitsSingleTerminalMetricsAfterResponse(t *testing.T) {
 func TestRunTurnNoSpeechEmitsSingleMetrics(t *testing.T) {
 	bus := events.NewBus()
 	var metricsCount, responseCount atomic.Int32
-	events.Subscribe(bus, func(events.TurnMetrics) { metricsCount.Add(1) })
+	var lastMetrics atomic.Value
+	events.Subscribe(bus, func(e events.TurnMetrics) {
+		metricsCount.Add(1)
+		lastMetrics.Store(e)
+	})
 	events.Subscribe(bus, func(events.ResponseReady) { responseCount.Add(1) })
 
 	p := &Pipeline{STT: &fakeSTT{text: ""}, Brain: &fakeBrain{}, Events: bus}
@@ -376,6 +380,9 @@ func TestRunTurnNoSpeechEmitsSingleMetrics(t *testing.T) {
 	}
 	if got := metricsCount.Load(); got != 1 {
 		t.Fatalf("TurnMetrics emitted %d times, want exactly 1", got)
+	}
+	if m, ok := lastMetrics.Load().(events.TurnMetrics); !ok || m.Outcome != "timed_out" {
+		t.Fatalf("TurnMetrics.Outcome = %+v, want timed_out on no speech", m)
 	}
 	if got := responseCount.Load(); got != 0 {
 		t.Fatalf("ResponseReady emitted %d times, want 0 on no-speech turn", got)
