@@ -3,15 +3,28 @@ package config
 import (
 	"archive/tar"
 	"compress/bzip2"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/lancekrogers/samantha/internal/textclean"
 )
+
+// downloadClient bounds connection setup and the wait for response headers
+// without capping total transfer time; large model downloads rely on ctx
+// cancellation instead of a whole-request timeout.
+var downloadClient = &http.Client{Transport: downloadTransport()}
+
+func downloadTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.ResponseHeaderTimeout = 30 * time.Second
+	return t
+}
 
 // ModelFile describes a required model file (individual download).
 type ModelFile struct {
@@ -95,7 +108,7 @@ func runtimeArchives(cfg *Config, req AssetRequest) ([]ModelArchive, error) {
 }
 
 // EnsureRuntimeAssets downloads any missing model files and archives needed for this run.
-func EnsureRuntimeAssets(cfg *Config, req AssetRequest, onProgress func(name string, pct float64)) error {
+func EnsureRuntimeAssets(ctx context.Context, cfg *Config, req AssetRequest, onProgress func(name string, pct float64)) error {
 	dir := ModelsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create models dir: %w", err)
@@ -120,11 +133,15 @@ func EnsureRuntimeAssets(cfg *Config, req AssetRequest, onProgress func(name str
 			continue
 		}
 
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		if onProgress != nil {
 			onProgress(m.Name, 0)
 		}
 
-		if err := downloadFile(path, m.URL, func(pct float64) {
+		if err := downloadFile(ctx, path, m.URL, func(pct float64) {
 			if onProgress != nil {
 				onProgress(m.Name, pct)
 			}
@@ -148,11 +165,15 @@ func EnsureRuntimeAssets(cfg *Config, req AssetRequest, onProgress func(name str
 			continue
 		}
 
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		if onProgress != nil {
 			onProgress(a.Name, 0)
 		}
 
-		if err := downloadAndExtractArchive(targetDir, a.URL, func(pct float64) {
+		if err := downloadAndExtractArchive(ctx, targetDir, a.URL, func(pct float64) {
 			if onProgress != nil {
 				onProgress(a.Name, pct)
 			}
@@ -171,8 +192,8 @@ func EnsureRuntimeAssets(cfg *Config, req AssetRequest, onProgress func(name str
 }
 
 // EnsureModels preserves the old behavior for callers that still need the default asset set.
-func EnsureModels(cfg *Config, onProgress func(name string, pct float64)) error {
-	return EnsureRuntimeAssets(cfg, AssetRequest{
+func EnsureModels(ctx context.Context, cfg *Config, onProgress func(name string, pct float64)) error {
+	return EnsureRuntimeAssets(ctx, cfg, AssetRequest{
 		NeedSTT: strings.EqualFold(cfg.STTProvider, "sherpa") ||
 			strings.EqualFold(cfg.STTProvider, "sherpa-streaming") ||
 			strings.EqualFold(cfg.STTProvider, "sherpa-offline") ||
@@ -229,8 +250,12 @@ func sanitizeKokoroLexicon(path string) error {
 
 // downloadAndExtractArchive downloads a tar.bz2 and extracts to dir,
 // stripping the top-level directory prefix.
-func downloadAndExtractArchive(dir, url string, onProgress func(float64)) error {
-	resp, err := http.Get(url)
+func downloadAndExtractArchive(ctx context.Context, dir, url string, onProgress func(float64)) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("build request for %s: %w", url, err)
+	}
+	resp, err := downloadClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -336,8 +361,12 @@ func fileExists(path string, expectedSize int64) bool {
 	return true
 }
 
-func downloadFile(path, url string, onProgress func(float64)) error {
-	resp, err := http.Get(url)
+func downloadFile(ctx context.Context, path, url string, onProgress func(float64)) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("build request for %s: %w", url, err)
+	}
+	resp, err := downloadClient.Do(req)
 	if err != nil {
 		return err
 	}

@@ -213,7 +213,10 @@ func (m settingsModel) previewVoice(ctx context.Context, voice tts.Voice) tea.Cm
 		cfg := *m.cfg
 		cfg.TTSVoice = voice.Name
 
-		if err := config.EnsureRuntimeAssets(&cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
+		if err := config.EnsureRuntimeAssets(ctx, &cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return quiet
+			}
 			return voicePreviewDoneMsg{voice: voice.Name, message: fmt.Sprintf("Asset error: %v", err)}
 		}
 
