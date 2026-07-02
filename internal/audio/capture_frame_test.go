@@ -56,3 +56,32 @@ func TestCaptureCloseIsSafeWhenNotRunning(t *testing.T) {
 		t.Errorf("Close() error = %v, want nil", err)
 	}
 }
+
+// TestCapturePublishUnsubscribeNoPanic is the send-on-closed-channel regression
+// guard: the malgo callback publishes while subscribers churn. Pre-fix,
+// Unsubscribe closed the channel outside the lock while publish sent outside
+// the lock, so a send could land on a just-closed channel and panic the audio
+// callback thread.
+func TestCapturePublishUnsubscribeNoPanic(t *testing.T) {
+	c := NewCapture()
+	samples := []float32{0.1, 0.2, 0.3}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 2000 {
+			c.publish(samples)
+		}
+	}()
+
+	for range 500 {
+		id, ch := c.Subscribe(1)
+		// Drain a little so the buffered channel stays send-ready.
+		select {
+		case <-ch:
+		default:
+		}
+		c.Unsubscribe(id)
+	}
+	<-done
+}

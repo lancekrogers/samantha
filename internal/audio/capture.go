@@ -177,14 +177,15 @@ func (c *Capture) Subscribe(buffer int) (int, <-chan []float32) {
 
 // Unsubscribe removes a capture listener.
 func (c *Capture) Unsubscribe(id int) {
+	// Close while holding the write lock: publish sends under the read lock, so
+	// the close cannot interleave with a send. Closing outside the lock let the
+	// malgo callback thread send on a just-closed channel and panic (a send on a
+	// closed channel counts as ready in a select — default does not protect).
 	c.subsMu.Lock()
-	ch, ok := c.subs[id]
-	if ok {
-		delete(c.subs, id)
-	}
-	c.subsMu.Unlock()
+	defer c.subsMu.Unlock()
 
-	if ok {
+	if ch, ok := c.subs[id]; ok {
+		delete(c.subs, id)
 		close(ch)
 	}
 }
@@ -197,19 +198,13 @@ func (c *Capture) IsRunning() bool {
 }
 
 func (c *Capture) publish(samples []float32) {
+	// Hold the read lock across the sends. They are non-blocking (buffered +
+	// default), so the callback thread never stalls, and Unsubscribe's
+	// delete+close (under the write lock) cannot race a send.
 	c.subsMu.RLock()
-	if len(c.subs) == 0 {
-		c.subsMu.RUnlock()
-		return
-	}
+	defer c.subsMu.RUnlock()
 
-	subs := make([]chan []float32, 0, len(c.subs))
 	for _, ch := range c.subs {
-		subs = append(subs, ch)
-	}
-	c.subsMu.RUnlock()
-
-	for _, ch := range subs {
 		select {
 		case ch <- samples:
 		default:

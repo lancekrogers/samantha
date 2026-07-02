@@ -840,3 +840,85 @@ func (v *fakeVAD) clearedCount() int {
 	defer v.mu.Unlock()
 	return v.cleared
 }
+
+// TestRunTurnBargeInServicedDuringSynthesis is the blocked-select regression
+// guard: synthesis runs on the ordered worker, so a barge-in arriving while the
+// next sentence is mid-generation must stop playback immediately instead of
+// waiting out the synthesis. Pre-fix the loop ran synth+PlayStream inline and
+// could not service the interrupt until the TTS call finished.
+func TestRunTurnBargeInServicedDuringSynthesis(t *testing.T) {
+	bus := events.NewBus()
+	ttsDelay := 1500 * time.Millisecond
+	ttsProvider := &fakeTTS{delay: ttsDelay}
+	player := newFakePlayer(5 * time.Second) // sentence 1 plays long
+	defer player.Close()
+	capture := newFakeCapture()
+
+	p := &Pipeline{
+		STT:        &fakeSTT{text: "hello"},
+		Brain:      &fakeBrain{chunks: []string{"First sentence. Second sentence."}},
+		TTS:        ttsProvider,
+		Player:     player,
+		Capture:    capture,
+		VAD:        &fakeVAD{},
+		BargeInVAD: &fakeVAD{},
+		Events:     bus,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.RunTurn(context.Background())
+		done <- err
+	}()
+
+	// Sentence 1 starts playing once its synthesis finishes; sentence 2's
+	// synthesis is then in flight on the worker.
+	select {
+	case <-player.StartedSignal():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for playback to start")
+	}
+
+	time.Sleep(bargeInArmDelay + 80*time.Millisecond)
+	for range bargeInMinSpeechChunks {
+		capture.Publish([]float32{0.9, 0.9, 0.9})
+		time.Sleep(60 * time.Millisecond)
+	}
+	bargeAt := time.Now()
+
+	// The second synthesis completes at callTimes[1] + delay; the stop must
+	// land before that instant, proving the interrupt was serviced while the
+	// synthesis was still in flight.
+	var stoppedAt time.Time
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
+		if player.StopCount() > 0 {
+			stoppedAt = time.Now()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if stoppedAt.IsZero() {
+		t.Fatal("player was never stopped after barge-in")
+	}
+
+	calls := ttsProvider.CallTimes()
+	if len(calls) < 2 {
+		t.Fatalf("TTS calls = %d, want 2 (second sentence should be synthesizing)", len(calls))
+	}
+	synthDone := calls[1].Add(ttsDelay)
+	if !stoppedAt.Before(synthDone) {
+		t.Fatalf("Stop() at %v, after synthesis completion %v — barge-in waited out the synthesis", stoppedAt, synthDone)
+	}
+	if got := stoppedAt.Sub(bargeAt); got > time.Second {
+		t.Fatalf("stop latency after barge-in = %v, want well under 1s", got)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunTurn() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("interrupted turn did not finish")
+	}
+}

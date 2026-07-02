@@ -155,6 +155,9 @@ func (k *KokoroTTS) Synthesize(ctx context.Context, text string) (*audio.PCMStre
 func (k *KokoroTTS) generate(text string) *sherpa.GeneratedAudio {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if k.tts == nil {
+		return nil // deleted while a synthesis was queued
+	}
 	return k.tts.Generate(text, k.sid, k.speed)
 }
 
@@ -191,9 +194,15 @@ func (k *KokoroTTS) ListVoices(locale, gender string) []Voice {
 	return voices
 }
 
-// Delete frees TTS resources.
+// Delete frees TTS resources. It takes the same mutex as generate: Generate is
+// an uncancellable cgo call, and freeing the handle while one is in flight (a
+// superseded voice preview, shutdown cleanup) is a use-after-free.
 func (k *KokoroTTS) Delete() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
 	if k.tts != nil {
 		sherpa.DeleteOfflineTts(k.tts)
+		k.tts = nil
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -56,6 +57,10 @@ type playbackEventType int
 const (
 	playbackStarted playbackEventType = iota
 	playbackFinished
+	// playbackNotEnqueued reports a handed-off sentence that produced no
+	// playback (TTS/playback error, or synthesis canceled), so the loop can
+	// release its pending slot.
+	playbackNotEnqueued
 )
 
 type playbackEvent struct {
@@ -387,6 +392,27 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 	stalled := make(chan struct{})
 	watchdogArmed := false
 
+	// Synthesis runs on a single ordered worker so this loop keeps servicing
+	// barge-in and playback events while a sentence is being generated —
+	// PlayStream cannot return until the TTS engine has produced audio, and
+	// Kokoro generates a whole sentence per uncancellable cgo call. One worker
+	// (not one goroutine per sentence) preserves playback order. Backpressure is
+	// unchanged: the pending gate keeps at most voiceQueueDepth sentences
+	// outstanding, so the buffered handoff below never blocks.
+	synthQueue := make(chan string, voiceQueueDepth)
+	var synthQueueOnce sync.Once
+	closeSynthQueue := func() { synthQueueOnce.Do(func() { close(synthQueue) }) }
+	defer closeSynthQueue()
+	go func() {
+		for sentence := range synthQueue {
+			if !p.synthesizeSegment(streamCtx, loopDone, sentence, &audioStarted, playbackEvents) {
+				// No playback was enqueued: release the pending slot so the
+				// loop's accounting and the intake gate stay correct.
+				sendPlaybackEvent(loopDone, playbackEvents, playbackEvent{kind: playbackNotEnqueued, sentence: sentence})
+			}
+		}
+	}()
+
 	for sentences != nil || pending > 0 || modelDone != nil {
 		// Pause sentence intake while the playback queue is full so the loop
 		// always returns to select and can drain playbackEvents. Blocking here
@@ -443,6 +469,7 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 		case sentence, ok := <-sentenceCh:
 			if !ok {
 				sentences = nil
+				closeSynthQueue() // no more handoffs; let the worker exit
 				continue
 			}
 
@@ -469,11 +496,15 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 				go p.watchPlaybackStall(streamCtx, &audioStarted, cancel, stalled, p.stallTimeout())
 			}
 
-			if p.synthesizeSegment(streamCtx, loopDone, sentence, &audioStarted, playbackEvents) {
-				pending++
-			}
+			pending++
+			synthQueue <- sentence
 
 		case event := <-playbackEvents:
+			if interrupted && event.kind == playbackStarted && p.Player != nil {
+				// A synthesis that raced the barge-in finished after Stop();
+				// stop the late playback immediately.
+				p.Player.Stop()
+			}
 			if p.applyPlaybackEvent(event, metrics, &armAt) {
 				pending--
 			}
@@ -496,14 +527,17 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 	return strings.TrimSpace(fullResponse.String()), interrupted, nil
 }
 
-// synthesizeSegment is the synth scheduler stage: it announces the segment,
-// synthesizes it, starts playback, and hands the playback to the watcher
-// goroutine, returning true when a playback was enqueued so the caller can track
-// it as pending. TTS/playback failures surface as Error events; failures after
-// the turn context is canceled (cancel or barge-in) are swallowed so teardown
-// stays quiet. It never blocks on a full queue — backpressure is the caller's
-// job via the pending count.
+// synthesizeSegment is the synth scheduler stage, run on the ordered synth
+// worker: it announces the segment, synthesizes it, starts playback, and hands
+// the playback to the watcher goroutine, returning true when a playback was
+// enqueued so the loop can track it as pending. TTS/playback failures surface as
+// Error events; failures after the turn context is canceled (cancel or barge-in)
+// are swallowed so teardown stays quiet. It never blocks on a full queue —
+// backpressure is the loop's job via the pending count.
 func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct{}, sentence string, audioStarted *atomic.Bool, out chan<- playbackEvent) bool {
+	if ctx.Err() != nil {
+		return false // canceled while queued: drain without synthesizing
+	}
 	p.emit(events.SpeechSegmentReady{Text: sentence})
 	p.emit(events.GeneratingVoice{Sentence: sentence})
 
@@ -534,6 +568,9 @@ func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct
 // count.
 func (p *Pipeline) applyPlaybackEvent(event playbackEvent, metrics *turnMetrics, armAt *atomic.Int64) (finished bool) {
 	switch event.kind {
+	case playbackNotEnqueued:
+		return true
+
 	case playbackStarted:
 		armAt.Store(time.Now().Add(bargeInArmDelay).UnixNano())
 		if metrics.firstAudioReady.IsZero() {
