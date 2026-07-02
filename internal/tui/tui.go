@@ -62,22 +62,26 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
-			a.settings.cancelPreview()
+			a.settings.closePreview()
 			a.quitting = true
 			return a, tea.Quit
 		}
 
 	case switchScreenMsg:
+		if a.screen == screenSettings {
+			a.settings.closePreview()
+		}
 		a.screen = screen(msg)
 		switch a.screen {
 		case screenSettings:
-			// Replacing the model would orphan an in-flight preview.
-			a.settings.cancelPreview()
+			// Replacing the model must not orphan an in-flight preview or player.
+			a.settings.closePreview()
 			a.settings = newSettings(a.cfg, a.providers)
 		}
 		return a, nil
 
 	case startPipelineMsg:
+		a.settings.closePreview()
 		a.startPipeline = true
 		return a, tea.Quit
 
