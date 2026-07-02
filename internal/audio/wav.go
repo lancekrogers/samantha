@@ -16,6 +16,12 @@ func ReadWAVFloat32(path string) ([]float32, int, error) {
 	}
 	defer f.Close()
 
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, 0, fmt.Errorf("stat wav: %w", err)
+	}
+	fileSize := fi.Size()
+
 	var header [12]byte
 	if _, err := io.ReadFull(f, header[:]); err != nil {
 		return nil, 0, fmt.Errorf("read wav header: %w", err)
@@ -40,6 +46,16 @@ func ReadWAVFloat32(path string) ([]float32, int, error) {
 
 		chunkID := string(chunkHeader[0:4])
 		chunkSize := binary.LittleEndian.Uint32(chunkHeader[4:8])
+
+		// Reject sizes beyond the file's remaining bytes before allocating.
+		pos, err := f.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return nil, 0, fmt.Errorf("seek wav: %w", err)
+		}
+		if remaining := fileSize - pos; int64(chunkSize) > remaining {
+			return nil, 0, fmt.Errorf("wav chunk %s declares %d bytes but only %d remain", chunkID, chunkSize, remaining)
+		}
+
 		payload := make([]byte, chunkSize)
 		if _, err := io.ReadFull(f, payload); err != nil {
 			return nil, 0, fmt.Errorf("read wav chunk %s: %w", chunkID, err)

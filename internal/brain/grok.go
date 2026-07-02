@@ -178,5 +178,5 @@ func (g *GrokBrain) ClearHistory() {
 
 // LoadHistory restores conversation history from a saved session.
 func (g *GrokBrain) LoadHistory(turns []Turn) {
-	g.history = turns
+	g.history = normalizePromptHistory(turns)
 }
