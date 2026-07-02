@@ -300,6 +300,9 @@ func (o *OllamaBrain) trimHistory() {
 // it from its assistant tool-call antecedent — the window advances to the
 // next user message.
 func historyWindowStart(history []api.Message, max int) int {
+	if max <= 0 {
+		return len(history)
+	}
 	start := 0
 	if len(history) > max {
 		start = len(history) - max

@@ -216,6 +216,23 @@ func TestBuildMessagesNeverStrandsToolResults(t *testing.T) {
 	}
 }
 
+func TestBuildMessagesWithNonPositiveHistoryWindow(t *testing.T) {
+	for _, maxHistory := range []int{0, -1} {
+		o := &OllamaBrain{
+			workDir: "/work/dir",
+			cfg:     &config.Config{AgentName: "Samantha", MaxHistory: maxHistory},
+			history: toolGroupHistory(),
+		}
+		msgs := o.buildMessages()
+		if len(msgs) != 1 {
+			t.Fatalf("maxHistory=%d: got %d messages, want system prompt only", maxHistory, len(msgs))
+		}
+		if msgs[0].Role != "system" {
+			t.Fatalf("maxHistory=%d: first message role = %q, want system", maxHistory, msgs[0].Role)
+		}
+	}
+}
+
 func TestTrimHistoryNeverStrandsToolResults(t *testing.T) {
 	o := &OllamaBrain{
 		cfg:     &config.Config{MaxHistory: 3},
@@ -229,6 +246,19 @@ func TestTrimHistoryNeverStrandsToolResults(t *testing.T) {
 		t.Fatal("trimmed history starts with role tool")
 	}
 	assertNoStrandedTools(t, o.history)
+}
+
+func TestTrimHistoryWithNonPositiveHistoryWindow(t *testing.T) {
+	for _, maxHistory := range []int{0, -1} {
+		o := &OllamaBrain{
+			cfg:     &config.Config{MaxHistory: maxHistory},
+			history: toolGroupHistory(),
+		}
+		o.trimHistory()
+		if len(o.history) != 0 {
+			t.Fatalf("maxHistory=%d: got %d history messages, want none", maxHistory, len(o.history))
+		}
+	}
 }
 
 func TestThinkFullOmitsToolsWhenDisabled(t *testing.T) {
