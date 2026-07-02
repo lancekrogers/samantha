@@ -25,4 +25,18 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Test
-        run: go test ./...
+        run: go test -race ./...
+
+  # Advisory until the pipeline VAD race is fixed (PR #27's interrupt
+  # controller); flip to blocking after.
+  voiceflow:
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Voiceflow
+        run: go test -race -tags integration ./tests/voiceflow/...

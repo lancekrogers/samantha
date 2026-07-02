@@ -5,10 +5,9 @@ BUILDTOOL := "go run ./internal/buildutil"
 default:
     @just --list --unsorted --justfile {{source_file()}}
 
-# Run all unit tests with dashboard
+# Run unit then integration tests (requires Docker)
 [no-cd]
-all:
-    @{{BUILDTOOL}} test
+all: unit integration
 
 # Run unit tests only with dashboard
 [no-cd]
@@ -34,6 +33,9 @@ integration-verbose:
     mkdir -p bin/linux
     CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) go build -tags=integration -o bin/linux/samantha ./cmd/samantha
     echo "Running container-based integration tests..."
-    DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock" \
-    TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock \
     go test -v -tags=integration ./tests/integration/... -timeout 5m 2>&1
+
+# Run fixture-audio voice flow tests (tagged integration, no Docker)
+[no-cd]
+voiceflow:
+    go test -race -tags integration ./tests/voiceflow/...
