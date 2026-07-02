@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/ollama/ollama/api"
 
@@ -35,8 +36,13 @@ func NewOllama(cfg *config.Config) (*OllamaBrain, error) {
 
 	client := api.NewClient(base, http.DefaultClient)
 
-	// Verify model exists.
-	models, err := client.List(context.Background())
+	// Verify model exists. The probe uses its own timeout-bounded client so a
+	// reachable-but-hung host can't block startup; chat requests keep the
+	// untimed default client since generations can run long.
+	probe := api.NewClient(base, &http.Client{Timeout: 10 * time.Second})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	models, err := probe.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("cannot connect to ollama at %s: %w", cfg.OllamaHost, err)
 	}
@@ -272,11 +278,17 @@ func (o *OllamaBrain) History() []Turn {
 	return turns
 }
 
-// LoadHistory restores conversation history from a saved session.
+// LoadHistory restores conversation history from a saved session. Sessions
+// saved by the prompt-based providers use role "samantha" for replies; map it
+// to ollama's native "assistant".
 func (o *OllamaBrain) LoadHistory(turns []Turn) {
 	o.history = make([]api.Message, len(turns))
 	for i, t := range turns {
-		o.history[i] = api.Message{Role: t.Role, Content: t.Content}
+		role := t.Role
+		if role == "samantha" {
+			role = "assistant"
+		}
+		o.history[i] = api.Message{Role: role, Content: t.Content}
 	}
 }
 
@@ -287,19 +299,37 @@ func (o *OllamaBrain) buildMessages() []api.Message {
 		{Role: "system", Content: systemPrompt},
 	}
 
-	recent := o.history
-	max := o.cfg.MaxHistory * 2
-	if len(recent) > max {
-		recent = recent[len(recent)-max:]
-	}
+	recent := o.history[historyWindowStart(o.history, o.cfg.MaxHistory*2):]
 
 	msgs = append(msgs, recent...)
 	return msgs
 }
 
 func (o *OllamaBrain) trimHistory() {
-	max := o.cfg.MaxHistory * 2
-	if len(o.history) > max {
-		o.history = o.history[len(o.history)-max:]
+	if start := historyWindowStart(o.history, o.cfg.MaxHistory*2); start > 0 {
+		o.history = o.history[start:]
 	}
+}
+
+// historyWindowStart returns the index where a history window of at most max
+// messages begins. If the tail slice would open on a tool result — stranding
+// it from its assistant tool-call antecedent — the window advances to the
+// next user message.
+func historyWindowStart(history []api.Message, max int) int {
+	if max <= 0 {
+		return len(history)
+	}
+	start := 0
+	if len(history) > max {
+		start = len(history) - max
+	}
+	if start == 0 || history[start].Role != "tool" {
+		return start
+	}
+	for i := start + 1; i < len(history); i++ {
+		if history[i].Role == "user" {
+			return i
+		}
+	}
+	return len(history)
 }

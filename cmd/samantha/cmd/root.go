@@ -103,15 +103,26 @@ func startPipeline(cfg *config.Config, resumeSession *session.Session) error {
 	}
 
 	// Create or resume session.
-	model := cfg.OllamaModel
-	if cfg.BrainProvider == "claude" {
+	var model string
+	switch cfg.BrainProvider {
+	case "claude":
 		model = "claude"
+	case "grok":
+		model = cfg.GrokModel
+		if model == "" {
+			model = "grok"
+		}
+	default:
+		model = cfg.OllamaModel
 	}
 	sess := resumeSession
 	if sess == nil {
 		sess = session.New(cfg.BrainProvider, model)
 	} else {
 		// Restore conversation history.
+		if sess.Provider != "" && sess.Provider != cfg.BrainProvider {
+			fmt.Printf("  Note: session was recorded with provider %q, resuming with %q\n", sess.Provider, cfg.BrainProvider)
+		}
 		p.Brain.LoadHistory(sess.Turns)
 		fmt.Printf("  Resuming session %s (%d turns)\n", sess.ID, len(sess.Turns))
 	}

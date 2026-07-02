@@ -54,11 +54,12 @@ func (b *Brain) ThinkStream(ctx context.Context, input string, _ StreamOptions) 
 	b.history = append(b.history, Turn{Role: "user", Content: input})
 	prompt := b.buildPrompt()
 
+	// Partial (stream_event) messages are not requested: chunking is
+	// per-assistant-message, so deltas would be discarded anyway.
 	opts := &claude.RunOptions{
-		Format:                 claude.StreamJSONOutput,
-		SystemPrompt:           GetSystemPrompt(b.cfg.AgentName),
-		PermissionMode:         claude.PermissionModeBypassPermissions,
-		IncludePartialMessages: true,
+		Format:         claude.StreamJSONOutput,
+		SystemPrompt:   GetSystemPrompt(b.cfg.AgentName),
+		PermissionMode: claude.PermissionModeBypassPermissions,
 	}
 
 	messages, errs := b.client.StreamPrompt(ctx, prompt, opts)
@@ -205,7 +206,24 @@ func (b *Brain) ClearHistory() {
 
 // LoadHistory restores conversation history from a saved session.
 func (b *Brain) LoadHistory(turns []Turn) {
-	b.history = turns
+	b.history = normalizePromptHistory(turns)
+}
+
+// normalizePromptHistory maps persisted roles onto the prompt-based providers'
+// native scheme: "assistant" becomes "samantha" and tool results (which only
+// ollama produces) are dropped.
+func normalizePromptHistory(turns []Turn) []Turn {
+	out := make([]Turn, 0, len(turns))
+	for _, t := range turns {
+		switch t.Role {
+		case "tool":
+			continue
+		case "assistant":
+			t.Role = "samantha"
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 // fallbackResponse is spoken verbatim when a provider returns nothing; it must

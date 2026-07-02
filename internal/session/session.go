@@ -1,6 +1,8 @@
 package session
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -37,12 +39,16 @@ func New(provider, model string) *Session {
 
 // Save persists the session to disk.
 func (s *Session) Save(turns []brain.Turn) error {
-	s.Turns = turns
+	return s.saveTo(config.SessionsDir(), turns)
+}
+
+func (s *Session) saveTo(dir string, turns []brain.Turn) error {
+	s.Turns = normalizeTurns(turns)
 	s.UpdatedAt = time.Now()
 
 	// Set summary from first user message.
 	if s.Summary == "" {
-		for _, t := range turns {
+		for _, t := range s.Turns {
 			if t.Role == "user" {
 				s.Summary = truncate(t.Content, 80)
 				break
@@ -50,7 +56,6 @@ func (s *Session) Save(turns []brain.Turn) error {
 		}
 	}
 
-	dir := config.SessionsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create sessions dir: %w", err)
 	}
@@ -60,13 +65,51 @@ func (s *Session) Save(turns []brain.Turn) error {
 		return fmt.Errorf("marshal session: %w", err)
 	}
 
-	path := filepath.Join(dir, s.ID+".json")
-	return os.WriteFile(path, data, 0o644)
+	// Write to a temp file and rename so a crash mid-write can't corrupt an
+	// existing session.
+	tmp, err := os.CreateTemp(dir, s.ID+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create session temp file: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("write session: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("close session temp file: %w", err)
+	}
+	if err := os.Rename(tmp.Name(), filepath.Join(dir, s.ID+".json")); err != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("save session: %w", err)
+	}
+	return nil
+}
+
+// normalizeTurns maps provider-specific roles to the persisted scheme:
+// "samantha" (claude/grok replies) is stored as "assistant".
+func normalizeTurns(turns []brain.Turn) []brain.Turn {
+	if len(turns) == 0 {
+		return nil
+	}
+	out := make([]brain.Turn, len(turns))
+	for i, t := range turns {
+		if t.Role == "samantha" {
+			t.Role = "assistant"
+		}
+		out[i] = t
+	}
+	return out
 }
 
 // Load reads a session from disk by ID.
 func Load(id string) (*Session, error) {
-	path := filepath.Join(config.SessionsDir(), id+".json")
+	return loadFrom(config.SessionsDir(), id)
+}
+
+func loadFrom(dir, id string) (*Session, error) {
+	path := filepath.Join(dir, id+".json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read session %s: %w", id, err)
@@ -90,7 +133,10 @@ func Latest() *Session {
 
 // List returns all sessions sorted by most recently updated.
 func List() []Session {
-	dir := config.SessionsDir()
+	return listIn(config.SessionsDir())
+}
+
+func listIn(dir string) []Session {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -103,7 +149,7 @@ func List() []Session {
 		}
 
 		id := strings.TrimSuffix(e.Name(), ".json")
-		s, err := Load(id)
+		s, err := loadFrom(dir, id)
 		if err != nil {
 			continue
 		}
@@ -118,7 +164,9 @@ func List() []Session {
 }
 
 func generateID() string {
-	return time.Now().Format("20060102-150405")
+	var suffix [2]byte
+	_, _ = rand.Read(suffix[:])
+	return time.Now().Format("20060102-150405") + "-" + hex.EncodeToString(suffix[:])
 }
 
 func truncate(s string, maxLen int) string {

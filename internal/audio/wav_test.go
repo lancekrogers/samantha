@@ -1,9 +1,50 @@
 package audio
 
 import (
+	"encoding/binary"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestReadWAVFloat32RejectsOversizedChunk(t *testing.T) {
+	// WriteWAVFloat32 layout: fmt chunk size at byte 16, data chunk size at 40.
+	tests := []struct {
+		name       string
+		sizeOffset int
+	}{
+		{"fmt chunk declares more bytes than file holds", 16},
+		{"data chunk declares more bytes than file holds", 40},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "corrupt.wav")
+			if err := WriteWAVFloat32(path, SampleRate, make([]float32, 64)); err != nil {
+				t.Fatalf("WriteWAVFloat32() error = %v", err)
+			}
+
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("ReadFile() error = %v", err)
+			}
+			binary.LittleEndian.PutUint32(data[tt.sizeOffset:], 0xFFFFFF00)
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+
+			_, _, err = ReadWAVFloat32(path)
+			if err == nil {
+				t.Fatal("ReadWAVFloat32() = nil error, want oversized-chunk rejection")
+			}
+			if !strings.Contains(err.Error(), "declares") {
+				t.Fatalf("ReadWAVFloat32() error = %v, want oversized-chunk rejection", err)
+			}
+		})
+	}
+}
 
 func TestWriteReadWAVFloat32RoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "roundtrip.wav")
