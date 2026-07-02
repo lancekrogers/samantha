@@ -30,8 +30,13 @@ func Providers() []ProviderSpec {
 
 // NewProvider constructs the configured STT provider and its cleanup hook.
 func NewProvider(cfg *config.Config, capture audioSource, vad *audio.VAD) (Provider, func(), error) {
-	switch strings.TrimSpace(strings.ToLower(cfg.STTProvider)) {
-	case "sherpa-streaming":
+	norm, ok := config.NormalizeSTT(cfg.STTProvider)
+	if !ok {
+		return nil, nil, unsupportedProviderError(cfg.STTProvider)
+	}
+
+	switch {
+	case norm.Provider == config.STTProviderSherpa && norm.Mode == config.STTModeStreaming:
 		if capture == nil {
 			return nil, nil, fmt.Errorf("sherpa-streaming STT requires audio capture")
 		}
@@ -44,7 +49,7 @@ func NewProvider(cfg *config.Config, capture audioSource, vad *audio.VAD) (Provi
 			return nil, nil, err
 		}
 		return provider, provider.Delete, nil
-	case "", "sherpa", "sherpa-offline":
+	case norm.Provider == config.STTProviderSherpa && norm.Mode == config.STTModeOffline:
 		if capture == nil {
 			return nil, nil, fmt.Errorf("sherpa STT requires audio capture")
 		}
@@ -57,7 +62,7 @@ func NewProvider(cfg *config.Config, capture audioSource, vad *audio.VAD) (Provi
 			return nil, nil, err
 		}
 		return provider, provider.Delete, nil
-	case "whispercpp":
+	case norm.Provider == config.STTProviderWhisperCPP:
 		if capture == nil {
 			return nil, nil, fmt.Errorf("whispercpp STT requires audio capture")
 		}

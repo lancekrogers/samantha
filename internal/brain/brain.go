@@ -83,7 +83,10 @@ func (b *Brain) ThinkStream(ctx context.Context, input string, _ StreamOptions) 
 					for _, c := range content.Content {
 						if c.Type == "text" && c.Text != "" {
 							fullResponse.WriteString(c.Text)
-							out <- c.Text
+							if err := sendChunk(ctx, out, c.Text); err != nil {
+								done <- StreamResult{Err: err}
+								return
+							}
 						}
 					}
 				}
@@ -93,7 +96,10 @@ func (b *Brain) ThinkStream(ctx context.Context, input string, _ StreamOptions) 
 			if msg.Type == "result" && msg.Result != "" {
 				if fullResponse.Len() == 0 {
 					fullResponse.WriteString(msg.Result)
-					out <- msg.Result
+					if err := sendChunk(ctx, out, msg.Result); err != nil {
+						done <- StreamResult{Err: err}
+						return
+					}
 				}
 			}
 		}

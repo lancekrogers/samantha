@@ -7,10 +7,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/endpoint"
 )
 
 // WhisperCPPSTT implements utterance-final STT using whisper.cpp CLI.
@@ -50,7 +50,8 @@ func NewWhisperCPPSTT(cfg *config.Config, capture audioSource, vad *audio.VAD) (
 	}, nil
 }
 
-// Start begins a whisper.cpp STT session.
+// Start begins a whisper.cpp STT session. It reuses the shared utterance-final
+// loop (runOfflineLoop) with the whisper.cpp CLI as the transcribe seam.
 func (w *WhisperCPPSTT) Start(ctx context.Context) (Session, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 	session := &sherpaSession{
@@ -58,111 +59,21 @@ func (w *WhisperCPPSTT) Start(ctx context.Context) (Session, error) {
 		events: make(chan Event, 8),
 	}
 
-	go w.runSession(sessionCtx, session.events)
+	finite := sourceKind(w.capture) != audio.SourceLive
+	deps := offlineLoopDeps{
+		frames: asFrameSource(w.capture),
+		seg:    vadSegmenter{vad: w.vad},
+		policy: endpoint.FromConfig(w.cfg, finite),
+		transcribe: func(samples []float32) (string, error) {
+			return w.transcribe(sessionCtx, samples)
+		},
+	}
+
+	go func() {
+		defer close(session.events)
+		runOfflineLoop(sessionCtx, deps, session.events)
+	}()
 	return session, nil
-}
-
-func (w *WhisperCPPSTT) runSession(ctx context.Context, events chan<- Event) {
-	defer close(events)
-
-	w.vad.Clear()
-	lastPhaseAt := time.Now()
-	emitPhase := func(phase string) {
-		now := time.Now()
-		events <- PhaseEvent{Phase: phase, Elapsed: now.Sub(lastPhaseAt).Nanoseconds()}
-		lastPhaseAt = now
-	}
-	emitPhase("listening")
-
-	listenDeadline := time.Now().Add(time.Duration(w.cfg.ListenTimeout) * time.Second)
-	speechDetected := false
-	speechStartedAt := time.Time{}
-
-	for {
-		select {
-		case <-ctx.Done():
-			events <- Failure{Err: ctx.Err()}
-			return
-		default:
-		}
-
-		if !speechDetected && time.Now().After(listenDeadline) {
-			events <- Timeout{}
-			return
-		}
-
-		chunk := w.capture.Read()
-		exhausted := len(chunk) == 0 && sourceExhausted(w.capture)
-		if len(chunk) == 0 {
-			if !exhausted {
-				time.Sleep(10 * time.Millisecond)
-				continue
-			}
-			w.vad.Flush()
-			if !speechDetected && !w.vad.IsSpeechDetected() {
-				events <- Timeout{}
-				return
-			}
-		} else {
-			w.vad.AcceptWaveform(chunk)
-			if !speechDetected && w.vad.IsSpeech() {
-				speechDetected = true
-				speechStartedAt = time.Now()
-				emitPhase("hearing")
-			}
-		}
-
-		phraseExpired := !speechStartedAt.IsZero() &&
-			time.Since(speechStartedAt) >= time.Duration(max(w.cfg.PhraseTimeLimit, 1))*time.Second
-		if !w.vad.IsSpeechDetected() && !phraseExpired && !exhausted {
-			continue
-		}
-
-		if !w.vad.IsSpeechDetected() {
-			events <- Timeout{}
-			return
-		}
-
-		emitPhase("transcribing")
-
-		var allSamples []float32
-		for !w.vad.IsEmpty() {
-			allSamples = append(allSamples, w.vad.Front()...)
-			w.vad.Pop()
-		}
-
-		if len(allSamples) < minSpeechSamples {
-			if exhausted {
-				events <- Timeout{}
-				return
-			}
-			speechDetected = false
-			speechStartedAt = time.Time{}
-			listenDeadline = time.Now().Add(time.Duration(w.cfg.ListenTimeout) * time.Second)
-			emitPhase("listening")
-			continue
-		}
-
-		text, err := w.transcribe(ctx, allSamples)
-		if err != nil {
-			events <- Failure{Err: err}
-			return
-		}
-		if text == "" {
-			if exhausted {
-				events <- Timeout{}
-				return
-			}
-			speechDetected = false
-			speechStartedAt = time.Time{}
-			listenDeadline = time.Now().Add(time.Duration(w.cfg.ListenTimeout) * time.Second)
-			emitPhase("listening")
-			continue
-		}
-
-		events <- FinalTranscript{Text: text}
-		return
-	}
 }
 
 func (w *WhisperCPPSTT) transcribe(ctx context.Context, samples []float32) (string, error) {
