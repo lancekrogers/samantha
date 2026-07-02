@@ -261,6 +261,32 @@ func TestTrimHistoryWithNonPositiveHistoryWindow(t *testing.T) {
 	}
 }
 
+// TestThinkFullSpeaksFallbackVerbatim: an empty model response must yield the
+// canned fallback untouched — cleanForVoice runs before the fallback is
+// substituted, never on it.
+func TestThinkFullSpeaksFallbackVerbatim(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"model":"m","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop"}`+"\n")
+	}))
+	t.Cleanup(srv.Close)
+	base, _ := url.Parse(srv.URL)
+
+	o := &OllamaBrain{
+		client:  api.NewClient(base, http.DefaultClient),
+		model:   "m",
+		workDir: t.TempDir(),
+		cfg:     &config.Config{MaxHistory: 10},
+	}
+
+	resp, err := o.ThinkFull(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("ThinkFull returned error: %v", err)
+	}
+	if resp != fallbackResponse {
+		t.Errorf("resp = %q, want fallback verbatim %q", resp, fallbackResponse)
+	}
+}
+
 func TestThinkFullOmitsToolsWhenDisabled(t *testing.T) {
 	var withTools, withoutTools int
 	o := &OllamaBrain{

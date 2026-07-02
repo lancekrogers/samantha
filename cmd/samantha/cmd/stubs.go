@@ -37,48 +37,59 @@ var testCmd = &cobra.Command{
 
 		// TTS test
 		fmt.Printf("  %s %s\n", sectionStyle.Render("1."), "Testing speaker (TTS)...")
-		if err := config.EnsureRuntimeAssets(cmd.Context(), cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
-			fmt.Printf("  %s %v\n\n", failStyle.Render("FAIL:"), err)
-			return nil
-		}
-
-		ttsProvider, cleanup, err := tts.NewProvider(cfg)
-		if err != nil {
-			fmt.Printf("  %s %v\n\n", failStyle.Render("FAIL:"), err)
+		speakerErr := runSpeakerTest(cmd.Context(), cfg)
+		if speakerErr != nil {
+			fmt.Printf("  %s %v\n\n", failStyle.Render("FAIL:"), speakerErr)
 		} else {
-			if cleanup != nil {
-				defer cleanup()
-			}
-
-			player := audio.NewPlayer()
-			defer func() { _ = player.Close() }()
-
-			stream, err := ttsProvider.Synthesize(context.Background(), "Hello! I'm Samantha. Your speaker is working.")
-			if err != nil {
-				fmt.Printf("  %s %v\n\n", failStyle.Render("FAIL:"), err)
-			} else {
-				playback, err := player.PlayStream(context.Background(), stream)
-				if err != nil {
-					fmt.Printf("  %s %v\n\n", failStyle.Render("FAIL:"), err)
-				} else {
-					result := <-playback.Done()
-					if result.Err != nil && !result.Interrupted {
-						fmt.Printf("  %s %v\n\n", failStyle.Render("FAIL:"), result.Err)
-					} else {
-						fmt.Printf("  %s Played speaker test clip\n\n", okStyle.Render("PASS:"))
-					}
-				}
-			}
+			fmt.Printf("  %s Played speaker test clip\n\n", okStyle.Render("PASS:"))
 		}
 
 		// STT test placeholder
 		fmt.Printf("  %s %s\n", sectionStyle.Render("2."), "Testing microphone (STT)...")
 		fmt.Println(dimStyle.Render("  (mic test requires full pipeline — use 'samantha' to test)"))
 		fmt.Println()
+		if speakerErr != nil {
+			fmt.Println(failStyle.Render("  Test failed."))
+			fmt.Println()
+			return fmt.Errorf("speaker (TTS) test failed: %w", speakerErr)
+		}
 		fmt.Println(okStyle.Render("  Test complete."))
 		fmt.Println()
 		return nil
 	},
+}
+
+func runSpeakerTest(ctx context.Context, cfg *config.Config) error {
+	if err := config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
+		return err
+	}
+
+	ttsProvider, cleanup, err := tts.NewProvider(cfg)
+	if err != nil {
+		return err
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	player := audio.NewPlayer()
+	defer func() { _ = player.Close() }()
+
+	stream, err := ttsProvider.Synthesize(ctx, "Hello! I'm Samantha. Your speaker is working.")
+	if err != nil {
+		return err
+	}
+
+	playback, err := player.PlayStream(ctx, stream)
+	if err != nil {
+		return err
+	}
+
+	result := <-playback.Done()
+	if result.Err != nil && !result.Interrupted {
+		return result.Err
+	}
+	return nil
 }
 
 var voicesCmd = &cobra.Command{

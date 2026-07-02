@@ -9,6 +9,7 @@ default:
     @just --list --justfile {{source_file()}}
 
 # Tag and push a release after tests pass. Usage: just release tag v0.1.0
+[no-cd]
 tag version:
     #!/usr/bin/env bash
     set -euo pipefail

@@ -175,29 +175,46 @@ func (m *settingsModel) selectCurrent() {
 	switch m.section {
 	case sectionProvider:
 		if m.cursor < len(m.providers) && m.providers[m.cursor].Available {
-			m.cfg.BrainProvider = m.providers[m.cursor].Name
-			_ = config.SetAndSave("brain_provider", m.cfg.BrainProvider)
+			// Mutate the live config only after the save succeeds, so a
+			// failed save doesn't leave the running session on a provider
+			// that was never persisted.
+			name := m.providers[m.cursor].Name
+			if err := config.SetAndSave("brain_provider", name); err != nil {
+				m.message = fmt.Sprintf("Failed to save provider: %v", err)
+				return
+			}
+			m.cfg.BrainProvider = name
 			m.buildModelItems()
-			m.message = fmt.Sprintf("Provider set to %s", m.cfg.BrainProvider)
+			m.message = fmt.Sprintf("Provider set to %s", name)
 		}
 	case sectionModel:
 		if m.cursor < len(m.modelItems) {
 			model := m.modelItems[m.cursor]
+			var field *string
+			var key string
 			switch m.cfg.BrainProvider {
 			case "ollama":
-				m.cfg.OllamaModel = model
-				_ = config.SetAndSave("ollama_model", model)
+				field, key = &m.cfg.OllamaModel, "ollama_model"
 			case "grok":
-				m.cfg.GrokModel = model
-				_ = config.SetAndSave("grok_model", model)
+				field, key = &m.cfg.GrokModel, "grok_model"
+			}
+			if field != nil {
+				if err := config.SetAndSave(key, model); err != nil {
+					m.message = fmt.Sprintf("Failed to save model: %v", err)
+					return
+				}
+				*field = model
 			}
 			m.message = fmt.Sprintf("Model set to %s", model)
 		}
 	case sectionVoice:
 		if m.cursor < len(m.voiceItems) {
 			voice := m.voiceItems[m.cursor]
+			if err := config.SetAndSave("tts_voice", voice.Name); err != nil {
+				m.message = fmt.Sprintf("Failed to save voice: %v", err)
+				return
+			}
 			m.cfg.TTSVoice = voice.Name
-			_ = config.SetAndSave("tts_voice", voice.Name)
 			m.message = fmt.Sprintf("Voice set to %s", voice.Name)
 		}
 	}
@@ -209,12 +226,14 @@ type voicePreviewDoneMsg struct {
 }
 
 func (m settingsModel) previewVoice(ctx context.Context, voice tts.Voice) tea.Cmd {
+	// Snapshot the config before the closure runs: the returned Cmd executes on
+	// its own goroutine while selectCurrent keeps mutating m.cfg on Update's.
+	cfg := *m.cfg
+	cfg.TTSVoice = voice.Name
 	return func() tea.Msg {
 		// A superseded preview (ctx cancelled) reports quietly so it doesn't
 		// clobber the newer preview's message or "playing" indicator.
 		quiet := voicePreviewDoneMsg{voice: voice.Name}
-		cfg := *m.cfg
-		cfg.TTSVoice = voice.Name
 
 		if err := config.EnsureRuntimeAssets(ctx, &cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
 			return voicePreviewDoneMsg{voice: voice.Name, message: fmt.Sprintf("Asset error: %v", err)}

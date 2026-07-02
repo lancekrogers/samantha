@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -38,6 +39,19 @@ func classifyVoiceFailure(err, ctxErr error, consecutiveFailures int) voiceFailu
 
 func isResumeVoiceCommand(cmd string) bool {
 	return cmd == "/voice" || cmd == "/v"
+}
+
+// normalizeCommand prepares a transcript for command matching: Whisper output
+// carries casing and trailing punctuation ("Goodbye.") that exact matches miss.
+func normalizeCommand(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	return strings.TrimSpace(strings.TrimRight(s, ".,!?"))
+}
+
+// isClearCommand matches exactly — substring matching wiped history on
+// sentences that merely mentioned "reset".
+func isClearCommand(cmd string) bool {
+	return cmd == "/clear" || cmd == "/c" || slices.Contains(clearPhrases, cmd)
 }
 
 var exitPhrases = map[string]bool{
@@ -115,7 +129,7 @@ func Run(ctx context.Context, p *pipeline.Pipeline, in io.Reader, textMode, noVo
 			text = turnText
 		}
 
-		cmd := strings.ToLower(strings.TrimSpace(text))
+		cmd := normalizeCommand(text)
 
 		// Exit check
 		if exitPhrases[cmd] {
@@ -131,16 +145,7 @@ func Run(ctx context.Context, p *pipeline.Pipeline, in io.Reader, textMode, noVo
 		}
 
 		// Clear check
-		isClear := cmd == "/clear" || cmd == "/c"
-		if !isClear {
-			for _, phrase := range clearPhrases {
-				if strings.Contains(cmd, phrase) {
-					isClear = true
-					break
-				}
-			}
-		}
-		if isClear {
+		if isClearCommand(cmd) {
 			p.Brain.ClearHistory()
 			p.Events.Emit(events.ConversationCleared{})
 			continue

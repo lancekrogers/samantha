@@ -68,7 +68,7 @@ func findSentenceEnd(text string) int {
 			// Check for abbreviations (e.g., "Mr.", "Dr.", "etc.")
 			if r == '.' && i > 0 && i < len(runes)-1 {
 				prevWord := extractPrevWord(runes[:i])
-				if isAbbreviation(prevWord) {
+				if isAbbreviation(prevWord) || isInitialism(runes[:i]) {
 					continue
 				}
 			}
@@ -93,6 +93,17 @@ func extractPrevWord(runes []rune) string {
 		start--
 	}
 	return string(runes[start:end])
+}
+
+// isInitialism reports whether text ends in a letter-dot-letter run like
+// "e.g" or "i.e", so the trailing dot is not a sentence end.
+func isInitialism(runes []rune) bool {
+	end := len(runes)
+	start := end
+	for start > 0 && unicode.IsLetter(runes[start-1]) {
+		start--
+	}
+	return end-start == 1 && start > 0 && runes[start-1] == '.'
 }
 
 func isAbbreviation(word string) bool {

@@ -402,6 +402,7 @@ func (c *fixtureCapture) replayWAV(t *testing.T, path string, speedup float64) {
 }
 
 type energyVAD struct {
+	mu        sync.Mutex
 	threshold float64
 	required  int
 	speech    bool
@@ -410,6 +411,9 @@ type energyVAD struct {
 }
 
 func (v *energyVAD) AcceptWaveform(samples []float32) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
 	if meanAbs(samples) >= v.threshold {
 		v.streak++
 		v.speech = true
@@ -422,9 +426,21 @@ func (v *energyVAD) AcceptWaveform(samples []float32) {
 	v.streak = 0
 }
 
-func (v *energyVAD) IsSpeech() bool         { return v.speech }
-func (v *energyVAD) IsSpeechDetected() bool { return v.detected }
+func (v *energyVAD) IsSpeech() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.speech
+}
+
+func (v *energyVAD) IsSpeechDetected() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.detected
+}
+
 func (v *energyVAD) Clear() {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	v.speech = false
 	v.detected = false
 	v.streak = 0
