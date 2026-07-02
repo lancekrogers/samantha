@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -96,12 +97,21 @@ func TestDiagnoseDoesNotCheckBinaryForSherpa(t *testing.T) {
 // setup with assets present is healthy, and doctor never emits a microphone or
 // audio-device check (so batch-only setups are not failed for lacking a mic).
 func TestDiagnoseNeverRequiresMicrophone(t *testing.T) {
-	cfg := &Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro", VADEnabled: true}
+	cfg := &Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro", VADEnabled: false}
 	dir := t.TempDir()
 	m, _ := ManifestFor(cfg, DefaultAssetRequest(cfg))
 	for _, a := range m.Assets {
 		for _, p := range a.installPaths(dir) {
 			touchFile(t, p)
+		}
+		if a.IsArchive() && a.Archive.SHA256 != "" {
+			target := dir
+			if a.TargetDir != "" {
+				target = filepath.Join(dir, a.TargetDir)
+			}
+			if err := writeArchiveInstallMarker(target, a.ID, a.Archive.URL, a.Archive.SHA256, a.CheckFiles); err != nil {
+				t.Fatalf("writeArchiveInstallMarker(%s) error = %v", a.ID, err)
+			}
 		}
 	}
 

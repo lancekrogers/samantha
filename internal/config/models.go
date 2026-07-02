@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -95,6 +96,7 @@ type ModelFile struct {
 
 // ModelArchive describes a tar.bz2 archive to download and extract.
 type ModelArchive struct {
+	ID         string   // stable manifest asset id
 	Name       string   // display name for progress
 	URL        string   // tar.bz2 URL
 	SHA256     string   // expected hex checksum of compressed archive (empty = skip check)
@@ -146,7 +148,7 @@ func ensureManifest(ctx context.Context, manifest AssetManifest, dir string, onP
 			return err
 		}
 		path := filepath.Join(dir, m.Name)
-		if fileExists(path, m.Size) {
+		if fileVerified(path, m.Size, m.SHA256) {
 			continue
 		}
 
@@ -173,7 +175,7 @@ func ensureManifest(ctx context.Context, manifest AssetManifest, dir string, onP
 			targetDir = a.TargetDir
 		}
 
-		if archiveExtracted(targetDir, a.CheckFiles) {
+		if archiveInstalled(targetDir, a.ID, a.URL, a.SHA256, a.CheckFiles) {
 			continue
 		}
 
@@ -181,7 +183,7 @@ func ensureManifest(ctx context.Context, manifest AssetManifest, dir string, onP
 			onProgress(a.Name, 0)
 		}
 
-		if err := downloadAndExtractArchive(ctx, targetDir, a.URL, a.Name, a.CheckFiles, a.SHA256, func(pct float64) {
+		if err := downloadAndExtractArchive(ctx, targetDir, a.ID, a.URL, a.Name, a.CheckFiles, a.SHA256, func(pct float64) {
 			if onProgress != nil {
 				onProgress(a.Name, pct)
 			}
@@ -207,6 +209,16 @@ func archiveExtracted(dir string, checkFiles []string) bool {
 		}
 	}
 	return true
+}
+
+func archiveInstalled(dir, id, url, sha256Hex string, checkFiles []string) bool {
+	if !archiveExtracted(dir, checkFiles) {
+		return false
+	}
+	if sha256Hex == "" {
+		return true
+	}
+	return archiveInstallMarkerValid(dir, id, url, sha256Hex, checkFiles)
 }
 
 func sanitizeKokoroLexicons(dir string) error {
@@ -250,7 +262,7 @@ func sanitizeKokoroLexicon(path string) error {
 // extracts into a temp dir, verifies the check files, then atomically promotes
 // the result — so a partial or malicious archive never lands at dir. name labels
 // the asset in error messages.
-func downloadAndExtractArchive(ctx context.Context, dir, url, name string, checkFiles []string, sha256Hex string, onProgress func(float64)) error {
+func downloadAndExtractArchive(ctx context.Context, dir, id, url, name string, checkFiles []string, sha256Hex string, onProgress func(float64)) error {
 	resp, err := openDownload(ctx, url, name)
 	if err != nil {
 		return err
@@ -277,7 +289,15 @@ func downloadAndExtractArchive(ctx context.Context, dir, url, name string, check
 		return fmt.Errorf("extract %s: %w", name, err)
 	}
 
-	return extractTarStream(bzip2.NewReader(tmp), dir, name, checkFiles)
+	if err := extractTarStream(bzip2.NewReader(tmp), dir, name, checkFiles); err != nil {
+		return err
+	}
+	if sha256Hex != "" {
+		if err := writeArchiveInstallMarker(dir, id, url, sha256Hex, checkFiles); err != nil {
+			return fmt.Errorf("extract %s: write install marker: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // extractTarStream extracts a decompressed tar stream into dir. It extracts into
@@ -409,6 +429,10 @@ func safeJoin(dir, rel string) (string, error) {
 }
 
 func fileExists(path string, expectedSize int64) bool {
+	return fileVerified(path, expectedSize, "")
+}
+
+func fileVerified(path string, expectedSize int64, sha256Hex string) bool {
 	info, err := os.Stat(path)
 	if err != nil {
 		return false
@@ -416,7 +440,171 @@ func fileExists(path string, expectedSize int64) bool {
 	if expectedSize > 0 && info.Size() != expectedSize {
 		return false
 	}
+	if sha256Hex != "" {
+		got, err := fileSHA256(path)
+		if err != nil || !strings.EqualFold(got, sha256Hex) {
+			return false
+		}
+	}
 	return true
+}
+
+type archiveInstallMarker struct {
+	ID          string            `json:"id"`
+	URL         string            `json:"url"`
+	SHA256      string            `json:"sha256"`
+	CheckHashes map[string]string `json:"check_hashes"`
+}
+
+func archiveInstallMarkerPath(dir, id string) string {
+	var b strings.Builder
+	for _, r := range id {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	name := b.String()
+	if name == "" {
+		name = "archive"
+	}
+	return filepath.Join(dir, ".samantha-asset-"+name+".json")
+}
+
+func archiveInstallMarkerValid(dir, id, url, sha256Hex string, checkFiles []string) bool {
+	data, err := os.ReadFile(archiveInstallMarkerPath(dir, id))
+	if err != nil {
+		return false
+	}
+	var marker archiveInstallMarker
+	if err := json.Unmarshal(data, &marker); err != nil {
+		return false
+	}
+	if marker.ID != id || marker.URL != url || !strings.EqualFold(marker.SHA256, sha256Hex) {
+		return false
+	}
+	wantHashes, err := archiveCheckHashes(dir, checkFiles)
+	if err != nil {
+		return false
+	}
+	if len(marker.CheckHashes) != len(wantHashes) {
+		return false
+	}
+	for path, got := range wantHashes {
+		if !strings.EqualFold(got, marker.CheckHashes[path]) {
+			return false
+		}
+	}
+	return true
+}
+
+func writeArchiveInstallMarker(dir, id, url, sha256Hex string, checkFiles []string) error {
+	hashes, err := archiveCheckHashes(dir, checkFiles)
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(archiveInstallMarker{
+		ID:          id,
+		URL:         url,
+		SHA256:      strings.ToLower(sha256Hex),
+		CheckHashes: hashes,
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+
+	path := archiveInstallMarkerPath(dir, id)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			tmp.Close()
+			os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func archiveCheckHashes(dir string, checkFiles []string) (map[string]string, error) {
+	hashes := make(map[string]string, len(checkFiles))
+	for _, rel := range checkFiles {
+		sum, err := pathSHA256(filepath.Join(dir, rel))
+		if err != nil {
+			return nil, err
+		}
+		hashes[rel] = sum
+	}
+	return hashes, nil
+}
+
+func pathSHA256(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return fileSHA256(path)
+	}
+	hasher := sha256.New()
+	err = filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(path, p)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		hasher.Write([]byte(rel))
+		hasher.Write([]byte{0})
+		if d.IsDir() {
+			hasher.Write([]byte{1})
+			return nil
+		}
+		hasher.Write([]byte{2})
+		f, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(hasher, f)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 // copyBodyVerified streams body into dst (hashing when sha256Hex is set),

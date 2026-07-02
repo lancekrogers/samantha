@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,14 +52,36 @@ func TestModelsStatusJSONIsMachineReadable(t *testing.T) {
 }
 
 func TestModelsStatusReportsInstalled(t *testing.T) {
-	cfg := &config.Config{STTProvider: "whispercpp", WhisperCPPModel: "base.en"}
+	cfg := &config.Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "none", VADEnabled: false}
 	dir := t.TempDir()
-	// Install the whisper.cpp file so status reports it present.
-	p := filepath.Join(dir, "whispercpp", "ggml-base.en.bin")
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		t.Fatal(err)
+	manifest, err := config.ManifestFor(cfg, config.DefaultAssetRequest(cfg))
+	if err != nil {
+		t.Fatalf("ManifestFor() error = %v", err)
 	}
-	if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+	asset := manifest.Assets[0]
+	hashes := map[string]string{}
+	for _, rel := range asset.CheckFiles {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256([]byte("x"))
+		hashes[rel] = fmt.Sprintf("%x", sum)
+	}
+	marker := fmt.Sprintf(`{
+  "id": %q,
+  "url": %q,
+  "sha256": %q,
+  "check_hashes": {
+    %q: %q,
+    %q: %q
+  }
+}
+`, asset.ID, asset.Archive.URL, asset.Archive.SHA256, asset.CheckFiles[0], hashes[asset.CheckFiles[0]], asset.CheckFiles[1], hashes[asset.CheckFiles[1]])
+	if err := os.WriteFile(filepath.Join(dir, ".samantha-asset-"+asset.ID+".json"), []byte(marker), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,6 +21,13 @@ func fileAssetManifest(url string) AssetManifest {
 			Files: []AssetFile{{Path: "whispercpp/ggml-base.en.bin", URL: url}},
 		}},
 	}
+}
+
+func pinnedFileAssetManifest(url, sha string, size int64) AssetManifest {
+	m := fileAssetManifest(url)
+	m.Assets[0].Files[0].SHA256 = sha
+	m.Assets[0].Files[0].Size = size
+	return m
 }
 
 func TestEnsureManifestDownloadsMissingFile(t *testing.T) {
@@ -71,6 +80,36 @@ func TestEnsureManifestSkipsPresentFile(t *testing.T) {
 	}
 }
 
+func TestEnsureManifestRedownloadsCorruptPinnedFile(t *testing.T) {
+	const good = "verified-model"
+	sum := sha256.Sum256([]byte(good))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(good))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "whispercpp", "ggml-base.en.bin")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("corrupt-model!"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := pinnedFileAssetManifest(srv.URL, fmt.Sprintf("%x", sum), int64(len(good)))
+	if err := ensureManifest(t.Context(), m, dir, nil); err != nil {
+		t.Fatalf("ensureManifest() error = %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != good {
+		t.Fatalf("file content = %q, want redownloaded verified content", got)
+	}
+}
+
 func TestEnsureManifestSkipsExtractedArchive(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
@@ -93,6 +132,30 @@ func TestEnsureManifestSkipsExtractedArchive(t *testing.T) {
 	}
 	if err := ensureManifest(t.Context(), m, dir, nil); err != nil {
 		t.Fatalf("ensureManifest() error = %v, want nil (extracted archive skipped)", err)
+	}
+}
+
+func TestEnsureManifestDoesNotSkipPinnedArchiveWithoutMarker(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "model.onnx"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := AssetManifest{
+		Schema: AssetSchema,
+		Assets: []Asset{{
+			ID: "tts.kokoro", Provider: "kokoro", Kind: AssetKindTTS, Name: "kokoro-tts",
+			Archive:    &AssetArchive{URL: srv.URL, SHA256: strings.Repeat("a", 64)},
+			CheckFiles: []string{"model.onnx"},
+		}},
+	}
+	if err := ensureManifest(t.Context(), m, dir, nil); err == nil {
+		t.Fatal("ensureManifest() error = nil, want pinned archive without marker to redownload")
 	}
 }
 

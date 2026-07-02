@@ -1,8 +1,11 @@
 package config
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +29,29 @@ func defaultStatusManifest(t *testing.T) AssetManifest {
 		t.Fatalf("ManifestFor() error = %v", err)
 	}
 	return m
+}
+
+func testStatusManifest() AssetManifest {
+	return AssetManifest{
+		Schema: AssetSchema,
+		Assets: []Asset{
+			{
+				ID:       "vad.test",
+				Provider: "sherpa",
+				Kind:     AssetKindVAD,
+				Name:     "vad.onnx",
+				Files:    []AssetFile{{Path: "vad.onnx"}},
+			},
+			{
+				ID:         "tts.test",
+				Provider:   "kokoro",
+				Kind:       AssetKindTTS,
+				Name:       "kokoro-tts",
+				Archive:    &AssetArchive{URL: "https://example.invalid/kokoro.tar.bz2"},
+				CheckFiles: []string{"model.onnx"},
+			},
+		},
+	}
 }
 
 func statusByID(statuses []AssetStatus) map[string]AssetStatus {
@@ -54,7 +80,7 @@ func TestManifestStatusReportsMissing(t *testing.T) {
 
 func TestManifestStatusReportsPresent(t *testing.T) {
 	dir := t.TempDir()
-	m := defaultStatusManifest(t)
+	m := testStatusManifest()
 
 	// Create every required install path.
 	for _, a := range m.Assets {
@@ -72,7 +98,7 @@ func TestManifestStatusReportsPresent(t *testing.T) {
 
 func TestManifestStatusReportsPartial(t *testing.T) {
 	dir := t.TempDir()
-	m := defaultStatusManifest(t)
+	m := testStatusManifest()
 
 	// Install only the VAD asset.
 	for _, a := range m.Assets {
@@ -85,16 +111,76 @@ func TestManifestStatusReportsPartial(t *testing.T) {
 	}
 
 	byID := statusByID(m.Status(dir))
-	if !byID["vad.silero.v1"].Installed {
+	if !byID["vad.test"].Installed {
 		t.Error("VAD should be installed")
 	}
 	for id, s := range byID {
-		if id == "vad.silero.v1" {
+		if id == "vad.test" {
 			continue
 		}
 		if s.Installed {
 			t.Errorf("%s: Installed = true, want false (not created)", id)
 		}
+	}
+}
+
+func TestManifestStatusRejectsCorruptPinnedFile(t *testing.T) {
+	const good = "verified-model"
+	sum := sha256.Sum256([]byte(good))
+	dir := t.TempDir()
+	path := filepath.Join(dir, "model.bin")
+	if err := os.WriteFile(path, []byte("corrupt-model!"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := AssetManifest{Schema: AssetSchema, Assets: []Asset{{
+		ID:       "file.test",
+		Provider: "whispercpp",
+		Kind:     AssetKindSTT,
+		Name:     "model.bin",
+		Files:    []AssetFile{{Path: "model.bin", Size: int64(len(good)), SHA256: fmt.Sprintf("%x", sum)}},
+	}}}
+
+	st := m.Status(dir)[0]
+	if st.Installed {
+		t.Fatal("corrupt same-size pinned file reported installed")
+	}
+	if len(st.Missing) != 1 || st.Missing[0] != path {
+		t.Fatalf("Missing = %v, want %s", st.Missing, path)
+	}
+}
+
+func TestManifestStatusRejectsPinnedArchiveWithoutValidMarker(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "model.onnx"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := AssetManifest{Schema: AssetSchema, Assets: []Asset{{
+		ID:         "archive.test",
+		Provider:   "kokoro",
+		Kind:       AssetKindTTS,
+		Name:       "kokoro-tts",
+		Archive:    &AssetArchive{URL: "https://example.invalid/kokoro.tar.bz2", SHA256: strings.Repeat("a", 64)},
+		CheckFiles: []string{"model.onnx"},
+	}}}
+
+	st := m.Status(dir)[0]
+	if st.Installed {
+		t.Fatal("pinned archive without install marker reported installed")
+	}
+
+	if err := writeArchiveInstallMarker(dir, "archive.test", m.Assets[0].Archive.URL, m.Assets[0].Archive.SHA256, m.Assets[0].CheckFiles); err != nil {
+		t.Fatalf("writeArchiveInstallMarker() error = %v", err)
+	}
+	if st := m.Status(dir)[0]; !st.Installed {
+		t.Fatalf("archive with valid marker reported missing: %v", st.Missing)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "model.onnx"), []byte("corrupt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if st := m.Status(dir)[0]; st.Installed {
+		t.Fatal("archive with corrupted check file reported installed")
 	}
 }
 

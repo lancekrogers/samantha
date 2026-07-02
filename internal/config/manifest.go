@@ -294,17 +294,44 @@ func (a Asset) installPaths(modelsDir string) []string {
 	return paths
 }
 
+func (a Asset) installProblems(modelsDir string) []string {
+	if a.IsArchive() {
+		target := modelsDir
+		if a.TargetDir != "" {
+			target = filepath.Join(modelsDir, a.TargetDir)
+		}
+		var missing []string
+		for _, p := range a.installPaths(modelsDir) {
+			if !pathExists(p) {
+				missing = append(missing, p)
+			}
+		}
+		if len(missing) > 0 {
+			return missing
+		}
+		if a.Archive.SHA256 != "" && !archiveInstallMarkerValid(target, a.ID, a.Archive.URL, a.Archive.SHA256, a.CheckFiles) {
+			return []string{archiveInstallMarkerPath(target, a.ID)}
+		}
+		return nil
+	}
+
+	var missing []string
+	for _, f := range a.Files {
+		p := filepath.Join(modelsDir, f.Path)
+		if !fileVerified(p, f.Size, f.SHA256) {
+			missing = append(missing, p)
+		}
+	}
+	return missing
+}
+
 // Status resolves the installation state of every asset in the manifest under
 // modelsDir. It only reads the filesystem and never downloads.
 func (m AssetManifest) Status(modelsDir string) []AssetStatus {
 	out := make([]AssetStatus, 0, len(m.Assets))
 	for _, a := range m.Assets {
 		st := AssetStatus{ID: a.ID, Name: a.Name, Provider: a.Provider, Mode: a.Mode, Kind: a.Kind}
-		for _, p := range a.installPaths(modelsDir) {
-			if !pathExists(p) {
-				st.Missing = append(st.Missing, p)
-			}
-		}
+		st.Missing = a.installProblems(modelsDir)
 		st.Installed = len(st.Missing) == 0
 		out = append(out, st)
 	}
@@ -329,6 +356,7 @@ func (m AssetManifest) ModelArchives(base string) []ModelArchive {
 			targetDir = filepath.Join(base, a.TargetDir)
 		}
 		archives = append(archives, ModelArchive{
+			ID:         a.ID,
 			Name:       a.Name,
 			URL:        a.Archive.URL,
 			SHA256:     a.Archive.SHA256,
