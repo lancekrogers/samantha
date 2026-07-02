@@ -62,12 +62,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
-			a.settings.cancelPreview()
+			a.settings.closePreview()
 			a.quitting = true
 			return a, tea.Quit
 		}
 
 	case switchScreenMsg:
+		if a.screen == screenSettings {
+			a.settings.closePreview()
+		}
 		a.screen = screen(msg)
 		switch a.screen {
 		case screenSettings:
@@ -78,6 +81,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case startPipelineMsg:
+		a.settings.closePreview()
 		a.startPipeline = true
 		return a, tea.Quit
 
