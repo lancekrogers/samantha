@@ -40,6 +40,8 @@ type settingsModel struct {
 	previewCancel    context.CancelFunc
 	previewPlayer    audio.Engine
 	newPreviewPlayer func() audio.Engine
+	ensureTTSAssets  func(context.Context, *config.Config) error
+	newTTSProvider   func(*config.Config) (tts.Provider, func(), error)
 	message          string
 }
 
@@ -50,6 +52,10 @@ func newSettings(cfg *config.Config, providers []discovery.ProviderInfo) setting
 		newPreviewPlayer: func() audio.Engine {
 			return audio.NewPlayer()
 		},
+		ensureTTSAssets: func(ctx context.Context, cfg *config.Config) error {
+			return config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedTTS: true}, nil)
+		},
+		newTTSProvider: tts.NewProvider,
 	}
 	m.buildProviderItems()
 	m.buildModelItems()
@@ -184,11 +190,7 @@ func (m *settingsModel) playerForPreview() audio.Engine {
 	if m.previewPlayer != nil {
 		return m.previewPlayer
 	}
-	if m.newPreviewPlayer != nil {
-		m.previewPlayer = m.newPreviewPlayer()
-	} else {
-		m.previewPlayer = audio.NewPlayer()
-	}
+	m.previewPlayer = m.newPreviewPlayer()
 	return m.previewPlayer
 }
 
@@ -269,14 +271,14 @@ func (m settingsModel) previewVoice(ctx context.Context, id int64, voice tts.Voi
 		// clobber the newer preview's message or "playing" indicator.
 		quiet := voicePreviewDoneMsg{id: id, voice: voice.Name}
 
-		if err := config.EnsureRuntimeAssets(ctx, &cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
+		if err := m.ensureTTSAssets(ctx, &cfg); err != nil {
 			if errors.Is(err, context.Canceled) {
 				return quiet
 			}
 			return voicePreviewDoneMsg{id: id, voice: voice.Name, message: fmt.Sprintf("Asset error: %v", err)}
 		}
 
-		ttsProvider, cleanup, err := tts.NewProvider(&cfg)
+		ttsProvider, cleanup, err := m.newTTSProvider(&cfg)
 		if err != nil {
 			return voicePreviewDoneMsg{id: id, voice: voice.Name, message: fmt.Sprintf("TTS error: %v", err)}
 		}
@@ -303,9 +305,8 @@ func (m settingsModel) previewVoice(ctx context.Context, id int64, voice tts.Voi
 		var result audio.PlaybackResult
 		select {
 		case <-ctx.Done():
-			// Cancelled mid-playback: silence the device, then wait for the
-			// segment to resolve before the deferred Close runs.
-			player.Stop()
+			// cancelPreview already stopped the shared player. Do not stop it
+			// again here, because a newer preview may now be queued on it.
 			<-playback.Done()
 			return quiet
 		case result = <-playback.Done():
