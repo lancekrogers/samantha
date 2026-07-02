@@ -234,7 +234,7 @@ func runSingleSTTBenchmark(ctx context.Context, cfg *config.Config, providerName
 	cfgCopy := *cfg
 	cfgCopy.STTProvider = providerName
 
-	if err := config.EnsureRuntimeAssets(&cfgCopy, config.AssetRequest{NeedSTT: true, NeedVAD: true}, nil); err != nil {
+	if err := config.EnsureRuntimeAssets(ctx, &cfgCopy, config.AssetRequest{NeedSTT: true, NeedVAD: true}, nil); err != nil {
 		return result, err
 	}
 

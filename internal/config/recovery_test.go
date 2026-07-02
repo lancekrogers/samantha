@@ -42,7 +42,7 @@ func TestRecoveryFileDownloadThenRetry(t *testing.T) {
 	if m.Status(dir)[0].Installed {
 		t.Fatal("asset should start missing")
 	}
-	if err := ensureManifest(m, dir, nil); err == nil {
+	if err := ensureManifest(t.Context(), m, dir, nil); err == nil {
 		t.Fatal("first attempt should fail")
 	}
 	if m.Status(dir)[0].Installed {
@@ -51,7 +51,7 @@ func TestRecoveryFileDownloadThenRetry(t *testing.T) {
 	noLeftoverExtractDirs(t, dir)
 
 	ok.Store(true)
-	if err := ensureManifest(m, dir, nil); err != nil {
+	if err := ensureManifest(t.Context(), m, dir, nil); err != nil {
 		t.Fatalf("retry should succeed, got %v", err)
 	}
 	if !m.Status(dir)[0].Installed {
@@ -74,7 +74,7 @@ func TestRecoveryArchiveDownloadFailureLeavesMissing(t *testing.T) {
 		CheckFiles: []string{"model.onnx"},
 	}}}
 
-	if err := ensureManifest(m, dir, nil); err == nil {
+	if err := ensureManifest(t.Context(), m, dir, nil); err == nil {
 		t.Fatal("archive download should fail")
 	}
 	if m.Status(dir)[0].Installed {
@@ -98,7 +98,7 @@ func TestRecoveryCorruptArchiveLeavesMissing(t *testing.T) {
 		CheckFiles: []string{"model.onnx"},
 	}}}
 
-	if err := ensureManifest(m, dir, nil); err == nil {
+	if err := ensureManifest(t.Context(), m, dir, nil); err == nil {
 		t.Fatal("corrupt archive should fail extraction")
 	}
 	if m.Status(dir)[0].Installed {

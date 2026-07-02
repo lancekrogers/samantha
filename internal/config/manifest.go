@@ -10,10 +10,14 @@ import (
 const AssetSchema = "samantha.assets.v1"
 
 // Canonical asset facts shared by the manifest builder and the legacy download
-// adapters so URLs and check files have a single source of truth.
+// adapters so URLs and check files have a single source of truth. Checksums for
+// these two come from the GitHub release asset digests (sha256).
 const (
-	sileroVADURL     = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
-	kokoroArchiveURL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2"
+	sileroVADURL        = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
+	sileroVADSHA256     = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"
+	sileroVADSize       = 643854
+	kokoroArchiveURL    = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2"
+	kokoroArchiveSHA256 = "c133d26353d776da730870dac7da07dbfc9a5e3bc80cc5e8e83ab6e823be7046"
 )
 
 var kokoroCheckFiles = []string{"model.onnx", "voices.bin", "tokens.txt", "espeak-ng-data"}
@@ -146,7 +150,7 @@ func ManifestFor(cfg *Config, req AssetRequest) (AssetManifest, error) {
 			Provider: "sherpa",
 			Kind:     AssetKindVAD,
 			Name:     "silero_vad.onnx",
-			Files:    []AssetFile{{Path: "silero_vad.onnx", URL: sileroVADURL}},
+			Files:    []AssetFile{{Path: "silero_vad.onnx", URL: sileroVADURL, SHA256: sileroVADSHA256, Size: sileroVADSize}},
 		})
 	}
 
@@ -168,7 +172,7 @@ func ManifestFor(cfg *Config, req AssetRequest) (AssetManifest, error) {
 			Provider:   "kokoro",
 			Kind:       AssetKindTTS,
 			Name:       "kokoro-tts",
-			Archive:    &AssetArchive{URL: kokoroArchiveURL},
+			Archive:    &AssetArchive{URL: kokoroArchiveURL, SHA256: kokoroArchiveSHA256},
 			CheckFiles: kokoroCheckFiles,
 		})
 	}
@@ -192,7 +196,7 @@ func sttAsset(cfg *Config, norm NormalizedSTT) (*Asset, error) {
 			Kind:       AssetKindSTT,
 			Name:       s.Name,
 			TargetDir:  s.DirName,
-			Archive:    &AssetArchive{URL: s.URL},
+			Archive:    &AssetArchive{URL: s.URL, SHA256: s.ArchiveSHA256},
 			CheckFiles: s.RequiredFiles(cfg.WhisperQuantized),
 		}, nil
 	case norm.Provider == STTProviderSherpa && norm.Mode == STTModeOffline:
@@ -206,7 +210,7 @@ func sttAsset(cfg *Config, norm NormalizedSTT) (*Asset, error) {
 			Mode:     "offline",
 			Kind:     AssetKindSTT,
 			Name:     "whisper-" + model,
-			Archive:  &AssetArchive{URL: sherpaWhisperOfflineURL(model)},
+			Archive:  &AssetArchive{URL: sherpaWhisperOfflineURL(model), SHA256: sherpaWhisperArchiveSHA256[model]},
 			CheckFiles: []string{
 				model + "-encoder.onnx",
 				model + "-decoder.onnx",
@@ -223,7 +227,7 @@ func sttAsset(cfg *Config, norm NormalizedSTT) (*Asset, error) {
 			Mode:     "cli",
 			Kind:     AssetKindSTT,
 			Name:     a.Name,
-			Files:    []AssetFile{{Path: filepath.Join("whispercpp", a.Filename), URL: a.URL}},
+			Files:    []AssetFile{{Path: filepath.Join("whispercpp", a.Filename), URL: a.URL, SHA256: a.SHA256, Size: a.Size}},
 		}, nil
 	}
 	return nil, nil

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // noLeftoverTemp asserts the target dir contains only the final file (no .part
@@ -35,7 +37,7 @@ func TestDownloadFileNestedPathAtomicAndClean(t *testing.T) {
 
 	base := t.TempDir()
 	path := filepath.Join(base, "whispercpp", "ggml-base.en.bin")
-	if err := downloadFile(path, srv.URL, "ggml-base.en.bin", 0, "", nil); err != nil {
+	if err := downloadFile(t.Context(), path, srv.URL, "ggml-base.en.bin", 0, "", nil); err != nil {
 		t.Fatalf("downloadFile() error = %v", err)
 	}
 	got, err := os.ReadFile(path)
@@ -53,7 +55,7 @@ func TestDownloadFileHTTPErrorLeavesNothing(t *testing.T) {
 
 	base := t.TempDir()
 	path := filepath.Join(base, "model.bin")
-	err := downloadFile(path, srv.URL, "model.bin", 0, "", nil)
+	err := downloadFile(t.Context(), path, srv.URL, "model.bin", 0, "", nil)
 	if err == nil || !strings.Contains(err.Error(), "model.bin") {
 		t.Fatalf("error = %v, want it to name the asset", err)
 	}
@@ -72,7 +74,7 @@ func TestDownloadFileSizeMismatchLeavesNothing(t *testing.T) {
 
 	base := t.TempDir()
 	path := filepath.Join(base, "model.bin")
-	err := downloadFile(path, srv.URL, "model.bin", 999, "", nil)
+	err := downloadFile(t.Context(), path, srv.URL, "model.bin", 999, "", nil)
 	if err == nil || !strings.Contains(err.Error(), "size mismatch") {
 		t.Fatalf("error = %v, want a size mismatch", err)
 	}
@@ -94,12 +96,12 @@ func TestDownloadFileChecksumVerified(t *testing.T) {
 
 	base := t.TempDir()
 	okPath := filepath.Join(base, "ok.bin")
-	if err := downloadFile(okPath, srv.URL, "ok.bin", 0, good, nil); err != nil {
+	if err := downloadFile(t.Context(), okPath, srv.URL, "ok.bin", 0, good, nil); err != nil {
 		t.Fatalf("matching checksum should succeed, got %v", err)
 	}
 
 	badPath := filepath.Join(base, "bad.bin")
-	err := downloadFile(badPath, srv.URL, "bad.bin", 0, "deadbeef", nil)
+	err := downloadFile(t.Context(), badPath, srv.URL, "bad.bin", 0, "deadbeef", nil)
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("error = %v, want a checksum mismatch", err)
 	}
@@ -132,7 +134,7 @@ func TestDownloadFileInterruptedLeavesNothing(t *testing.T) {
 
 	base := t.TempDir()
 	path := filepath.Join(base, "model.bin")
-	err := downloadFile(path, srv.URL, "model.bin", 0, "", nil)
+	err := downloadFile(t.Context(), path, srv.URL, "model.bin", 0, "", nil)
 	if err == nil {
 		t.Fatal("interrupted download should return an error")
 	}
@@ -150,7 +152,7 @@ func TestDownloadFileRetryAfterFailureSucceeds(t *testing.T) {
 	path := filepath.Join(base, "whispercpp", "ggml-base.en.bin")
 
 	bad := httptest.NewServer(http.HandlerFunc(interruptedHandler))
-	if err := downloadFile(path, bad.URL, "ggml-base.en.bin", 0, "", nil); err == nil {
+	if err := downloadFile(t.Context(), path, bad.URL, "ggml-base.en.bin", 0, "", nil); err == nil {
 		t.Fatal("first (interrupted) download should fail")
 	}
 	bad.Close()
@@ -163,7 +165,7 @@ func TestDownloadFileRetryAfterFailureSucceeds(t *testing.T) {
 		_, _ = w.Write([]byte(body))
 	}))
 	defer good.Close()
-	if err := downloadFile(path, good.URL, "ggml-base.en.bin", 0, "", nil); err != nil {
+	if err := downloadFile(t.Context(), path, good.URL, "ggml-base.en.bin", 0, "", nil); err != nil {
 		t.Fatalf("retry after failure should succeed, got %v", err)
 	}
 	got, err := os.ReadFile(path)
@@ -171,4 +173,38 @@ func TestDownloadFileRetryAfterFailureSucceeds(t *testing.T) {
 		t.Fatalf("retry result = %q err=%v, want %q", got, err, body)
 	}
 	noLeftoverTemp(t, filepath.Dir(path))
+}
+
+// TestDownloadFileHonorsContextCancellation guards the download client
+// migration: a bare http.Get could hang forever on a wedged host, so a
+// canceled context must abort the request promptly and leave nothing behind.
+func TestDownloadFileHonorsContextCancellation(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-release // hold the body open: only cancellation can unblock the client
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	dir := t.TempDir()
+	path := filepath.Join(dir, "model.bin")
+	errCh := make(chan error, 1)
+	go func() { errCh <- downloadFile(ctx, path, srv.URL, "model.bin", 0, "", nil) }()
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("downloadFile() error = nil, want cancellation error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("downloadFile did not abort after context cancellation")
+	}
+	if _, statErr := os.Stat(path); statErr == nil {
+		t.Fatal("canceled download must not land at the target path")
+	}
+	noLeftoverTemp(t, dir)
 }

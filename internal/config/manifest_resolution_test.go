@@ -137,3 +137,46 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// TestManifestForShipsChecksumsForBuiltInAssets guards the download hardening:
+// every built-in asset must carry a pinned SHA256, or checksum enforcement
+// silently degrades to HTTP-200 trust for exactly the defaults users install.
+func TestManifestForShipsChecksumsForBuiltInAssets(t *testing.T) {
+	cfg := &Config{STTProvider: "sherpa", TTSProvider: "kokoro", VADEnabled: true}
+	m, err := ManifestFor(cfg, AssetRequest{NeedSTT: true, NeedTTS: true, NeedVAD: true})
+	if err != nil {
+		t.Fatalf("ManifestFor() error = %v", err)
+	}
+	for _, f := range m.ModelFiles() {
+		if f.SHA256 == "" || f.Size == 0 {
+			t.Errorf("file %s missing pinned SHA256/size", f.Name)
+		}
+	}
+	for _, a := range m.ModelArchives("") {
+		if a.SHA256 == "" {
+			t.Errorf("archive %s missing pinned SHA256", a.Name)
+		}
+	}
+
+	for _, model := range sherpaWhisperKnownModels {
+		if sherpaWhisperArchiveSHA256[model] == "" {
+			t.Errorf("known whisper model %s missing pinned SHA256", model)
+		}
+	}
+	for _, name := range []string{"base.en", "small.en"} {
+		a, err := WhisperCPPModelAsset(name)
+		if err != nil {
+			t.Fatalf("WhisperCPPModelAsset(%s) error = %v", name, err)
+		}
+		if a.SHA256 == "" || a.Size == 0 {
+			t.Errorf("whisper.cpp model %s missing pinned SHA256/size", name)
+		}
+	}
+	s, err := SherpaStreamingModel("")
+	if err != nil {
+		t.Fatalf("SherpaStreamingModel() error = %v", err)
+	}
+	if s.ArchiveSHA256 == "" {
+		t.Error("streaming zipformer missing pinned SHA256")
+	}
+}

@@ -87,7 +87,7 @@ func runModelsEnsure(cmd *cobra.Command, cfg *config.Config) error {
 	out := cmd.OutOrStdout()
 
 	started := map[string]bool{}
-	err := config.EnsureModels(cfg, func(name string, pct float64) {
+	err := config.EnsureModels(cmd.Context(), cfg, func(name string, pct float64) {
 		if !started[name] {
 			started[name] = true
 			fmt.Fprintf(out, "  downloading %s ...\n", name)

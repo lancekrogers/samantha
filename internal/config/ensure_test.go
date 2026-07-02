@@ -30,7 +30,7 @@ func TestEnsureManifestDownloadsMissingFile(t *testing.T) {
 
 	dir := t.TempDir()
 	var progressed bool
-	err := ensureManifest(fileAssetManifest(srv.URL), dir, func(name string, pct float64) {
+	err := ensureManifest(t.Context(), fileAssetManifest(srv.URL), dir, func(name string, pct float64) {
 		progressed = true
 	})
 	if err != nil {
@@ -66,7 +66,7 @@ func TestEnsureManifestSkipsPresentFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := ensureManifest(fileAssetManifest(srv.URL), dir, nil); err != nil {
+	if err := ensureManifest(t.Context(), fileAssetManifest(srv.URL), dir, nil); err != nil {
 		t.Fatalf("ensureManifest() error = %v, want nil (present file skipped)", err)
 	}
 }
@@ -91,7 +91,7 @@ func TestEnsureManifestSkipsExtractedArchive(t *testing.T) {
 			CheckFiles: []string{"model.onnx"},
 		}},
 	}
-	if err := ensureManifest(m, dir, nil); err != nil {
+	if err := ensureManifest(t.Context(), m, dir, nil); err != nil {
 		t.Fatalf("ensureManifest() error = %v, want nil (extracted archive skipped)", err)
 	}
 }
@@ -102,7 +102,7 @@ func TestEnsureManifestFileDownloadErrorNamesAsset(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := ensureManifest(fileAssetManifest(srv.URL), t.TempDir(), nil)
+	err := ensureManifest(t.Context(), fileAssetManifest(srv.URL), t.TempDir(), nil)
 	if err == nil || !strings.Contains(err.Error(), "ggml-base.en.bin") {
 		t.Fatalf("error = %v, want it to name the failing asset file", err)
 	}
@@ -124,7 +124,7 @@ func TestEnsureManifestArchiveChecksumMismatchLeavesMissing(t *testing.T) {
 		}},
 	}
 
-	err := ensureManifest(m, dir, nil)
+	err := ensureManifest(t.Context(), m, dir, nil)
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("error = %v, want archive checksum mismatch", err)
 	}

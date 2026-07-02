@@ -382,6 +382,17 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 		watch := p.newInterruptController().watchWithDone(streamCtx, &armAt)
 		bargeIn = watch.requests
 		bargeDone = watch.done
+		// Join the watcher on every exit path — including early returns via
+		// outer cancellation, playback stall, and brain error — so its capture
+		// subscription and VAD Clear never overlap the next turn. Cancel first
+		// so it unblocks; joining twice is fine (done is closed).
+		defer func() {
+			if bargeDone == nil {
+				return
+			}
+			cancel()
+			<-bargeDone
+		}()
 	}
 
 	playbackEvents := make(chan playbackEvent, voiceQueueDepth*2)

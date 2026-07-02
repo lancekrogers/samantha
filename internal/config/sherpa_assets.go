@@ -8,16 +8,17 @@ import (
 
 // SherpaStreamingAsset describes a bundled sherpa-onnx online STT model.
 type SherpaStreamingAsset struct {
-	Name        string
-	ArchiveName string
-	URL         string
-	DirName     string
-	Encoder     string
-	EncoderInt8 string
-	Decoder     string
-	Joiner      string
-	JoinerInt8  string
-	Tokens      string
+	Name          string
+	ArchiveName   string
+	URL           string
+	ArchiveSHA256 string // checksum of the compressed release archive
+	DirName       string
+	Encoder       string
+	EncoderInt8   string
+	Decoder       string
+	Joiner        string
+	JoinerInt8    string
+	Tokens        string
 }
 
 // SherpaStreamingModel returns metadata for a supported sherpa streaming model.
@@ -25,16 +26,17 @@ func SherpaStreamingModel(name string) (SherpaStreamingAsset, error) {
 	switch strings.TrimSpace(strings.ToLower(name)) {
 	case "", "en", "en-us", "en-2023-06-26":
 		return SherpaStreamingAsset{
-			Name:        "sherpa-streaming-en",
-			ArchiveName: "sherpa-onnx-streaming-zipformer-en-2023-06-26",
-			URL:         "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-2023-06-26.tar.bz2",
-			DirName:     "sherpa-onnx-streaming-zipformer-en-2023-06-26",
-			Encoder:     "encoder-epoch-99-avg-1-chunk-16-left-128.onnx",
-			EncoderInt8: "encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
-			Decoder:     "decoder-epoch-99-avg-1-chunk-16-left-128.onnx",
-			Joiner:      "joiner-epoch-99-avg-1-chunk-16-left-128.onnx",
-			JoinerInt8:  "joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
-			Tokens:      "tokens.txt",
+			Name:          "sherpa-streaming-en",
+			ArchiveName:   "sherpa-onnx-streaming-zipformer-en-2023-06-26",
+			URL:           "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-2023-06-26.tar.bz2",
+			ArchiveSHA256: "639e25b578e9e997131402199419c13a941f8e4e198e2da1ce57dbf5cf401282",
+			DirName:       "sherpa-onnx-streaming-zipformer-en-2023-06-26",
+			Encoder:       "encoder-epoch-99-avg-1-chunk-16-left-128.onnx",
+			EncoderInt8:   "encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+			Decoder:       "decoder-epoch-99-avg-1-chunk-16-left-128.onnx",
+			Joiner:        "joiner-epoch-99-avg-1-chunk-16-left-128.onnx",
+			JoinerInt8:    "joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+			Tokens:        "tokens.txt",
 		}, nil
 	default:
 		return SherpaStreamingAsset{}, fmt.Errorf("unsupported sherpa streaming model %q", name)

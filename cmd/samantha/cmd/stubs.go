@@ -37,7 +37,7 @@ var testCmd = &cobra.Command{
 
 		// TTS test
 		fmt.Printf("  %s %s\n", sectionStyle.Render("1."), "Testing speaker (TTS)...")
-		if err := config.EnsureRuntimeAssets(cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
+		if err := config.EnsureRuntimeAssets(cmd.Context(), cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
 			fmt.Printf("  %s %v\n\n", failStyle.Render("FAIL:"), err)
 			return nil
 		}
@@ -92,7 +92,7 @@ var voicesCmd = &cobra.Command{
 
 		fmt.Printf("\n  %s %s\n\n", titleStyle.Render("Voices for:"), sectionStyle.Render(cfg.TTSProvider))
 
-		if err := config.EnsureRuntimeAssets(cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
+		if err := config.EnsureRuntimeAssets(cmd.Context(), cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
 			return err
 		}
 

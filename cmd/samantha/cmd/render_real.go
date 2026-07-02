@@ -36,7 +36,7 @@ func runRenderText(cmd *cobra.Command, opts render.Options) error {
 		return err
 	}
 
-	synth, cleanup, err := newRenderSynth(opts)
+	synth, cleanup, err := newRenderSynth(cmd.Context(), &opts)
 	if err != nil {
 		return err
 	}
@@ -129,19 +129,17 @@ func runRenderEPUB(cmd *cobra.Command, opts render.Options, synth render.Synthes
 }
 
 // newRenderSynth builds the TTS-backed synthesizer for batch rendering, applying
-// --voice/--speed and ensuring only TTS assets.
-func newRenderSynth(opts render.Options) (render.Synthesizer, func(), error) {
+// --voice/--speed and ensuring only TTS assets. It writes the resolved effective
+// voice/speed back into opts so manifests and resume keys record what was
+// actually used, not just the CLI overrides — a config-driven render is then
+// auditable and reproducible from its manifest alone.
+func newRenderSynth(ctx context.Context, opts *render.Options) (render.Synthesizer, func(), error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, nil, err
 	}
-	if opts.Voice != "" {
-		cfg.TTSVoice = opts.Voice
-	}
-	if opts.Speed > 0 {
-		cfg.SpeechSpeed = opts.Speed
-	}
-	if err := config.EnsureRuntimeAssets(cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
+	applyVoiceOverrides(cfg, opts)
+	if err := config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
 		return nil, nil, fmt.Errorf("render: TTS assets: %w", err)
 	}
 	provider, cleanup, err := tts.NewProvider(cfg)
@@ -152,6 +150,20 @@ func newRenderSynth(opts render.Options) (render.Synthesizer, func(), error) {
 		cleanup = func() {}
 	}
 	return &ttsSynth{provider: provider, id: synthIdentityFor(cfg)}, cleanup, nil
+}
+
+// applyVoiceOverrides folds CLI --voice/--speed into cfg and writes the
+// resolved effective values back into opts, so manifests and resume keys record
+// the voice/speed actually used even when they came from config.
+func applyVoiceOverrides(cfg *config.Config, opts *render.Options) {
+	if opts.Voice != "" {
+		cfg.TTSVoice = opts.Voice
+	}
+	if opts.Speed > 0 {
+		cfg.SpeechSpeed = opts.Speed
+	}
+	opts.Voice = cfg.TTSVoice
+	opts.Speed = cfg.SpeechSpeed
 }
 
 // synthIdentityFor describes the TTS engine for resume keys: the provider,

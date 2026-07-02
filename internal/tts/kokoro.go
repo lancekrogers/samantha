@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 
@@ -49,6 +50,7 @@ func init() {
 type KokoroTTS struct {
 	mu    sync.Mutex
 	tts   *sherpa.OfflineTts
+	alive atomic.Bool
 	voice string
 	speed float32
 	sid   int
@@ -93,12 +95,14 @@ func NewKokoroTTS(cfg *config.Config) (*KokoroTTS, error) {
 		sid = voiceToSID["af_heart"] // fallback
 	}
 
-	return &KokoroTTS{
+	k := &KokoroTTS{
 		tts:   tts,
 		voice: cfg.TTSVoice,
 		speed: float32(cfg.SpeechSpeed),
 		sid:   sid,
-	}, nil
+	}
+	k.alive.Store(true)
+	return k, nil
 }
 
 // Synthesize streams synthesized PCM frames for the given text.
@@ -161,9 +165,11 @@ func (k *KokoroTTS) generate(text string) *sherpa.GeneratedAudio {
 	return k.tts.Generate(text, k.sid, k.speed)
 }
 
-// Available returns true if TTS is ready.
+// Available returns true if TTS is ready. It reads an atomic flag rather than
+// k.tts under k.mu: generate holds the mutex across a whole cgo synthesis, and
+// Available is called from the turn loop, which must never block behind one.
 func (k *KokoroTTS) Available() bool {
-	return k.tts != nil
+	return k.alive.Load()
 }
 
 // ListVoices returns available Kokoro voices with optional filtering.
@@ -198,6 +204,7 @@ func (k *KokoroTTS) ListVoices(locale, gender string) []Voice {
 // an uncancellable cgo call, and freeing the handle while one is in flight (a
 // superseded voice preview, shutdown cleanup) is a use-after-free.
 func (k *KokoroTTS) Delete() {
+	k.alive.Store(false)
 	k.mu.Lock()
 	defer k.mu.Unlock()
 

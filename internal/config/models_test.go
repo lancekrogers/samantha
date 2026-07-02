@@ -73,7 +73,7 @@ func TestEnsureRuntimeAssetsWarnsOnKokoroLexiconSanitizeFailure(t *testing.T) {
 		os.Stderr = oldStderr
 	}()
 
-	err = EnsureRuntimeAssets(&Config{TTSProvider: "kokoro"}, AssetRequest{NeedTTS: true}, nil)
+	err = EnsureRuntimeAssets(t.Context(), &Config{TTSProvider: "kokoro"}, AssetRequest{NeedTTS: true}, nil)
 	if closeErr := writePipe.Close(); closeErr != nil {
 		t.Fatalf("Close() error = %v", closeErr)
 	}

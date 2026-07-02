@@ -922,3 +922,32 @@ func TestRunTurnBargeInServicedDuringSynthesis(t *testing.T) {
 		t.Fatal("interrupted turn did not finish")
 	}
 }
+
+// TestRunTurnBrainErrorJoinsInterruptWatcher guards the interrupt-watcher
+// lifecycle: streamResponse must join the watcher on every exit path, not only
+// the clean tail. A brain error is an early return — before the deferred join,
+// the watcher's capture subscription could still be live when RunTurn returned
+// and overlap the next turn.
+func TestRunTurnBrainErrorJoinsInterruptWatcher(t *testing.T) {
+	capture := newFakeCapture()
+	player := newFakePlayer(50 * time.Millisecond)
+	defer player.Close()
+
+	p := &Pipeline{
+		STT:        &fakeSTT{text: "hello"},
+		Brain:      &fakeBrain{streamErr: errors.New("boom")},
+		TTS:        &fakeTTS{},
+		Player:     player,
+		Capture:    capture,
+		VAD:        &fakeVAD{},
+		BargeInVAD: &fakeVAD{},
+		Events:     events.NewBus(),
+	}
+
+	if _, err := p.RunTurn(context.Background()); err == nil {
+		t.Fatal("RunTurn() error = nil, want brain error")
+	}
+	if n := capture.subCount(); n != 0 {
+		t.Fatalf("capture subscriptions after error return = %d, want 0 (watcher joined)", n)
+	}
+}
