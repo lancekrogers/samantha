@@ -118,7 +118,9 @@ func startPipeline(cfg *config.Config, resumeSession *session.Session) error {
 
 	// Auto-save after each turn.
 	p.OnTurn = func() {
-		_ = sess.Save(p.Brain.History())
+		if err := sess.Save(p.Brain.History()); err != nil {
+			bus.Emit(events.Error{Stage: "session", Message: fmt.Sprintf("save session: %v", err)})
+		}
 	}
 
 	display.ShowWelcome()
@@ -128,7 +130,9 @@ func startPipeline(cfg *config.Config, resumeSession *session.Session) error {
 	err = app.Run(ctx, p, os.Stdin, textMode, noVoice)
 
 	// Final save on exit.
-	_ = sess.Save(p.Brain.History())
+	if saveErr := sess.Save(p.Brain.History()); saveErr != nil {
+		fmt.Fprintf(os.Stderr, "  warning: failed to save session %s: %v\n", sess.ID, saveErr)
+	}
 
 	return err
 }
