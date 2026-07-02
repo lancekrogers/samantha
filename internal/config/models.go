@@ -175,7 +175,11 @@ func ensureManifest(ctx context.Context, manifest AssetManifest, dir string, onP
 			targetDir = a.TargetDir
 		}
 
-		if archiveInstalled(targetDir, a.ID, a.URL, a.SHA256, a.CheckFiles) {
+		installed, err := ensureArchiveInstalled(targetDir, a.ID, a.URL, a.SHA256, a.CheckFiles)
+		if err != nil {
+			return err
+		}
+		if installed {
 			continue
 		}
 
@@ -219,6 +223,25 @@ func archiveInstalled(dir, id, url, sha256Hex string, checkFiles []string) bool 
 		return true
 	}
 	return archiveInstallMarkerValid(dir, id, url, sha256Hex, checkFiles)
+}
+
+func ensureArchiveInstalled(dir, id, url, sha256Hex string, checkFiles []string) (bool, error) {
+	if !archiveExtracted(dir, checkFiles) {
+		return false, nil
+	}
+	if sha256Hex == "" {
+		return true, nil
+	}
+	if archiveInstallMarkerValid(dir, id, url, sha256Hex, checkFiles) {
+		return true, nil
+	}
+	if archiveInstallMarkerExists(dir, id) {
+		return false, nil
+	}
+	if err := writeArchiveInstallMarker(dir, id, url, sha256Hex, checkFiles); err != nil {
+		return false, fmt.Errorf("adopt extracted archive %s: %w", id, err)
+	}
+	return true, nil
 }
 
 func sanitizeKokoroLexicons(dir string) error {
@@ -470,6 +493,11 @@ func archiveInstallMarkerPath(dir, id string) string {
 		name = "archive"
 	}
 	return filepath.Join(dir, ".samantha-asset-"+name+".json")
+}
+
+func archiveInstallMarkerExists(dir, id string) bool {
+	_, err := os.Stat(archiveInstallMarkerPath(dir, id))
+	return err == nil
 }
 
 func archiveInstallMarkerValid(dir, id, url, sha256Hex string, checkFiles []string) bool {

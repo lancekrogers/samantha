@@ -135,7 +135,7 @@ func TestEnsureManifestSkipsExtractedArchive(t *testing.T) {
 	}
 }
 
-func TestEnsureManifestDoesNotSkipPinnedArchiveWithoutMarker(t *testing.T) {
+func TestEnsureManifestAdoptsPinnedArchiveWithoutMarker(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
@@ -154,8 +154,38 @@ func TestEnsureManifestDoesNotSkipPinnedArchiveWithoutMarker(t *testing.T) {
 			CheckFiles: []string{"model.onnx"},
 		}},
 	}
+	if err := ensureManifest(t.Context(), m, dir, nil); err != nil {
+		t.Fatalf("ensureManifest() error = %v, want nil (markerless extracted archive adopted)", err)
+	}
+	if !archiveInstallMarkerValid(dir, "tts.kokoro", srv.URL, strings.Repeat("a", 64), []string{"model.onnx"}) {
+		t.Fatal("ensureManifest() did not write a valid install marker for the extracted archive")
+	}
+}
+
+func TestEnsureManifestDoesNotAdoptPinnedArchiveWithInvalidMarker(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "model.onnx"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archiveInstallMarkerPath(dir, "tts.kokoro"), []byte(`{"id":"tts.kokoro","url":"wrong"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := AssetManifest{
+		Schema: AssetSchema,
+		Assets: []Asset{{
+			ID: "tts.kokoro", Provider: "kokoro", Kind: AssetKindTTS, Name: "kokoro-tts",
+			Archive:    &AssetArchive{URL: srv.URL, SHA256: strings.Repeat("a", 64)},
+			CheckFiles: []string{"model.onnx"},
+		}},
+	}
 	if err := ensureManifest(t.Context(), m, dir, nil); err == nil {
-		t.Fatal("ensureManifest() error = nil, want pinned archive without marker to redownload")
+		t.Fatal("ensureManifest() error = nil, want pinned archive with invalid marker to redownload")
 	}
 }
 
