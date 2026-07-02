@@ -101,13 +101,11 @@ func (g *GrokBrain) ThinkFull(ctx context.Context, input string) (string, error)
 		return "", fmt.Errorf("grok error: %w", err)
 	}
 
-	response := strings.TrimSpace(result.Text)
+	// Clean first, then fall back, so the fallback is spoken verbatim.
+	response := cleanForVoice(result.Text)
 	if response == "" {
-		response = "Hmm, I lost my train of thought for a second. What were you saying?"
+		response = fallbackResponse
 	}
-
-	// Clean formatting
-	response = cleanForVoice(response)
 
 	g.history = append(g.history, Turn{Role: "samantha", Content: response})
 	g.trimHistory()

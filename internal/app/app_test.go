@@ -43,6 +43,57 @@ func TestClassifyVoiceFailure(t *testing.T) {
 	}
 }
 
+func TestNormalizeCommand(t *testing.T) {
+	for _, tt := range []struct {
+		in, want string
+	}{
+		{"Goodbye.", "goodbye"},
+		{"GOODBYE!", "goodbye"},
+		{"  exit  ", "exit"},
+		{"talk later...", "talk later"},
+		{"Reset?", "reset"},
+		{"what's up", "what's up"}, // internal punctuation kept
+		{"", ""},
+	} {
+		if got := normalizeCommand(tt.in); got != tt.want {
+			t.Errorf("normalizeCommand(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestVoiceCommandMatching(t *testing.T) {
+	tests := []struct {
+		name  string
+		in    string
+		exit  bool
+		clear bool
+	}{
+		// Sentences that merely mention a phrase must not trigger anything.
+		{"router question does not clear", "Can you help me reset my router password?", false, false},
+		{"mention of goodbye does not exit", "How do you say goodbye in French?", false, false},
+		{"regular speech passes through", "Tell me about summer weather", false, false},
+		{"punctuated goodbye exits", "Goodbye.", true, false},
+		{"shouted goodbye exits", "GOODBYE!", true, false},
+		{"multi-word exit phrase", "Talk later.", true, false},
+		{"exact reset clears", "reset", false, true},
+		{"punctuated reset clears", "Reset.", false, true},
+		{"slash clear clears", "/clear", false, true},
+		{"fresh start clears", "fresh start", false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := normalizeCommand(tt.in)
+			if got := exitPhrases[cmd]; got != tt.exit {
+				t.Errorf("exitPhrases[normalizeCommand(%q)] = %v, want %v", tt.in, got, tt.exit)
+			}
+			if got := isClearCommand(cmd); got != tt.clear {
+				t.Errorf("isClearCommand(normalizeCommand(%q)) = %v, want %v", tt.in, got, tt.clear)
+			}
+		})
+	}
+}
+
 func TestIsResumeVoiceCommand(t *testing.T) {
 	for _, tt := range []struct {
 		cmd  string

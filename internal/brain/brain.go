@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	"github.com/lancekrogers/claude-code-go/pkg/claude"
@@ -139,13 +140,11 @@ func (b *Brain) ThinkFull(ctx context.Context, input string) (string, error) {
 		return "", fmt.Errorf("claude error: %w", err)
 	}
 
-	response := strings.TrimSpace(result.Result)
+	// Clean first, then fall back, so the fallback is spoken verbatim.
+	response := cleanForVoice(result.Result)
 	if response == "" {
-		response = "Hmm, I lost my train of thought for a second. What were you saying?"
+		response = fallbackResponse
 	}
-
-	// Clean formatting
-	response = cleanForVoice(response)
 
 	b.history = append(b.history, Turn{Role: "samantha", Content: response})
 	b.trimHistory()
@@ -203,15 +202,18 @@ func (b *Brain) LoadHistory(turns []Turn) {
 	b.history = turns
 }
 
+// fallbackResponse is spoken verbatim when a provider returns nothing; it must
+// be substituted after cleanForVoice, which would strip its "Hmm, " prefix.
+const fallbackResponse = "Hmm, I lost my train of thought for a second. What were you saying?"
+
+var (
+	markdownReplacer = strings.NewReplacer("**", "", "```", "", "##", "", "# ", "")
+	// Vocal fillers that TTS spells out instead of vocalizing. Whole words only,
+	// plus a trailing comma so "Hmm, hello" cleans to "hello".
+	fillerRE = regexp.MustCompile(`(?i)\b(?:hmm+|umm+|uhh+|ahh+|mmm+|haha|heh)\b,?\s*`)
+)
+
 func cleanForVoice(s string) string {
-	r := strings.NewReplacer(
-		// Strip markdown formatting.
-		"**", "", "```", "", "##", "", "# ", "",
-		// Replace vocal sounds that TTS spells out instead of vocalizing.
-		"Mmm", "", "mmm", "", "Hmm", "", "hmm", "",
-		"Haha", "", "haha", "", "Heh", "", "heh", "",
-		"Uhh", "", "uhh", "", "Umm", "", "umm", "",
-		"Ahh", "", "ahh", "",
-	)
-	return strings.TrimSpace(textclean.StripUnsupportedKokoroMarks(r.Replace(s)))
+	s = fillerRE.ReplaceAllString(markdownReplacer.Replace(s), "")
+	return strings.TrimSpace(textclean.StripUnsupportedKokoroMarks(s))
 }
