@@ -4,7 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/spf13/viper"
 )
@@ -63,6 +67,9 @@ var (
 	configDir  = filepath.Join(homeDir(), ".obey", "agents", "voice", "samantha")
 	configFile = filepath.Join(configDir, "config.yaml")
 	v          *viper.Viper
+	// mu guards v: the TUI reads config from tea.Cmd goroutines while the
+	// Update goroutine writes via SetAndSave.
+	mu sync.RWMutex
 )
 
 func init() {
@@ -112,15 +119,15 @@ func setDefaults(v *viper.Viper) {
 
 // Load reads configuration from disk and environment.
 func Load() (*Config, error) {
+	mu.Lock()
+	defer mu.Unlock()
+
 	v.SetConfigFile(configFile)
 	v.SetConfigType("yaml")
 
-	// Environment variable overrides
-	v.SetEnvPrefix("")
-	v.AutomaticEnv()
-	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
-
-	// Explicit env bindings
+	// Explicit env bindings only — no AutomaticEnv, which would bind every
+	// key to its bare upper-cased name and let unrelated vars like the
+	// standard LANGUAGE leak into (and get persisted over) config values.
 	bindings := map[string]string{
 		"tts_provider":            "TTS_PROVIDER",
 		"tts_voice":               "TTS_VOICE",
@@ -163,16 +170,27 @@ func Load() (*Config, error) {
 
 // Get returns a config value by key.
 func Get(key string) any {
+	mu.RLock()
+	defer mu.RUnlock()
 	return v.Get(key)
 }
 
 // Set updates a config value.
 func Set(key string, value any) {
+	mu.Lock()
+	defer mu.Unlock()
 	v.Set(key, value)
 }
 
 // Save persists current config to disk.
 func Save() error {
+	mu.Lock()
+	defer mu.Unlock()
+	return save()
+}
+
+// save writes the config file. Callers must hold mu.
+func save() error {
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return fmt.Errorf("creating config dir: %w", err)
 	}
@@ -181,17 +199,66 @@ func Save() error {
 
 // SetAndSave updates a value and persists to disk.
 func SetAndSave(key string, value any) error {
-	Set(key, value)
-	return Save()
+	mu.Lock()
+	defer mu.Unlock()
+	v.Set(key, value)
+	return save()
+}
+
+// ValidateAndSet coerces raw to the type of key's current effective value and
+// persists it, rejecting unknown keys so a typo can't corrupt the config file.
+func ValidateAndSet(key, raw string) error {
+	key = strings.ToLower(key)
+	keys := AllKeys()
+	if !slices.Contains(keys, key) {
+		sort.Strings(keys)
+		return fmt.Errorf("unknown config key %q (valid keys: %s)", key, strings.Join(keys, ", "))
+	}
+	value, err := coerceValue(Get(key), raw)
+	if err != nil {
+		return fmt.Errorf("invalid value for %s: %w", key, err)
+	}
+	return SetAndSave(key, value)
+}
+
+// coerceValue converts raw to the type of current so persisted values keep
+// unmarshalling into Config.
+func coerceValue(current any, raw string) (any, error) {
+	switch current.(type) {
+	case bool:
+		b, err := strconv.ParseBool(raw)
+		if err != nil {
+			return nil, fmt.Errorf("expected true or false, got %q", raw)
+		}
+		return b, nil
+	case int, int64:
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("expected an integer, got %q", raw)
+		}
+		return n, nil
+	case float64:
+		f, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return nil, fmt.Errorf("expected a number, got %q", raw)
+		}
+		return f, nil
+	default:
+		return raw, nil
+	}
 }
 
 // AllSettings returns all config as a map.
 func AllSettings() map[string]any {
+	mu.RLock()
+	defer mu.RUnlock()
 	return v.AllSettings()
 }
 
 // AllKeys returns all config keys.
 func AllKeys() []string {
+	mu.RLock()
+	defer mu.RUnlock()
 	return v.AllKeys()
 }
 
@@ -202,7 +269,20 @@ func ConfigFile() string {
 
 // ModelsDir returns the model cache directory.
 func ModelsDir() string {
+	mu.RLock()
+	defer mu.RUnlock()
 	return v.GetString("models_dir")
+}
+
+// LanguageCode returns the lowercase language code of a locale tag
+// ("en-US" -> "en"), falling back to "en" when empty.
+func LanguageCode(lang string) string {
+	lang = strings.TrimSpace(lang)
+	if lang == "" {
+		return "en"
+	}
+	parts := strings.Split(lang, "-")
+	return strings.ToLower(parts[0])
 }
 
 // SessionsDir returns the sessions directory.

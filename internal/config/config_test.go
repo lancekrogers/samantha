@@ -1,12 +1,26 @@
 package config
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
+
+	"github.com/spf13/viper"
 )
+
+// resetViper swaps in a fresh viper so earlier tests' Set overrides don't leak.
+func resetViper(t *testing.T) {
+	t.Helper()
+	orig := v
+	v = viper.New()
+	setDefaults(v)
+	t.Cleanup(func() { v = orig })
+}
 
 func TestLoadDefaults(t *testing.T) {
 	// Point to a non-existent config file so defaults are used
@@ -272,4 +286,143 @@ func TestSaveAndReload(t *testing.T) {
 	if cfg.TTSVoice != "af_bella" {
 		t.Errorf("TTSVoice = %q, want af_bella (saved)", cfg.TTSVoice)
 	}
+}
+
+func TestValidateAndSet(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		raw  string
+		want string
+	}{
+		{"string", "tts_voice", "af_nova", "af_nova"},
+		{"bool", "vad_enabled", "false", "false"},
+		{"int", "max_history", "25", "25"},
+		{"float", "vad_threshold", "0.45", "0.45"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			origDir, origFile := configDir, configFile
+			configDir, configFile = dir, filepath.Join(dir, "config.yaml")
+			defer func() { configDir, configFile = origDir, origFile }()
+			resetViper(t)
+
+			if err := ValidateAndSet(tt.key, tt.raw); err != nil {
+				t.Fatalf("ValidateAndSet() error: %v", err)
+			}
+
+			// Reload from disk with a fresh viper: the value must persist and
+			// the config must still unmarshal.
+			resetViper(t)
+			if _, err := Load(); err != nil {
+				t.Fatalf("Load() after ValidateAndSet error: %v", err)
+			}
+			if got := fmt.Sprint(Get(tt.key)); got != tt.want {
+				t.Errorf("Get(%s) = %q, want %q", tt.key, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateAndSetRejects(t *testing.T) {
+	tests := []struct {
+		name    string
+		key     string
+		raw     string
+		wantErr string
+	}{
+		{"unknown key", "vad_treshold", "0.5", "unknown config key"},
+		{"bad bool", "vad_enabled", "high", "expected true or false"},
+		{"bad int", "max_history", "many", "expected an integer"},
+		{"bad float", "vad_threshold", "high", "expected a number"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			origDir, origFile := configDir, configFile
+			configDir, configFile = dir, filepath.Join(dir, "config.yaml")
+			defer func() { configDir, configFile = origDir, origFile }()
+			resetViper(t)
+
+			err := ValidateAndSet(tt.key, tt.raw)
+			if err == nil {
+				t.Fatalf("ValidateAndSet(%s, %s) = nil, want error", tt.key, tt.raw)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %q, want it to contain %q", err, tt.wantErr)
+			}
+			if _, statErr := os.Stat(configFile); !os.IsNotExist(statErr) {
+				t.Error("config file written despite invalid input")
+			}
+		})
+	}
+}
+
+func TestLanguageCode(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"en-US", "en"},
+		{"en", "en"},
+		{"", "en"},
+		{"C", "c"},
+		{"pt-BR", "pt"},
+		{" en-GB ", "en"},
+	}
+	for _, tt := range tests {
+		if got := LanguageCode(tt.in); got != tt.want {
+			t.Errorf("LanguageCode(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestLanguageEnvDoesNotLeak(t *testing.T) {
+	orig := configFile
+	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")
+	defer func() { configFile = orig }()
+	resetViper(t)
+
+	t.Setenv("LANGUAGE", "en_US:en") // standard locale var, not a samantha setting
+	t.Setenv("TTS_VOICE", "af_nova") // documented binding must still apply
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.Language != "en-US" {
+		t.Errorf("Language = %q, want en-US default (LANGUAGE env must not bind)", cfg.Language)
+	}
+	if cfg.TTSVoice != "af_nova" {
+		t.Errorf("TTSVoice = %q, want af_nova from TTS_VOICE env", cfg.TTSVoice)
+	}
+}
+
+func TestConcurrentAccess(t *testing.T) {
+	dir := t.TempDir()
+	origDir, origFile := configDir, configFile
+	configDir, configFile = dir, filepath.Join(dir, "config.yaml")
+	defer func() { configDir, configFile = origDir, origFile }()
+	resetViper(t)
+
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func(writer bool) {
+			defer wg.Done()
+			for range 25 {
+				if writer {
+					_ = SetAndSave("tts_voice", "af_bella")
+				} else {
+					_ = Get("tts_voice")
+					_ = ModelsDir()
+					_ = AllSettings()
+					_ = AllKeys()
+				}
+			}
+		}(i%2 == 0)
+	}
+	wg.Wait()
 }

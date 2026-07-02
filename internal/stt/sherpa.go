@@ -54,7 +54,7 @@ func NewSherpaOfflineSTT(cfg *config.Config, capture audioSource, vad *audio.VAD
 	whisperConfig := sherpa.OfflineWhisperModelConfig{
 		Encoder:  filepath.Join(modelsDir, fmt.Sprintf("%s-encoder%s", model, suffix)),
 		Decoder:  filepath.Join(modelsDir, fmt.Sprintf("%s-decoder%s", model, suffix)),
-		Language: cfg.Language[:2], // "en-US" -> "en"
+		Language: config.LanguageCode(cfg.Language), // "en-US" -> "en"
 	}
 
 	threads := min(runtime.NumCPU(), 4)

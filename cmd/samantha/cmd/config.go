@@ -35,7 +35,7 @@ var configCmd = &cobra.Command{
 			fmt.Printf("  %s %s %s\n", keyStyle.Render(args[0]), dimStyle.Render("="), valueStyle.Render(display))
 		case 2:
 			// Set value
-			if err := config.SetAndSave(args[0], args[1]); err != nil {
+			if err := config.ValidateAndSet(args[0], args[1]); err != nil {
 				return err
 			}
 			fmt.Printf("  %s %s %s %s\n", dimStyle.Render("Set"), keyStyle.Render(args[0]), dimStyle.Render("="), valueStyle.Render(maskSecret(args[0], args[1])))

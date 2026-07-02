@@ -60,7 +60,7 @@ type KokoroTTS struct {
 func NewKokoroTTS(cfg *config.Config) (*KokoroTTS, error) {
 	modelsDir := config.ModelsDir()
 
-	lang := cfg.Language[:2] // "en-US" -> "en"
+	lang := config.LanguageCode(cfg.Language) // "en-US" -> "en"
 	lexicon := filepath.Join(modelsDir, "lexicon-us-en.txt")
 	if lang != "en" {
 		lexicon = filepath.Join(modelsDir, fmt.Sprintf("lexicon-%s.txt", lang))

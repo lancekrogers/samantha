@@ -209,12 +209,14 @@ type voicePreviewDoneMsg struct {
 }
 
 func (m settingsModel) previewVoice(ctx context.Context, voice tts.Voice) tea.Cmd {
+	// Snapshot the config before the closure runs: the returned Cmd executes on
+	// its own goroutine while selectCurrent keeps mutating m.cfg on Update's.
+	cfg := *m.cfg
+	cfg.TTSVoice = voice.Name
 	return func() tea.Msg {
 		// A superseded preview (ctx cancelled) reports quietly so it doesn't
 		// clobber the newer preview's message or "playing" indicator.
 		quiet := voicePreviewDoneMsg{voice: voice.Name}
-		cfg := *m.cfg
-		cfg.TTSVoice = voice.Name
 
 		if err := config.EnsureRuntimeAssets(ctx, &cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
 			return voicePreviewDoneMsg{voice: voice.Name, message: fmt.Sprintf("Asset error: %v", err)}
