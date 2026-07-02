@@ -214,12 +214,11 @@ func (o *OllamaBrain) ThinkFull(ctx context.Context, input string) (string, erro
 			continue
 		}
 
-		// Text response.
-		text := strings.TrimSpace(response.Content)
+		// Text response. Clean first, then fall back, so the fallback is spoken verbatim.
+		text := cleanForVoice(response.Content)
 		if text == "" {
-			text = "Hmm, I lost my train of thought for a second. What were you saying?"
+			text = fallbackResponse
 		}
-		text = cleanForVoice(text)
 		o.history = append(o.history, api.Message{Role: "assistant", Content: text})
 		o.trimHistory()
 		return text, nil
