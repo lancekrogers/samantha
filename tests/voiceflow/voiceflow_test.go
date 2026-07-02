@@ -20,7 +20,10 @@ import (
 	"github.com/lancekrogers/samantha/internal/tts"
 )
 
-const testBargeInArmDelay = 180 * time.Millisecond
+// testBargeInArmDelay mirrors the pipeline's unexported bargeInArmDelay: barge-in
+// is held off this long after playback starts so the echo of Samantha's own
+// first words can't trip it. Keep this in sync with pipeline.bargeInArmDelay.
+const testBargeInArmDelay = 600 * time.Millisecond
 
 func TestFixtureStreamingSTTFlow(t *testing.T) {
 	t.Parallel()
@@ -90,7 +93,9 @@ func TestFixtureBargeInInterruptsPlayback(t *testing.T) {
 	t.Parallel()
 
 	bus := events.NewBus()
-	player := newFixturePlayer(500 * time.Millisecond)
+	// Playback must outlast the arm window (testBargeInArmDelay) so barge-in can
+	// arm while a realistically long response is still playing.
+	player := newFixturePlayer(2 * time.Second)
 	defer player.Close()
 
 	capture := newFixtureCapture()

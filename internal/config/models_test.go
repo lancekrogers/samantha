@@ -58,6 +58,13 @@ func TestEnsureRuntimeAssetsWarnsOnKokoroLexiconSanitizeFailure(t *testing.T) {
 			t.Fatalf("WriteFile() error = %v", err)
 		}
 	}
+	m, err := ManifestFor(&Config{TTSProvider: "kokoro"}, AssetRequest{NeedTTS: true})
+	if err != nil {
+		t.Fatalf("ManifestFor() error = %v", err)
+	}
+	if err := writeArchiveInstallMarker(dir, m.Assets[0].ID, m.Assets[0].Archive.URL, m.Assets[0].Archive.SHA256, m.Assets[0].CheckFiles); err != nil {
+		t.Fatalf("writeArchiveInstallMarker() error = %v", err)
+	}
 
 	if err := os.Mkdir(filepath.Join(dir, "lexicon-us-en.txt"), 0o755); err != nil {
 		t.Fatalf("Mkdir() error = %v", err)
@@ -73,7 +80,7 @@ func TestEnsureRuntimeAssetsWarnsOnKokoroLexiconSanitizeFailure(t *testing.T) {
 		os.Stderr = oldStderr
 	}()
 
-	err = EnsureRuntimeAssets(&Config{TTSProvider: "kokoro"}, AssetRequest{NeedTTS: true}, nil)
+	err = EnsureRuntimeAssets(t.Context(), &Config{TTSProvider: "kokoro"}, AssetRequest{NeedTTS: true}, nil)
 	if closeErr := writePipe.Close(); closeErr != nil {
 		t.Fatalf("Close() error = %v", closeErr)
 	}

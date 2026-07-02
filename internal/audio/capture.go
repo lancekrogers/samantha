@@ -28,6 +28,7 @@ type Capture struct {
 	running  bool
 	subs     map[int]chan []float32
 	nextSub  int
+	frameSeq int64
 }
 
 // NewCapture creates a new mic capture instance.
@@ -116,6 +117,35 @@ func (c *Capture) Read() []float32 {
 	return c.buf.Read(ChunkSize)
 }
 
+// ReadFrame implements FrameSource for live capture: it returns the next chunk
+// as a SourceLive frame, ErrNoFrameReady when no audio is buffered yet, and
+// never sets Final. A live source ends only when ctx is canceled or Close is
+// called, never on ordinary silence.
+func (c *Capture) ReadFrame(ctx context.Context) (Frame, error) {
+	if err := ctx.Err(); err != nil {
+		return Frame{}, err
+	}
+	samples := c.buf.Read(ChunkSize)
+	if samples == nil {
+		return Frame{}, ErrNoFrameReady
+	}
+	c.frameSeq++
+	return Frame{
+		Samples:    samples,
+		SampleRate: SampleRate,
+		Channels:   Channels,
+		Duration:   SamplesDuration(len(samples)),
+		Sequence:   c.frameSeq,
+		SourceKind: SourceLive,
+	}, nil
+}
+
+// Close implements FrameSource by stopping capture and releasing the device.
+func (c *Capture) Close() error {
+	c.Stop()
+	return nil
+}
+
 // Reset drains the ring buffer to discard stale audio between turns.
 func (c *Capture) Reset() {
 	for c.buf.Read(ChunkSize) != nil {
@@ -147,14 +177,15 @@ func (c *Capture) Subscribe(buffer int) (int, <-chan []float32) {
 
 // Unsubscribe removes a capture listener.
 func (c *Capture) Unsubscribe(id int) {
+	// Close while holding the write lock: publish sends under the read lock, so
+	// the close cannot interleave with a send. Closing outside the lock let the
+	// malgo callback thread send on a just-closed channel and panic (a send on a
+	// closed channel counts as ready in a select — default does not protect).
 	c.subsMu.Lock()
-	ch, ok := c.subs[id]
-	if ok {
-		delete(c.subs, id)
-	}
-	c.subsMu.Unlock()
+	defer c.subsMu.Unlock()
 
-	if ok {
+	if ch, ok := c.subs[id]; ok {
+		delete(c.subs, id)
 		close(ch)
 	}
 }
@@ -167,19 +198,13 @@ func (c *Capture) IsRunning() bool {
 }
 
 func (c *Capture) publish(samples []float32) {
+	// Hold the read lock across the sends. They are non-blocking (buffered +
+	// default), so the callback thread never stalls, and Unsubscribe's
+	// delete+close (under the write lock) cannot race a send.
 	c.subsMu.RLock()
-	if len(c.subs) == 0 {
-		c.subsMu.RUnlock()
-		return
-	}
+	defer c.subsMu.RUnlock()
 
-	subs := make([]chan []float32, 0, len(c.subs))
 	for _, ch := range c.subs {
-		subs = append(subs, ch)
-	}
-	c.subsMu.RUnlock()
-
-	for _, ch := range subs {
 		select {
 		case ch <- samples:
 		default:

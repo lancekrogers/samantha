@@ -1,0 +1,19 @@
+Why Local Voice AI Matters
+
+Running speech models on your own machine keeps your data private and removes the network round trip.
+
+Latency
+
+Local inference avoids cloud latency. The result feels immediate.
+
+No network hop
+
+Predictable performance
+
+Cost
+
+After the one-time download, there is no per-request fee.
+
+Own your tools and your data.
+
+A diagram of the local pipeline

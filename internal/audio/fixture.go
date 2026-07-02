@@ -1,6 +1,7 @@
 package audio
 
 import (
+	"context"
 	"time"
 )
 
@@ -11,6 +12,9 @@ type FixtureSource struct {
 	realtime      bool
 	index         int
 	nextAt        time.Time
+	seq           int64
+	finalSent     bool
+	closed        bool
 }
 
 // NewFixtureSourceFromWAV loads a WAV fixture and returns a chunked source.
@@ -28,14 +32,21 @@ func NewFixtureSourceFromWAV(path string, chunkSize int, realtime bool) (*Fixtur
 
 	return &FixtureSource{
 		chunks:        ChunkSamples(samples, chunkSize),
-		chunkDuration: time.Duration(float64(chunkSize) / float64(SampleRate) * float64(time.Second)),
+		chunkDuration: SamplesDuration(chunkSize),
 		realtime:      realtime,
 		nextAt:        time.Now(),
 	}, nil
 }
 
-// Read returns the next fixture chunk.
+// Read returns the next fixture chunk, or nil once exhausted.
 func (f *FixtureSource) Read() []float32 {
+	return f.nextChunk()
+}
+
+// nextChunk advances one chunk, honoring real-time pacing when enabled. It
+// returns nil at end of input. Pacing only delays delivery; which chunks and
+// when EOF occurs do not depend on the wall clock.
+func (f *FixtureSource) nextChunk() []float32 {
 	if f.index >= len(f.chunks) {
 		return nil
 	}
@@ -54,6 +65,44 @@ func (f *FixtureSource) Read() []float32 {
 	return chunk
 }
 
+// ReadFrame implements FrameSource for finite fixtures: each chunk is a
+// SourceFixture frame, end of input is reported with one explicit Final frame,
+// and any further read returns ErrSourceClosed. EOF is signalled explicitly, not
+// inferred from silence, and frame content does not depend on the wall clock.
+func (f *FixtureSource) ReadFrame(ctx context.Context) (Frame, error) {
+	if err := ctx.Err(); err != nil {
+		return Frame{}, err
+	}
+	if f.closed {
+		return Frame{}, ErrSourceClosed
+	}
+
+	chunk := f.nextChunk()
+	if chunk == nil {
+		if f.finalSent {
+			return Frame{}, ErrSourceClosed
+		}
+		f.finalSent = true
+		return Frame{SourceKind: SourceFixture, Final: true}, nil
+	}
+
+	f.seq++
+	return Frame{
+		Samples:    chunk,
+		SampleRate: SampleRate,
+		Channels:   Channels,
+		Duration:   SamplesDuration(len(chunk)),
+		Sequence:   f.seq,
+		SourceKind: SourceFixture,
+	}, nil
+}
+
+// Close implements FrameSource. Subsequent ReadFrame calls return ErrSourceClosed.
+func (f *FixtureSource) Close() error {
+	f.closed = true
+	return nil
+}
+
 // Exhausted reports whether every fixture chunk has been read.
 func (f *FixtureSource) Exhausted() bool {
 	return f.index >= len(f.chunks)
@@ -63,6 +112,9 @@ func (f *FixtureSource) Exhausted() bool {
 func (f *FixtureSource) Reset() {
 	f.index = 0
 	f.nextAt = time.Now()
+	f.seq = 0
+	f.finalSent = false
+	f.closed = false
 }
 
 // ChunkSamples splits PCM into chunk-sized slices.

@@ -13,6 +13,7 @@ It captures speech, transcribes it locally, streams the prompt through an AI cod
 - Voice activity detection with Silero.
 - Streaming playback, barge-in handling, and session resume.
 - Local benchmark command for prompt and STT fixture measurements.
+- Batch narration: render text, Markdown, HTML, URL articles, and EPUB to WAV (and optional MP3/M4B/...) with a resumable manifest — scriptable, no microphone.
 
 ## Architecture
 
@@ -92,6 +93,35 @@ samantha test                           # Test microphone and speaker
 samantha benchmark --prompt "hello"     # Run a local benchmark
 samantha resume <session-id>            # Resume a saved session
 samantha continue                       # Continue the most recent session
+samantha doctor                         # Diagnose config, assets, and binaries (read-only)
+samantha models status                  # Which model assets are installed vs missing
+samantha render notes.txt --out a.wav   # Batch-render a document to audio
+```
+
+### Batch narration (audiobooks)
+
+`samantha render` turns documents into audio files and a manifest without the
+live voice pipeline (no microphone). It reads text, Markdown, HTML, URL articles,
+or EPUB, segments the text, synthesizes with the configured TTS, and always
+writes WAV (the source of truth).
+
+```bash
+# Single file (format auto-detected from the extension; --stdin reads text):
+samantha render article.md --out out/article.wav
+cat notes.txt | samantha render --stdin --out out/notes.wav
+samantha render https://example.com/post --out out/post.wav   # URL article
+
+# EPUB -> one WAV per chapter (spine order) + a manifest:
+samantha render book.epub --out-dir out/book
+
+# Optional compressed output via an external encoder (default ffmpeg); WAV is
+# still written. A missing encoder fails before any synthesis:
+samantha render book.epub --out-dir out/book --audio-format mp3
+
+# Resume a long render: unchanged chapters are skipped, changed/failed ones
+# rebuild. --json prints completed/skipped/failed counts and exits non-zero if
+# any chapter failed, so scripts can branch:
+samantha render book.epub --out-dir out/book --resume --json | jq '.failed'
 ```
 
 ## Configuration
@@ -150,6 +180,82 @@ go test ./...                  # Plain Go test fallback
 ```
 
 Integration tests expect `bin/linux/samantha` to exist. The build dashboard creates it for the integration workflow.
+
+#### Voice smoke tests (opt-in, require local models)
+
+The STT provider loops (`internal/stt`) are covered by deterministic unit tests
+that use fakes, so they run without model files. Real end-to-end voice behavior
+depends on local STT/VAD/TTS models and is therefore opt-in. When the models are
+installed (`samantha models ensure`, once available), run the smoke plan:
+
+| Scenario | Expectation |
+|----------|-------------|
+| Short utterance (`hello samantha`) | final transcript within ~2s; finalizes on the source's EOF/silence, not a phrase timeout |
+| Long utterance | partial/final transcript; caps at the max-utterance length |
+| Silence only | times out with no final transcript |
+| Finite fixture EOF | terminates promptly on the explicit final frame, no hang |
+
+```bash
+# Deterministic, no models needed:
+go test ./internal/stt ./internal/endpoint ./internal/audio
+
+# Real-provider smoke (needs models + whisper.cpp binary for that provider):
+go test -tags integration ./tests/voiceflow      # fixture-driven pipeline flow
+samantha listen                                  # manual: speak a short command
+```
+
+#### Latency benchmarks (protect the sub-2s goal)
+
+The `samantha benchmark` command measures the perceived-latency milestones that
+protect the <2s end-to-end goal and emits them as both a summary and (with
+`--json`) a stable `TurnMetrics` record per turn: STT final, first model chunk,
+first segment, first audio ready, playback start, playback complete, and — on a
+barged-in turn — interruption latency. Threshold flags fail the run when a
+milestone regresses, so the benchmark can gate CI or a local check:
+
+```bash
+# Prompt latency with budgets (any breach exits non-zero):
+samantha benchmark --prompt "hello" \
+  --max-total 2s --max-first-model-chunk 500ms --max-playback-start 800ms
+
+# STT fixture latency + transcript accuracy:
+samantha benchmark --mode stt --max-stt-final 2s --min-transcript-score 0.8
+
+# Machine-readable output for tracking regressions over time:
+samantha benchmark --prompt "hello" --json bench.json
+```
+
+Interruption latency is reported only when a turn is interrupted; all milestones
+are always present in the `--json` output.
+
+### Model Assets And Readiness
+
+Local model assets are described by an asset manifest and managed by three
+commands:
+
+```bash
+samantha models status        # read-only: which assets are installed vs missing
+samantha models status --json # machine-readable for scripts
+samantha models ensure        # download any missing assets (atomic + verified)
+samantha doctor               # diagnose config, assets, and external binaries
+```
+
+`models status` and `doctor` are read-only and safe offline; `doctor` exits
+non-zero only on errors (a missing asset is a warning that points you to
+`models ensure`). Downloads are reliable by construction: each file is written to
+a temp file, size/checksum-verified when known, and atomically renamed; archives
+are extracted into a temp directory, verified, then promoted — so an interrupted
+or corrupt download never lands a partial asset, and **re-running
+`models ensure` cleanly recovers**.
+
+Automated tests cover download/extraction reliability with fake HTTP servers (no
+network). To verify the **real** assets manually:
+
+```bash
+samantha models status        # confirm what's missing
+samantha models ensure        # download from the real release URLs
+samantha doctor               # confirm everything reports OK
+```
 
 ### Voice Utilities
 
