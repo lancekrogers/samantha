@@ -173,20 +173,29 @@ func (m *settingsModel) selectCurrent() {
 	case sectionProvider:
 		if m.cursor < len(m.providers) && m.providers[m.cursor].Available {
 			m.cfg.BrainProvider = m.providers[m.cursor].Name
-			_ = config.SetAndSave("brain_provider", m.cfg.BrainProvider)
+			err := config.SetAndSave("brain_provider", m.cfg.BrainProvider)
 			m.buildModelItems()
+			if err != nil {
+				m.message = fmt.Sprintf("Failed to save provider: %v", err)
+				return
+			}
 			m.message = fmt.Sprintf("Provider set to %s", m.cfg.BrainProvider)
 		}
 	case sectionModel:
 		if m.cursor < len(m.modelItems) {
 			model := m.modelItems[m.cursor]
+			var err error
 			switch m.cfg.BrainProvider {
 			case "ollama":
 				m.cfg.OllamaModel = model
-				_ = config.SetAndSave("ollama_model", model)
+				err = config.SetAndSave("ollama_model", model)
 			case "grok":
 				m.cfg.GrokModel = model
-				_ = config.SetAndSave("grok_model", model)
+				err = config.SetAndSave("grok_model", model)
+			}
+			if err != nil {
+				m.message = fmt.Sprintf("Failed to save model: %v", err)
+				return
 			}
 			m.message = fmt.Sprintf("Model set to %s", model)
 		}
@@ -194,7 +203,10 @@ func (m *settingsModel) selectCurrent() {
 		if m.cursor < len(m.voiceItems) {
 			voice := m.voiceItems[m.cursor]
 			m.cfg.TTSVoice = voice.Name
-			_ = config.SetAndSave("tts_voice", voice.Name)
+			if err := config.SetAndSave("tts_voice", voice.Name); err != nil {
+				m.message = fmt.Sprintf("Failed to save voice: %v", err)
+				return
+			}
 			m.message = fmt.Sprintf("Voice set to %s", voice.Name)
 		}
 	}

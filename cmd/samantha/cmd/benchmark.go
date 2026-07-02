@@ -95,11 +95,7 @@ var benchmarkCmd = &cobra.Command{
 			fmt.Printf("\n  %s %s\n\n", okStyle.Render("Wrote benchmark JSON to"), benchmarkJSONOutput)
 		}
 
-		failures := countViolations(results)
-		if failures > 0 {
-			return fmt.Errorf("benchmark failed: %d threshold violation(s)", failures)
-		}
-		return nil
+		return benchmarkExitErr(results)
 	},
 }
 
@@ -381,6 +377,33 @@ func countViolations(results []benchmarkResult) int {
 		total += len(result.Violations)
 	}
 	return total
+}
+
+func countErrorResults(results []benchmarkResult) int {
+	total := 0
+	for _, result := range results {
+		if len(result.Errors) > 0 {
+			total++
+		}
+	}
+	return total
+}
+
+// benchmarkExitErr decides the command's exit status from the collected
+// results: hard errors and threshold violations both fail the run.
+func benchmarkExitErr(results []benchmarkResult) error {
+	errored := countErrorResults(results)
+	violations := countViolations(results)
+	switch {
+	case errored > 0 && violations > 0:
+		return fmt.Errorf("benchmark failed: %d run(s) with errors, %d threshold violation(s)", errored, violations)
+	case errored > 0:
+		return fmt.Errorf("benchmark failed: %d run(s) with errors", errored)
+	case violations > 0:
+		return fmt.Errorf("benchmark failed: %d threshold violation(s)", violations)
+	default:
+		return nil
+	}
 }
 
 func printBenchmarkSummary(results []benchmarkResult) {

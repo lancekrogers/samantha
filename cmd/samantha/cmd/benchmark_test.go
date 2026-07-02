@@ -3,11 +3,68 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/lancekrogers/samantha/internal/events"
 )
+
+func TestBenchmarkExitErr(t *testing.T) {
+	tests := []struct {
+		name        string
+		results     []benchmarkResult
+		wantErr     bool
+		wantContain []string
+	}{
+		{
+			name: "hard errors fail",
+			results: []benchmarkResult{
+				{Errors: []benchmarkErrorLog{{Stage: "benchmark", Message: "fixture not found"}}},
+			},
+			wantErr:     true,
+			wantContain: []string{"1 run(s) with errors"},
+		},
+		{
+			name: "violations fail",
+			results: []benchmarkResult{
+				{Violations: []string{"total 3s exceeded 2s"}},
+			},
+			wantErr:     true,
+			wantContain: []string{"1 threshold violation(s)"},
+		},
+		{
+			name: "errors and violations both reported",
+			results: []benchmarkResult{
+				{Errors: []benchmarkErrorLog{{Message: "boom"}}, Violations: []string{"too slow"}},
+				{Errors: []benchmarkErrorLog{{Message: "bang"}, {Message: "crash"}}},
+			},
+			wantErr:     true,
+			wantContain: []string{"2 run(s) with errors", "1 threshold violation(s)"},
+		},
+		{
+			name:    "clean results pass",
+			results: []benchmarkResult{{Mode: "text"}, {Mode: "stt"}},
+		},
+		{
+			name: "no results pass",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := benchmarkExitErr(tt.results)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("benchmarkExitErr() = %v, wantErr %v", err, tt.wantErr)
+			}
+			for _, want := range tt.wantContain {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("benchmarkExitErr() = %q, want substring %q", err.Error(), want)
+				}
+			}
+		})
+	}
+}
 
 func TestEvaluateTextThresholds(t *testing.T) {
 	benchmarkMaxTotal = 2 * time.Second
