@@ -3,12 +3,34 @@
 package cmd
 
 import (
+	"bytes"
+	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/lancekrogers/samantha/internal/events"
 )
+
+func captureStdout(t *testing.T, f func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() error = %v", err)
+	}
+	os.Stdout = w
+	f()
+	w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatalf("read captured stdout: %v", err)
+	}
+	return buf.String()
+}
 
 func TestBenchmarkExitErr(t *testing.T) {
 	tests := []struct {
@@ -109,6 +131,72 @@ func TestEvaluateSTTThresholds(t *testing.T) {
 	violations := evaluateSTTThresholds(result)
 	if len(violations) != 2 {
 		t.Fatalf("len(violations) = %d, want 2", len(violations))
+	}
+}
+
+func TestEvaluateThresholdsWithinBudgetNoViolations(t *testing.T) {
+	benchmarkMaxTotal = 2 * time.Second
+	benchmarkMaxFirstModelChunk = 500 * time.Millisecond
+	benchmarkMaxPlaybackStart = 800 * time.Millisecond
+	benchmarkMaxPlaybackComplete = 1500 * time.Millisecond
+	benchmarkMaxSTTFinal = 700 * time.Millisecond
+	benchmarkMinTranscriptScore = 0.8
+	defer func() {
+		benchmarkMaxTotal = 0
+		benchmarkMaxFirstModelChunk = 0
+		benchmarkMaxPlaybackStart = 0
+		benchmarkMaxPlaybackComplete = 0
+		benchmarkMaxSTTFinal = 0
+		benchmarkMinTranscriptScore = 0
+	}()
+
+	text := benchmarkResult{
+		Elapsed: time.Second,
+		Metrics: events.TurnMetrics{
+			FirstModelChunkElapsed:  300 * time.Millisecond,
+			PlaybackStartElapsed:    600 * time.Millisecond,
+			PlaybackCompleteElapsed: 1200 * time.Millisecond,
+		},
+	}
+	if v := evaluateTextThresholds(text); len(v) != 0 {
+		t.Fatalf("within-budget text violations = %v, want none", v)
+	}
+
+	stt := benchmarkResult{
+		Metrics:         events.TurnMetrics{STTFinalElapsed: 500 * time.Millisecond},
+		TranscriptScore: 0.95,
+	}
+	if v := evaluateSTTThresholds(stt); len(v) != 0 {
+		t.Fatalf("within-budget stt violations = %v, want none", v)
+	}
+}
+
+func TestBenchmarkSummaryShowsInterruptionLatency(t *testing.T) {
+	results := []benchmarkResult{{
+		Mode:      "voice",
+		Iteration: 1,
+		Prompt:    "hi",
+		Metrics: events.TurnMetrics{
+			Interrupted:    true,
+			BargeInElapsed: 250 * time.Millisecond,
+		},
+	}}
+	out := captureStdout(t, func() { printBenchmarkSummary(results) })
+	if !strings.Contains(out, "interruption: 250ms") {
+		t.Fatalf("benchmark summary missing interruption latency:\n%s", out)
+	}
+}
+
+func TestBenchmarkSummaryOmitsInterruptionWhenNone(t *testing.T) {
+	results := []benchmarkResult{{
+		Mode:      "voice",
+		Iteration: 1,
+		Prompt:    "hi",
+		Metrics:   events.TurnMetrics{FirstModelChunkElapsed: 100 * time.Millisecond},
+	}}
+	out := captureStdout(t, func() { printBenchmarkSummary(results) })
+	if strings.Contains(out, "interruption:") {
+		t.Fatalf("summary should omit interruption for a non-interrupted turn:\n%s", out)
 	}
 }
 

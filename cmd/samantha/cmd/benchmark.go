@@ -230,7 +230,7 @@ func runSingleSTTBenchmark(ctx context.Context, cfg *config.Config, providerName
 	cfgCopy := *cfg
 	cfgCopy.STTProvider = providerName
 
-	if err := config.EnsureRuntimeAssets(&cfgCopy, config.AssetRequest{NeedSTT: true, NeedVAD: true}, nil); err != nil {
+	if err := config.EnsureRuntimeAssets(ctx, &cfgCopy, config.AssetRequest{NeedSTT: true, NeedVAD: true}, nil); err != nil {
 		return result, err
 	}
 
@@ -431,6 +431,9 @@ func printBenchmarkSummary(results []benchmarkResult) {
 			printMetric("first audio ready", formatMetric(result.Metrics.FirstAudioReadyElapsed))
 			printMetric("playback start", formatMetric(result.Metrics.PlaybackStartElapsed))
 			printMetric("playback complete", formatMetric(result.Metrics.PlaybackCompleteElapsed))
+			if result.Metrics.Interrupted || result.Metrics.BargeInElapsed > 0 {
+				printMetric("interruption", formatMetric(result.Metrics.BargeInElapsed))
+			}
 		}
 
 		if len(result.Errors) > 0 {

@@ -37,7 +37,7 @@ var testCmd = &cobra.Command{
 
 		// TTS test
 		fmt.Printf("  %s %s\n", sectionStyle.Render("1."), "Testing speaker (TTS)...")
-		speakerErr := runSpeakerTest(cfg)
+		speakerErr := runSpeakerTest(cmd.Context(), cfg)
 		if speakerErr != nil {
 			fmt.Printf("  %s %v\n\n", failStyle.Render("FAIL:"), speakerErr)
 		} else {
@@ -59,8 +59,8 @@ var testCmd = &cobra.Command{
 	},
 }
 
-func runSpeakerTest(cfg *config.Config) error {
-	if err := config.EnsureRuntimeAssets(cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
+func runSpeakerTest(ctx context.Context, cfg *config.Config) error {
+	if err := config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
 		return err
 	}
 
@@ -75,12 +75,12 @@ func runSpeakerTest(cfg *config.Config) error {
 	player := audio.NewPlayer()
 	defer func() { _ = player.Close() }()
 
-	stream, err := ttsProvider.Synthesize(context.Background(), "Hello! I'm Samantha. Your speaker is working.")
+	stream, err := ttsProvider.Synthesize(ctx, "Hello! I'm Samantha. Your speaker is working.")
 	if err != nil {
 		return err
 	}
 
-	playback, err := player.PlayStream(context.Background(), stream)
+	playback, err := player.PlayStream(ctx, stream)
 	if err != nil {
 		return err
 	}
@@ -103,7 +103,7 @@ var voicesCmd = &cobra.Command{
 
 		fmt.Printf("\n  %s %s\n\n", titleStyle.Render("Voices for:"), sectionStyle.Render(cfg.TTSProvider))
 
-		if err := config.EnsureRuntimeAssets(cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
+		if err := config.EnsureRuntimeAssets(cmd.Context(), cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
 			return err
 		}
 
@@ -317,4 +317,5 @@ func init() {
 	rootCmd.AddCommand(providersCmd)
 	rootCmd.AddCommand(resumeCmd)
 	rootCmd.AddCommand(continueCmd)
+	rootCmd.AddCommand(newRenderCmd(runRenderText))
 }

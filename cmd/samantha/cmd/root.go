@@ -83,7 +83,7 @@ func startPipeline(cfg *config.Config, resumeSession *session.Session) error {
 		NeedSTT: !textMode,
 		NeedVAD: !textMode && cfg.VADEnabled,
 	}
-	if err := config.EnsureRuntimeAssets(cfg, req, modelProgress); err != nil {
+	if err := config.EnsureRuntimeAssets(ctx, cfg, req, modelProgress); err != nil {
 		return fmt.Errorf("ensure runtime assets: %w", err)
 	}
 

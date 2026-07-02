@@ -127,9 +127,7 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 			m.selectCurrent()
 		case "p":
 			if m.section == sectionVoice && m.cursor < len(m.voiceItems) {
-				if m.previewCancel != nil {
-					m.previewCancel()
-				}
+				m.cancelPreview()
 				voice := m.voiceItems[m.cursor]
 				m.previewing = voice.Name
 				ctx, cancel := context.WithCancel(context.Background())
@@ -137,9 +135,7 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 				return m, m.previewVoice(ctx, voice)
 			}
 		case "esc", "q":
-			if m.previewCancel != nil {
-				m.previewCancel()
-			}
+			m.cancelPreview()
 			return m, func() tea.Msg { return switchScreenMsg(screenLauncher) }
 		}
 
@@ -154,6 +150,13 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// cancelPreview stops any in-flight voice preview. Safe to call when idle.
+func (m *settingsModel) cancelPreview() {
+	if m.previewCancel != nil {
+		m.previewCancel()
+	}
 }
 
 func (m *settingsModel) currentListLen() int {
@@ -230,7 +233,7 @@ func (m settingsModel) previewVoice(ctx context.Context, voice tts.Voice) tea.Cm
 		cfg := *m.cfg
 		cfg.TTSVoice = voice.Name
 
-		if err := config.EnsureRuntimeAssets(&cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
+		if err := config.EnsureRuntimeAssets(ctx, &cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
 			return voicePreviewDoneMsg{voice: voice.Name, message: fmt.Sprintf("Asset error: %v", err)}
 		}
 
@@ -261,7 +264,16 @@ func (m settingsModel) previewVoice(ctx context.Context, voice tts.Voice) tea.Cm
 			return voicePreviewDoneMsg{voice: voice.Name, message: fmt.Sprintf("Playback error: %v", err)}
 		}
 
-		result := <-playback.Done()
+		var result audio.PlaybackResult
+		select {
+		case <-ctx.Done():
+			// Cancelled mid-playback: silence the device, then wait for the
+			// segment to resolve before the deferred Close runs.
+			player.Stop()
+			<-playback.Done()
+			return quiet
+		case result = <-playback.Done():
+		}
 		if result.Interrupted || errors.Is(result.Err, context.Canceled) {
 			return quiet
 		}
