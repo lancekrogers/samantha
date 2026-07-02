@@ -172,41 +172,46 @@ func (m *settingsModel) selectCurrent() {
 	switch m.section {
 	case sectionProvider:
 		if m.cursor < len(m.providers) && m.providers[m.cursor].Available {
-			m.cfg.BrainProvider = m.providers[m.cursor].Name
-			err := config.SetAndSave("brain_provider", m.cfg.BrainProvider)
-			m.buildModelItems()
-			if err != nil {
+			// Mutate the live config only after the save succeeds, so a
+			// failed save doesn't leave the running session on a provider
+			// that was never persisted.
+			name := m.providers[m.cursor].Name
+			if err := config.SetAndSave("brain_provider", name); err != nil {
 				m.message = fmt.Sprintf("Failed to save provider: %v", err)
 				return
 			}
-			m.message = fmt.Sprintf("Provider set to %s", m.cfg.BrainProvider)
+			m.cfg.BrainProvider = name
+			m.buildModelItems()
+			m.message = fmt.Sprintf("Provider set to %s", name)
 		}
 	case sectionModel:
 		if m.cursor < len(m.modelItems) {
 			model := m.modelItems[m.cursor]
-			var err error
+			var field *string
+			var key string
 			switch m.cfg.BrainProvider {
 			case "ollama":
-				m.cfg.OllamaModel = model
-				err = config.SetAndSave("ollama_model", model)
+				field, key = &m.cfg.OllamaModel, "ollama_model"
 			case "grok":
-				m.cfg.GrokModel = model
-				err = config.SetAndSave("grok_model", model)
+				field, key = &m.cfg.GrokModel, "grok_model"
 			}
-			if err != nil {
-				m.message = fmt.Sprintf("Failed to save model: %v", err)
-				return
+			if field != nil {
+				if err := config.SetAndSave(key, model); err != nil {
+					m.message = fmt.Sprintf("Failed to save model: %v", err)
+					return
+				}
+				*field = model
 			}
 			m.message = fmt.Sprintf("Model set to %s", model)
 		}
 	case sectionVoice:
 		if m.cursor < len(m.voiceItems) {
 			voice := m.voiceItems[m.cursor]
-			m.cfg.TTSVoice = voice.Name
 			if err := config.SetAndSave("tts_voice", voice.Name); err != nil {
 				m.message = fmt.Sprintf("Failed to save voice: %v", err)
 				return
 			}
+			m.cfg.TTSVoice = voice.Name
 			m.message = fmt.Sprintf("Voice set to %s", voice.Name)
 		}
 	}
