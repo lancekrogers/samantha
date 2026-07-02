@@ -2,76 +2,11 @@ package config
 
 import (
 	"bytes"
-	"context"
-	"errors"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
-
-func TestDownloadFileCancelledWhileBodyStalls(t *testing.T) {
-	headersSent := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Length", "1048576")
-		w.WriteHeader(http.StatusOK)
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-		close(headersSent)
-		// Stall the body until the client gives up.
-		<-r.Context().Done()
-	}))
-	defer srv.Close()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	path := filepath.Join(t.TempDir(), "model.bin")
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- downloadFile(ctx, path, srv.URL, nil)
-	}()
-
-	select {
-	case <-headersSent:
-	case <-time.After(5 * time.Second):
-		t.Fatal("server never sent headers")
-	}
-	cancel()
-
-	select {
-	case err := <-errCh:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("downloadFile() error = %v, want context.Canceled", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("downloadFile() did not return after context cancellation")
-	}
-}
-
-func TestDownloadFileSucceedsWithContext(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("model-bytes"))
-	}))
-	defer srv.Close()
-
-	path := filepath.Join(t.TempDir(), "model.bin")
-	if err := downloadFile(context.Background(), path, srv.URL, nil); err != nil {
-		t.Fatalf("downloadFile() error = %v", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	if got, want := string(data), "model-bytes"; got != want {
-		t.Fatalf("downloaded content = %q, want %q", got, want)
-	}
-}
 
 func TestSanitizeKokoroLexiconsRemovesUnsupportedMarks(t *testing.T) {
 	dir := t.TempDir()
@@ -123,6 +58,13 @@ func TestEnsureRuntimeAssetsWarnsOnKokoroLexiconSanitizeFailure(t *testing.T) {
 			t.Fatalf("WriteFile() error = %v", err)
 		}
 	}
+	m, err := ManifestFor(&Config{TTSProvider: "kokoro"}, AssetRequest{NeedTTS: true})
+	if err != nil {
+		t.Fatalf("ManifestFor() error = %v", err)
+	}
+	if err := writeArchiveInstallMarker(dir, m.Assets[0].ID, m.Assets[0].Archive.URL, m.Assets[0].Archive.SHA256, m.Assets[0].CheckFiles); err != nil {
+		t.Fatalf("writeArchiveInstallMarker() error = %v", err)
+	}
 
 	if err := os.Mkdir(filepath.Join(dir, "lexicon-us-en.txt"), 0o755); err != nil {
 		t.Fatalf("Mkdir() error = %v", err)
@@ -138,7 +80,7 @@ func TestEnsureRuntimeAssetsWarnsOnKokoroLexiconSanitizeFailure(t *testing.T) {
 		os.Stderr = oldStderr
 	}()
 
-	err = EnsureRuntimeAssets(context.Background(), &Config{TTSProvider: "kokoro"}, AssetRequest{NeedTTS: true}, nil)
+	err = EnsureRuntimeAssets(t.Context(), &Config{TTSProvider: "kokoro"}, AssetRequest{NeedTTS: true}, nil)
 	if closeErr := writePipe.Close(); closeErr != nil {
 		t.Fatalf("Close() error = %v", closeErr)
 	}

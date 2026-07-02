@@ -23,3 +23,15 @@ func TestVoicePreviewDoneGating(t *testing.T) {
 		t.Fatalf("matching completion did not set message: got %q", m.message)
 	}
 }
+
+func TestCancelPreviewNilSafe(t *testing.T) {
+	m := settingsModel{}
+	m.cancelPreview()
+
+	called := false
+	m.previewCancel = func() { called = true }
+	m.cancelPreview()
+	if !called {
+		t.Fatal("cancelPreview did not invoke previewCancel")
+	}
+}

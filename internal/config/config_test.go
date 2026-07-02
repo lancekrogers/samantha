@@ -1,7 +1,6 @@
 package config
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -233,7 +232,7 @@ func TestDownloadFileCreatesNestedParentDir(t *testing.T) {
 	defer server.Close()
 
 	path := filepath.Join(t.TempDir(), "whispercpp", "ggml-base.en.bin")
-	if err := downloadFile(context.Background(), path, server.URL, nil); err != nil {
+	if err := downloadFile(t.Context(), path, server.URL, "ggml-base.en.bin", 0, "", nil); err != nil {
 		t.Fatalf("downloadFile() error = %v", err)
 	}
 

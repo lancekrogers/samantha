@@ -6,13 +6,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 	"unicode"
 
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/endpoint"
 )
 
 // SherpaStreamingSTT implements streaming STT using sherpa-onnx online Zipformer.
@@ -69,7 +69,8 @@ func NewSherpaStreamingSTT(cfg *config.Config, capture audioSource, vad *audio.V
 	}, nil
 }
 
-// Start begins a streaming STT session with partial transcript support.
+// Start begins a streaming STT session with partial transcript support over the
+// typed frame contract and the shared endpoint policy.
 func (s *SherpaStreamingSTT) Start(ctx context.Context) (Session, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 	session := &sherpaSession{
@@ -77,148 +78,71 @@ func (s *SherpaStreamingSTT) Start(ctx context.Context) (Session, error) {
 		events: make(chan Event, 16),
 	}
 
-	go s.runSession(sessionCtx, session.events)
+	finite := sourceKind(s.capture) != audio.SourceLive
+	policy := endpoint.FromConfig(s.cfg, finite)
+	policy.AllowProviderEnd = true // the streaming recognizer self-endpoints
+
+	go func() {
+		defer close(session.events)
+
+		stream := sherpa.NewOnlineStream(s.recognizer)
+		if stream == nil {
+			sendEvent(sessionCtx, session.events, Failure{Err: fmt.Errorf("failed to create streaming sherpa stream")})
+			return
+		}
+		rec := &onlineRec{recognizer: s.recognizer, stream: stream}
+		defer rec.close()
+
+		runStreamingLoop(sessionCtx, streamingLoopDeps{
+			frames: asFrameSource(s.capture),
+			seg:    vadSegmenter{vad: s.vad},
+			rec:    rec,
+			policy: policy,
+		}, session.events)
+	}()
 	return session, nil
 }
 
-func (s *SherpaStreamingSTT) runSession(ctx context.Context, events chan<- Event) {
-	defer close(events)
+// onlineRec adapts the cgo sherpa online recognizer to the streamingRecognizer
+// seam so the streaming loop can run against either the real recognizer or a fake.
+type onlineRec struct {
+	recognizer *sherpa.OnlineRecognizer
+	stream     *sherpa.OnlineStream
+}
 
-	s.vad.Clear()
-
-	stream := sherpa.NewOnlineStream(s.recognizer)
-	if stream == nil {
-		events <- Failure{Err: fmt.Errorf("failed to create streaming sherpa stream")}
-		return
-	}
-	defer func() {
-		if stream != nil {
-			sherpa.DeleteOnlineStream(stream)
-		}
-	}()
-
-	lastPhaseAt := time.Now()
-	emitPhase := func(phase string) {
-		now := time.Now()
-		events <- PhaseEvent{Phase: phase, Elapsed: now.Sub(lastPhaseAt).Nanoseconds()}
-		lastPhaseAt = now
-	}
-	emitPhase("listening")
-
-	listenDeadline := time.Now().Add(time.Duration(s.cfg.ListenTimeout) * time.Second)
-	speechDetected := false
-	transcribing := false
-	speechStartedAt := time.Time{}
-	lastPartial := ""
-
-	for {
-		select {
-		case <-ctx.Done():
-			events <- Failure{Err: ctx.Err()}
-			return
-		default:
-		}
-
-		if !speechDetected && time.Now().After(listenDeadline) {
-			events <- Timeout{}
-			return
-		}
-
-		chunk := s.capture.Read()
-		exhausted := len(chunk) == 0 && sourceExhausted(s.capture)
-		if len(chunk) == 0 {
-			if !exhausted {
-				time.Sleep(10 * time.Millisecond)
-				continue
-			}
-			s.vad.Flush()
-			if !speechDetected && s.vad.IsSpeechDetected() {
-				speechDetected = true
-				speechStartedAt = time.Now()
-				emitPhase("hearing")
-			}
-			if !speechDetected && lastPartial == "" {
-				events <- Timeout{}
-				return
-			}
-		} else {
-			s.vad.AcceptWaveform(chunk)
-			if !speechDetected && s.vad.IsSpeech() {
-				speechDetected = true
-				speechStartedAt = time.Now()
-				emitPhase("hearing")
-			}
-
-			stream.AcceptWaveform(audio.SampleRate, chunk)
-			for s.recognizer.IsReady(stream) {
-				s.recognizer.Decode(stream)
-			}
-
-			partial := normalizeTranscript(strings.TrimSpace(s.recognizer.GetResult(stream).Text))
-			if partial != "" {
-				if !speechDetected {
-					speechDetected = true
-					speechStartedAt = time.Now()
-					emitPhase("hearing")
-				}
-				if !transcribing {
-					transcribing = true
-					emitPhase("transcribing")
-				}
-				if partial != lastPartial {
-					events <- PartialTranscript{Text: partial}
-					lastPartial = partial
-				}
-			}
-		}
-
-		phraseExpired := !speechStartedAt.IsZero() &&
-			time.Since(speechStartedAt) >= time.Duration(max(s.cfg.PhraseTimeLimit, 1))*time.Second
-		endpoint := speechDetected && (exhausted || s.recognizer.IsEndpoint(stream) || s.vad.IsSpeechDetected() || phraseExpired)
-		if !endpoint {
-			continue
-		}
-
-		if !transcribing {
-			transcribing = true
-			emitPhase("transcribing")
-		}
-
-		finalText := normalizeTranscript(strings.TrimSpace(s.flushStream(stream)))
-		if finalText != "" {
-			events <- FinalTranscript{Text: finalText}
-			return
-		}
-
-		if exhausted {
-			events <- Timeout{}
-			return
-		}
-
-		// False positive or empty decode: reset state and keep listening.
-		s.vad.Clear()
-		speechDetected = false
-		transcribing = false
-		speechStartedAt = time.Time{}
-		lastPartial = ""
-		listenDeadline = time.Now().Add(time.Duration(s.cfg.ListenTimeout) * time.Second)
-
-		sherpa.DeleteOnlineStream(stream)
-		stream = sherpa.NewOnlineStream(s.recognizer)
-		if stream == nil {
-			events <- Failure{Err: fmt.Errorf("failed to reset streaming sherpa stream")}
-			return
-		}
-		emitPhase("listening")
+func (o *onlineRec) Accept(samples []float32) {
+	o.stream.AcceptWaveform(audio.SampleRate, samples)
+	for o.recognizer.IsReady(o.stream) {
+		o.recognizer.Decode(o.stream)
 	}
 }
 
-func (s *SherpaStreamingSTT) flushStream(stream *sherpa.OnlineStream) string {
-	stream.InputFinished()
-	for s.recognizer.IsReady(stream) {
-		s.recognizer.Decode(stream)
+func (o *onlineRec) Partial() string  { return o.recognizer.GetResult(o.stream).Text }
+func (o *onlineRec) IsEndpoint() bool { return o.recognizer.IsEndpoint(o.stream) }
+
+func (o *onlineRec) Finalize() string {
+	o.stream.InputFinished()
+	for o.recognizer.IsReady(o.stream) {
+		o.recognizer.Decode(o.stream)
 	}
-	return s.recognizer.GetResult(stream).Text
+	return o.recognizer.GetResult(o.stream).Text
+}
+
+func (o *onlineRec) Reset() error {
+	stream := sherpa.NewOnlineStream(o.recognizer)
+	if stream == nil {
+		return fmt.Errorf("failed to create streaming sherpa stream")
+	}
+	sherpa.DeleteOnlineStream(o.stream)
+	o.stream = stream
+	return nil
+}
+
+func (o *onlineRec) close() {
+	if o.stream != nil {
+		sherpa.DeleteOnlineStream(o.stream)
+		o.stream = nil
+	}
 }
 
 // Available returns true if the STT provider is ready.

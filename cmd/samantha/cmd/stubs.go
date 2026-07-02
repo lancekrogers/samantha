@@ -306,4 +306,5 @@ func init() {
 	rootCmd.AddCommand(providersCmd)
 	rootCmd.AddCommand(resumeCmd)
 	rootCmd.AddCommand(continueCmd)
+	rootCmd.AddCommand(newRenderCmd(runRenderText))
 }

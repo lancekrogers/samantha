@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>The HTML Test Article</title>
+  <style>.nav { color: red; }</style>
+  <script>console.log("should be stripped");</script>
+</head>
+<body>
+  <nav><a href="/">Home</a> | <a href="/about">About</a></nav>
+  <header><h1>Site Banner Should Be Dropped</h1></header>
+  <article>
+    <h1>Main Title</h1>
+    <p>This is the <a href="https://example.com">first paragraph</a> with
+       <strong>bold</strong> text and an &amp; entity.</p>
+    <p>Second paragraph here.</p>
+    <h2>Details Section</h2>
+    <ul>
+      <li>First item</li>
+      <li>Second item</li>
+    </ul>
+    <blockquote>A quoted line.</blockquote>
+    <img src="x.png" alt="A descriptive image caption">
+  </article>
+  <footer>Copyright 2026 — footer boilerplate</footer>
+  <!-- a comment that should vanish -->
+</body>
+</html>
