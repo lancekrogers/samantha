@@ -35,15 +35,27 @@ type settingsModel struct {
 	voiceItems    []tts.Voice
 
 	// Preview playback state.
-	previewing    string
-	previewCancel context.CancelFunc
-	message       string
+	previewing       string
+	previewID        int64
+	previewCancel    context.CancelFunc
+	previewPlayer    audio.Engine
+	newPreviewPlayer func() audio.Engine
+	ensureTTSAssets  func(context.Context, *config.Config) error
+	newTTSProvider   func(*config.Config) (tts.Provider, func(), error)
+	message          string
 }
 
 func newSettings(cfg *config.Config, providers []discovery.ProviderInfo) settingsModel {
 	m := settingsModel{
 		cfg:       cfg,
 		providers: providers,
+		newPreviewPlayer: func() audio.Engine {
+			return audio.NewPlayer()
+		},
+		ensureTTSAssets: func(ctx context.Context, cfg *config.Config) error {
+			return config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedTTS: true}, nil)
+		},
+		newTTSProvider: tts.NewProvider,
 	}
 	m.buildProviderItems()
 	m.buildModelItems()
@@ -130,9 +142,11 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 				m.cancelPreview()
 				voice := m.voiceItems[m.cursor]
 				m.previewing = voice.Name
+				m.previewID++
 				ctx, cancel := context.WithCancel(context.Background())
 				m.previewCancel = cancel
-				return m, m.previewVoice(ctx, voice)
+				player := m.playerForPreview()
+				return m, m.previewVoice(ctx, m.previewID, voice, player)
 			}
 		case "esc", "q":
 			m.cancelPreview()
@@ -141,8 +155,9 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 
 	case voicePreviewDoneMsg:
 		// Ignore completions from a preview that's already been superseded.
-		if msg.voice == m.previewing {
+		if msg.id == m.previewID && msg.voice == m.previewing {
 			m.previewing = ""
+			m.previewCancel = nil
 			if msg.message != "" {
 				m.message = msg.message
 			}
@@ -156,7 +171,27 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 func (m *settingsModel) cancelPreview() {
 	if m.previewCancel != nil {
 		m.previewCancel()
+		m.previewCancel = nil
 	}
+	if m.previewPlayer != nil {
+		m.previewPlayer.Stop()
+	}
+}
+
+func (m *settingsModel) closePreview() {
+	m.cancelPreview()
+	if m.previewPlayer != nil {
+		_ = m.previewPlayer.Close()
+		m.previewPlayer = nil
+	}
+}
+
+func (m *settingsModel) playerForPreview() audio.Engine {
+	if m.previewPlayer != nil {
+		return m.previewPlayer
+	}
+	m.previewPlayer = m.newPreviewPlayer()
+	return m.previewPlayer
 }
 
 func (m *settingsModel) currentListLen() int {
@@ -221,11 +256,12 @@ func (m *settingsModel) selectCurrent() {
 }
 
 type voicePreviewDoneMsg struct {
+	id      int64
 	voice   string
 	message string
 }
 
-func (m settingsModel) previewVoice(ctx context.Context, voice tts.Voice) tea.Cmd {
+func (m settingsModel) previewVoice(ctx context.Context, id int64, voice tts.Voice, player audio.Engine) tea.Cmd {
 	// Snapshot the config before the closure runs: the returned Cmd executes on
 	// its own goroutine while selectCurrent keeps mutating m.cfg on Update's.
 	cfg := *m.cfg
@@ -233,18 +269,18 @@ func (m settingsModel) previewVoice(ctx context.Context, voice tts.Voice) tea.Cm
 	return func() tea.Msg {
 		// A superseded preview (ctx cancelled) reports quietly so it doesn't
 		// clobber the newer preview's message or "playing" indicator.
-		quiet := voicePreviewDoneMsg{voice: voice.Name}
+		quiet := voicePreviewDoneMsg{id: id, voice: voice.Name}
 
-		if err := config.EnsureRuntimeAssets(ctx, &cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
+		if err := m.ensureTTSAssets(ctx, &cfg); err != nil {
 			if errors.Is(err, context.Canceled) {
 				return quiet
 			}
-			return voicePreviewDoneMsg{voice: voice.Name, message: fmt.Sprintf("Asset error: %v", err)}
+			return voicePreviewDoneMsg{id: id, voice: voice.Name, message: fmt.Sprintf("Asset error: %v", err)}
 		}
 
-		ttsProvider, cleanup, err := tts.NewProvider(&cfg)
+		ttsProvider, cleanup, err := m.newTTSProvider(&cfg)
 		if err != nil {
-			return voicePreviewDoneMsg{voice: voice.Name, message: fmt.Sprintf("TTS error: %v", err)}
+			return voicePreviewDoneMsg{id: id, voice: voice.Name, message: fmt.Sprintf("TTS error: %v", err)}
 		}
 		if cleanup != nil {
 			defer cleanup()
@@ -255,26 +291,22 @@ func (m settingsModel) previewVoice(ctx context.Context, voice tts.Voice) tea.Cm
 			if errors.Is(err, context.Canceled) {
 				return quiet
 			}
-			return voicePreviewDoneMsg{voice: voice.Name, message: fmt.Sprintf("Synthesize error: %v", err)}
+			return voicePreviewDoneMsg{id: id, voice: voice.Name, message: fmt.Sprintf("Synthesize error: %v", err)}
 		}
-
-		player := audio.NewPlayer()
-		defer func() { _ = player.Close() }()
 
 		playback, err := player.PlayStream(ctx, stream)
 		if err != nil {
-			if errors.Is(err, context.Canceled) {
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 				return quiet
 			}
-			return voicePreviewDoneMsg{voice: voice.Name, message: fmt.Sprintf("Playback error: %v", err)}
+			return voicePreviewDoneMsg{id: id, voice: voice.Name, message: fmt.Sprintf("Playback error: %v", err)}
 		}
 
 		var result audio.PlaybackResult
 		select {
 		case <-ctx.Done():
-			// Cancelled mid-playback: silence the device, then wait for the
-			// segment to resolve before the deferred Close runs.
-			player.Stop()
+			// cancelPreview already stopped the shared player. Do not stop it
+			// again here, because a newer preview may now be queued on it.
 			<-playback.Done()
 			return quiet
 		case result = <-playback.Done():
@@ -283,10 +315,10 @@ func (m settingsModel) previewVoice(ctx context.Context, voice tts.Voice) tea.Cm
 			return quiet
 		}
 		if result.Err != nil {
-			return voicePreviewDoneMsg{voice: voice.Name, message: fmt.Sprintf("Playback error: %v", result.Err)}
+			return voicePreviewDoneMsg{id: id, voice: voice.Name, message: fmt.Sprintf("Playback error: %v", result.Err)}
 		}
 
-		return voicePreviewDoneMsg{voice: voice.Name, message: fmt.Sprintf("Previewed %s", voice.Name)}
+		return voicePreviewDoneMsg{id: id, voice: voice.Name, message: fmt.Sprintf("Previewed %s", voice.Name)}
 	}
 }
 
