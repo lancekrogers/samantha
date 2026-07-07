@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -9,7 +10,35 @@ import (
 	"github.com/lancekrogers/samantha/internal/config"
 )
 
-var modelsStatusJSON bool
+var (
+	modelsStatusJSON  bool
+	modelsStatusScope scopeFlags
+	modelsEnsureScope scopeFlags
+)
+
+// scopeFlags narrows a models command to specific asset kinds. Flags combine as
+// a union; no scope flags (or --all) keeps the full default request.
+type scopeFlags struct {
+	tts bool
+	stt bool
+	vad bool
+	all bool
+}
+
+func (s *scopeFlags) register(cmd *cobra.Command) {
+	cmd.Flags().BoolVar(&s.tts, "tts", false, "Limit to TTS assets")
+	cmd.Flags().BoolVar(&s.stt, "stt", false, "Limit to the configured STT provider's assets")
+	cmd.Flags().BoolVar(&s.vad, "vad", false, "Limit to the VAD asset")
+	cmd.Flags().BoolVar(&s.all, "all", false, "All asset kinds (same as no scope flags)")
+}
+
+// request resolves the flags to the asset request for cfg.
+func (s scopeFlags) request(cfg *config.Config) config.AssetRequest {
+	if s.all || (!s.tts && !s.stt && !s.vad) {
+		return config.DefaultAssetRequest(cfg)
+	}
+	return config.ScopedAssetRequest(cfg, config.AssetScope{STT: s.stt, TTS: s.tts, VAD: s.vad})
+}
 
 var modelsCmd = &cobra.Command{
 	Use:   "models",
@@ -24,14 +53,15 @@ var modelsStatusCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runModelsStatus(cmd, cfg, config.ModelsDir(), modelsStatusJSON)
+		return runModelsStatus(cmd, cfg, config.ModelsDir(), modelsStatusScope.request(cfg), modelsStatusJSON)
 	},
 }
 
-// runModelsStatus resolves the asset manifest for cfg and reports each asset's
-// installed/missing state under modelsDir. It is read-only and never downloads.
-func runModelsStatus(cmd *cobra.Command, cfg *config.Config, modelsDir string, asJSON bool) error {
-	manifest, err := config.ManifestFor(cfg, config.DefaultAssetRequest(cfg))
+// runModelsStatus resolves the asset manifest for cfg and req and reports each
+// asset's installed/missing state under modelsDir. It is read-only and never
+// downloads.
+func runModelsStatus(cmd *cobra.Command, cfg *config.Config, modelsDir string, req config.AssetRequest, asJSON bool) error {
+	manifest, err := config.ManifestFor(cfg, req)
 	if err != nil {
 		return err
 	}
@@ -76,18 +106,22 @@ var modelsEnsureCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runModelsEnsure(cmd, cfg)
+		return runModelsEnsure(cmd, cfg, modelsEnsureScope.request(cfg), config.EnsureRuntimeAssets)
 	},
 }
 
-// runModelsEnsure downloads the missing assets for cfg, reporting each asset as
-// it begins and a final status line. It returns an actionable error naming the
-// failing asset if a download fails.
-func runModelsEnsure(cmd *cobra.Command, cfg *config.Config) error {
+// ensureAssetsFunc matches config.EnsureRuntimeAssets so tests can observe the
+// request without downloading.
+type ensureAssetsFunc func(ctx context.Context, cfg *config.Config, req config.AssetRequest, onProgress func(name string, pct float64)) error
+
+// runModelsEnsure downloads the missing assets in req for cfg, reporting each
+// asset as it begins and a final status line. It returns an actionable error
+// naming the failing asset if a download fails.
+func runModelsEnsure(cmd *cobra.Command, cfg *config.Config, req config.AssetRequest, ensure ensureAssetsFunc) error {
 	out := cmd.OutOrStdout()
 
 	started := map[string]bool{}
-	err := config.EnsureModels(cmd.Context(), cfg, func(name string, pct float64) {
+	err := ensure(cmd.Context(), cfg, req, func(name string, pct float64) {
 		if !started[name] {
 			started[name] = true
 			fmt.Fprintf(out, "  downloading %s ...\n", name)
@@ -107,6 +141,8 @@ func runModelsEnsure(cmd *cobra.Command, cfg *config.Config) error {
 
 func init() {
 	modelsStatusCmd.Flags().BoolVar(&modelsStatusJSON, "json", false, "Output machine-readable JSON")
+	modelsStatusScope.register(modelsStatusCmd)
+	modelsEnsureScope.register(modelsEnsureCmd)
 	modelsCmd.AddCommand(modelsStatusCmd)
 	modelsCmd.AddCommand(modelsEnsureCmd)
 	rootCmd.AddCommand(modelsCmd)
