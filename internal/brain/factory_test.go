@@ -34,3 +34,17 @@ func TestNewProviderRejectsUnsupportedProvider(t *testing.T) {
 		t.Fatalf("NewProvider() error = %q, want unsupported brain_provider message", err)
 	}
 }
+
+func TestNewBatchProviderRejectsUnsupportedProvider(t *testing.T) {
+	for _, provider := range []string{"not-real", "claude", ""} {
+		cfg := &config.Config{BrainProvider: provider}
+
+		_, err := NewBatchProvider(cfg)
+		if err == nil {
+			t.Fatalf("NewBatchProvider(%q) error = nil, want unsupported provider error", provider)
+		}
+		if !strings.Contains(err.Error(), "unsupported batch brain_provider") {
+			t.Fatalf("NewBatchProvider(%q) error = %q, want unsupported batch brain_provider message", provider, err)
+		}
+	}
+}

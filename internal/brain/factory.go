@@ -40,6 +40,24 @@ func NewProvider(cfg *config.Config) (Provider, error) {
 	}
 }
 
+var batchProviderSpecs = []ProviderSpec{
+	{Name: "grok", Description: "Grok CLI"},
+	{Name: "ollama", Description: "Local Ollama server"},
+}
+
+// NewBatchProvider constructs the configured provider's batch adapter for
+// single-shot, history-free transforms.
+func NewBatchProvider(cfg *config.Config) (BatchProvider, error) {
+	switch normalizeProvider(cfg.BrainProvider) {
+	case "grok":
+		return newGrokBatch(cfg)
+	case "ollama":
+		return newOllamaBatch(cfg)
+	default:
+		return nil, unsupportedProviderError("batch brain_provider", cfg.BrainProvider, batchProviderSpecs)
+	}
+}
+
 func normalizeProvider(name string) string {
 	return strings.TrimSpace(strings.ToLower(name))
 }
