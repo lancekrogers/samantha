@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestManifestForDefaultResolvesExpectedAssets pins the default interactive
 // asset set (VAD + sherpa offline whisper + Kokoro TTS) to the exact files the
@@ -55,24 +58,29 @@ func TestManifestForDefaultResolvesExpectedAssets(t *testing.T) {
 }
 
 // TestManifestForEachProviderPath checks every recognized STT provider/mode
-// resolves to the expected asset shape and provider.
+// resolves to the expected asset shape and provider, including the preferred
+// stt_provider + stt_mode schema.
 func TestManifestForEachProviderPath(t *testing.T) {
 	cases := []struct {
 		name        string
 		provider    string
+		mode        string
 		wantProv    string
 		wantMode    string
 		wantArchive bool
 	}{
-		{"empty default", "", "sherpa", "offline", true},
-		{"sherpa", "sherpa", "sherpa", "offline", true},
-		{"sherpa-offline", "sherpa-offline", "sherpa", "offline", true},
-		{"sherpa-streaming", "sherpa-streaming", "sherpa", "streaming", true},
-		{"whispercpp", "whispercpp", "whispercpp", "cli", false},
+		{"empty default", "", "", "sherpa", "offline", true},
+		{"sherpa", "sherpa", "", "sherpa", "offline", true},
+		{"sherpa-offline", "sherpa-offline", "", "sherpa", "offline", true},
+		{"sherpa-streaming", "sherpa-streaming", "", "sherpa", "streaming", true},
+		{"whispercpp", "whispercpp", "", "whispercpp", "cli", false},
+		{"sherpa with offline mode", "sherpa", "offline", "sherpa", "offline", true},
+		{"sherpa with streaming mode", "sherpa", "streaming", "sherpa", "streaming", true},
+		{"whispercpp with cli mode", "whispercpp", "cli", "whispercpp", "cli", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := &Config{STTProvider: tc.provider, WhisperModel: "base.en"}
+			cfg := &Config{STTProvider: tc.provider, STTMode: tc.mode, WhisperModel: "base.en"}
 			m, err := ManifestFor(cfg, AssetRequest{NeedSTT: true})
 			if err != nil {
 				t.Fatalf("ManifestFor(%q) error = %v", tc.provider, err)
@@ -97,16 +105,48 @@ func TestManifestForEachProviderPath(t *testing.T) {
 	}
 }
 
-// TestManifestForUnsupportedProviderSkipsSTT preserves the historical no-op: an
-// unrecognized provider yields no STT asset (and no error) rather than failing.
-func TestManifestForUnsupportedProviderSkipsSTT(t *testing.T) {
-	cfg := &Config{STTProvider: "bogus"}
-	m, err := ManifestFor(cfg, AssetRequest{NeedSTT: true})
-	if err != nil {
-		t.Fatalf("ManifestFor(unsupported) error = %v, want nil (silent skip)", err)
+// TestManifestForConflictingSTTModeErrors proves an invalid provider/mode
+// combination surfaces where assets are resolved instead of silently picking
+// the alias path.
+func TestManifestForConflictingSTTModeErrors(t *testing.T) {
+	tests := []struct {
+		name            string
+		provider        string
+		mode            string
+		wantErrContains string
+	}{
+		{name: "compound alias with conflicting mode", provider: "sherpa-streaming", mode: "offline", wantErrContains: "conflicts with stt_mode"},
+		{name: "mode unsupported by provider", provider: "whispercpp", mode: "streaming", wantErrContains: "not supported by stt_provider"},
 	}
-	if len(m.Assets) != 0 {
-		t.Fatalf("assets = %d, want 0 for an unsupported provider", len(m.Assets))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{STTProvider: tt.provider, STTMode: tt.mode, WhisperModel: "base.en"}
+			_, err := ManifestFor(cfg, AssetRequest{NeedSTT: true})
+			if err == nil {
+				t.Fatalf("ManifestFor(%q, %q) error = nil, want stt_mode error", tt.provider, tt.mode)
+			}
+			if !strings.Contains(err.Error(), tt.wantErrContains) {
+				t.Fatalf("ManifestFor(%q, %q) error = %q, want containing %q", tt.provider, tt.mode, err, tt.wantErrContains)
+			}
+		})
+	}
+}
+
+// TestManifestForUnsupportedProviderSkipsSTT preserves the historical no-op: an
+// unrecognized provider yields no STT asset (and no error) rather than failing,
+// with or without stt_mode set.
+func TestManifestForUnsupportedProviderSkipsSTT(t *testing.T) {
+	for _, cfg := range []*Config{
+		{STTProvider: "bogus"},
+		{STTProvider: "bogus", STTMode: "streaming"},
+	} {
+		m, err := ManifestFor(cfg, AssetRequest{NeedSTT: true})
+		if err != nil {
+			t.Fatalf("ManifestFor(unsupported) error = %v, want nil (silent skip)", err)
+		}
+		if len(m.Assets) != 0 {
+			t.Fatalf("assets = %d, want 0 for an unsupported provider", len(m.Assets))
+		}
 	}
 }
 

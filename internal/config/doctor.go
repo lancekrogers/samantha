@@ -32,15 +32,15 @@ type Diagnostic struct {
 func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, error)) []Diagnostic {
 	var diags []Diagnostic
 
-	norm, sttOK := NormalizeSTT(cfg.STTProvider)
-	if sttOK {
+	norm, sttErr := NormalizeSTTWithMode(cfg.STTProvider, cfg.STTMode)
+	if sttErr == nil {
 		diags = append(diags, Diagnostic{Name: "stt-provider", Severity: SeverityOK, Detail: fmt.Sprintf("%s/%s", norm.Provider, norm.Mode)})
 	} else {
 		diags = append(diags, Diagnostic{
 			Name:        "stt-provider",
 			Severity:    SeverityError,
-			Detail:      fmt.Sprintf("unsupported stt_provider %q", cfg.STTProvider),
-			Remediation: "set stt_provider to sherpa, sherpa-streaming, or whispercpp",
+			Detail:      sttErr.Error(),
+			Remediation: "set a supported stt_provider/stt_mode combination",
 		})
 	}
 
@@ -67,7 +67,7 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 	}
 
 	// whisper.cpp shells out to an external CLI; check it only when selected.
-	if sttOK && norm.Provider == STTProviderWhisperCPP {
+	if sttErr == nil && norm.Provider == STTProviderWhisperCPP {
 		bin := strings.TrimSpace(cfg.WhisperCPPBinary)
 		if _, err := lookPath(bin); err != nil {
 			diags = append(diags, Diagnostic{
@@ -81,7 +81,11 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 		}
 	}
 
-	if m, err := ManifestFor(cfg, DefaultAssetRequest(cfg)); err != nil {
+	// Skip STT asset resolution when the STT config already failed above, so
+	// the model-assets check stays about model names rather than repeating it.
+	req := DefaultAssetRequest(cfg)
+	req.NeedSTT = req.NeedSTT && sttErr == nil
+	if m, err := ManifestFor(cfg, req); err != nil {
 		diags = append(diags, Diagnostic{
 			Name:        "model-assets",
 			Severity:    SeverityError,

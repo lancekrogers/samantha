@@ -24,6 +24,18 @@ func TestNewProviderRejectsUnsupportedProvider(t *testing.T) {
 	}
 }
 
+func TestNewProviderRejectsConflictingSTTMode(t *testing.T) {
+	cfg := &config.Config{STTProvider: "sherpa-streaming", STTMode: "offline"}
+
+	_, _, err := NewProvider(cfg, nil, nil)
+	if err == nil {
+		t.Fatal("NewProvider() error = nil, want stt_mode conflict error")
+	}
+	if !strings.Contains(err.Error(), "conflicts with stt_mode") {
+		t.Fatalf("NewProvider() error = %q, want stt_mode conflict message", err)
+	}
+}
+
 func TestNewProviderRequiresVADForSherpa(t *testing.T) {
 	cfg := &config.Config{STTProvider: "sherpa"}
 
@@ -38,22 +50,28 @@ func TestNewProviderRequiresVADForSherpa(t *testing.T) {
 
 // TestNewProviderRoutesConfiguredAliases proves the normalized provider/mode
 // reaches the matching construction branch. With nil capture every supported
-// alias should fail at its own provider-named capture guard.
+// alias and provider+mode pair should fail at its own provider-named capture
+// guard.
 func TestNewProviderRoutesConfiguredAliases(t *testing.T) {
 	tests := []struct {
+		name     string
 		provider string
+		mode     string
 		wantMsg  string
 	}{
-		{provider: "", wantMsg: "sherpa STT requires audio capture"},
-		{provider: "sherpa", wantMsg: "sherpa STT requires audio capture"},
-		{provider: "sherpa-offline", wantMsg: "sherpa STT requires audio capture"},
-		{provider: "sherpa-streaming", wantMsg: "sherpa-streaming STT requires audio capture"},
-		{provider: "whispercpp", wantMsg: "whispercpp STT requires audio capture"},
+		{name: "default", provider: "", wantMsg: "sherpa STT requires audio capture"},
+		{name: "sherpa", provider: "sherpa", wantMsg: "sherpa STT requires audio capture"},
+		{name: "sherpa-offline", provider: "sherpa-offline", wantMsg: "sherpa STT requires audio capture"},
+		{name: "sherpa-streaming", provider: "sherpa-streaming", wantMsg: "sherpa-streaming STT requires audio capture"},
+		{name: "whispercpp", provider: "whispercpp", wantMsg: "whispercpp STT requires audio capture"},
+		{name: "sherpa with offline mode", provider: "sherpa", mode: "offline", wantMsg: "sherpa STT requires audio capture"},
+		{name: "sherpa with streaming mode", provider: "sherpa", mode: "streaming", wantMsg: "sherpa-streaming STT requires audio capture"},
+		{name: "whispercpp with cli mode", provider: "whispercpp", mode: "cli", wantMsg: "whispercpp STT requires audio capture"},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.provider, func(t *testing.T) {
-			cfg := &config.Config{STTProvider: tt.provider}
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{STTProvider: tt.provider, STTMode: tt.mode}
 
 			_, _, err := NewProvider(cfg, nil, nil)
 			if err == nil {

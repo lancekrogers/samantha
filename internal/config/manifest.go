@@ -138,9 +138,10 @@ func (m AssetManifest) Validate() error {
 // ManifestFor builds the asset manifest describing exactly the assets required
 // for req under cfg. It is pure metadata — no I/O or network — so status, doctor,
 // and the installer can all resolve requirements from one source. STT
-// provider/mode selection uses NormalizeSTT; an unsupported provider yields no
-// STT asset (matching the historical download no-op), while an unsupported model
-// for a recognized provider returns an error naming it.
+// provider/mode selection uses NormalizeSTTWithMode; an unsupported provider
+// yields no STT asset (matching the historical download no-op), while an
+// unsupported model or invalid stt_mode for a recognized provider returns an
+// error naming it.
 func ManifestFor(cfg *Config, req AssetRequest) (AssetManifest, error) {
 	m := AssetManifest{Schema: AssetSchema}
 
@@ -155,7 +156,11 @@ func ManifestFor(cfg *Config, req AssetRequest) (AssetManifest, error) {
 	}
 
 	if req.NeedSTT {
-		if norm, ok := NormalizeSTT(cfg.STTProvider); ok {
+		if _, ok := NormalizeSTT(cfg.STTProvider); ok {
+			norm, err := NormalizeSTTWithMode(cfg.STTProvider, cfg.STTMode)
+			if err != nil {
+				return AssetManifest{}, err
+			}
 			asset, err := sttAsset(cfg, norm)
 			if err != nil {
 				return AssetManifest{}, err
@@ -253,7 +258,9 @@ func (m AssetManifest) ModelFiles() []ModelFile {
 func DefaultAssetRequest(cfg *Config) AssetRequest {
 	// Route through NormalizeSTT so this agrees with ManifestFor on every alias
 	// (including the empty default, which normalizes to sherpa-offline); an
-	// unrecognized provider needs no STT asset, matching the resolver.
+	// unrecognized provider needs no STT asset, matching the resolver. A
+	// recognized provider with an invalid stt_mode still needs STT, so the
+	// mode error surfaces in ManifestFor instead of silently skipping assets.
 	_, sttOK := NormalizeSTT(cfg.STTProvider)
 	return AssetRequest{
 		NeedSTT: sttOK,

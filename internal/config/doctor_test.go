@@ -68,6 +68,37 @@ func TestDiagnoseUnsupportedProviderIsError(t *testing.T) {
 	}
 }
 
+// TestDiagnoseConflictingSTTModeIsError proves an stt_provider/stt_mode
+// conflict surfaces as a doctor error with the resolver's actionable message,
+// and does not leak a misleading model-assets error.
+func TestDiagnoseConflictingSTTModeIsError(t *testing.T) {
+	cfg := &Config{STTProvider: "sherpa-streaming", STTMode: "offline", TTSProvider: "kokoro"}
+	diags := Diagnose(cfg, t.TempDir(), okLookPath)
+	if !HasErrors(diags) {
+		t.Fatal("conflicting stt_mode should produce an error")
+	}
+	byName := diagByName(diags)
+	if byName["stt-provider"].Severity != SeverityError {
+		t.Fatalf("stt-provider severity = %q, want error: %+v", byName["stt-provider"].Severity, diags)
+	}
+	if !strings.Contains(byName["stt-provider"].Detail, "conflicts with stt_mode") {
+		t.Errorf("stt-provider detail = %q, want conflict message", byName["stt-provider"].Detail)
+	}
+	if d, ok := byName["model-assets"]; ok {
+		t.Errorf("unexpected model-assets diagnostic for an stt_mode conflict: %+v", d)
+	}
+}
+
+// TestDiagnoseSTTModeResolvesProvider proves doctor reports the mode-resolved
+// provider for the preferred stt_provider + stt_mode schema.
+func TestDiagnoseSTTModeResolvesProvider(t *testing.T) {
+	cfg := &Config{STTProvider: "sherpa", STTMode: "streaming", TTSProvider: "kokoro"}
+	d := diagByName(Diagnose(cfg, t.TempDir(), okLookPath))["stt-provider"]
+	if d.Severity != SeverityOK || d.Detail != "sherpa/streaming" {
+		t.Fatalf("stt-provider = %+v, want ok sherpa/streaming", d)
+	}
+}
+
 func TestDiagnoseWhisperCPPBinary(t *testing.T) {
 	cfg := &Config{STTProvider: "whispercpp", WhisperCPPModel: "base.en", WhisperCPPBinary: "whisper-cli", TTSProvider: "kokoro"}
 

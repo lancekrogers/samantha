@@ -186,9 +186,13 @@ func runSTTBenchmarks(ctx context.Context, cfg *config.Config) ([]benchmarkResul
 
 	providers := benchmarkSTTProviders
 	if len(providers) == 0 {
-		active := strings.TrimSpace(cfg.STTProvider)
+		norm, err := config.NormalizeSTTWithMode(cfg.STTProvider, cfg.STTMode)
+		if err != nil {
+			return nil, err
+		}
+		active := norm.Alias
 		if active == "" {
-			active = "sherpa"
+			active = norm.Provider
 		}
 		providers = []string{active}
 	}
@@ -227,8 +231,11 @@ func runSingleSTTBenchmark(ctx context.Context, cfg *config.Config, providerName
 		Expected:  expected,
 	}
 
+	// providerName is an explicit alias; clear stt_mode so it fully selects
+	// the path instead of conflicting with the user's configured mode.
 	cfgCopy := *cfg
 	cfgCopy.STTProvider = providerName
+	cfgCopy.STTMode = ""
 
 	if err := config.EnsureRuntimeAssets(ctx, &cfgCopy, config.AssetRequest{NeedSTT: true, NeedVAD: true}, nil); err != nil {
 		return result, err

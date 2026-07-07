@@ -171,9 +171,15 @@ var providersCmd = &cobra.Command{
 
 		fmt.Println()
 		fmt.Printf("  %s\n", sectionStyle.Render("STT (speech-to-text):"))
+		// Highlight the mode-resolved alias so sherpa + stt_mode=streaming
+		// marks the streaming row; a misconfigured pair falls back to the raw
+		// configured value (doctor reports the error).
 		sttActive := cfg.STTProvider
-		if sttActive == "" {
-			sttActive = "sherpa"
+		if norm, err := config.NormalizeSTTWithMode(cfg.STTProvider, cfg.STTMode); err == nil {
+			sttActive = norm.Alias
+			if sttActive == "" {
+				sttActive = norm.Provider
+			}
 		}
 		for _, spec := range stt.Providers() {
 			printProvider(sttActive == spec.Name, spec.Name, spec.Description)

@@ -30,9 +30,12 @@ func Providers() []ProviderSpec {
 
 // NewProvider constructs the configured STT provider and its cleanup hook.
 func NewProvider(cfg *config.Config, capture audioSource, vad *audio.VAD) (Provider, func(), error) {
-	norm, ok := config.NormalizeSTT(cfg.STTProvider)
-	if !ok {
-		return nil, nil, unsupportedProviderError(cfg.STTProvider)
+	norm, err := config.NormalizeSTTWithMode(cfg.STTProvider, cfg.STTMode)
+	if err != nil {
+		if _, ok := config.NormalizeSTT(cfg.STTProvider); !ok {
+			return nil, nil, unsupportedProviderError(cfg.STTProvider)
+		}
+		return nil, nil, err
 	}
 
 	switch {
