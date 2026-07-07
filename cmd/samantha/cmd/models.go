@@ -14,6 +14,9 @@ var (
 	modelsStatusJSON  bool
 	modelsStatusScope scopeFlags
 	modelsEnsureScope scopeFlags
+	modelsCleanUnused bool
+	modelsCleanDryRun bool
+	modelsCleanJSON   bool
 )
 
 // scopeFlags narrows a models command to specific asset kinds. Flags combine as
@@ -139,11 +142,84 @@ func runModelsEnsure(cmd *cobra.Command, cfg *config.Config, req config.AssetReq
 	return nil
 }
 
+var modelsCleanCmd = &cobra.Command{
+	Use:   "clean",
+	Short: "Preview model assets not required by the current configuration (dry-run only)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		return runModelsClean(cmd, cfg, config.ModelsDir(), modelsCleanUnused, modelsCleanDryRun, modelsCleanJSON)
+	},
+}
+
+// runModelsClean lists the paths under modelsDir that the currently required
+// manifest (the full default request for cfg) does not claim. It is preview
+// only: there is no deletion path, and running without --dry-run errors.
+func runModelsClean(cmd *cobra.Command, cfg *config.Config, modelsDir string, unused, dryRun, asJSON bool) error {
+	if !unused {
+		return fmt.Errorf("models clean: --unused is required (only unused-asset cleanup is supported)")
+	}
+	if !dryRun {
+		return fmt.Errorf("models clean: applying deletions is not yet supported — use --dry-run to preview removable assets")
+	}
+
+	manifest, err := config.ManifestFor(cfg, config.DefaultAssetRequest(cfg))
+	if err != nil {
+		return err
+	}
+	candidates, err := manifest.CleanCandidates(cmd.Context(), modelsDir)
+	if err != nil {
+		return err
+	}
+
+	out := cmd.OutOrStdout()
+	if asJSON {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(candidates)
+	}
+
+	fmt.Fprintf(out, "\n  Unused model assets (models dir: %s) — dry run\n\n", modelsDir)
+	if len(candidates) == 0 {
+		fmt.Fprintln(out, "  No removable assets.")
+		fmt.Fprintln(out)
+		return nil
+	}
+
+	var total int64
+	for _, c := range candidates {
+		fmt.Fprintf(out, "  %s (%s)\n", c.Path, formatBytes(c.Size))
+		total += c.Size
+	}
+	fmt.Fprintf(out, "\n  %d candidate(s), %s total. Nothing was deleted.\n\n", len(candidates), formatBytes(total))
+	return nil
+}
+
+// formatBytes renders a byte count with a binary unit suffix.
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
 func init() {
 	modelsStatusCmd.Flags().BoolVar(&modelsStatusJSON, "json", false, "Output machine-readable JSON")
 	modelsStatusScope.register(modelsStatusCmd)
 	modelsEnsureScope.register(modelsEnsureCmd)
+	modelsCleanCmd.Flags().BoolVar(&modelsCleanUnused, "unused", false, "Select assets not required by the current configuration")
+	modelsCleanCmd.Flags().BoolVar(&modelsCleanDryRun, "dry-run", false, "Preview removable assets without deleting anything")
+	modelsCleanCmd.Flags().BoolVar(&modelsCleanJSON, "json", false, "Output machine-readable JSON")
 	modelsCmd.AddCommand(modelsStatusCmd)
 	modelsCmd.AddCommand(modelsEnsureCmd)
+	modelsCmd.AddCommand(modelsCleanCmd)
 	rootCmd.AddCommand(modelsCmd)
 }

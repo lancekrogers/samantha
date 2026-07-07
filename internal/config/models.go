@@ -312,11 +312,12 @@ func downloadAndExtractArchive(ctx context.Context, dir, id, url, name string, c
 		return fmt.Errorf("extract %s: %w", name, err)
 	}
 
-	if err := extractTarStream(bzip2.NewReader(tmp), dir, name, checkFiles); err != nil {
+	names, err := extractTarStream(bzip2.NewReader(tmp), dir, name, checkFiles)
+	if err != nil {
 		return err
 	}
 	if sha256Hex != "" {
-		if err := writeArchiveInstallMarker(dir, id, url, sha256Hex, checkFiles); err != nil {
+		if err := writeArchiveInstallMarkerFiles(dir, id, url, sha256Hex, checkFiles, names); err != nil {
 			return fmt.Errorf("extract %s: write install marker: %w", name, err)
 		}
 	}
@@ -326,14 +327,16 @@ func downloadAndExtractArchive(ctx context.Context, dir, id, url, name string, c
 // extractTarStream extracts a decompressed tar stream into dir. It extracts into
 // a temp directory inside dir, verifies that every check file is present, then
 // promotes each top-level entry into dir, so dir is never left with a partial or
-// rejected extraction. It is the testable core (no bzip2/HTTP).
-func extractTarStream(r io.Reader, dir, name string, checkFiles []string) error {
+// rejected extraction. It returns the promoted top-level entry names (relative to
+// dir) so callers can record the archive's footprint. It is the testable core
+// (no bzip2/HTTP).
+func extractTarStream(r io.Reader, dir, name string, checkFiles []string) ([]string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("extract %s: %w", name, err)
+		return nil, fmt.Errorf("extract %s: %w", name, err)
 	}
 	tmpDir, err := os.MkdirTemp(dir, ".extract-*")
 	if err != nil {
-		return fmt.Errorf("extract %s: %w", name, err)
+		return nil, fmt.Errorf("extract %s: %w", name, err)
 	}
 	committed := false
 	defer func() {
@@ -343,32 +346,34 @@ func extractTarStream(r io.Reader, dir, name string, checkFiles []string) error 
 	}()
 
 	if err := extractTar(tar.NewReader(r), tmpDir, name); err != nil {
-		return err
+		return nil, err
 	}
 	if !archiveExtracted(tmpDir, checkFiles) {
-		return fmt.Errorf("extract %s: archive missing expected files after extraction", name)
+		return nil, fmt.Errorf("extract %s: archive missing expected files after extraction", name)
 	}
 
 	// Promote each top-level entry into the final directory, replacing any stale
 	// partial from a previous run.
 	entries, err := os.ReadDir(tmpDir)
 	if err != nil {
-		return fmt.Errorf("extract %s: %w", name, err)
+		return nil, fmt.Errorf("extract %s: %w", name, err)
 	}
+	names := make([]string, 0, len(entries))
 	for _, e := range entries {
+		names = append(names, e.Name())
 		src := filepath.Join(tmpDir, e.Name())
 		dst := filepath.Join(dir, e.Name())
 		if err := os.RemoveAll(dst); err != nil {
-			return fmt.Errorf("extract %s: clear %s: %w", name, e.Name(), err)
+			return nil, fmt.Errorf("extract %s: clear %s: %w", name, e.Name(), err)
 		}
 		if err := os.Rename(src, dst); err != nil {
-			return fmt.Errorf("extract %s: promote %s: %w", name, e.Name(), err)
+			return nil, fmt.Errorf("extract %s: promote %s: %w", name, e.Name(), err)
 		}
 	}
 
 	committed = true
 	os.RemoveAll(tmpDir)
-	return nil
+	return names, nil
 }
 
 // extractTar extracts every entry of tr into dir, stripping the archive's
@@ -477,6 +482,12 @@ type archiveInstallMarker struct {
 	URL         string            `json:"url"`
 	SHA256      string            `json:"sha256"`
 	CheckHashes map[string]string `json:"check_hashes"`
+	// Files are the top-level entry names promoted into the target dir at
+	// extraction, relative to it. It records the archive's full on-disk footprint
+	// (not just the check-file subset) so cleanup knows every path the asset owns.
+	// Omitted by markers written before this field existed; readers must treat an
+	// absent list conservatively.
+	Files []string `json:"files,omitempty"`
 }
 
 func archiveInstallMarkerPath(dir, id string) string {
@@ -498,6 +509,22 @@ func archiveInstallMarkerPath(dir, id string) string {
 func archiveInstallMarkerExists(dir, id string) bool {
 	_, err := os.Stat(archiveInstallMarkerPath(dir, id))
 	return err == nil
+}
+
+// archiveMarkerFiles returns the recorded top-level extraction footprint for an
+// archive and whether a parseable marker exists. files is nil for legacy markers
+// written before the footprint was recorded, so callers must distinguish "marker
+// present but footprint unknown" (present=true, files=nil) from "no marker".
+func archiveMarkerFiles(dir, id string) (files []string, present bool) {
+	data, err := os.ReadFile(archiveInstallMarkerPath(dir, id))
+	if err != nil {
+		return nil, false
+	}
+	var marker archiveInstallMarker
+	if err := json.Unmarshal(data, &marker); err != nil {
+		return nil, false
+	}
+	return marker.Files, true
 }
 
 func archiveInstallMarkerValid(dir, id, url, sha256Hex string, checkFiles []string) bool {
@@ -528,6 +555,14 @@ func archiveInstallMarkerValid(dir, id, url, sha256Hex string, checkFiles []stri
 }
 
 func writeArchiveInstallMarker(dir, id, url, sha256Hex string, checkFiles []string) error {
+	return writeArchiveInstallMarkerFiles(dir, id, url, sha256Hex, checkFiles, nil)
+}
+
+// writeArchiveInstallMarkerFiles is writeArchiveInstallMarker with the extracted
+// top-level entry list recorded (see archiveInstallMarker.Files). files is nil
+// when the footprint is unknown (e.g. adopting an already-extracted archive),
+// which readers treat as a legacy marker.
+func writeArchiveInstallMarkerFiles(dir, id, url, sha256Hex string, checkFiles, files []string) error {
 	hashes, err := archiveCheckHashes(dir, checkFiles)
 	if err != nil {
 		return err
@@ -537,6 +572,7 @@ func writeArchiveInstallMarker(dir, id, url, sha256Hex string, checkFiles []stri
 		URL:         url,
 		SHA256:      strings.ToLower(sha256Hex),
 		CheckHashes: hashes,
+		Files:       files,
 	}, "", "  ")
 	if err != nil {
 		return err

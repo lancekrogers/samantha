@@ -297,6 +297,110 @@ func TestModelsEnsureReportsAllPresentWhenNothingNeeded(t *testing.T) {
 	}
 }
 
+func runClean(t *testing.T, cfg *config.Config, modelsDir string, unused, dryRun, asJSON bool) (string, error) {
+	t.Helper()
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	err := runModelsClean(cmd, cfg, modelsDir, unused, dryRun, asJSON)
+	return buf.String(), err
+}
+
+func TestModelsCleanFlagValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		unused  bool
+		dryRun  bool
+		wantErr string
+	}{
+		{"bare clean requires --unused", false, false, "--unused is required"},
+		{"bare clean with --dry-run still requires --unused", false, true, "--unused is required"},
+		{"apply without --dry-run is not supported", true, false, "not yet supported"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := runClean(t, fullCfg(), t.TempDir(), tc.unused, tc.dryRun, false)
+			if err == nil || !contains(err.Error(), tc.wantErr) {
+				t.Fatalf("clean error = %v, want it to mention %q", err, tc.wantErr)
+			}
+			if tc.name == "apply without --dry-run is not supported" && !contains(err.Error(), "--dry-run") {
+				t.Errorf("apply error = %v, want it to point at --dry-run", err)
+			}
+			if out != "" {
+				t.Errorf("rejected clean should print nothing, got:\n%s", out)
+			}
+		})
+	}
+}
+
+func TestModelsCleanDryRunReportsOnlyExtras(t *testing.T) {
+	// VAD-only config: silero_vad.onnx is required, everything else is extra.
+	cfg := &config.Config{STTProvider: "none", TTSProvider: "none", VADEnabled: true}
+	dir := t.TempDir()
+	for _, name := range []string{"silero_vad.onnx", "stale.bin"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("data"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out, err := runClean(t, cfg, dir, true, true, false)
+	if err != nil {
+		t.Fatalf("runModelsClean() error = %v", err)
+	}
+	for _, want := range []string{"stale.bin", "1 candidate(s)", "Nothing was deleted"} {
+		if !contains(out, want) {
+			t.Errorf("clean output missing %q:\n%s", want, out)
+		}
+	}
+	if contains(out, "silero_vad.onnx") {
+		t.Errorf("clean output must not list the required asset:\n%s", out)
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "stale.bin")); err != nil || len(data) != 4 {
+		t.Errorf("dry run must not touch candidates: %v", err)
+	}
+}
+
+func TestModelsCleanDryRunReportsNoCandidates(t *testing.T) {
+	cfg := &config.Config{STTProvider: "none", TTSProvider: "none", VADEnabled: false}
+
+	out, err := runClean(t, cfg, t.TempDir(), true, true, false)
+	if err != nil {
+		t.Fatalf("runModelsClean() error = %v", err)
+	}
+	if !contains(out, "No removable assets") {
+		t.Errorf("empty clean should report no removable assets:\n%s", out)
+	}
+}
+
+func TestModelsCleanJSONIsMachineReadable(t *testing.T) {
+	cfg := &config.Config{STTProvider: "none", TTSProvider: "none", VADEnabled: false}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "stale.bin"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runClean(t, cfg, dir, true, true, true)
+	if err != nil {
+		t.Fatalf("runModelsClean() error = %v", err)
+	}
+	var candidates []config.CleanCandidate
+	if err := json.Unmarshal([]byte(out), &candidates); err != nil {
+		t.Fatalf("--json output is not valid JSON: %v\n%s", err, out)
+	}
+	if len(candidates) != 1 || candidates[0].Path != filepath.Join(dir, "stale.bin") || candidates[0].Size != 4 {
+		t.Fatalf("json candidates = %+v, want one 4-byte stale.bin", candidates)
+	}
+}
+
+func TestModelsCleanCommandRegistersFlags(t *testing.T) {
+	for _, name := range []string{"unused", "dry-run", "json"} {
+		if modelsCleanCmd.Flags().Lookup(name) == nil {
+			t.Errorf("clean command missing --%s flag", name)
+		}
+	}
+}
+
 func contains(s, sub string) bool {
 	return bytes.Contains([]byte(s), []byte(sub))
 }
