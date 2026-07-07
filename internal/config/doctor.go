@@ -1,6 +1,8 @@
 package config
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -104,6 +106,61 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 	}
 
 	return diags
+}
+
+// VoiceDeviceChecker probes audio hardware availability. Implementations must
+// honor ctx cancellation and deadlines so a wedged backend cannot hang doctor.
+type VoiceDeviceChecker interface {
+	CaptureDevices(ctx context.Context) ([]string, error)
+	PlaybackDevices(ctx context.Context) ([]string, error)
+}
+
+// DiagnoseVoiceDevices checks microphone and speaker availability through
+// checker. It is opt-in (doctor --voice-devices) because it touches audio
+// hardware; the default Diagnose stays read-only and hardware-free. ctx should
+// carry a short timeout.
+func DiagnoseVoiceDevices(ctx context.Context, checker VoiceDeviceChecker) []Diagnostic {
+	return []Diagnostic{
+		voiceDeviceDiagnostic(ctx, "voice:microphone",
+			"connect a microphone and allow microphone access for your terminal in OS privacy settings",
+			checker.CaptureDevices),
+		voiceDeviceDiagnostic(ctx, "voice:speaker",
+			"connect or enable an output device in OS sound settings",
+			checker.PlaybackDevices),
+	}
+}
+
+func voiceDeviceDiagnostic(ctx context.Context, name, remediation string, list func(context.Context) ([]string, error)) Diagnostic {
+	devices, err := list(ctx)
+	switch {
+	case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
+		return Diagnostic{
+			Name:        name,
+			Severity:    SeverityWarn,
+			Detail:      fmt.Sprintf("device probe timed out: %v", err),
+			Remediation: "audio backend did not respond; close other apps using audio and retry, or check OS audio permissions",
+		}
+	case err != nil:
+		return Diagnostic{
+			Name:        name,
+			Severity:    SeverityError,
+			Detail:      fmt.Sprintf("device probe failed: %v", err),
+			Remediation: remediation,
+		}
+	case len(devices) == 0:
+		return Diagnostic{
+			Name:        name,
+			Severity:    SeverityError,
+			Detail:      "no devices found",
+			Remediation: remediation,
+		}
+	default:
+		return Diagnostic{
+			Name:     name,
+			Severity: SeverityOK,
+			Detail:   fmt.Sprintf("%d device(s): %s", len(devices), strings.Join(devices, ", ")),
+		}
+	}
 }
 
 // HasErrors reports whether any diagnostic has error severity.

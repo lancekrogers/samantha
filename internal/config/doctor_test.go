@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -128,6 +129,102 @@ func TestDiagnoseNeverRequiresMicrophone(t *testing.T) {
 	}
 	if got := diagByName(diags)["asset:tts.kokoro.multi-lang-v1_0"].Severity; got != SeverityOK {
 		t.Errorf("kokoro asset severity = %q, want ok", got)
+	}
+}
+
+// fakeDeviceChecker implements VoiceDeviceChecker without touching hardware.
+type fakeDeviceChecker struct {
+	capture, playback []string
+	err               error
+}
+
+func (f fakeDeviceChecker) CaptureDevices(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return f.capture, f.err
+}
+
+func (f fakeDeviceChecker) PlaybackDevices(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return f.playback, f.err
+}
+
+func TestDiagnoseVoiceDevicesProbeFailureIsError(t *testing.T) {
+	diags := DiagnoseVoiceDevices(context.Background(), fakeDeviceChecker{err: errors.New("backend broken")})
+	byName := diagByName(diags)
+	for _, name := range []string{"voice:microphone", "voice:speaker"} {
+		if byName[name].Severity != SeverityError {
+			t.Errorf("%s severity = %q, want error: %+v", name, byName[name].Severity, byName[name])
+		}
+		if byName[name].Remediation == "" {
+			t.Errorf("%s probe failure should include remediation", name)
+		}
+	}
+}
+
+func TestDiagnoseVoiceDevicesNoDevicesIsError(t *testing.T) {
+	diags := DiagnoseVoiceDevices(context.Background(), fakeDeviceChecker{playback: []string{"Speaker"}})
+	byName := diagByName(diags)
+	mic := byName["voice:microphone"]
+	if mic.Severity != SeverityError || !strings.Contains(mic.Detail, "no devices found") {
+		t.Errorf("missing microphone should be an error: %+v", mic)
+	}
+	if !strings.Contains(mic.Remediation, "microphone") {
+		t.Errorf("microphone error should hint at permissions/connection: %+v", mic)
+	}
+	if byName["voice:speaker"].Severity != SeverityOK {
+		t.Errorf("present speaker should be OK: %+v", byName["voice:speaker"])
+	}
+}
+
+func TestDiagnoseVoiceDevicesTimeoutIsWarning(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 0)
+	defer cancel()
+	<-ctx.Done()
+
+	diags := DiagnoseVoiceDevices(ctx, fakeDeviceChecker{capture: []string{"Mic"}, playback: []string{"Speaker"}})
+	if HasErrors(diags) {
+		t.Fatalf("timed-out probe must be a warning, not an error: %+v", diags)
+	}
+	for _, d := range diags {
+		if d.Severity != SeverityWarn {
+			t.Errorf("%s severity = %q, want warn on timeout", d.Name, d.Severity)
+		}
+		if !strings.Contains(d.Detail, "timed out") || d.Remediation == "" {
+			t.Errorf("timeout diagnostic should explain and remediate: %+v", d)
+		}
+	}
+}
+
+func TestDiagnoseVoiceDevicesCancelledContextIsWarning(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	diags := DiagnoseVoiceDevices(ctx, fakeDeviceChecker{capture: []string{"Mic"}})
+	if HasErrors(diags) {
+		t.Fatalf("cancelled probe must not be an error: %+v", diags)
+	}
+	if diagByName(diags)["voice:microphone"].Severity != SeverityWarn {
+		t.Errorf("cancelled context should produce warnings: %+v", diags)
+	}
+}
+
+func TestDiagnoseVoiceDevicesHealthy(t *testing.T) {
+	diags := DiagnoseVoiceDevices(context.Background(), fakeDeviceChecker{
+		capture:  []string{"Built-in Mic"},
+		playback: []string{"Built-in Speaker", "Headphones"},
+	})
+	byName := diagByName(diags)
+	mic := byName["voice:microphone"]
+	if mic.Severity != SeverityOK || !strings.Contains(mic.Detail, "Built-in Mic") {
+		t.Errorf("microphone diagnostic should list devices: %+v", mic)
+	}
+	spk := byName["voice:speaker"]
+	if spk.Severity != SeverityOK || !strings.Contains(spk.Detail, "2 device(s)") {
+		t.Errorf("speaker diagnostic should count devices: %+v", spk)
 	}
 }
 
