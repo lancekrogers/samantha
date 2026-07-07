@@ -6,6 +6,32 @@ import (
 	"testing"
 )
 
+// TestScopedAssetRequestNarrowsDefault proves scoping only masks kinds out of
+// the default request — it never requests an asset the config does not need.
+func TestScopedAssetRequestNarrowsDefault(t *testing.T) {
+	full := &Config{STTProvider: "sherpa", TTSProvider: "kokoro", VADEnabled: true}
+	bare := &Config{STTProvider: "none", TTSProvider: "none", VADEnabled: false}
+	cases := []struct {
+		name  string
+		cfg   *Config
+		scope AssetScope
+		want  AssetRequest
+	}{
+		{"full scope matches default", full, AssetScope{STT: true, TTS: true, VAD: true}, DefaultAssetRequest(full)},
+		{"tts scope drops stt and vad", full, AssetScope{TTS: true}, AssetRequest{NeedTTS: true}},
+		{"stt and vad scope drops tts", full, AssetScope{STT: true, VAD: true}, AssetRequest{NeedSTT: true, NeedVAD: true}},
+		{"scope cannot add unneeded assets", bare, AssetScope{STT: true, TTS: true, VAD: true}, AssetRequest{}},
+		{"empty scope requests nothing", full, AssetScope{}, AssetRequest{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ScopedAssetRequest(tc.cfg, tc.scope); got != tc.want {
+				t.Errorf("ScopedAssetRequest() = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestManifestForBatchRenderingResolvesTTSOnly proves batch rendering pulls only
 // the TTS asset — no STT or VAD providers are initialized.
 func TestManifestForBatchRenderingResolvesTTSOnly(t *testing.T) {

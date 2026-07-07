@@ -248,18 +248,33 @@ func (m AssetManifest) ModelFiles() []ModelFile {
 	return files
 }
 
-// DefaultAssetRequest returns the asset request the default setup/startup path
-// uses for cfg — the same provider selection EnsureModels applies.
-func DefaultAssetRequest(cfg *Config) AssetRequest {
+// AssetScope selects which asset kinds a request should cover.
+type AssetScope struct {
+	STT bool
+	TTS bool
+	VAD bool
+}
+
+// ScopedAssetRequest returns the asset request for cfg narrowed to the kinds
+// selected in scope. Kinds outside the scope are never requested; kinds inside
+// it are requested only when cfg needs them, exactly as DefaultAssetRequest
+// decides.
+func ScopedAssetRequest(cfg *Config, scope AssetScope) AssetRequest {
 	// Route through NormalizeSTT so this agrees with ManifestFor on every alias
 	// (including the empty default, which normalizes to sherpa-offline); an
 	// unrecognized provider needs no STT asset, matching the resolver.
 	_, sttOK := NormalizeSTT(cfg.STTProvider)
 	return AssetRequest{
-		NeedSTT: sttOK,
-		NeedTTS: ManagedTTS(cfg),
-		NeedVAD: cfg.VADEnabled,
+		NeedSTT: scope.STT && sttOK,
+		NeedTTS: scope.TTS && ManagedTTS(cfg),
+		NeedVAD: scope.VAD && cfg.VADEnabled,
 	}
+}
+
+// DefaultAssetRequest returns the asset request the default setup/startup path
+// uses for cfg — the same provider selection EnsureModels applies.
+func DefaultAssetRequest(cfg *Config) AssetRequest {
+	return ScopedAssetRequest(cfg, AssetScope{STT: true, TTS: true, VAD: true})
 }
 
 // AssetStatus reports the on-disk installation state of one asset.
