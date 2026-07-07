@@ -5,7 +5,6 @@ package cmd
 import (
 	"archive/zip"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -152,20 +151,6 @@ func newRenderSynth(ctx context.Context, opts *render.Options) (render.Synthesiz
 	return &ttsSynth{provider: provider, id: synthIdentityFor(cfg)}, cleanup, nil
 }
 
-// applyVoiceOverrides folds CLI --voice/--speed into cfg and writes the
-// resolved effective values back into opts, so manifests and resume keys record
-// the voice/speed actually used even when they came from config.
-func applyVoiceOverrides(cfg *config.Config, opts *render.Options) {
-	if opts.Voice != "" {
-		cfg.TTSVoice = opts.Voice
-	}
-	if opts.Speed > 0 {
-		cfg.SpeechSpeed = opts.Speed
-	}
-	opts.Voice = cfg.TTSVoice
-	opts.Speed = cfg.SpeechSpeed
-}
-
 // synthIdentityFor describes the TTS engine for resume keys: the provider,
 // output-affecting provider settings, and the effective voice/speed after config
 // plus CLI overrides have been resolved.
@@ -234,12 +219,6 @@ func finishRender(cmd *cobra.Command, opts render.Options, manifest render.Rende
 	}
 	human(out, manifestPath, encoded)
 	return renderErr
-}
-
-func writeRenderJSON(out io.Writer, payload map[string]any) error {
-	enc := json.NewEncoder(out)
-	enc.SetIndent("", "  ")
-	return enc.Encode(payload)
 }
 
 // extractRenderText reads the input and converts it to narration text according

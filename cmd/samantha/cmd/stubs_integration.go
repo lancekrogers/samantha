@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"github.com/lancekrogers/samantha/internal/config"
 )
 
 var providersCmd = &cobra.Command{
@@ -34,5 +36,5 @@ var providersCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(providersCmd)
 	rootCmd.AddCommand(newRenderCmd(runRenderPlan))
-	rootCmd.AddCommand(newAudiobookCmd(runRenderPlan))
+	rootCmd.AddCommand(newAudiobookCmd(runRenderPlan, config.Load))
 }
