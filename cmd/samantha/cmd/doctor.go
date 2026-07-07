@@ -1,16 +1,26 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
 )
 
-var doctorJSON bool
+var (
+	doctorJSON         bool
+	doctorVoiceDevices bool
+)
+
+// voiceDeviceProbeTimeout bounds the opt-in hardware probe so a wedged audio
+// backend cannot hang doctor.
+const voiceDeviceProbeTimeout = 3 * time.Second
 
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
@@ -20,7 +30,11 @@ var doctorCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runDoctor(cmd, cfg, config.ModelsDir(), exec.LookPath, doctorJSON)
+		var checker config.VoiceDeviceChecker
+		if doctorVoiceDevices {
+			checker = audio.NewDeviceChecker()
+		}
+		return runDoctor(cmd, cfg, config.ModelsDir(), exec.LookPath, checker, doctorJSON)
 	},
 }
 
@@ -31,9 +45,22 @@ var severityMark = map[config.Severity]string{
 }
 
 // runDoctor prints read-only setup diagnostics and returns an error (non-zero
-// exit) only when a check has error severity. lookPath is injectable for tests.
-func runDoctor(cmd *cobra.Command, cfg *config.Config, modelsDir string, lookPath func(string) (string, error), asJSON bool) error {
+// exit) only when a check has error severity. lookPath is injectable for
+// tests. voiceChecker is nil unless --voice-devices opted in to hardware
+// probes (inject a fake in tests).
+func runDoctor(cmd *cobra.Command, cfg *config.Config, modelsDir string, lookPath func(string) (string, error), voiceChecker config.VoiceDeviceChecker, asJSON bool) error {
 	diags := config.Diagnose(cfg, modelsDir, lookPath)
+
+	if voiceChecker != nil {
+		parent := cmd.Context()
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(parent, voiceDeviceProbeTimeout)
+		defer cancel()
+		diags = append(diags, config.DiagnoseVoiceDevices(ctx, voiceChecker)...)
+	}
+
 	out := cmd.OutOrStdout()
 
 	if asJSON {
@@ -61,5 +88,6 @@ func runDoctor(cmd *cobra.Command, cfg *config.Config, modelsDir string, lookPat
 
 func init() {
 	doctorCmd.Flags().BoolVar(&doctorJSON, "json", false, "Output machine-readable JSON")
+	doctorCmd.Flags().BoolVar(&doctorVoiceDevices, "voice-devices", false, "Also probe microphone/speaker availability (touches audio hardware)")
 	rootCmd.AddCommand(doctorCmd)
 }
