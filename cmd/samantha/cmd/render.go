@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 
 	"github.com/spf13/cobra"
 
+	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/render"
 )
 
@@ -79,6 +82,26 @@ func addRenderPassthroughFlags(cmd *cobra.Command, opts *render.Options) {
 	f.BoolVar(&opts.Overwrite, "overwrite", false, "Replace existing outputs")
 	f.StringVar(&opts.AudioFormat, "audio-format", "", "Also encode output to mp3|m4a|m4b|aac|opus via an external encoder (WAV is always written)")
 	f.StringVar(&opts.EncoderBin, "encoder", "", "External encoder binary to use (default: ffmpeg)")
+}
+
+// applyVoiceOverrides folds CLI --voice/--speed into cfg and writes the
+// resolved effective values back into opts, so manifests and resume keys record
+// the voice/speed actually used even when they came from config.
+func applyVoiceOverrides(cfg *config.Config, opts *render.Options) {
+	if opts.Voice != "" {
+		cfg.TTSVoice = opts.Voice
+	}
+	if opts.Speed > 0 {
+		cfg.SpeechSpeed = opts.Speed
+	}
+	opts.Voice = cfg.TTSVoice
+	opts.Speed = cfg.SpeechSpeed
+}
+
+func writeRenderJSON(out io.Writer, payload map[string]any) error {
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	return enc.Encode(payload)
 }
 
 // runRenderPlan reports the resolved render plan. The synthesis runtime is wired
