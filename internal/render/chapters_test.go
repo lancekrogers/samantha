@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -153,6 +155,76 @@ func TestChapterFilenameFallbacks(t *testing.T) {
 	}
 	if got := chapterFilename(3, RenderChapter{}); got != "003.wav" {
 		t.Errorf("index-only filename = %q", got)
+	}
+}
+
+// TestChapterFilenameLocksSlugRules locks the exact slug rules behind generated
+// WAV filenames (case folding, punctuation collapsing, unicode stripping, the
+// 40-char cap, dash trimming). A refactor that changes any of these silently
+// breaks resume against existing output directories.
+func TestChapterFilenameLocksSlugRules(t *testing.T) {
+	cases := []struct {
+		name  string
+		index int
+		ch    RenderChapter
+		want  string
+	}{
+		{"unicode-only title falls back to id", 4, RenderChapter{ID: "ch1", Title: "第一章"}, "004-ch1.wav"},
+		{"punctuation collapses to single dashes", 1, RenderChapter{Title: "What's New?? (2025 Edition)"}, "001-what-s-new-2025-edition.wav"},
+		{"case folds and whitespace dashes", 2, RenderChapter{Title: "THE Quick   Brown Fox"}, "002-the-quick-brown-fox.wav"},
+		{"long title caps at 40 chars", 3, RenderChapter{Title: strings.Repeat("abcde ", 10)}, "003-abcde-abcde-abcde-abcde-abcde-abcde-abcd.wav"},
+		{"cap trims a trailing dash", 5, RenderChapter{Title: strings.Repeat("abcd ", 12)}, "005-abcd-abcd-abcd-abcd-abcd-abcd-abcd-abcd.wav"},
+		{"title wins over id", 6, RenderChapter{ID: "xhtml-6", Title: "Epilogue"}, "006-epilogue.wav"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := chapterFilename(c.index, c.ch); got != c.want {
+				t.Errorf("chapterFilename(%d, %+v) = %q, want %q", c.index, c.ch, got, c.want)
+			}
+		})
+	}
+}
+
+// TestRenderChaptersManifestGolden pins the entire chaptered manifest for a
+// fixed input: chapter order, segment IDs (explicit and ch-NNN fallback),
+// titles, output filenames, source_format, and header fields. RenderChapters
+// refactors must reproduce this manifest exactly.
+func TestRenderChaptersManifestGolden(t *testing.T) {
+	dir := t.TempDir()
+	opts := Options{Input: "book.epub", OutDir: dir, Format: FormatEPUB, Voice: "af_bella", Speed: 1.0, Title: "Golden Book"}
+	chapters := []RenderChapter{
+		{ID: "intro", Title: "Introduction", Text: "Welcome to the golden book."},
+		{Title: "Chapter One!", Text: "First chapter body."},
+		{ID: "ch-three", Text: "Third chapter body."},
+	}
+
+	m, err := RenderChapters(context.Background(), opts, chapters, &fakeSynth{rate: 24000}, recordingWriter(new([]string)))
+	if err != nil {
+		t.Fatalf("RenderChapters() error = %v", err)
+	}
+
+	want := RenderManifest{
+		Schema:       RenderSchema,
+		Title:        "Golden Book",
+		Source:       "book.epub",
+		SourceFormat: FormatEPUB,
+		Voice:        "af_bella",
+		SpeechSpeed:  1.0,
+		SampleRate:   24000,
+		Segments: []ManifestSegment{
+			{Index: 1, ID: "intro", Title: "Introduction", TextSHA256: textHash(chapters[0].Text),
+				ResumeKey: resumeKey(opts, "", chapters[0].Text, "001-introduction.wav"),
+				Output:    "001-introduction.wav", DurationMS: 1, Status: StatusComplete},
+			{Index: 2, ID: "ch-002", Title: "Chapter One!", TextSHA256: textHash(chapters[1].Text),
+				ResumeKey: resumeKey(opts, "", chapters[1].Text, "002-chapter-one.wav"),
+				Output:    "002-chapter-one.wav", DurationMS: 0, Status: StatusComplete},
+			{Index: 3, ID: "ch-three", TextSHA256: textHash(chapters[2].Text),
+				ResumeKey: resumeKey(opts, "", chapters[2].Text, "003-ch-three.wav"),
+				Output:    "003-ch-three.wav", DurationMS: 0, Status: StatusComplete},
+		},
+	}
+	if !reflect.DeepEqual(m, want) {
+		t.Errorf("manifest drifted from golden.\n got: %+v\nwant: %+v", m, want)
 	}
 }
 
