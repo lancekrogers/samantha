@@ -3,12 +3,115 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/spf13/cobra"
 
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/render"
 )
+
+func chapteredManifest() render.RenderManifest {
+	return render.RenderManifest{
+		Schema: render.RenderSchema, Source: "book.epub", SourceFormat: render.FormatEPUB, SampleRate: 24000,
+		Segments: []render.ManifestSegment{
+			{Index: 1, ID: "ch1", Output: "001-one.wav", DurationMS: 10, Status: render.StatusComplete},
+			{Index: 2, ID: "ch2", Output: "002-two.wav", DurationMS: 15, Status: render.StatusSkipped},
+			{Index: 3, ID: "ch3", Status: render.StatusFailed},
+		},
+	}
+}
+
+func runFinishRender(t *testing.T, opts render.Options, renderErr error) (string, error) {
+	t.Helper()
+	cmd := &cobra.Command{}
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	err := finishRender(cmd, opts, chapteredManifest(), nil, renderReport{outputKey: "output_dir", output: opts.OutDir}, renderErr, nil)
+	return buf.String(), err
+}
+
+// TestFinishRenderChapteredPartialFailure locks failure-path persistence: a
+// render error must still write the manifest (so the run is resumable) and be
+// returned alongside the summary.
+func TestFinishRenderChapteredPartialFailure(t *testing.T) {
+	dir := t.TempDir()
+	opts := render.Options{Input: "book.epub", OutDir: dir, Format: render.FormatEPUB, JSON: true}
+	sentinel := errors.New("chapter failed")
+
+	out, err := runFinishRender(t, opts, sentinel)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("finishRender() error = %v, want the render error passed through", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "manifest.json")); statErr != nil {
+		t.Errorf("manifest not persisted on partial failure: %v", statErr)
+	}
+	var got map[string]any
+	if jsonErr := json.Unmarshal([]byte(out), &got); jsonErr != nil {
+		t.Fatalf("summary is not JSON: %v\n%s", jsonErr, out)
+	}
+	if got["failed"] != 1.0 || got["completed"] != 1.0 {
+		t.Errorf("summary counts = failed %v completed %v, want 1/1", got["failed"], got["completed"])
+	}
+}
+
+// TestFinishRenderChapteredJSONSummary locks the chaptered --json contract
+// (key set and values) and the persisted manifest side effect: source_format
+// survives and CreatedAt is stamped as RFC3339.
+func TestFinishRenderChapteredJSONSummary(t *testing.T) {
+	dir := t.TempDir()
+	opts := render.Options{Input: "book.epub", OutDir: dir, Format: render.FormatEPUB, JSON: true}
+
+	out, err := runFinishRender(t, opts, nil)
+	if err != nil {
+		t.Fatalf("finishRender() error = %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("summary is not JSON: %v\n%s", err, out)
+	}
+	want := map[string]any{
+		"output_dir":  dir,
+		"manifest":    filepath.Join(dir, "manifest.json"),
+		"segments":    3.0,
+		"completed":   1.0,
+		"skipped":     1.0,
+		"failed":      1.0,
+		"encoded":     nil,
+		"sample_rate": 24000.0,
+		"duration_ms": 25.0,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("--json summary drifted.\n got: %#v\nwant: %#v", got, want)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatalf("read persisted manifest: %v", err)
+	}
+	var persisted render.RenderManifest
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatalf("persisted manifest is not valid JSON: %v", err)
+	}
+	if persisted.SourceFormat != render.FormatEPUB || persisted.Source != "book.epub" {
+		t.Errorf("persisted source = %q/%q, want book.epub/epub", persisted.Source, persisted.SourceFormat)
+	}
+	if _, err := time.Parse(time.RFC3339, persisted.CreatedAt); err != nil {
+		t.Errorf("persisted created_at %q is not RFC3339: %v", persisted.CreatedAt, err)
+	}
+	if len(persisted.Segments) != 3 || persisted.Segments[0].Output != "001-one.wav" {
+		t.Errorf("persisted segments = %+v, want the render manifest unchanged", persisted.Segments)
+	}
+}
 
 func TestSynthIdentityIncludesEffectiveVoiceAndSpeed(t *testing.T) {
 	base := synthIdentityFor(&config.Config{
