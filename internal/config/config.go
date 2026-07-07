@@ -22,6 +22,7 @@ type Config struct {
 
 	// STT
 	STTProvider          string `mapstructure:"stt_provider"`
+	STTMode              string `mapstructure:"stt_mode"`
 	SherpaStreamingModel string `mapstructure:"sherpa_streaming_model"`
 	WhisperModel         string `mapstructure:"whisper_model"`
 	WhisperQuantized     bool   `mapstructure:"whisper_quantized"`
@@ -83,6 +84,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("speech_speed", 0.95)
 
 	v.SetDefault("stt_provider", "sherpa")
+	v.SetDefault("stt_mode", "")
 	v.SetDefault("sherpa_streaming_model", "en-2023-06-26")
 	v.SetDefault("whisper_model", "small")
 	v.SetDefault("whisper_quantized", true)
@@ -132,6 +134,7 @@ func Load() (*Config, error) {
 		"tts_provider":            "TTS_PROVIDER",
 		"tts_voice":               "TTS_VOICE",
 		"stt_provider":            "STT_PROVIDER",
+		"stt_mode":                "STT_MODE",
 		"sherpa_streaming_model":  "SHERPA_STREAMING_MODEL",
 		"whisper_model":           "WHISPER_MODEL",
 		"whispercpp_binary":       "WHISPERCPP_BINARY",
