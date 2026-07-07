@@ -125,6 +125,34 @@ func TestCLI_RenderRequiresOutput(t *testing.T) {
 	}
 }
 
+func TestCLI_AudiobookCreateHelp(t *testing.T) {
+	tc := GetSharedContainer(t)
+
+	output, err := tc.RunSamantha("audiobook", "create", "--help")
+	if err != nil {
+		t.Fatalf("samantha audiobook create --help failed: %v", err)
+	}
+	for _, want := range []string{"EPUB", "--out-dir", "--resume", "--audio-format"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("audiobook create --help should document %q, got: %s", want, output)
+		}
+	}
+}
+
+func TestCLI_AudiobookCreatePlan(t *testing.T) {
+	tc := GetSharedContainer(t)
+
+	// The integration binary uses the plan-only render runner, so a valid
+	// create invocation reports the plan without synthesizing audio.
+	output, err := tc.RunSamantha("audiobook", "create", "book.epub", "--out-dir", "out/book", "--json")
+	if err != nil {
+		t.Fatalf("samantha audiobook create failed: %v", err)
+	}
+	if !strings.Contains(output, "out/book") {
+		t.Errorf("plan output should mention out/book, got: %s", output)
+	}
+}
+
 func TestCLI_Doctor(t *testing.T) {
 	tc := GetSharedContainer(t)
 

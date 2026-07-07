@@ -124,6 +124,20 @@ samantha render book.epub --out-dir out/book --audio-format mp3
 samantha render book.epub --out-dir out/book --resume --json | jq '.failed'
 ```
 
+### Audiobook creation
+
+`samantha audiobook create` is a task-oriented wrapper over the same render
+runtime for EPUB books: one WAV per chapter (spine order) plus a manifest under
+`--out-dir` (required). It accepts render's pass-through flags (`--resume`,
+`--voice`, `--speed`, `--audio-format`, `--encoder`, `--json`, `--manifest`,
+`--overwrite`). Only EPUB input is supported yet; use `samantha render` for
+markdown, HTML, URL, and text sources.
+
+```bash
+samantha audiobook create book.epub --out-dir out/book
+samantha audiobook create book.epub --out-dir out/book --audio-format m4b --resume --json
+```
+
 ## Configuration
 
 Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be overridden with environment variables where listed.
