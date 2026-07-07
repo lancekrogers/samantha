@@ -42,6 +42,20 @@ func (d Document) Narration() string {
 	return b.String()
 }
 
+// Units converts the document's top-level sections into ordered render units:
+// one unit per section, narrated the same way Narration() reads it (title then
+// body). Section IDs, titles, and text pass through unchanged, so unit
+// identity is as stable as the extractor's section IDs. A section with no
+// narratable text converts to an empty-text unit, which the render path
+// records as skipped — identical to an empty chapter.
+func (d Document) Units() []RenderUnit {
+	units := make([]RenderUnit, 0, len(d.Sections))
+	for _, s := range d.Sections {
+		units = append(units, RenderUnit{ID: s.ID, Title: s.Title, Text: s.narration(), SourceRef: d.Source})
+	}
+	return units
+}
+
 func (s DocumentSection) narration() string {
 	var parts []string
 	if t := strings.TrimSpace(s.Title); t != "" {
