@@ -46,14 +46,20 @@ func init() {
 	}
 }
 
+const kokoroProviderName = "kokoro"
+
 // KokoroTTS implements TTS using sherpa-onnx Kokoro.
 type KokoroTTS struct {
-	mu    sync.Mutex
-	tts   *sherpa.OfflineTts
-	alive atomic.Bool
-	voice string
-	speed float32
-	sid   int
+	mu         sync.Mutex
+	tts        *sherpa.OfflineTts
+	alive      atomic.Bool
+	voice      string
+	speed      float32
+	sid        int
+	sampleRate int
+
+	// generateFn overrides sherpa generation in tests.
+	generateFn func(text string, sid int, speed float32) *sherpa.GeneratedAudio
 }
 
 // NewKokoroTTS creates a Kokoro TTS provider via sherpa-onnx.
@@ -96,10 +102,11 @@ func NewKokoroTTS(cfg *config.Config) (*KokoroTTS, error) {
 	}
 
 	k := &KokoroTTS{
-		tts:   tts,
-		voice: cfg.TTSVoice,
-		speed: float32(cfg.SpeechSpeed),
-		sid:   sid,
+		tts:        tts,
+		voice:      cfg.TTSVoice,
+		speed:      float32(cfg.SpeechSpeed),
+		sid:        sid,
+		sampleRate: tts.SampleRate(),
 	}
 	k.alive.Store(true)
 	return k, nil
@@ -107,6 +114,35 @@ func NewKokoroTTS(cfg *config.Config) (*KokoroTTS, error) {
 
 // Synthesize streams synthesized PCM frames for the given text.
 func (k *KokoroTTS) Synthesize(ctx context.Context, text string) (*audio.PCMStream, error) {
+	result, err := k.SynthesizeRequest(ctx, SynthesisRequest{Text: text})
+	if err != nil {
+		return nil, err
+	}
+	return result.Stream, nil
+}
+
+// SynthesizeRequest streams synthesized PCM frames for a typed request. Empty
+// Voice and zero Speed fall back to the configured defaults; an explicit
+// unknown voice or non-native sample rate is an error.
+func (k *KokoroTTS) SynthesizeRequest(ctx context.Context, req SynthesisRequest) (SynthesisResult, error) {
+	voice, sid := k.voice, k.sid
+	if req.Voice != "" {
+		s, ok := voiceToSID[req.Voice]
+		if !ok {
+			return SynthesisResult{}, fmt.Errorf("unknown kokoro voice %q", req.Voice)
+		}
+		voice, sid = req.Voice, s
+	}
+
+	speed := k.speed
+	if req.Speed != 0 {
+		speed = float32(req.Speed)
+	}
+
+	if req.SampleRate != 0 && req.SampleRate != k.sampleRate {
+		return SynthesisResult{}, fmt.Errorf("kokoro cannot resample to %d Hz (native rate %d Hz)", req.SampleRate, k.sampleRate)
+	}
+
 	stream := audio.NewPCMStream(ctx)
 
 	go func() {
@@ -121,7 +157,7 @@ func (k *KokoroTTS) Synthesize(ctx context.Context, text string) (*audio.PCMStre
 			return
 		}
 
-		audioResult := k.generate(textclean.StripUnsupportedKokoroMarks(text))
+		audioResult := k.generate(textclean.StripUnsupportedKokoroMarks(req.Text), sid, speed)
 		if audioResult == nil {
 			stream.CloseWithError(fmt.Errorf("TTS generation returned nil"))
 			return
@@ -153,16 +189,24 @@ func (k *KokoroTTS) Synthesize(ctx context.Context, text string) (*audio.PCMStre
 		stream.Close()
 	}()
 
-	return stream, nil
+	return SynthesisResult{
+		Stream:     stream,
+		SampleRate: k.sampleRate,
+		Provider:   kokoroProviderName,
+		Voice:      voice,
+	}, nil
 }
 
-func (k *KokoroTTS) generate(text string) *sherpa.GeneratedAudio {
+func (k *KokoroTTS) generate(text string, sid int, speed float32) *sherpa.GeneratedAudio {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if k.generateFn != nil {
+		return k.generateFn(text, sid, speed)
+	}
 	if k.tts == nil {
 		return nil // deleted while a synthesis was queued
 	}
-	return k.tts.Generate(text, k.sid, k.speed)
+	return k.tts.Generate(text, sid, speed)
 }
 
 // Available returns true if TTS is ready. It reads an atomic flag rather than
