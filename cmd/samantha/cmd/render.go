@@ -61,17 +61,24 @@ Scripting:
 	f.StringVar((*string)(&opts.Format), "format", string(render.FormatAuto), "Input format: text|markdown|html|url|epub|auto")
 	f.StringVar(&opts.Out, "out", "", "Write a single audio file to PATH")
 	f.StringVar(&opts.OutDir, "out-dir", "", "Write chapter/segment files and a manifest to DIR")
+	f.StringVar(&opts.Title, "title", "", "Override the document title")
+	addRenderPassthroughFlags(cmd, &opts)
+
+	return cmd
+}
+
+// addRenderPassthroughFlags registers the render flags shared with task
+// wrappers such as `audiobook create`, so their semantics cannot drift apart.
+func addRenderPassthroughFlags(cmd *cobra.Command, opts *render.Options) {
+	f := cmd.Flags()
 	f.StringVar(&opts.Voice, "voice", "", "Override the configured TTS voice")
 	f.Float64Var(&opts.Speed, "speed", 0, "Override the configured speech speed")
-	f.StringVar(&opts.Title, "title", "", "Override the document title")
 	f.StringVar(&opts.Manifest, "manifest", "", "Write the render manifest to PATH (default OUT_DIR/manifest.json for --out-dir)")
 	f.BoolVar(&opts.JSON, "json", false, "Print a machine-readable summary")
 	f.BoolVar(&opts.Resume, "resume", false, "Skip completed manifest entries with matching text hash")
 	f.BoolVar(&opts.Overwrite, "overwrite", false, "Replace existing outputs")
 	f.StringVar(&opts.AudioFormat, "audio-format", "", "Also encode output to mp3|m4a|m4b|aac|opus via an external encoder (WAV is always written)")
 	f.StringVar(&opts.EncoderBin, "encoder", "", "External encoder binary to use (default: ffmpeg)")
-
-	return cmd
 }
 
 // runRenderPlan reports the resolved render plan. The synthesis runtime is wired
