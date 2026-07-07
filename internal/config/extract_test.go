@@ -46,7 +46,8 @@ func makeTar(t *testing.T, entries []tarEntry) []byte {
 
 func extract(t *testing.T, entries []tarEntry, dir, name string, checkFiles []string) error {
 	t.Helper()
-	return extractTarStream(bytes.NewReader(makeTar(t, entries)), dir, name, checkFiles)
+	_, err := extractTarStream(bytes.NewReader(makeTar(t, entries)), dir, name, checkFiles)
+	return err
 }
 
 func TestExtractTarStreamDirectoriesAndNestedFiles(t *testing.T) {

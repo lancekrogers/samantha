@@ -9,10 +9,10 @@ import (
 	"testing"
 )
 
-// cleanTestManifest claims vad.onnx at the root, an archive extracted into
-// streaming-model/, and an archive extracted into the root — the three install
-// shapes ManifestFor produces. Both archives carry a SHA256, so their install
-// markers are claimed too.
+// cleanTestManifest exercises every ownership shape: an individual file at the
+// models-dir root, an individual file in a nested dir, a TargetDir archive
+// (whole directory owned), and a root-extracting archive (footprint owned via
+// its recorded install marker).
 func cleanTestManifest() AssetManifest {
 	return AssetManifest{
 		Schema: AssetSchema,
@@ -22,6 +22,12 @@ func cleanTestManifest() AssetManifest {
 				Provider: "sherpa",
 				Kind:     AssetKindVAD,
 				Files:    []AssetFile{{Path: "vad.onnx", URL: "https://example.invalid/vad.onnx"}},
+			},
+			{
+				ID:       "cli.test",
+				Provider: "whispercpp",
+				Kind:     AssetKindSTT,
+				Files:    []AssetFile{{Path: filepath.Join("whispercpp", "model.bin"), URL: "https://example.invalid/model.bin"}},
 			},
 			{
 				ID:         "stt.test",
@@ -35,23 +41,40 @@ func cleanTestManifest() AssetManifest {
 				ID:         "tts.test",
 				Provider:   "kokoro",
 				Kind:       AssetKindTTS,
-				Archive:    &AssetArchive{URL: "https://example.invalid/tts.tar.bz2", SHA256: "bb"},
+				Archive:    &AssetArchive{URL: ttsFootprintURL, SHA256: "bb"},
 				CheckFiles: []string{"model.onnx", "espeak-ng-data"},
 			},
 		},
 	}
 }
 
-// installRequired creates every path cleanTestManifest claims, including the
-// archive install markers.
+const ttsFootprintURL = "https://example.invalid/tts.tar.bz2"
+
+// installRequired lays down every path cleanTestManifest owns: the two
+// individual files, the TargetDir archive's whole directory (a check file plus
+// an extra extracted file), and the root archive's check files plus extra
+// extracted files, recording the full root footprint in a valid marker.
 func installRequired(t *testing.T, dir string) {
 	t.Helper()
 	touchFile(t, filepath.Join(dir, "vad.onnx"))
+	touchFile(t, filepath.Join(dir, "whispercpp", "model.bin"))
+
+	// TargetDir archive: a check file plus an extra file the archive extracted
+	// (e.g. the other precision) that is not in CheckFiles.
 	touchFile(t, filepath.Join(dir, "streaming-model", "encoder.onnx"))
+	touchFile(t, filepath.Join(dir, "streaming-model", "encoder.int8.onnx"))
 	touchFile(t, filepath.Join(dir, "streaming-model", ".samantha-asset-stt.test.json"))
+
+	// Root archive: check files, then extra extracted files, then a marker that
+	// records the full extraction footprint.
 	touchFile(t, filepath.Join(dir, "model.onnx"))
 	touchFile(t, filepath.Join(dir, "espeak-ng-data", "phontab"))
-	touchFile(t, filepath.Join(dir, ".samantha-asset-tts.test.json"))
+	touchFile(t, filepath.Join(dir, "lexicon.txt"))
+	touchFile(t, filepath.Join(dir, "dict", "words"))
+	footprint := []string{"model.onnx", "espeak-ng-data", "lexicon.txt", "dict"}
+	if err := writeArchiveInstallMarkerFiles(dir, "tts.test", ttsFootprintURL, "bb", []string{"model.onnx", "espeak-ng-data"}, footprint); err != nil {
+		t.Fatalf("write tts.test marker: %v", err)
+	}
 }
 
 func candidatePaths(t *testing.T, dir string, candidates []CleanCandidate) []string {
@@ -59,7 +82,7 @@ func candidatePaths(t *testing.T, dir string, candidates []CleanCandidate) []str
 	paths := make([]string, 0, len(candidates))
 	for _, c := range candidates {
 		rel, err := filepath.Rel(dir, c.Path)
-		if err != nil || strings.HasPrefix(rel, "..") {
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			t.Fatalf("candidate %q is outside the models dir %q", c.Path, dir)
 		}
 		paths = append(paths, rel)
@@ -106,16 +129,14 @@ func TestCleanCandidates(t *testing.T) {
 				touchFile(t, filepath.Join(dir, "stale.onnx"))
 				touchFile(t, filepath.Join(dir, ".samantha-asset-old.json"))
 				touchFile(t, filepath.Join(dir, "old-model", "encoder.onnx"))
+				touchFile(t, filepath.Join(dir, "whispercpp", "stale.bin"))
 			},
-			want: []string{".samantha-asset-old.json", "old-model", "stale.onnx"},
-		},
-		{
-			name: "dir holding required paths is descended, not listed whole",
-			setup: func(t *testing.T, dir string) {
-				installRequired(t, dir)
-				touchFile(t, filepath.Join(dir, "streaming-model", "stale.onnx"))
+			want: []string{
+				".samantha-asset-old.json",
+				"old-model",
+				"stale.onnx",
+				filepath.Join("whispercpp", "stale.bin"),
 			},
-			want: []string{filepath.Join("streaming-model", "stale.onnx")},
 		},
 	}
 	for _, tc := range cases {
@@ -138,6 +159,124 @@ func TestCleanCandidates(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestCleanCandidatesNeverReportsArchiveOwnedFiles is the regression for the
+// review finding: files an installed, currently-selected archive extracted
+// beyond its CheckFiles must never be reported as removable — both for a
+// TargetDir archive (whole directory owned) and a root-extracting archive
+// (footprint owned via the recorded marker).
+func TestCleanCandidatesNeverReportsArchiveOwnedFiles(t *testing.T) {
+	dir := t.TempDir()
+	installRequired(t, dir)
+	// A genuine extra so the candidate list is non-empty and the assertion below
+	// is not vacuously true.
+	touchFile(t, filepath.Join(dir, "stale.onnx"))
+
+	got, err := cleanTestManifest().CleanCandidates(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("CleanCandidates() error = %v", err)
+	}
+	paths := candidatePaths(t, dir, got)
+
+	reported := func(rel string) bool {
+		for _, p := range paths {
+			if p == rel {
+				return true
+			}
+		}
+		return false
+	}
+	if !reported("stale.onnx") {
+		t.Fatalf("expected the genuine extra stale.onnx to be reported, got %v", paths)
+	}
+	// TargetDir archive: the non-check extracted file inside the owned directory.
+	if reported(filepath.Join("streaming-model", "encoder.int8.onnx")) {
+		t.Errorf("extra file inside the selected TargetDir archive must not be reported: %v", paths)
+	}
+	// Root-extracting archive: the footprint file beyond CheckFiles.
+	if reported("lexicon.txt") {
+		t.Errorf("recorded footprint file of the selected root archive must not be reported: %v", paths)
+	}
+}
+
+// TestCleanCandidatesQuantizationSwitch is the reviewer's quantization case:
+// with the streaming sherpa archive installed, switching WhisperQuantized must
+// not surface the other precision's files, because the whole extraction target
+// is owned by the selected asset.
+func TestCleanCandidatesQuantizationSwitch(t *testing.T) {
+	asset, err := SherpaStreamingModel("")
+	if err != nil {
+		t.Fatalf("SherpaStreamingModel() error = %v", err)
+	}
+	dir := t.TempDir()
+	// Both precisions and the tokens are present in the extracted directory.
+	for _, f := range []string{asset.Encoder, asset.EncoderInt8, asset.Decoder, asset.Joiner, asset.JoinerInt8, asset.Tokens} {
+		touchFile(t, filepath.Join(dir, asset.DirName, f))
+	}
+
+	for _, quantized := range []bool{false, true} {
+		cfg := &Config{STTProvider: "sherpa-streaming", TTSProvider: "none", VADEnabled: false, WhisperQuantized: quantized}
+		manifest, err := ManifestFor(cfg, DefaultAssetRequest(cfg))
+		if err != nil {
+			t.Fatalf("ManifestFor(quantized=%v) error = %v", quantized, err)
+		}
+		got, err := manifest.CleanCandidates(context.Background(), dir)
+		if err != nil {
+			t.Fatalf("CleanCandidates(quantized=%v) error = %v", quantized, err)
+		}
+		if paths := candidatePaths(t, dir, got); len(paths) != 0 {
+			t.Errorf("quantized=%v: streaming archive files reported as removable: %v", quantized, paths)
+		}
+	}
+}
+
+// TestCleanCandidatesLegacyMarkerSuppressesRoot documents the conservative
+// fallback: a root-extracting archive installed with a marker that predates the
+// recorded footprint can't be enumerated, so top-level entries are not reported
+// at all (never a false positive). Suppression is scoped to the root level —
+// unowned files in a required-holding subdirectory are still reported.
+func TestCleanCandidatesLegacyMarkerSuppressesRoot(t *testing.T) {
+	manifest := AssetManifest{
+		Schema: AssetSchema,
+		Assets: []Asset{
+			{
+				ID:       "cli.test",
+				Provider: "whispercpp",
+				Kind:     AssetKindSTT,
+				Files:    []AssetFile{{Path: filepath.Join("whispercpp", "model.bin"), URL: "https://example.invalid/model.bin"}},
+			},
+			{
+				ID:         "tts.test",
+				Provider:   "kokoro",
+				Kind:       AssetKindTTS,
+				Archive:    &AssetArchive{URL: ttsFootprintURL, SHA256: "bb"},
+				CheckFiles: []string{"model.onnx", "espeak-ng-data"},
+			},
+		},
+	}
+	dir := t.TempDir()
+	touchFile(t, filepath.Join(dir, "whispercpp", "model.bin"))
+	touchFile(t, filepath.Join(dir, "whispercpp", "stale.bin"))
+	touchFile(t, filepath.Join(dir, "model.onnx"))
+	touchFile(t, filepath.Join(dir, "espeak-ng-data", "phontab"))
+	touchFile(t, filepath.Join(dir, "lexicon.txt")) // owned by the archive, footprint unknown
+	touchFile(t, filepath.Join(dir, "stale-root.onnx"))
+	// Legacy marker: valid but without the recorded footprint.
+	if err := writeArchiveInstallMarker(dir, "tts.test", ttsFootprintURL, "bb", []string{"model.onnx", "espeak-ng-data"}); err != nil {
+		t.Fatalf("write legacy marker: %v", err)
+	}
+
+	got, err := manifest.CleanCandidates(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("CleanCandidates() error = %v", err)
+	}
+	paths := candidatePaths(t, dir, got)
+	// Root-level entries suppressed; the nested unowned file still reported.
+	want := []string{filepath.Join("whispercpp", "stale.bin")}
+	if len(paths) != len(want) || paths[0] != want[0] {
+		t.Fatalf("candidates = %v, want %v (root suppressed, nested extra reported)", paths, want)
 	}
 }
 
