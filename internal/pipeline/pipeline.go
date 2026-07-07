@@ -316,29 +316,32 @@ func (p *Pipeline) transcribeTurn(ctx context.Context, metrics *turnMetrics, tur
 				return "", nil
 			}
 
-			switch e := event.(type) {
-			case stt.PhaseEvent:
-				if e.Phase == "transcribing" {
+			te := stt.ToTyped(event)
+			switch te.Kind {
+			case stt.KindPhase:
+				if te.Phase == "transcribing" {
 					turn.to(TurnTranscribing)
 				}
 				p.emit(events.STTPhase{
-					Phase:   e.Phase,
-					Elapsed: time.Duration(e.Elapsed),
+					Phase:   te.Phase,
+					Elapsed: te.Elapsed,
 				})
-			case stt.PartialTranscript:
-				if e.Text != "" {
-					p.emit(events.TranscriptPartial{Text: e.Text})
+			case stt.KindPartialTranscript:
+				if te.Text != "" {
+					p.emit(events.TranscriptPartial{Text: te.Text})
 				}
-			case stt.FinalTranscript:
+			case stt.KindFinalTranscript:
 				metrics.sttFinal = time.Now()
-				return e.Text, nil
-			case stt.Timeout:
+				return te.Text, nil
+			case stt.KindTimeout:
 				return "", nil
-			case stt.Failure:
-				if errors.Is(e.Err, context.Canceled) && ctx.Err() != nil {
+			case stt.KindFailure:
+				// Failure needs the error value (errors.Is + %w), not ErrText.
+				fail, _ := event.(stt.Failure)
+				if errors.Is(fail.Err, context.Canceled) && ctx.Err() != nil {
 					return "", ctx.Err()
 				}
-				return "", fmt.Errorf("STT: %w", e.Err)
+				return "", fmt.Errorf("STT: %w", fail.Err)
 			}
 		}
 	}

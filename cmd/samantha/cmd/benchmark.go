@@ -281,18 +281,19 @@ func runSingleSTTBenchmark(ctx context.Context, cfg *config.Config, providerName
 				return result, nil
 			}
 
-			switch e := event.(type) {
-			case stt.PartialTranscript:
+			te := stt.ToTyped(event)
+			switch te.Kind {
+			case stt.KindPartialTranscript:
 				if firstPartial.IsZero() {
 					firstPartial = time.Now()
 				}
-				result.Transcript = e.Text
-			case stt.FinalTranscript:
+				result.Transcript = te.Text
+			case stt.KindFinalTranscript:
 				now := time.Now()
 				if firstPartial.IsZero() {
 					firstPartial = now
 				}
-				result.Transcript = e.Text
+				result.Transcript = te.Text
 				result.Elapsed = now.Sub(start)
 				result.Metrics.STTFinalElapsed = result.Elapsed
 				if !firstPartial.IsZero() {
@@ -302,12 +303,15 @@ func runSingleSTTBenchmark(ctx context.Context, cfg *config.Config, providerName
 					result.TranscriptScore = transcriptScore(expected, result.Transcript)
 				}
 				return result, nil
-			case stt.Timeout:
+			case stt.KindTimeout:
 				result.Elapsed = time.Since(start)
 				return result, errors.New("stt timed out")
-			case stt.Failure:
+			case stt.KindFailure:
 				result.Elapsed = time.Since(start)
-				return result, e.Err
+				// The caller receives the error value itself; ErrText would
+				// break a nil-Err Failure and drop the error chain.
+				fail, _ := event.(stt.Failure)
+				return result, fail.Err
 			}
 		}
 	}
