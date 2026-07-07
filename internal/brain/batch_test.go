@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lancekrogers/claude-code-go/pkg/claude"
 	"github.com/lancekrogers/grok-go-sdk/pkg/grok"
 	"github.com/ollama/ollama/api"
 )
@@ -310,6 +311,110 @@ func TestGrokBatchReportsDefaultModelWhenUnconfigured(t *testing.T) {
 	}
 	if res.Provider != "grok" || res.Model != "default" {
 		t.Errorf("identity = %s/%s, want grok/default", res.Provider, res.Model)
+	}
+}
+
+type fakeClaudeRunner struct {
+	result    *claude.ClaudeResult
+	err       error
+	gotPrompt string
+	gotOpts   *claude.RunOptions
+	calls     int
+}
+
+func (f *fakeClaudeRunner) RunPromptCtx(_ context.Context, prompt string, opts *claude.RunOptions) (*claude.ClaudeResult, error) {
+	f.calls++
+	f.gotPrompt = prompt
+	f.gotOpts = opts
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.result, nil
+}
+
+func TestClaudeBatchTransformErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		runner  *fakeClaudeRunner
+		wantErr string
+	}{
+		{"provider failure", &fakeClaudeRunner{err: errors.New("boom")}, "claude batch:"},
+		{"empty response", &fakeClaudeRunner{result: &claude.ClaudeResult{Result: ""}}, "empty response"},
+		{"whitespace-only response", &fakeClaudeRunner{result: &claude.ClaudeResult{Result: " \n "}}, "empty response"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &claudeBatch{runner: tt.runner}
+
+			_, err := c.Transform(context.Background(), BatchRequest{Text: "hello"})
+			if err == nil {
+				t.Fatal("Transform() error = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Transform() error = %q, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestClaudeBatchTransformCancelledBeforeCall(t *testing.T) {
+	runner := &fakeClaudeRunner{result: &claude.ClaudeResult{Result: "out"}}
+	c := &claudeBatch{runner: runner}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := c.Transform(ctx, BatchRequest{Text: "hello"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Transform() error = %v, want context.Canceled", err)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("cancelled context must not reach the provider; got %d calls", runner.calls)
+	}
+}
+
+func TestClaudeBatchTransformSendsSystemAndBodyWithoutPersonaOrTools(t *testing.T) {
+	runner := &fakeClaudeRunner{result: &claude.ClaudeResult{Result: " transformed "}}
+	c := &claudeBatch{runner: runner}
+
+	req := BatchRequest{
+		SystemPrompt: "You rewrite text for narration.",
+		StylePrompt:  "Warm and steady.",
+		Text:         "Raw text.",
+	}
+	res, err := c.Transform(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Transform() error = %v", err)
+	}
+
+	if res.Text != "transformed" {
+		t.Errorf("Text = %q, want trimmed %q", res.Text, "transformed")
+	}
+	if res.Provider != "claude" || res.Model != "default" {
+		t.Errorf("identity = %s/%s, want claude/default", res.Provider, res.Model)
+	}
+	if runner.gotPrompt != batchPromptBody(req) {
+		t.Errorf("prompt = %q, want assembled body %q", runner.gotPrompt, batchPromptBody(req))
+	}
+
+	opts := runner.gotOpts
+	if opts.SystemPrompt != req.SystemPrompt {
+		t.Errorf("SystemPrompt = %q, want caller's system prompt verbatim", opts.SystemPrompt)
+	}
+	// No interactive persona may leak into a batch transform.
+	if strings.Contains(opts.SystemPrompt, "inspired by the character") {
+		t.Error("batch transform must not inject the interactive persona system prompt")
+	}
+	if opts.Format != claude.TextOutput {
+		t.Errorf("Format = %v, want TextOutput", opts.Format)
+	}
+	// Batch is a pure text transform: it must not grant tool execution.
+	if opts.PermissionMode == claude.PermissionModeBypassPermissions {
+		t.Error("batch transform must not use bypassPermissions (would grant tool execution)")
+	}
+	if len(opts.AllowedTools) != 0 || len(opts.Tools) != 0 {
+		t.Errorf("batch transform must wire no tools; got AllowedTools=%v Tools=%v", opts.AllowedTools, opts.Tools)
 	}
 }
 

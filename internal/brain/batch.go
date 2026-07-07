@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/lancekrogers/claude-code-go/pkg/claude"
 	"github.com/lancekrogers/grok-go-sdk/pkg/grok"
 	"github.com/ollama/ollama/api"
 
@@ -168,16 +169,68 @@ func (g *grokBatch) Transform(ctx context.Context, req BatchRequest) (BatchResul
 
 	text := strings.TrimSpace(result.Text)
 	if text == "" {
-		return BatchResult{}, fmt.Errorf("grok batch: empty response from model %s", g.modelID())
+		return BatchResult{}, fmt.Errorf("grok batch: empty response from model %s", modelIDOrDefault(g.model))
 	}
-	return BatchResult{Text: text, Provider: "grok", Model: g.modelID()}, nil
+	return BatchResult{Text: text, Provider: "grok", Model: modelIDOrDefault(g.model)}, nil
 }
 
-// modelID reports the model identity even when the config leaves selection to
-// the grok CLI.
-func (g *grokBatch) modelID() string {
-	if g.model == "" {
+// claudePromptRunner is the slice of the claude client the batch adapter needs.
+type claudePromptRunner interface {
+	RunPromptCtx(ctx context.Context, prompt string, opts *claude.RunOptions) (*claude.ClaudeResult, error)
+}
+
+// claudeBatch adapts the claude CLI client to BatchProvider.
+type claudeBatch struct {
+	runner claudePromptRunner
+	model  string
+}
+
+// newClaudeBatch reuses the interactive constructor for its claude-CLI lookup
+// (and its "claude CLI not found" error shape), then keeps only the client —
+// batch calls inject no persona and touch no history.
+func newClaudeBatch(cfg *config.Config) (*claudeBatch, error) {
+	b, err := New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	// The claude CLI selects the model itself and never reports it, so batch
+	// records the stable "default" identity via modelIDOrDefault.
+	return &claudeBatch{runner: b.client}, nil
+}
+
+func (c *claudeBatch) Transform(ctx context.Context, req BatchRequest) (BatchResult, error) {
+	if err := ctx.Err(); err != nil {
+		return BatchResult{}, err
+	}
+
+	opts := &claude.RunOptions{
+		Format: claude.TextOutput,
+		// Caller-supplied system prompt only — no GetSystemPrompt persona.
+		SystemPrompt: req.SystemPrompt,
+		// Batch is a pure text transform. Unlike the interactive provider it
+		// must not grant tool execution, so it uses the default permission mode
+		// (headless print mode never auto-runs tools) rather than
+		// bypassPermissions, and wires no tools.
+		PermissionMode: claude.PermissionModeDefault,
+	}
+
+	result, err := c.runner.RunPromptCtx(ctx, batchPromptBody(req), opts)
+	if err != nil {
+		return BatchResult{}, fmt.Errorf("claude batch: %w", err)
+	}
+
+	text := strings.TrimSpace(result.Result)
+	if text == "" {
+		return BatchResult{}, fmt.Errorf("claude batch: empty response from model %s", modelIDOrDefault(c.model))
+	}
+	return BatchResult{Text: text, Provider: "claude", Model: modelIDOrDefault(c.model)}, nil
+}
+
+// modelIDOrDefault reports model, or "default" when the provider CLI selects
+// the model itself — neither the grok nor claude CLI returns the resolved name.
+func modelIDOrDefault(model string) string {
+	if model == "" {
 		return "default"
 	}
-	return g.model
+	return model
 }
