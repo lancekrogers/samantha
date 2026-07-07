@@ -177,6 +177,9 @@ var providersCmd = &cobra.Command{
 		}
 		for _, spec := range stt.Providers() {
 			printProvider(sttActive == spec.Name, spec.Name, spec.Description)
+			if detail := sttSpecDetail(spec.Name); detail != "" {
+				fmt.Printf("      %s\n", dimStyle.Render(detail))
+			}
 		}
 		if !sttImplemented(sttActive) {
 			fmt.Printf("    %s %s\n", dimStyle.Render("[config]"), dimStyle.Render(sttActive+" — configured but not implemented in this build"))
@@ -288,6 +291,37 @@ func brainImplemented(name string) bool {
 		}
 	}
 	return false
+}
+
+// sttSpecDetail renders one STT provider's capability line from the spec side
+// table. It returns "" when the name has no spec, so the row prints unchanged.
+func sttSpecDetail(name string) string {
+	norm, ok := config.NormalizeSTT(name)
+	if !ok {
+		return ""
+	}
+	spec, ok := stt.SpecForNormalized(norm)
+	if !ok {
+		return ""
+	}
+
+	parts := []string{spec.Provider + "/" + spec.Mode}
+	if spec.EmitsPartial {
+		parts = append(parts, "partials")
+	}
+	if spec.UsesEndpoint {
+		parts = append(parts, "self-endpoint")
+	}
+	if spec.SupportsEOF {
+		parts = append(parts, "eof")
+	}
+	if spec.RequiresVAD {
+		parts = append(parts, "requires vad")
+	}
+	if spec.RecommendedUse != "" {
+		parts = append(parts, spec.RecommendedUse)
+	}
+	return strings.Join(parts, " · ")
 }
 
 func sttImplemented(name string) bool {
