@@ -1,0 +1,72 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/lancekrogers/samantha/main/docs/schemas/prompt.schema.json",
+  "title": "Samantha prompt document",
+  "description": "Schema for samantha.prompt.v1 prompt documents. Editor tooling only; runtime validation lives in internal/prompts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "prompt"],
+  "properties": {
+    "schema": {
+      "const": "samantha.prompt.v1"
+    },
+    "prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "system_prompt"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": ["persona", "system", "style", "pronunciation"]
+        },
+        "system_prompt": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["identity"],
+              "properties": {
+                "identity": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "conversation_style": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "guidance": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "constraints": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "core_concepts": {
+                  "type": "object",
+                  "additionalProperties": { "type": "string" }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "version": { "type": "integer" },
+        "description": { "type": "string" }
+      }
+    }
+  }
+}
