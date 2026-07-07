@@ -92,7 +92,7 @@ func runRenderEPUB(cmd *cobra.Command, opts render.Options, synth render.Synthes
 		opts.Title = book.Metadata.Title
 	}
 
-	chapters := make([]render.RenderChapter, 0, len(book.Chapters))
+	units := make([]render.RenderUnit, 0, len(book.Chapters))
 	for _, ch := range book.Chapters {
 		data, err := book.ReadChapter(ch.Href)
 		if err != nil {
@@ -106,13 +106,13 @@ func runRenderEPUB(cmd *cobra.Command, opts render.Options, synth render.Synthes
 		if title == "" {
 			title = doc.Title
 		}
-		chapters = append(chapters, render.RenderChapter{ID: ch.ID, Title: title, Text: doc.Narration()})
+		units = append(units, render.RenderUnit{ID: ch.ID, Title: title, Text: doc.Narration(), SourceRef: ch.Href})
 	}
 
-	// RenderChapters records failed chapters and returns the partial manifest
+	// RenderUnits records failed chapters and returns the partial manifest
 	// even when some chapters fail or the render is cancelled, so the manifest is
 	// always persisted and the run stays resumable.
-	manifest, renderErr := render.RenderChapters(cmd.Context(), opts, chapters, synth, audio.WriteWAVFloat32)
+	manifest, renderErr := render.RenderUnits(cmd.Context(), opts, units, synth, audio.WriteWAVFloat32)
 
 	complete, skipped, failed := manifest.Counts()
 	return finishRender(cmd, opts, manifest, enc, renderReport{
