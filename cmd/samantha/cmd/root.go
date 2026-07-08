@@ -16,6 +16,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/pipeline"
+	"github.com/lancekrogers/samantha/internal/prompts"
 	"github.com/lancekrogers/samantha/internal/session"
 	"github.com/lancekrogers/samantha/internal/stt"
 	"github.com/lancekrogers/samantha/internal/tts"
@@ -34,8 +35,16 @@ var rootCmd = &cobra.Command{
 	Short: "Give Claude a voice",
 	Long:  "Samantha — ultra-low-latency voice assistant for AI coding, inspired by Her.",
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		_, err := config.Load()
-		return err
+		if _, err := config.Load(); err != nil {
+			return err
+		}
+		// Best-effort: seed default prompt documents so users have editable
+		// starting files. A failure here (e.g. a read-only home) must not
+		// block commands — resolution falls back to the embedded defaults.
+		if _, err := prompts.Seed(config.PromptsDir()); err != nil {
+			fmt.Fprintf(os.Stderr, "samantha: seeding prompt defaults: %v\n", err)
+		}
+		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
