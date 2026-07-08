@@ -57,6 +57,10 @@ type Config struct {
 	// Agent
 	AgentName string `mapstructure:"agent_name"`
 
+	// Prompts
+	Persona    string `mapstructure:"persona"`
+	PromptsDir string `mapstructure:"prompts_dir"`
+
 	// General
 	Language        string `mapstructure:"language"`
 	MaxHistory      int    `mapstructure:"max_history"`
@@ -111,6 +115,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("voice_tools_enabled", false)
 
 	v.SetDefault("agent_name", "Samantha")
+	v.SetDefault("persona", "samantha")
+	v.SetDefault("prompts_dir", "")
 	v.SetDefault("models_dir", filepath.Join(homeDir(), ".cache", "samantha", "models"))
 
 	v.SetDefault("language", "en-US")
@@ -296,6 +302,17 @@ func SessionsDir() string {
 // ConfigDir returns the config directory path.
 func ConfigDir() string {
 	return configDir
+}
+
+// PromptsDir returns the user prompt-documents directory: the configured
+// prompts_dir when set, otherwise <config_dir>/prompts.
+func PromptsDir() string {
+	mu.RLock()
+	defer mu.RUnlock()
+	if d := v.GetString("prompts_dir"); d != "" {
+		return d
+	}
+	return filepath.Join(configDir, "prompts")
 }
 
 func homeDir() string {

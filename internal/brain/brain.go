@@ -16,9 +16,11 @@ import (
 
 // Brain manages conversation with Claude via claude-code-go.
 type Brain struct {
-	client  *claude.ClaudeClient
-	cfg     *config.Config
-	history []Turn
+	client          *claude.ClaudeClient
+	cfg             *config.Config
+	systemPrompt    string
+	turnInstruction string
+	history         []Turn
 }
 
 // Turn represents a single conversation exchange.
@@ -36,9 +38,20 @@ func New(cfg *config.Config) (*Brain, error) {
 
 	client := claude.NewClient(binPath)
 
+	systemPrompt, err := personaSystemPrompt(cfg)
+	if err != nil {
+		return nil, err
+	}
+	turn, err := turnInstruction(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Brain{
-		client: client,
-		cfg:    cfg,
+		client:          client,
+		cfg:             cfg,
+		systemPrompt:    systemPrompt,
+		turnInstruction: turn,
 	}, nil
 }
 
@@ -58,7 +71,7 @@ func (b *Brain) ThinkStream(ctx context.Context, input string, _ StreamOptions) 
 	// per-assistant-message, so deltas would be discarded anyway.
 	opts := &claude.RunOptions{
 		Format:         claude.StreamJSONOutput,
-		SystemPrompt:   GetSystemPrompt(b.cfg.AgentName),
+		SystemPrompt:   b.systemPrompt,
 		PermissionMode: claude.PermissionModeBypassPermissions,
 	}
 
@@ -138,7 +151,7 @@ func (b *Brain) ThinkFull(ctx context.Context, input string) (string, error) {
 
 	opts := &claude.RunOptions{
 		Format:         claude.TextOutput,
-		SystemPrompt:   GetSystemPrompt(b.cfg.AgentName),
+		SystemPrompt:   b.systemPrompt,
 		PermissionMode: claude.PermissionModeBypassPermissions,
 	}
 
@@ -173,7 +186,7 @@ func (b *Brain) buildPrompt() string {
 		for _, t := range recent[:len(recent)-1] {
 			speaker := "User"
 			if t.Role == "samantha" {
-				speaker = "Samantha"
+				speaker = b.cfg.AgentName
 			}
 			parts = append(parts, fmt.Sprintf("%s: %s", speaker, t.Content))
 		}
@@ -182,7 +195,7 @@ func (b *Brain) buildPrompt() string {
 
 	parts = append(parts, fmt.Sprintf("User: %s", b.history[len(b.history)-1].Content))
 	parts = append(parts, "")
-	parts = append(parts, "Respond as Samantha. 2-3 sentences max, natural speech, NO markdown, NO formatting, NO code blocks, NO bullet points. Just talk naturally.")
+	parts = append(parts, b.turnInstruction)
 
 	return strings.Join(parts, "\n")
 }
