@@ -58,3 +58,24 @@ func TestCatalogReportsUserOverride(t *testing.T) {
 		t.Error("persona path empty for a user override")
 	}
 }
+
+func TestCatalogReportsSeededDefaultsAsEmbedded(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Seed(dir); err != nil {
+		t.Fatalf("Seed() error = %v", err)
+	}
+
+	entries, err := Catalog(dir)
+	if err != nil {
+		t.Fatalf("Catalog() error = %v", err)
+	}
+
+	for _, e := range entries {
+		if e.Source != SourceEmbedded {
+			t.Errorf("kind %s source = %s, want embedded for seeded default", e.Kind, e.Source)
+		}
+		if e.Path != "" {
+			t.Errorf("kind %s path = %q, want empty for seeded default", e.Kind, e.Path)
+		}
+	}
+}

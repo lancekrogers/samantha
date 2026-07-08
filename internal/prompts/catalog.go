@@ -71,6 +71,9 @@ func Describe(userDir string, kind Kind, name string) (Entry, error) {
 		if err != nil {
 			return Entry{}, err
 		}
+		if isEmbeddedDefault(doc) {
+			return Entry{Kind: kind, Name: name, Source: SourceEmbedded, Hash: doc.Hash()}, nil
+		}
 		return Entry{Kind: kind, Name: name, Source: SourceUser, Path: path, Hash: doc.Hash()}, nil
 	}
 	doc, err := Default(kind)
@@ -78,6 +81,14 @@ func Describe(userDir string, kind Kind, name string) (Entry, error) {
 		return Entry{}, err
 	}
 	return Entry{Kind: kind, Name: name, Source: SourceEmbedded, Hash: doc.Hash()}, nil
+}
+
+func isEmbeddedDefault(doc *Document) bool {
+	embedded, err := Default(doc.Prompt.Kind)
+	if err != nil {
+		return false
+	}
+	return doc.Prompt.Name == embedded.Prompt.Name && doc.Hash() == embedded.Hash()
 }
 
 // userDocPath returns the first existing user document for kind/name, honoring
