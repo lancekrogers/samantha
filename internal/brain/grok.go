@@ -13,9 +13,11 @@ import (
 // GrokBrain manages conversation with Grok via grok-go-sdk, driving the local
 // grok CLI the same way the Claude provider drives the claude CLI.
 type GrokBrain struct {
-	client  *grok.GrokClient
-	cfg     *config.Config
-	history []Turn
+	client          *grok.GrokClient
+	cfg             *config.Config
+	systemPrompt    string
+	turnInstruction string
+	history         []Turn
 }
 
 // NewGrok creates a Grok brain provider backed by the grok CLI.
@@ -25,9 +27,20 @@ func NewGrok(cfg *config.Config) (*GrokBrain, error) {
 		return nil, fmt.Errorf("grok CLI not found on PATH: %w", err)
 	}
 
+	systemPrompt, err := personaSystemPrompt(cfg)
+	if err != nil {
+		return nil, err
+	}
+	turn, err := turnInstruction(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	return &GrokBrain{
-		client: client,
-		cfg:    cfg,
+		client:          client,
+		cfg:             cfg,
+		systemPrompt:    systemPrompt,
+		turnInstruction: turn,
 	}, nil
 }
 
@@ -122,7 +135,7 @@ func (g *GrokBrain) ThinkFull(ctx context.Context, input string) (string, error)
 func (g *GrokBrain) runOptions(format grok.OutputFormat) *grok.RunOptions {
 	opts := &grok.RunOptions{
 		Format:               format,
-		SystemPromptOverride: GetSystemPrompt(g.cfg.AgentName),
+		SystemPromptOverride: g.systemPrompt,
 		PermissionMode:       grok.PermissionBypassPermissions,
 		AllowDangerousMode:   true,
 	}
@@ -146,7 +159,7 @@ func (g *GrokBrain) buildPrompt() string {
 		for _, t := range recent[:len(recent)-1] {
 			speaker := "User"
 			if t.Role == "samantha" {
-				speaker = "Samantha"
+				speaker = g.cfg.AgentName
 			}
 			parts = append(parts, fmt.Sprintf("%s: %s", speaker, t.Content))
 		}
@@ -155,7 +168,7 @@ func (g *GrokBrain) buildPrompt() string {
 
 	parts = append(parts, fmt.Sprintf("User: %s", g.history[len(g.history)-1].Content))
 	parts = append(parts, "")
-	parts = append(parts, "Respond as Samantha. 2-3 sentences max, natural speech, NO markdown, NO formatting, NO code blocks, NO bullet points. Just talk naturally.")
+	parts = append(parts, g.turnInstruction)
 
 	return strings.Join(parts, "\n")
 }

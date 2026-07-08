@@ -16,11 +16,12 @@ import (
 
 // OllamaBrain implements Provider using the Ollama API with tool calling.
 type OllamaBrain struct {
-	client  *api.Client
-	model   string
-	workDir string
-	history []api.Message
-	cfg     *config.Config
+	client       *api.Client
+	model        string
+	workDir      string
+	history      []api.Message
+	cfg          *config.Config
+	systemPrompt string
 }
 
 // NewOllama creates an Ollama brain provider.
@@ -60,11 +61,17 @@ func NewOllama(cfg *config.Config) (*OllamaBrain, error) {
 
 	workDir, _ := os.Getwd()
 
+	systemPrompt, err := personaSystemPrompt(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	return &OllamaBrain{
-		client:  client,
-		model:   cfg.OllamaModel,
-		workDir: workDir,
-		cfg:     cfg,
+		client:       client,
+		model:        cfg.OllamaModel,
+		workDir:      workDir,
+		cfg:          cfg,
+		systemPrompt: systemPrompt,
 	}, nil
 }
 
@@ -293,7 +300,7 @@ func (o *OllamaBrain) LoadHistory(turns []Turn) {
 }
 
 func (o *OllamaBrain) buildMessages() []api.Message {
-	systemPrompt := GetSystemPrompt(o.cfg.AgentName) + "\n" + EnvironmentContext(o.workDir)
+	systemPrompt := o.systemPrompt + "\n" + EnvironmentContext(o.workDir)
 
 	msgs := []api.Message{
 		{Role: "system", Content: systemPrompt},

@@ -20,7 +20,7 @@
           "minLength": 1
         },
         "kind": {
-          "enum": ["persona", "system", "style", "pronunciation"]
+          "enum": ["persona", "system", "style", "pronunciation", "turn"]
         },
         "system_prompt": {
           "oneOf": [

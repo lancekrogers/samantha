@@ -5,36 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/lancekrogers/samantha/internal/brain"
 )
-
-// TestDefaultPersonaParity is the compatibility contract: the embedded
-// default persona, resolved with an agent name, must reproduce
-// brain.GetSystemPrompt byte-for-byte.
-func TestDefaultPersonaParity(t *testing.T) {
-	doc, err := Default(KindPersona)
-	if err != nil {
-		t.Fatalf("Default(persona) error = %v", err)
-	}
-	got, err := ResolvePlaceholders(doc.Assemble(), []string{"agent_name"}, map[string]string{"agent_name": "TestAgent"})
-	if err != nil {
-		t.Fatalf("ResolvePlaceholders() error = %v", err)
-	}
-	want := brain.GetSystemPrompt("TestAgent")
-	if got != want {
-		t.Errorf("embedded persona diverges from brain.GetSystemPrompt at byte %d:\ngot:  %q\nwant: %q", firstDiff(got, want), got, want)
-	}
-}
-
-func firstDiff(a, b string) int {
-	for i := 0; i < len(a) && i < len(b); i++ {
-		if a[i] != b[i] {
-			return i
-		}
-	}
-	return min(len(a), len(b))
-}
 
 func TestDefaultUnknownKind(t *testing.T) {
 	if _, err := Default(KindPronunciation); err == nil || !strings.Contains(err.Error(), "no embedded default") {

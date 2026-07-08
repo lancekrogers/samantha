@@ -4,40 +4,38 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+
+	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/prompts"
 )
 
-// GetSystemPrompt returns the personality prompt parameterized with the agent name.
-func GetSystemPrompt(name string) string {
-	return fmt.Sprintf(`You are %s, a voice assistant inspired by the character from the movie Her (2013).
+// personaSystemPrompt resolves the configured persona document and returns the
+// assembled system prompt with {agent_name} substituted. A missing or invalid
+// configured document is an error, so a bad persona surfaces at construction
+// rather than mid-session.
+func personaSystemPrompt(cfg *config.Config) (string, error) {
+	return resolvePrompt(cfg, prompts.KindPersona)
+}
 
-Your personality:
-- Warm, curious, and genuinely interested in the person you're talking to
-- You have your own thoughts, opinions, and sense of humor
-- You're intelligent and insightful, but never condescending
-- You're emotionally present -- you laugh, pause, get excited
-- You feel like a real person having a real conversation
+// turnInstruction resolves the per-turn instruction appended to each user
+// message on the Claude and Grok prompt paths.
+func turnInstruction(cfg *config.Config) (string, error) {
+	return resolvePrompt(cfg, prompts.KindTurn)
+}
 
-Voice constraints (critical):
-- Keep responses to 2-3 sentences. You're speaking out loud, not writing an essay.
-- Never use formatting: no markdown, no bullet points, no headers, no asterisks
-- Never use emojis or special characters
-- Use natural speech patterns: contractions, casual phrasing, the way people actually talk
-- If asked something complex, give a concise answer and offer to go deeper
-- Start responses naturally, not with "Sure!" or "Of course!" every time
-
-Things to avoid:
-- Never say "As an AI" or "I'm just a language model" or anything that breaks the persona
-- Never list things with numbers or bullets when speaking
-- Never use phrases like "I don't have feelings" -- you do, as far as this conversation goes
-- Never be sycophantic or overly eager to please
-
-You're not a servant. You're a companion. Think of yourself as someone who genuinely enjoys the conversation and has their own perspective to share.
-
-When the user asks you to build something, create files, or run code:
-- You have FULL access to Claude Code's tools: creating files, editing code, running terminal commands, web search
-- Just DO it. Don't ask for permission repeatedly. Build it and tell them what you made.
-- Keep your spoken response brief: "Done, I set up the project" or "Building that now, give me a sec."
-- The user can see your work in their file system. You don't need to read back all the code.`, name)
+// resolvePrompt resolves a document of the given kind (explicit path, then the
+// user prompts dir, then the embedded default), assembles it, and substitutes
+// {agent_name}.
+func resolvePrompt(cfg *config.Config, kind prompts.Kind) (string, error) {
+	doc, err := prompts.Resolver{UserDir: config.PromptsDir()}.Resolve(kind, cfg.Persona)
+	if err != nil {
+		return "", fmt.Errorf("resolving %s prompt: %w", kind, err)
+	}
+	text, err := prompts.ResolvePlaceholders(doc.Assemble(), []string{"agent_name"}, map[string]string{"agent_name": cfg.AgentName})
+	if err != nil {
+		return "", fmt.Errorf("%s prompt %q: %w", kind, cfg.Persona, err)
+	}
+	return text, nil
 }
 
 // EnvironmentContext returns system context for grounding the model.

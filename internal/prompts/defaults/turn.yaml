@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=../../../docs/schemas/prompt.schema.json
+schema: samantha.prompt.v1
+
+prompt:
+  name: samantha
+  kind: turn
+  system_prompt: |-
+    Respond as {agent_name}. 2-3 sentences max, natural speech, NO markdown, NO formatting, NO code blocks, NO bullet points. Just talk naturally.
+
+metadata:
+  id: samantha-turn
+  version: 1
+  description: Per-turn response instruction appended to each user message on the Claude and Grok paths.
