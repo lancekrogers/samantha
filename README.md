@@ -86,6 +86,7 @@ samantha --no-voice   # Voice input, text output
 ```bash
 samantha config                         # View all config
 samantha config tts_voice af_bella      # Set a config value
+samantha config migrate --dry-run       # Preview explicit STT config migration
 samantha voices                         # List available Kokoro voices
 samantha voices --locale en-US          # Filter voices by locale
 samantha providers                      # Show brain, TTS, and STT providers
@@ -176,6 +177,10 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `phrase_time_limit` | `30` | | Maximum phrase length in seconds |
 
 The preferred STT schema is `stt_provider` + `stt_mode` (e.g. `stt_provider: sherpa` with `stt_mode: streaming`). The legacy compound aliases (`sherpa-streaming`, `sherpa-offline`) still work with `stt_mode` unset and are never rewritten; combining a compound alias with a conflicting `stt_mode` is a config error.
+
+Use `samantha config migrate --dry-run` to preview the explicit
+`stt_provider`/`stt_mode` values that would preserve the current STT behavior.
+Dry runs report the config path and proposed values without writing files.
 
 ## Development
 

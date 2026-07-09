@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -44,6 +45,40 @@ var configCmd = &cobra.Command{
 	},
 }
 
+func newConfigMigrateCmd(load configLoader, configPath func() string) *cobra.Command {
+	var dryRun bool
+	cmd := &cobra.Command{
+		Use:   "migrate",
+		Short: "Preview safe config migrations",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if !dryRun {
+				return errors.New("config migrate requires --dry-run")
+			}
+			cfg, err := load()
+			if err != nil {
+				return err
+			}
+			proposal, err := config.ProposeSTTConfigMigration(cfg, configPath())
+			if err != nil {
+				return err
+			}
+
+			out := cmd.OutOrStdout()
+			fmt.Fprintln(out, "Config migration dry run")
+			fmt.Fprintf(out, "config_path: %s\n", proposal.ConfigPath)
+			fmt.Fprintf(out, "current_alias: %s\n", proposal.CurrentAlias)
+			fmt.Fprintf(out, "proposed_stt_provider: %s\n", proposal.ProposedProvider)
+			fmt.Fprintf(out, "proposed_stt_mode: %s\n", proposal.ProposedMode)
+			fmt.Fprintf(out, "no_op: %t\n", proposal.Noop)
+			fmt.Fprintln(out, "would_write: false")
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview migration without writing files")
+	return cmd
+}
+
 func maskSecret(key, value string) string {
 	if strings.Contains(strings.ToLower(key), "key") && len(value) > 8 {
 		return value[:4] + "..." + value[len(value)-4:]
@@ -52,5 +87,6 @@ func maskSecret(key, value string) string {
 }
 
 func init() {
+	configCmd.AddCommand(newConfigMigrateCmd(config.Load, config.ConfigFile))
 	rootCmd.AddCommand(configCmd)
 }

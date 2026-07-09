@@ -27,6 +27,16 @@ type NormalizedSTT struct {
 	Alias    string // canonical configured value, empty when defaulted
 }
 
+// STTConfigMigrationProposal describes how to rewrite STT config into the
+// explicit stt_provider + stt_mode schema without mutating files.
+type STTConfigMigrationProposal struct {
+	ConfigPath       string
+	CurrentAlias     string
+	ProposedProvider string
+	ProposedMode     string
+	Noop             bool
+}
+
 // sttAliasTable maps every accepted stt_provider value to its normalized
 // provider/mode. The empty key is the default: the reliable utterance-final
 // sherpa path. sherpa-offline is a legacy alias for the same provider/mode.
@@ -97,4 +107,27 @@ func NormalizeSTTWithMode(provider, mode string) (NormalizedSTT, error) {
 	norm.Mode = m
 	norm.Alias = norm.Provider + "-" + m
 	return norm, nil
+}
+
+// ProposeSTTConfigMigration returns the explicit STT config values that would
+// preserve the currently resolved provider/mode. It is read-only.
+func ProposeSTTConfigMigration(cfg *Config, configPath string) (STTConfigMigrationProposal, error) {
+	norm, err := NormalizeSTTWithMode(cfg.STTProvider, cfg.STTMode)
+	if err != nil {
+		return STTConfigMigrationProposal{}, err
+	}
+	currentAlias := norm.Alias
+	if currentAlias == "" {
+		currentAlias = "(default)"
+	}
+
+	provider := strings.ToLower(strings.TrimSpace(cfg.STTProvider))
+	mode := strings.ToLower(strings.TrimSpace(cfg.STTMode))
+	return STTConfigMigrationProposal{
+		ConfigPath:       configPath,
+		CurrentAlias:     currentAlias,
+		ProposedProvider: norm.Provider,
+		ProposedMode:     norm.Mode,
+		Noop:             provider == norm.Provider && mode == norm.Mode,
+	}, nil
 }

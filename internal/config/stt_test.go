@@ -149,6 +149,74 @@ func TestNormalizeSTTWithModeMatchesLegacyAliases(t *testing.T) {
 	}
 }
 
+func TestProposeSTTConfigMigration(t *testing.T) {
+	tests := []struct {
+		name            string
+		cfg             *Config
+		wantErrContains string
+		want            STTConfigMigrationProposal
+	}{
+		{
+			name: "sherpa streaming alias proposes explicit provider and mode",
+			cfg:  &Config{STTProvider: "sherpa-streaming"},
+			want: STTConfigMigrationProposal{
+				ConfigPath:       "/tmp/config.yaml",
+				CurrentAlias:     "sherpa-streaming",
+				ProposedProvider: STTProviderSherpa,
+				ProposedMode:     STTModeStreaming,
+				Noop:             false,
+			},
+		},
+		{
+			name: "sherpa offline alias proposes explicit provider and mode",
+			cfg:  &Config{STTProvider: "sherpa-offline"},
+			want: STTConfigMigrationProposal{
+				ConfigPath:       "/tmp/config.yaml",
+				CurrentAlias:     "sherpa-offline",
+				ProposedProvider: STTProviderSherpa,
+				ProposedMode:     STTModeOffline,
+				Noop:             false,
+			},
+		},
+		{
+			name: "already explicit config is no-op",
+			cfg:  &Config{STTProvider: "sherpa", STTMode: "streaming"},
+			want: STTConfigMigrationProposal{
+				ConfigPath:       "/tmp/config.yaml",
+				CurrentAlias:     "sherpa-streaming",
+				ProposedProvider: STTProviderSherpa,
+				ProposedMode:     STTModeStreaming,
+				Noop:             true,
+			},
+		},
+		{
+			name:            "unknown provider reports actionable error",
+			cfg:             &Config{STTProvider: "google"},
+			wantErrContains: "unsupported stt_provider",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ProposeSTTConfigMigration(tt.cfg, "/tmp/config.yaml")
+			if tt.wantErrContains != "" {
+				if err == nil {
+					t.Fatalf("ProposeSTTConfigMigration() error = nil, want %q", tt.wantErrContains)
+				}
+				if !strings.Contains(err.Error(), tt.wantErrContains) {
+					t.Fatalf("error = %q, want it to contain %q", err, tt.wantErrContains)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ProposeSTTConfigMigration() error = %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("ProposeSTTConfigMigration() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestNormalizeSTTDoesNotMutateInput guards the migration rule that
 // normalization is purely in-memory and never rewrites the configured value.
 func TestNormalizeSTTDoesNotMutateInput(t *testing.T) {
