@@ -130,3 +130,13 @@ func TestPromptsCommandsHumanOutput(t *testing.T) {
 		}
 	}
 }
+
+func TestPromptsListHelpMatchesCatalogBehavior(t *testing.T) {
+	out, err := runRootForPrompts(t, t.TempDir(), "prompts", "list", "--help")
+	if err != nil {
+		t.Fatalf("prompts list --help error = %v", err)
+	}
+	if !strings.Contains(out, "List embedded and user prompt documents") {
+		t.Errorf("prompts list --help output = %q, want current catalog behavior", out)
+	}
+}
