@@ -129,6 +129,11 @@ samantha render book.epub --out-dir out/book --audio-format mp3
 # ones rebuild. --json prints completed/skipped/failed counts and exits non-zero
 # if any unit failed, so scripts can branch:
 samantha render book.epub --out-dir out/book --resume --json | jq '.failed'
+
+# Optional planning controls (defaults preserve prior behavior):
+samantha render article.md --out-dir out/article \
+  --max-segment-chars 1200 --pause-heading 750ms --pause-paragraph 400ms \
+  --code-blocks skip
 ```
 
 ### Audiobook creation

@@ -287,7 +287,7 @@ func extractRenderDocument(cmd *cobra.Command, opts *render.Options) (render.Doc
 		if err != nil {
 			return render.Document{}, err
 		}
-		return extractors.ExtractMarkdown(renderSource(*opts), data)
+		return extractors.ExtractMarkdownPolicy(renderSource(*opts), data, opts.EffectiveCodeBlocks())
 	case render.FormatHTML:
 		data, err := readRenderBytes(cmd, *opts)
 		if err != nil {

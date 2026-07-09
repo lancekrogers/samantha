@@ -24,6 +24,12 @@ func TestOptionsValidate(t *testing.T) {
 		"url to dir":          {Options{Input: "https://example.com/a", OutDir: "out", Format: FormatAuto}, false},
 		"text to dir":         {Options{Input: "a.txt", OutDir: "out", Format: FormatAuto}, true},
 		"markdown to file":    {Options{Input: "a.md", Out: "x.wav", Format: FormatAuto}, false},
+		"seg cap too small":   {Options{Stdin: true, Out: "x.wav", Format: FormatText, MaxSegmentChars: 50}, true},
+		"seg cap ok":          {Options{Stdin: true, Out: "x.wav", Format: FormatText, MaxSegmentChars: 200}, false},
+		"bad pause":           {Options{Stdin: true, Out: "x.wav", Format: FormatText, PauseHeading: "soon"}, true},
+		"pause ok":            {Options{Stdin: true, Out: "x.wav", Format: FormatText, PauseHeading: "750ms"}, false},
+		"bad code blocks":     {Options{Input: "a.md", Out: "x.wav", Format: FormatAuto, CodeBlocks: "summarize"}, true},
+		"code blocks read":    {Options{Input: "a.md", Out: "x.wav", Format: FormatAuto, CodeBlocks: "read"}, false},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

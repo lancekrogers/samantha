@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/lancekrogers/samantha/internal/render/encoder"
 )
@@ -26,20 +27,24 @@ const (
 
 // Options describes one `samantha render` invocation.
 type Options struct {
-	Input       string  // positional input path or URL (empty with Stdin)
-	Stdin       bool    // read input text from stdin
-	Format      Format  // input format (auto-detected when FormatAuto)
-	Out         string  // single-file output path
-	OutDir      string  // multi-file output directory (with a manifest)
-	Voice       string  // override the configured TTS voice
-	Speed       float64 // override the configured speech speed (0 = use config)
-	Title       string  // override the document title
-	Manifest    string  // manifest output path (default: OUT_DIR/manifest.json for multi-file)
-	JSON        bool    // print a machine-readable summary
-	Resume      bool    // skip completed manifest entries with matching text hash
-	Overwrite   bool    // replace existing outputs
-	AudioFormat string  // optional compressed output (mp3|m4b|...); WAV is always written
-	EncoderBin  string  // external encoder binary (default: ffmpeg)
+	Input           string  // positional input path or URL (empty with Stdin)
+	Stdin           bool    // read input text from stdin
+	Format          Format  // input format (auto-detected when FormatAuto)
+	Out             string  // single-file output path
+	OutDir          string  // multi-file output directory (with a manifest)
+	Voice           string  // override the configured TTS voice
+	Speed           float64 // override the configured speech speed (0 = use config)
+	Title           string  // override the document title
+	Manifest        string  // manifest output path (default: OUT_DIR/manifest.json for multi-file)
+	JSON            bool    // print a machine-readable summary
+	Resume          bool    // skip completed manifest entries with matching text hash
+	Overwrite       bool    // replace existing outputs
+	AudioFormat     string  // optional compressed output (mp3|m4b|...); WAV is always written
+	EncoderBin      string  // external encoder binary (default: ffmpeg)
+	MaxSegmentChars int     // TTS text segment cap; 0 means defaultMaxSegmentChars
+	PauseHeading    string  // pause after headings (Go duration; empty/0 = none)
+	PauseParagraph  string  // pause after paragraphs (Go duration; empty/0 = none)
+	CodeBlocks      string  // markdown code-block policy: skip|read (default skip)
 }
 
 // ManifestPath returns where the manifest should be written. Every render writes
@@ -103,10 +108,74 @@ func (o Options) Validate() error {
 	if o.Speed < 0 {
 		return fmt.Errorf("render: --speed must be >= 0, got %v", o.Speed)
 	}
+	if o.MaxSegmentChars != 0 && o.MaxSegmentChars < minSegmentChars {
+		return fmt.Errorf("render: --max-segment-chars must be 0 (default) or >= %d, got %d", minSegmentChars, o.MaxSegmentChars)
+	}
+	if _, err := parsePauseDuration("--pause-heading", o.PauseHeading); err != nil {
+		return err
+	}
+	if _, err := parsePauseDuration("--pause-paragraph", o.PauseParagraph); err != nil {
+		return err
+	}
+	switch strings.ToLower(strings.TrimSpace(o.CodeBlocks)) {
+	case "", "skip", "read":
+	default:
+		return fmt.Errorf("render: unsupported --code-blocks %q (try skip or read)", o.CodeBlocks)
+	}
 	if !encoder.Supported(o.AudioFormat) {
 		return fmt.Errorf("render: unsupported --audio-format %q (try one of: mp3, m4a, m4b, aac, opus)", o.AudioFormat)
 	}
 	return nil
+}
+
+// EffectiveMaxSegmentChars returns the TTS segment cap used for this render.
+// Zero means the package default.
+func (o Options) EffectiveMaxSegmentChars() int {
+	if o.MaxSegmentChars > 0 {
+		return o.MaxSegmentChars
+	}
+	return defaultMaxSegmentChars
+}
+
+// EffectiveCodeBlocks returns the markdown code-block policy (default skip).
+func (o Options) EffectiveCodeBlocks() string {
+	v := strings.ToLower(strings.TrimSpace(o.CodeBlocks))
+	if v == "" {
+		return "skip"
+	}
+	return v
+}
+
+// minSegmentChars is the practical floor for --max-segment-chars when set.
+const minSegmentChars = 100
+
+// parsePauseDuration parses an optional Go duration for pause flags.
+// Empty means no pause (duration 0). Negative durations are rejected.
+func parsePauseDuration(flag, raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "0" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("render: invalid %s %q: %w", flag, raw, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("render: %s must be >= 0, got %s", flag, raw)
+	}
+	return d, nil
+}
+
+// PauseHeadingDuration returns the configured heading pause (0 if unset).
+func (o Options) PauseHeadingDuration() time.Duration {
+	d, _ := parsePauseDuration("--pause-heading", o.PauseHeading)
+	return d
+}
+
+// PauseParagraphDuration returns the configured paragraph pause (0 if unset).
+func (o Options) PauseParagraphDuration() time.Duration {
+	d, _ := parsePauseDuration("--pause-paragraph", o.PauseParagraph)
+	return d
 }
 
 // ResolveFormat returns the effective format, inferring it from the input when

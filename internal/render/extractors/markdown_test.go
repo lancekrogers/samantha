@@ -115,3 +115,21 @@ func TestExtractMarkdownUnitsSectioned(t *testing.T) {
 		t.Errorf("unit1 = %+v", units[1])
 	}
 }
+
+func TestExtractMarkdownCodeBlocksRead(t *testing.T) {
+	src := "# Intro\n\nBefore.\n\n```go\nfmt.Println(1)\n```\n\nAfter.\n"
+	skip, err := ExtractMarkdownPolicy("x.md", []byte(src), "skip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := ExtractMarkdownPolicy("x.md", []byte(src), "read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(skip.Narration(), "fmt.Println") {
+		t.Errorf("skip should omit code: %q", skip.Narration())
+	}
+	if !strings.Contains(read.Narration(), "fmt.Println") {
+		t.Errorf("read should include code: %q", read.Narration())
+	}
+}
