@@ -21,7 +21,7 @@ func newLauncher(cfg *config.Config, providers []discovery.ProviderInfo) launche
 	return launcherModel{
 		cfg:       cfg,
 		providers: providers,
-		items:     []string{"Start conversation", "Settings", "Quit"},
+		items:     []string{"Start conversation", "Create audiobook", "Settings", "Quit"},
 	}
 }
 
@@ -41,9 +41,11 @@ func (m launcherModel) Update(msg tea.Msg) (launcherModel, tea.Cmd) {
 			switch m.cursor {
 			case 0: // Start conversation
 				return m, func() tea.Msg { return startPipelineMsg{} }
-			case 1: // Settings
+			case 1: // Create audiobook
+				return m, func() tea.Msg { return switchScreenMsg(screenAudiobook) }
+			case 2: // Settings
 				return m, func() tea.Msg { return switchScreenMsg(screenSettings) }
-			case 2: // Quit
+			case 3: // Quit
 				return m, func() tea.Msg { return quitMsg{} }
 			}
 		case "q":
