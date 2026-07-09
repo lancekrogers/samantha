@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // CleanCandidate is one path under the models dir that no required asset
@@ -15,6 +16,12 @@ type CleanCandidate struct {
 	Path  string `json:"path"`
 	Size  int64  `json:"size"`
 	IsDir bool   `json:"dir,omitempty"`
+}
+
+// CleanApplyResult reports the candidates removed by an apply-mode cleanup.
+type CleanApplyResult struct {
+	Deleted []CleanCandidate `json:"deleted"`
+	Bytes   int64            `json:"bytes"`
 }
 
 // CleanCandidates lists the paths under modelsDir that are not claimed by any
@@ -39,6 +46,51 @@ func (m AssetManifest) CleanCandidates(ctx context.Context, modelsDir string) ([
 		return nil, err
 	}
 	return candidates, nil
+}
+
+// DeleteCleanCandidates removes the exact candidate paths after re-validating
+// path confinement under modelsDir. Symlinks are removed as links; their targets
+// are never followed.
+func DeleteCleanCandidates(ctx context.Context, modelsDir string, candidates []CleanCandidate) (CleanApplyResult, error) {
+	result := CleanApplyResult{}
+	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		if err := validateCleanCandidatePath(modelsDir, candidate.Path); err != nil {
+			return result, err
+		}
+		if _, err := os.Lstat(candidate.Path); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return result, fmt.Errorf("models clean: stat %s: %w", candidate.Path, err)
+		}
+		if err := os.RemoveAll(candidate.Path); err != nil {
+			return result, fmt.Errorf("models clean: remove %s: %w", candidate.Path, err)
+		}
+		result.Deleted = append(result.Deleted, candidate)
+		result.Bytes += candidate.Size
+	}
+	return result, nil
+}
+
+func validateCleanCandidatePath(modelsDir, candidatePath string) error {
+	modelsAbs, err := filepath.Abs(filepath.Clean(modelsDir))
+	if err != nil {
+		return fmt.Errorf("models clean: resolve models dir: %w", err)
+	}
+	candidateAbs, err := filepath.Abs(filepath.Clean(candidatePath))
+	if err != nil {
+		return fmt.Errorf("models clean: resolve candidate path: %w", err)
+	}
+	rel, err := filepath.Rel(modelsAbs, candidateAbs)
+	if err != nil {
+		return fmt.Errorf("models clean: compare candidate path: %w", err)
+	}
+	if rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("models clean: refusing to delete path outside models dir: %s", candidatePath)
+	}
+	return nil
 }
 
 // ownership records which paths under the models dir belong to a required asset.

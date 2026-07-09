@@ -307,6 +307,68 @@ func TestCleanCandidatesDoesNotFollowSymlinks(t *testing.T) {
 	}
 }
 
+func TestDeleteCleanCandidatesRemovesCandidatesOnly(t *testing.T) {
+	outside := t.TempDir()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "target.bin"), []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "stale.bin")
+	oldDir := filepath.Join(dir, "old-dir")
+	link := filepath.Join(dir, "link")
+	if err := os.WriteFile(file, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(oldDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldDir, "nested.bin"), []byte("nested"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "target.bin"), link); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := DeleteCleanCandidates(context.Background(), dir, []CleanCandidate{
+		{Path: file, Size: 4},
+		{Path: oldDir, Size: 6, IsDir: true},
+		{Path: link, Size: 7},
+	})
+	if err != nil {
+		t.Fatalf("DeleteCleanCandidates() error = %v", err)
+	}
+	if len(result.Deleted) != 3 || result.Bytes != 17 {
+		t.Fatalf("result = %+v, want 3 deleted and 17 bytes", result)
+	}
+	for _, p := range []string{file, oldDir, link} {
+		if _, err := os.Lstat(p); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists after delete", p)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(outside, "target.bin")); err != nil {
+		t.Fatalf("symlink target should not be deleted: %v", err)
+	}
+}
+
+func TestDeleteCleanCandidatesRejectsOutsidePath(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.bin")
+	if err := os.WriteFile(outside, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := DeleteCleanCandidates(context.Background(), dir, []CleanCandidate{{Path: outside}})
+	if err == nil {
+		t.Fatal("DeleteCleanCandidates() error = nil, want outside path rejection")
+	}
+	if !strings.Contains(err.Error(), "outside models dir") {
+		t.Fatalf("error = %q, want outside models dir", err)
+	}
+	if _, statErr := os.Stat(outside); statErr != nil {
+		t.Fatalf("outside path should remain after rejected delete: %v", statErr)
+	}
+}
+
 func TestCleanCandidateSizes(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "stale.onnx"), []byte("1234"), 0o644); err != nil {

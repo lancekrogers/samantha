@@ -16,6 +16,7 @@ var (
 	modelsEnsureScope scopeFlags
 	modelsCleanUnused bool
 	modelsCleanDryRun bool
+	modelsCleanYes    bool
 	modelsCleanJSON   bool
 )
 
@@ -144,25 +145,25 @@ func runModelsEnsure(cmd *cobra.Command, cfg *config.Config, req config.AssetReq
 
 var modelsCleanCmd = &cobra.Command{
 	Use:   "clean",
-	Short: "Preview model assets not required by the current configuration (dry-run only)",
+	Short: "Clean model assets not required by the current configuration",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {
 			return err
 		}
-		return runModelsClean(cmd, cfg, config.ModelsDir(), modelsCleanUnused, modelsCleanDryRun, modelsCleanJSON)
+		return runModelsClean(cmd, cfg, config.ModelsDir(), modelsCleanUnused, modelsCleanDryRun, modelsCleanYes, modelsCleanJSON)
 	},
 }
 
 // runModelsClean lists the paths under modelsDir that the currently required
-// manifest (the full default request for cfg) does not claim. It is preview
-// only: there is no deletion path, and running without --dry-run errors.
-func runModelsClean(cmd *cobra.Command, cfg *config.Config, modelsDir string, unused, dryRun, asJSON bool) error {
+// manifest (the full default request for cfg) does not claim, or deletes them
+// when --yes is explicitly set.
+func runModelsClean(cmd *cobra.Command, cfg *config.Config, modelsDir string, unused, dryRun, yes, asJSON bool) error {
 	if !unused {
 		return fmt.Errorf("models clean: --unused is required (only unused-asset cleanup is supported)")
 	}
-	if !dryRun {
-		return fmt.Errorf("models clean: applying deletions is not yet supported — use --dry-run to preview removable assets")
+	if dryRun == yes {
+		return fmt.Errorf("models clean: choose exactly one of --dry-run or --yes")
 	}
 
 	manifest, err := config.ManifestFor(cfg, config.DefaultAssetRequest(cfg))
@@ -178,10 +179,21 @@ func runModelsClean(cmd *cobra.Command, cfg *config.Config, modelsDir string, un
 	if asJSON {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
-		return enc.Encode(candidates)
+		if dryRun {
+			return enc.Encode(candidates)
+		}
+		result, err := config.DeleteCleanCandidates(cmd.Context(), modelsDir, candidates)
+		if err != nil {
+			return err
+		}
+		return enc.Encode(result)
 	}
 
-	fmt.Fprintf(out, "\n  Unused model assets (models dir: %s) — dry run\n\n", modelsDir)
+	mode := "dry run"
+	if yes {
+		mode = "apply"
+	}
+	fmt.Fprintf(out, "\n  Unused model assets (models dir: %s) — %s\n\n", modelsDir, mode)
 	if len(candidates) == 0 {
 		fmt.Fprintln(out, "  No removable assets.")
 		fmt.Fprintln(out)
@@ -193,7 +205,16 @@ func runModelsClean(cmd *cobra.Command, cfg *config.Config, modelsDir string, un
 		fmt.Fprintf(out, "  %s (%s)\n", c.Path, formatBytes(c.Size))
 		total += c.Size
 	}
-	fmt.Fprintf(out, "\n  %d candidate(s), %s total. Nothing was deleted.\n\n", len(candidates), formatBytes(total))
+	if dryRun {
+		fmt.Fprintf(out, "\n  %d candidate(s), %s total. Nothing was deleted.\n\n", len(candidates), formatBytes(total))
+		return nil
+	}
+
+	result, err := config.DeleteCleanCandidates(cmd.Context(), modelsDir, candidates)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "\n  Deleted %d candidate(s), %s total.\n\n", len(result.Deleted), formatBytes(result.Bytes))
 	return nil
 }
 
@@ -217,6 +238,7 @@ func init() {
 	modelsEnsureScope.register(modelsEnsureCmd)
 	modelsCleanCmd.Flags().BoolVar(&modelsCleanUnused, "unused", false, "Select assets not required by the current configuration")
 	modelsCleanCmd.Flags().BoolVar(&modelsCleanDryRun, "dry-run", false, "Preview removable assets without deleting anything")
+	modelsCleanCmd.Flags().BoolVar(&modelsCleanYes, "yes", false, "Delete unused model assets without prompting")
 	modelsCleanCmd.Flags().BoolVar(&modelsCleanJSON, "json", false, "Output machine-readable JSON")
 	modelsCmd.AddCommand(modelsStatusCmd)
 	modelsCmd.AddCommand(modelsEnsureCmd)

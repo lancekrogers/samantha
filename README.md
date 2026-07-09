@@ -97,6 +97,7 @@ samantha resume <session-id>            # Resume a saved session
 samantha continue                       # Continue the most recent session
 samantha doctor                         # Diagnose config, assets, and binaries (read-only)
 samantha models status                  # Which model assets are installed vs missing
+samantha models clean --unused --yes    # Delete model assets not required now
 samantha prompts list                   # List embedded and user prompt documents
 samantha prompts show persona           # Show an assembled prompt document
 samantha render notes.txt --out a.wav   # Batch-render a document to audio
