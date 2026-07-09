@@ -27,7 +27,11 @@ func turnInstruction(cfg *config.Config) (string, error) {
 // user prompts dir, then the embedded default), assembles it, and substitutes
 // {agent_name}.
 func resolvePrompt(cfg *config.Config, kind prompts.Kind) (string, error) {
-	doc, err := prompts.Resolver{UserDir: config.PromptsDir()}.Resolve(kind, cfg.Persona)
+	userDir := cfg.PromptsDir
+	if userDir == "" {
+		userDir = config.PromptsDir()
+	}
+	doc, err := prompts.Resolver{UserDir: userDir}.Resolve(kind, cfg.Persona)
 	if err != nil {
 		return "", fmt.Errorf("resolving %s prompt: %w", kind, err)
 	}
