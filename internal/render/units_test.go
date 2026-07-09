@@ -120,3 +120,55 @@ func TestStructuredSectionFilenamesStable(t *testing.T) {
 		})
 	}
 }
+
+// TestRenderUnitsFromDocumentMarkdownHTMLResume covers sectioned Markdown/HTML
+// units and resume: unchanged sections skip, changed text re-renders.
+func TestRenderUnitsFromDocumentMarkdownHTMLResume(t *testing.T) {
+	dir := t.TempDir()
+	opts := Options{OutDir: dir, Format: FormatMarkdown, Title: "Guide", Resume: true}
+	doc := Document{
+		Source: "guide.md",
+		Sections: []DocumentSection{
+			{ID: "sec-001-intro", Title: "Intro", Text: "Hello."},
+			{ID: "sec-002-body", Title: "Body", Text: "World."},
+		},
+	}
+	units := doc.Units()
+	var writes []string
+	m1, err := RenderUnits(context.Background(), opts, units, &fakeSynth{rate: 24000}, recordingWriter(&writes))
+	if err != nil {
+		t.Fatalf("first render: %v", err)
+	}
+	if err := WriteManifest(opts.ManifestPath(), m1); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if len(writes) != 2 {
+		t.Fatalf("first render wrote %d, want 2", len(writes))
+	}
+
+	// Resume unchanged: no new writes.
+	writes = nil
+	m2, err := RenderUnits(context.Background(), opts, units, &fakeSynth{rate: 24000}, recordingWriter(&writes))
+	if err != nil {
+		t.Fatalf("resume unchanged: %v", err)
+	}
+	if len(writes) != 0 {
+		t.Fatalf("resume wrote %v, want none", writes)
+	}
+	for _, s := range m2.Segments {
+		if s.Status != StatusSkipped {
+			t.Errorf("segment %s status = %s, want skipped", s.ID, s.Status)
+		}
+	}
+
+	// Change second section: only that unit re-renders.
+	doc.Sections[1].Text = "Changed."
+	writes = nil
+	_, err = RenderUnits(context.Background(), opts, doc.Units(), &fakeSynth{rate: 24000}, recordingWriter(&writes))
+	if err != nil {
+		t.Fatalf("resume changed: %v", err)
+	}
+	if len(writes) != 1 {
+		t.Fatalf("changed resume wrote %d, want 1: %v", len(writes), writes)
+	}
+}

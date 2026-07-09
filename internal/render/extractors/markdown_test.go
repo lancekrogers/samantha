@@ -98,3 +98,20 @@ func TestSlugifyAndSectionID(t *testing.T) {
 		t.Errorf("untitled sectionID = %q, want sec-003", id)
 	}
 }
+
+func TestExtractMarkdownUnitsSectioned(t *testing.T) {
+	doc, err := ExtractMarkdown("g.md", []byte("# Intro\n\nHello.\n\n# Body\n\nWorld.\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	units := doc.Units()
+	if len(units) != 2 {
+		t.Fatalf("units = %d, want 2", len(units))
+	}
+	if units[0].ID == "" || units[0].Title != "Intro" {
+		t.Errorf("unit0 = %+v", units[0])
+	}
+	if units[1].Title != "Body" {
+		t.Errorf("unit1 = %+v", units[1])
+	}
+}
