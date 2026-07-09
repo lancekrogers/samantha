@@ -19,7 +19,11 @@ func TestOptionsValidate(t *testing.T) {
 		"stdin url rejected":  {Options{Stdin: true, Out: "x.wav", Format: FormatURL}, true},
 		"negative speed":      {Options{Stdin: true, Out: "x.wav", Format: FormatText, Speed: -1}, true},
 		"epub to single file": {Options{Input: "b.epub", Out: "x.wav", Format: FormatAuto}, true},
-		"markdown to dir":     {Options{Input: "a.md", OutDir: "out", Format: FormatAuto}, true},
+		"markdown to dir":     {Options{Input: "a.md", OutDir: "out", Format: FormatAuto}, false},
+		"html to dir":         {Options{Input: "a.html", OutDir: "out", Format: FormatAuto}, false},
+		"url to dir":          {Options{Input: "https://example.com/a", OutDir: "out", Format: FormatAuto}, false},
+		"text to dir":         {Options{Input: "a.txt", OutDir: "out", Format: FormatAuto}, true},
+		"markdown to file":    {Options{Input: "a.md", Out: "x.wav", Format: FormatAuto}, false},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

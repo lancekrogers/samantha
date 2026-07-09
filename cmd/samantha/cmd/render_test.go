@@ -55,3 +55,28 @@ func TestRenderCmdAutoDetectsFormat(t *testing.T) {
 		t.Errorf("plan should auto-detect epub + multi-file:\n%s", out)
 	}
 }
+
+func TestRenderCmdAllowsStructuredOutDir(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"markdown out-dir", []string{"article.md", "--out-dir", "out/article"}},
+		{"html out-dir", []string{"page.html", "--out-dir", "out/page"}},
+		{"url out-dir", []string{"https://example.com/a", "--out-dir", "out/a"}},
+		{"markdown out single", []string{"article.md", "--out", "out/article.wav"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := runRender(t, tc.args...); err != nil {
+				t.Fatalf("expected valid plan for %v, got %v", tc.args, err)
+			}
+		})
+	}
+}
+
+func TestRenderCmdRejectsTextOutDir(t *testing.T) {
+	if _, err := runRender(t, "notes.txt", "--out-dir", "out/notes"); err == nil {
+		t.Fatal("expected validation error for text --out-dir")
+	}
+}

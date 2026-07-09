@@ -87,13 +87,17 @@ func (o Options) Validate() error {
 	}
 
 	// Cross-check the resolved format against the output mode so a mismatch fails
-	// fast here, before any TTS model is loaded. EPUB is inherently multi-file;
-	// every other format is single-file.
+	// fast here, before any TTS model is loaded. EPUB is multi-file only;
+	// Markdown/HTML/URL accept either --out (single file) or --out-dir (sectioned);
+	// plain text remains single-file only.
+	format := o.ResolveFormat()
 	switch {
-	case o.ResolveFormat() == FormatEPUB && o.Out != "":
+	case format == FormatEPUB && o.Out != "":
 		return fmt.Errorf("render: --format epub writes multiple files; use --out-dir DIR")
-	case o.ResolveFormat() != FormatEPUB && o.OutDir != "":
-		return fmt.Errorf("render: --format %s writes a single file; use --out FILE", o.ResolveFormat())
+	case format == FormatText && o.OutDir != "":
+		return fmt.Errorf("render: --format text writes a single file; use --out FILE")
+	case !supportsSectionedOutDir(format) && o.OutDir != "":
+		return fmt.Errorf("render: --format %s writes a single file; use --out FILE", format)
 	}
 
 	if o.Speed < 0 {
@@ -132,3 +136,14 @@ func (o Options) ResolveFormat() Format {
 // MultiFile reports whether this render writes multiple files (and thus a
 // manifest) rather than a single audio file.
 func (o Options) MultiFile() bool { return o.OutDir != "" }
+
+// supportsSectionedOutDir reports whether format may write multi-file sectioned
+// output under --out-dir (in addition to single-file --out where applicable).
+func supportsSectionedOutDir(f Format) bool {
+	switch f {
+	case FormatMarkdown, FormatHTML, FormatURL, FormatEPUB:
+		return true
+	default:
+		return false
+	}
+}

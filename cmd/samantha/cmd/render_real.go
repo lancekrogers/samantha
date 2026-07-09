@@ -26,7 +26,8 @@ import (
 // runRenderText is the real batch render runner: it constructs the TTS provider
 // (the only heavy dependency batch rendering needs — no STT, brain, microphone,
 // or playback) and renders the input to WAV. EPUB is rendered per chapter into a
-// directory; other formats render to a single WAV.
+// directory; Markdown/HTML/URL use sectioned multi-file output when --out-dir is
+// set, otherwise a single WAV; plain text is always single-file.
 func runRenderText(cmd *cobra.Command, opts render.Options) error {
 	// Preflight the optional encoder BEFORE constructing the synthesizer so an
 	// unavailable encoder fails fast — no model load, no synthesis, no audio.
@@ -43,6 +44,10 @@ func runRenderText(cmd *cobra.Command, opts render.Options) error {
 
 	if opts.ResolveFormat() == render.FormatEPUB {
 		return runRenderEPUB(cmd, opts, synth, enc)
+	}
+
+	if opts.MultiFile() {
+		return runRenderStructured(cmd, opts, synth, enc)
 	}
 
 	text, err := extractRenderText(cmd, &opts)
@@ -66,6 +71,38 @@ func runRenderText(cmd *cobra.Command, opts render.Options) error {
 		}
 		for _, e := range encoded {
 			fmt.Fprintf(out, "  Encoded:  %s\n", e)
+		}
+	})
+}
+
+// runRenderStructured renders Markdown/HTML/URL inputs as sectioned multi-file
+// output under --out-dir via Document.Units and RenderUnits.
+func runRenderStructured(cmd *cobra.Command, opts render.Options, synth render.Synthesizer, enc encoder.Encoder) error {
+	if opts.OutDir == "" {
+		return fmt.Errorf("render: sectioned rendering requires --out-dir DIR")
+	}
+
+	doc, err := extractRenderDocument(cmd, &opts)
+	if err != nil {
+		return err
+	}
+	if opts.Title == "" {
+		opts.Title = doc.Title
+	}
+
+	units := doc.Units()
+	manifest, renderErr := render.RenderUnits(cmd.Context(), opts, units, synth, audio.WriteWAVFloat32)
+
+	complete, skipped, failed := manifest.Counts()
+	return finishRender(cmd, opts, manifest, enc, renderReport{
+		outputKey: "output_dir",
+		output:    opts.OutDir,
+		wavs:      render.CompletedWAVPaths(opts.OutDir, manifest),
+	}, renderErr, func(out io.Writer, manifestPath string, encoded []string) {
+		fmt.Fprintf(out, "  Rendered %d section(s) to %s (%d skipped, %d failed)\n", complete, opts.OutDir, skipped, failed)
+		fmt.Fprintf(out, "  Manifest: %s\n", manifestPath)
+		if len(encoded) > 0 {
+			fmt.Fprintf(out, "  Encoded:  %d file(s) to .%s\n", len(encoded), enc.Ext())
 		}
 	})
 }
@@ -224,47 +261,14 @@ func finishRender(cmd *cobra.Command, opts render.Options, manifest render.Rende
 // extractRenderText reads the input and converts it to narration text according
 // to the resolved format. It may set opts.Title from the extracted document.
 func extractRenderText(cmd *cobra.Command, opts *render.Options) (string, error) {
-	switch f := opts.ResolveFormat(); f {
-	case render.FormatText:
+	if opts.ResolveFormat() == render.FormatText {
 		data, err := readRenderBytes(cmd, *opts)
 		if err != nil {
 			return "", err
 		}
 		return string(data), nil
-	case render.FormatMarkdown:
-		data, err := readRenderBytes(cmd, *opts)
-		if err != nil {
-			return "", err
-		}
-		doc, err := extractors.ExtractMarkdown(renderSource(*opts), data)
-		return narrationFromDoc(opts, doc, err)
-	case render.FormatHTML:
-		data, err := readRenderBytes(cmd, *opts)
-		if err != nil {
-			return "", err
-		}
-		doc, err := extractors.ExtractHTML(renderSource(*opts), data)
-		if err != nil {
-			return "", err
-		}
-		return narrationFromDoc(opts, doc, nil)
-	case render.FormatURL:
-		data, err := extractors.FetchArticle(cmd.Context(), nil, opts.Input, extractors.FetchOptions{})
-		if err != nil {
-			return "", err
-		}
-		doc, err := extractors.ExtractHTML(opts.Input, data)
-		if err != nil {
-			return "", err
-		}
-		return narrationFromDoc(opts, doc, nil)
-	default:
-		return "", fmt.Errorf("render: --format %s is not implemented yet", f)
 	}
-}
-
-// narrationFromDoc returns the document's narration text, adopting its title.
-func narrationFromDoc(opts *render.Options, doc render.Document, err error) (string, error) {
+	doc, err := extractRenderDocument(cmd, opts)
 	if err != nil {
 		return "", err
 	}
@@ -272,6 +276,33 @@ func narrationFromDoc(opts *render.Options, doc render.Document, err error) (str
 		opts.Title = doc.Title
 	}
 	return doc.Narration(), nil
+}
+
+// extractRenderDocument extracts a structure-aware Document for Markdown, HTML,
+// or URL inputs. Plain text and EPUB are not handled here.
+func extractRenderDocument(cmd *cobra.Command, opts *render.Options) (render.Document, error) {
+	switch f := opts.ResolveFormat(); f {
+	case render.FormatMarkdown:
+		data, err := readRenderBytes(cmd, *opts)
+		if err != nil {
+			return render.Document{}, err
+		}
+		return extractors.ExtractMarkdown(renderSource(*opts), data)
+	case render.FormatHTML:
+		data, err := readRenderBytes(cmd, *opts)
+		if err != nil {
+			return render.Document{}, err
+		}
+		return extractors.ExtractHTML(renderSource(*opts), data)
+	case render.FormatURL:
+		data, err := extractors.FetchArticle(cmd.Context(), nil, opts.Input, extractors.FetchOptions{})
+		if err != nil {
+			return render.Document{}, err
+		}
+		return extractors.ExtractHTML(opts.Input, data)
+	default:
+		return render.Document{}, fmt.Errorf("render: --format %s does not support document extraction", f)
+	}
 }
 
 // readRenderBytes returns the raw input from stdin or the input file.

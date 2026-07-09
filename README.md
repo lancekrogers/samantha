@@ -116,16 +116,18 @@ samantha render article.md --out out/article.wav
 cat notes.txt | samantha render --stdin --out out/notes.wav
 samantha render https://example.com/post --out out/post.wav   # URL article
 
-# EPUB -> one WAV per chapter (spine order) + a manifest:
+# Sectioned multi-file: one WAV per heading/section + a manifest.
+# Works for Markdown, HTML, URL, and EPUB (EPUB requires --out-dir):
+samantha render article.md --out-dir out/article
 samantha render book.epub --out-dir out/book
 
 # Optional compressed output via an external encoder (default ffmpeg); WAV is
 # still written. A missing encoder fails before any synthesis:
 samantha render book.epub --out-dir out/book --audio-format mp3
 
-# Resume a long render: unchanged chapters are skipped, changed/failed ones
-# rebuild. --json prints completed/skipped/failed counts and exits non-zero if
-# any chapter failed, so scripts can branch:
+# Resume a long render: unchanged chapters/sections are skipped, changed/failed
+# ones rebuild. --json prints completed/skipped/failed counts and exits non-zero
+# if any unit failed, so scripts can branch:
 samantha render book.epub --out-dir out/book --resume --json | jq '.failed'
 ```
 
@@ -136,7 +138,7 @@ runtime for EPUB books: one WAV per chapter (spine order) plus a manifest under
 `--out-dir` (required). It accepts render's pass-through flags (`--resume`,
 `--voice`, `--speed`, `--audio-format`, `--encoder`, `--json`, `--manifest`,
 `--overwrite`). Only EPUB input is supported yet; use `samantha render` for
-markdown, HTML, URL, and text sources.
+markdown, HTML, URL (including sectioned `--out-dir`), and text sources.
 
 ```bash
 samantha audiobook create book.epub --out-dir out/book

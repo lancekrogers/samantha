@@ -48,7 +48,27 @@ func (d Document) Narration() string {
 // identity is as stable as the extractor's section IDs. A section with no
 // narratable text converts to an empty-text unit, which the render path
 // records as skipped — identical to an empty chapter.
+//
+// When the document has no sections (a structured source with no headings and
+// no body sections), Units returns a single fallback unit from the document
+// title/narration so --out-dir still produces a usable multi-file render.
 func (d Document) Units() []RenderUnit {
+	if len(d.Sections) == 0 {
+		text := strings.TrimSpace(d.Narration())
+		if text == "" {
+			text = strings.TrimSpace(d.Title)
+		}
+		id := "sec-001"
+		if slug := Slugify(d.Title); slug != "" {
+			id = "sec-001-" + slug
+		}
+		return []RenderUnit{{
+			ID:        id,
+			Title:     d.Title,
+			Text:      text,
+			SourceRef: d.Source,
+		}}
+	}
 	units := make([]RenderUnit, 0, len(d.Sections))
 	for _, s := range d.Sections {
 		units = append(units, RenderUnit{ID: s.ID, Title: s.Title, Text: s.narration(), SourceRef: d.Source})
