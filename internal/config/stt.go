@@ -2,8 +2,14 @@ package config
 
 import (
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Normalized STT provider and mode identifiers resolved from the single
@@ -35,6 +41,13 @@ type STTConfigMigrationProposal struct {
 	ProposedProvider string
 	ProposedMode     string
 	Noop             bool
+}
+
+// STTConfigMigrationResult reports the outcome of applying a migration.
+type STTConfigMigrationResult struct {
+	STTConfigMigrationProposal
+	BackupPath string
+	Wrote      bool
 }
 
 // sttAliasTable maps every accepted stt_provider value to its normalized
@@ -130,4 +143,146 @@ func ProposeSTTConfigMigration(cfg *Config, configPath string) (STTConfigMigrati
 		ProposedMode:     norm.Mode,
 		Noop:             provider == norm.Provider && mode == norm.Mode,
 	}, nil
+}
+
+// WriteSTTConfigMigration applies the explicit STT provider/mode migration to
+// configPath. It creates a timestamped backup before replacing an existing
+// config file and writes through a temporary file before rename.
+func WriteSTTConfigMigration(cfg *Config, configPath string) (STTConfigMigrationResult, error) {
+	proposal, err := ProposeSTTConfigMigration(cfg, configPath)
+	if err != nil {
+		return STTConfigMigrationResult{}, err
+	}
+	result := STTConfigMigrationResult{STTConfigMigrationProposal: proposal}
+	if proposal.Noop {
+		return result, nil
+	}
+
+	data, exists, err := readOptionalFile(configPath)
+	if err != nil {
+		return STTConfigMigrationResult{}, err
+	}
+	doc, err := migrationYAMLDocument(data)
+	if err != nil {
+		return STTConfigMigrationResult{}, err
+	}
+	setYAMLScalar(doc.Content[0], "stt_provider", proposal.ProposedProvider)
+	setYAMLScalar(doc.Content[0], "stt_mode", proposal.ProposedMode)
+
+	out, err := encodeYAMLDocument(doc)
+	if err != nil {
+		return STTConfigMigrationResult{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		return STTConfigMigrationResult{}, fmt.Errorf("creating config dir: %w", err)
+	}
+	if exists {
+		backupPath, err := backupFile(configPath)
+		if err != nil {
+			return STTConfigMigrationResult{}, err
+		}
+		result.BackupPath = backupPath
+	}
+	if err := writeFileAtomic(configPath, out); err != nil {
+		return STTConfigMigrationResult{}, err
+	}
+	result.Wrote = true
+	return result, nil
+}
+
+func readOptionalFile(path string) ([]byte, bool, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("reading config: %w", err)
+	}
+	return data, true, nil
+}
+
+func migrationYAMLDocument(data []byte) (*yaml.Node, error) {
+	if strings.TrimSpace(string(data)) == "" {
+		return &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}, nil
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+	if len(doc.Content) == 0 {
+		doc.Content = []*yaml.Node{{Kind: yaml.MappingNode}}
+	}
+	if doc.Content[0].Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("config file must contain a YAML mapping")
+	}
+	return &doc, nil
+}
+
+func setYAMLScalar(mapping *yaml.Node, key, value string) {
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			mapping.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
+			return
+		}
+	}
+	mapping.Content = append(mapping.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
+	)
+}
+
+func encodeYAMLDocument(doc *yaml.Node) ([]byte, error) {
+	var b strings.Builder
+	enc := yaml.NewEncoder(&b)
+	enc.SetIndent(2)
+	if err := enc.Encode(doc); err != nil {
+		return nil, fmt.Errorf("encoding config: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return nil, fmt.Errorf("encoding config: %w", err)
+	}
+	return []byte(b.String()), nil
+}
+
+func backupFile(path string) (string, error) {
+	backupPath := fmt.Sprintf("%s.bak.%s", path, time.Now().UTC().Format("20060102T150405.000000000Z"))
+	src, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("opening config for backup: %w", err)
+	}
+	defer src.Close()
+
+	dst, err := os.OpenFile(backupPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("creating backup: %w", err)
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, src); err != nil {
+		return "", fmt.Errorf("writing backup: %w", err)
+	}
+	return backupPath, nil
+}
+
+func writeFileAtomic(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp.")
+	if err != nil {
+		return fmt.Errorf("creating temp config: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing temp config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp config: %w", err)
+	}
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		return fmt.Errorf("setting temp config permissions: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("replacing config: %w", err)
+	}
+	return nil
 }

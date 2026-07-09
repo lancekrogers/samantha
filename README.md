@@ -87,6 +87,7 @@ samantha --no-voice   # Voice input, text output
 samantha config                         # View all config
 samantha config tts_voice af_bella      # Set a config value
 samantha config migrate --dry-run       # Preview explicit STT config migration
+samantha config migrate --write         # Apply STT config migration with backup
 samantha voices                         # List available Kokoro voices
 samantha voices --locale en-US          # Filter voices by locale
 samantha providers                      # Show brain, TTS, and STT providers
@@ -180,7 +181,11 @@ The preferred STT schema is `stt_provider` + `stt_mode` (e.g. `stt_provider: she
 
 Use `samantha config migrate --dry-run` to preview the explicit
 `stt_provider`/`stt_mode` values that would preserve the current STT behavior.
-Dry runs report the config path and proposed values without writing files.
+Dry runs report the config path and proposed values without writing files. Use
+`samantha config migrate --write` to apply the migration; it creates a
+timestamped `.bak` file before replacing an existing config. The write path
+updates YAML via `yaml.v3`, so comments and unrelated keys are preserved where
+possible, but scalar formatting around touched keys may be normalized.
 
 ## Development
 

@@ -3,6 +3,8 @@ package cmd
 import (
 	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,13 +15,17 @@ import (
 
 func runConfigMigrate(t *testing.T, cfg *config.Config, args ...string) (string, error) {
 	t.Helper()
+	return runConfigMigrateWithPath(t, cfg, "/tmp/samantha/config.yaml", args...)
+}
 
+func runConfigMigrateWithPath(t *testing.T, cfg *config.Config, configPath string, args ...string) (string, error) {
+	t.Helper()
 	cmd := newConfigMigrateCmd(func() (*config.Config, error) {
 		if cfg == nil {
 			return nil, errors.New("load failed")
 		}
 		return cfg, nil
-	}, func() string { return "/tmp/samantha/config.yaml" })
+	}, func() string { return configPath })
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -53,10 +59,10 @@ func TestConfigMigrateDryRunOutput(t *testing.T) {
 func TestConfigMigrateRequiresDryRun(t *testing.T) {
 	_, err := runConfigMigrate(t, &config.Config{STTProvider: "sherpa"})
 	if err == nil {
-		t.Fatal("config migrate error = nil, want --dry-run requirement")
+		t.Fatal("config migrate error = nil, want mode requirement")
 	}
-	if !strings.Contains(err.Error(), "requires --dry-run") {
-		t.Fatalf("error = %q, want --dry-run requirement", err)
+	if !strings.Contains(err.Error(), "requires exactly one") {
+		t.Fatalf("error = %q, want exactly-one mode requirement", err)
 	}
 }
 
@@ -67,6 +73,39 @@ func TestConfigMigrateDryRunUnknownProvider(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unsupported stt_provider") {
 		t.Fatalf("error = %q, want unsupported provider", err)
+	}
+}
+
+func TestConfigMigrateWriteOutput(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("stt_provider: sherpa-offline\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runConfigMigrateWithPath(t, &config.Config{STTProvider: "sherpa-offline"}, path, "--write")
+	if err != nil {
+		t.Fatalf("config migrate --write error = %v", err)
+	}
+	for _, want := range []string{
+		"Config migration write",
+		"current_alias: sherpa-offline",
+		"proposed_stt_provider: sherpa",
+		"proposed_stt_mode: offline",
+		"no_op: false",
+		"wrote: true",
+		"backup_path: " + path + ".bak.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output = %q, want it to contain %q", out, want)
+		}
+	}
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(written), "stt_provider: sherpa") || !strings.Contains(string(written), "stt_mode: offline") {
+		t.Fatalf("written config = %q, want explicit stt provider/mode", written)
 	}
 }
 

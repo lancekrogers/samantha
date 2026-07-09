@@ -47,36 +47,64 @@ var configCmd = &cobra.Command{
 
 func newConfigMigrateCmd(load configLoader, configPath func() string) *cobra.Command {
 	var dryRun bool
+	var write bool
 	cmd := &cobra.Command{
 		Use:   "migrate",
 		Short: "Preview safe config migrations",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if !dryRun {
-				return errors.New("config migrate requires --dry-run")
+			if dryRun == write {
+				return errors.New("config migrate requires exactly one of --dry-run or --write")
 			}
 			cfg, err := load()
 			if err != nil {
 				return err
 			}
-			proposal, err := config.ProposeSTTConfigMigration(cfg, configPath())
+			if dryRun {
+				proposal, err := config.ProposeSTTConfigMigration(cfg, configPath())
+				if err != nil {
+					return err
+				}
+				printConfigMigrationDryRun(cmd, proposal)
+				return nil
+			}
+
+			result, err := config.WriteSTTConfigMigration(cfg, configPath())
 			if err != nil {
 				return err
 			}
-
-			out := cmd.OutOrStdout()
-			fmt.Fprintln(out, "Config migration dry run")
-			fmt.Fprintf(out, "config_path: %s\n", proposal.ConfigPath)
-			fmt.Fprintf(out, "current_alias: %s\n", proposal.CurrentAlias)
-			fmt.Fprintf(out, "proposed_stt_provider: %s\n", proposal.ProposedProvider)
-			fmt.Fprintf(out, "proposed_stt_mode: %s\n", proposal.ProposedMode)
-			fmt.Fprintf(out, "no_op: %t\n", proposal.Noop)
-			fmt.Fprintln(out, "would_write: false")
+			printConfigMigrationWrite(cmd, result)
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview migration without writing files")
+	cmd.Flags().BoolVar(&write, "write", false, "Apply migration with a backup")
 	return cmd
+}
+
+func printConfigMigrationDryRun(cmd *cobra.Command, proposal config.STTConfigMigrationProposal) {
+	out := cmd.OutOrStdout()
+	fmt.Fprintln(out, "Config migration dry run")
+	fmt.Fprintf(out, "config_path: %s\n", proposal.ConfigPath)
+	fmt.Fprintf(out, "current_alias: %s\n", proposal.CurrentAlias)
+	fmt.Fprintf(out, "proposed_stt_provider: %s\n", proposal.ProposedProvider)
+	fmt.Fprintf(out, "proposed_stt_mode: %s\n", proposal.ProposedMode)
+	fmt.Fprintf(out, "no_op: %t\n", proposal.Noop)
+	fmt.Fprintln(out, "would_write: false")
+}
+
+func printConfigMigrationWrite(cmd *cobra.Command, result config.STTConfigMigrationResult) {
+	out := cmd.OutOrStdout()
+	fmt.Fprintln(out, "Config migration write")
+	fmt.Fprintf(out, "config_path: %s\n", result.ConfigPath)
+	fmt.Fprintf(out, "current_alias: %s\n", result.CurrentAlias)
+	fmt.Fprintf(out, "proposed_stt_provider: %s\n", result.ProposedProvider)
+	fmt.Fprintf(out, "proposed_stt_mode: %s\n", result.ProposedMode)
+	fmt.Fprintf(out, "no_op: %t\n", result.Noop)
+	fmt.Fprintf(out, "wrote: %t\n", result.Wrote)
+	if result.BackupPath != "" {
+		fmt.Fprintf(out, "backup_path: %s\n", result.BackupPath)
+	}
 }
 
 func maskSecret(key, value string) string {
