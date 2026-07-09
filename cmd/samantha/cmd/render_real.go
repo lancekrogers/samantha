@@ -185,7 +185,12 @@ func newRenderSynth(ctx context.Context, opts *render.Options) (render.Synthesiz
 	if cleanup == nil {
 		cleanup = func() {}
 	}
-	return &ttsSynth{provider: provider, id: synthIdentityFor(cfg)}, cleanup, nil
+	return &ttsSynth{
+		provider: provider,
+		id:       synthIdentityFor(cfg),
+		voice:    cfg.TTSVoice,
+		speed:    cfg.SpeechSpeed,
+	}, cleanup, nil
 }
 
 // synthIdentityFor describes the TTS engine for resume keys: the provider,
@@ -330,22 +335,58 @@ func renderSource(opts render.Options) string {
 
 // ttsSynth adapts the cgo tts.Provider into the cgo-free render.Synthesizer by
 // draining the PCM stream into a sample slice. It carries an id so resume keys
-// can invalidate when the underlying TTS engine changes.
+// can invalidate when the underlying TTS engine changes. When the provider
+// implements tts.RequestProvider, typed batch-render requests carry metadata.
 type ttsSynth struct {
 	provider tts.Provider
 	id       string
+	voice    string
+	speed    float64
 }
 
 // Identity implements render.SynthIdentity so resume keys fold in the TTS engine.
 func (s *ttsSynth) Identity() string { return s.id }
 
 func (s *ttsSynth) Synthesize(ctx context.Context, text string) ([]float32, int, error) {
-	stream, err := s.provider.Synthesize(ctx, text)
+	return s.SynthesizeRequest(ctx, render.SynthesisRequest{Text: text, Voice: s.voice, Speed: s.speed})
+}
+
+// SynthesizeRequest implements render.RequestSynthesizer.
+func (s *ttsSynth) SynthesizeRequest(ctx context.Context, req render.SynthesisRequest) ([]float32, int, error) {
+	if req.Voice == "" {
+		req.Voice = s.voice
+	}
+	if req.Speed == 0 {
+		req.Speed = s.speed
+	}
+	if rp, ok := s.provider.(tts.RequestProvider); ok {
+		result, err := rp.SynthesizeRequest(ctx, tts.SynthesisRequest{
+			Text:     req.Text,
+			Voice:    req.Voice,
+			Speed:    req.Speed,
+			Metadata: req.Metadata,
+		})
+		if err != nil {
+			return nil, 0, err
+		}
+		return drainPCMStream(ctx, result.Stream, result.SampleRate)
+	}
+	stream, err := s.provider.Synthesize(ctx, req.Text)
 	if err != nil {
 		return nil, 0, err
 	}
-	rate, err := stream.WaitReady(ctx)
-	if err != nil {
+	return drainPCMStream(ctx, stream, 0)
+}
+
+func drainPCMStream(ctx context.Context, stream *audio.PCMStream, knownRate int) ([]float32, int, error) {
+	rate := knownRate
+	if rate == 0 {
+		var err error
+		rate, err = stream.WaitReady(ctx)
+		if err != nil {
+			return nil, 0, err
+		}
+	} else if _, err := stream.WaitReady(ctx); err != nil {
 		return nil, 0, err
 	}
 	var samples []float32

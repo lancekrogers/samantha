@@ -18,6 +18,22 @@ type Synthesizer interface {
 	Synthesize(ctx context.Context, text string) (samples []float32, sampleRate int, err error)
 }
 
+// SynthesisRequest is a typed batch-render synthesis call with optional
+// voice/speed overrides and stable metadata for resume/manifest identity.
+type SynthesisRequest struct {
+	Text     string
+	Voice    string
+	Speed    float64
+	Metadata map[string]string
+}
+
+// RequestSynthesizer is implemented by synthesizers that accept typed requests.
+// When present, batch render prefers it over Synthesize so metadata reaches the
+// TTS provider; the plain Synthesize path remains for tests and live voice.
+type RequestSynthesizer interface {
+	SynthesizeRequest(ctx context.Context, req SynthesisRequest) (samples []float32, sampleRate int, err error)
+}
+
 // WAVWriter writes mono float32 PCM to a WAV file. The command layer injects the
 // real audio writer.
 type WAVWriter func(path string, sampleRate int, samples []float32) error
@@ -66,7 +82,7 @@ func RenderText(ctx context.Context, opts Options, text string, synth Synthesize
 		}
 	}
 
-	all, sampleRate, err := synthSpans(ctx, spans, synth)
+	all, sampleRate, err := synthSpans(ctx, spans, synth, requestMeta(opts, "", opts.Title), opts.Voice, opts.Speed)
 	if err != nil {
 		return Result{}, err
 	}

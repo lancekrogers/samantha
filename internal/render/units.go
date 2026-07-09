@@ -133,7 +133,7 @@ func renderUnit(ctx context.Context, opts Options, i int, u RenderUnit, synthID 
 		return base, 0, nil
 	}
 
-	samples, rate, err := synthSpans(ctx, spans, synth)
+	samples, rate, err := synthSpans(ctx, spans, synth, requestMeta(opts, base.ID, u.Title), opts.Voice, opts.Speed)
 	if err == nil {
 		err = writeWAV(outPath, rate, samples)
 	}

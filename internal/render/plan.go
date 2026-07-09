@@ -108,12 +108,14 @@ func firstNonEmptyParaIndex(paras []string) int {
 
 // synthSpans synthesizes speech spans and inserts zero samples for silence.
 // Silence before the first speech sample is buffered until the sample rate is
-// known. Plans with only silence return an error.
-func synthSpans(ctx context.Context, spans []RenderSpan, synth Synthesizer) ([]float32, int, error) {
+// known. Plans with only silence return an error. meta is attached to each
+// speech request when the synthesizer implements RequestSynthesizer.
+func synthSpans(ctx context.Context, spans []RenderSpan, synth Synthesizer, meta map[string]string, voice string, speed float64) ([]float32, int, error) {
 	var all []float32
 	rate := 0
 	var pendingSilence time.Duration
 	speechCount := 0
+	reqSynth, useReq := synth.(RequestSynthesizer)
 
 	for i, sp := range spans {
 		if err := ctx.Err(); err != nil {
@@ -124,7 +126,21 @@ func synthSpans(ctx context.Context, spans []RenderSpan, synth Synthesizer) ([]f
 			if strings.TrimSpace(sp.Text) == "" {
 				continue
 			}
-			samples, r, err := synth.Synthesize(ctx, sp.Text)
+			var samples []float32
+			var r int
+			var err error
+			if useReq {
+				m := cloneMeta(meta)
+				m["segment_index"] = fmt.Sprintf("%d", i+1)
+				samples, r, err = reqSynth.SynthesizeRequest(ctx, SynthesisRequest{
+					Text:     sp.Text,
+					Voice:    voice,
+					Speed:    speed,
+					Metadata: m,
+				})
+			} else {
+				samples, r, err = synth.Synthesize(ctx, sp.Text)
+			}
 			if err != nil {
 				return nil, 0, fmt.Errorf("synthesize segment %d: %w", i+1, err)
 			}
@@ -152,6 +168,32 @@ func synthSpans(ctx context.Context, spans []RenderSpan, synth Synthesizer) ([]f
 		return nil, 0, fmt.Errorf("render: input contains no renderable text")
 	}
 	return all, rate, nil
+}
+
+func cloneMeta(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in)+1)
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+// requestMeta builds stable synthesis metadata for batch render requests.
+func requestMeta(opts Options, unitID, unitTitle string) map[string]string {
+	m := map[string]string{
+		"source":        sourceLabel(opts),
+		"source_format": string(opts.ResolveFormat()),
+		"title":         opts.Title,
+		"voice":         opts.Voice,
+		"speed":         fmt.Sprintf("%g", opts.Speed),
+	}
+	if unitID != "" {
+		m["unit_id"] = unitID
+	}
+	if unitTitle != "" {
+		m["unit_title"] = unitTitle
+	}
+	return m
 }
 
 func silenceSamples(d time.Duration, rate int) []float32 {

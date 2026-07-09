@@ -53,7 +53,7 @@ func TestSynthSpansAddsSilenceDuration(t *testing.T) {
 		{Kind: SpanSpeech, Text: "hi"}, // fakeSynth: 2 samples
 		{Kind: SpanSilence, Duration: time.Second},
 	}
-	samples, rate, err := synthSpans(context.Background(), spans, &fakeSynth{rate: 10})
+	samples, rate, err := synthSpans(context.Background(), spans, &fakeSynth{rate: 10}, nil, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,5 +80,37 @@ func TestResumeKeyIncludesSegmentCapAndPauses(t *testing.T) {
 	withCode.CodeBlocks = "read"
 	if resumeKey(withCode, "s", "text", "x.wav") == k1 {
 		t.Error("code-blocks should change resume key")
+	}
+}
+
+type recordingReqSynth struct {
+	rate int
+	last SynthesisRequest
+}
+
+func (r *recordingReqSynth) Synthesize(ctx context.Context, text string) ([]float32, int, error) {
+	return []float32{0.1}, r.rate, nil
+}
+
+func (r *recordingReqSynth) SynthesizeRequest(ctx context.Context, req SynthesisRequest) ([]float32, int, error) {
+	r.last = req
+	return []float32{0.1, 0.2}, r.rate, nil
+}
+
+func TestSynthSpansUsesRequestMetadata(t *testing.T) {
+	rec := &recordingReqSynth{rate: 24000}
+	spans := []RenderSpan{{Kind: SpanSpeech, Text: "hello"}}
+	meta := map[string]string{"source": "a.md", "unit_id": "sec-1"}
+	if _, _, err := synthSpans(context.Background(), spans, rec, meta, "af_heart", 1.1); err != nil {
+		t.Fatal(err)
+	}
+	if rec.last.Text != "hello" || rec.last.Voice != "af_heart" || rec.last.Speed != 1.1 {
+		t.Fatalf("request = %+v", rec.last)
+	}
+	if rec.last.Metadata["source"] != "a.md" || rec.last.Metadata["unit_id"] != "sec-1" {
+		t.Fatalf("metadata = %+v", rec.last.Metadata)
+	}
+	if rec.last.Metadata["segment_index"] != "1" {
+		t.Fatalf("segment_index = %q", rec.last.Metadata["segment_index"])
 	}
 }
