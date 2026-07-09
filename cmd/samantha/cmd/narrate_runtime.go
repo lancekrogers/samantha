@@ -28,6 +28,8 @@ func runNarratePrepare(cmd *cobra.Command, opts narrate.PrepareOptions) error {
 	}
 	bp, err := brain.NewBatchProvider(cfg)
 	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "  Warning: batch brain unavailable (%v)\n", err)
+		fmt.Fprintln(cmd.ErrOrStderr(), "         → sections will be copied unchanged (passthrough); prompts are NOT applied")
 		bp = identityBatch{}
 	}
 	opts.Batch = bp
@@ -123,17 +125,8 @@ func runNarrateRender(cmd *cobra.Command, opts narrate.RenderOptions) error {
 	if ropts.Format == "" || ropts.Format == render.FormatAuto {
 		ropts.Format = render.FormatMarkdown
 	}
-	// RenderUnits path needs OutDir only; Validate still requires input.
-	if strings.TrimSpace(ropts.Input) == "" {
-		ropts.Input = plan.Source.Path
-	}
 	if err := ropts.Validate(); err != nil {
-		// PDF plans may not pass until FormatPDF is fully wired for input-only;
-		// force markdown multi-file validation which accepts --out-dir.
-		ropts.Format = render.FormatMarkdown
-		if err2 := ropts.Validate(); err2 != nil {
-			return err2
-		}
+		return err
 	}
 
 	enc, err := render.ResolveEncoder(cmd.Context(), ropts, nil)

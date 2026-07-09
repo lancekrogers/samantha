@@ -3,7 +3,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -164,9 +163,4 @@ Examples:
 	cmd.Flags().StringVar(&voice, "voice", "", "Override plan/config TTS voice")
 	cmd.Flags().Float64Var(&speed, "speed", 0, "Override plan/config speech speed")
 	return cmd
-}
-
-// planBaseDir returns the directory containing the plan file.
-func planBaseDir(planPath string) string {
-	return filepath.Dir(planPath)
 }

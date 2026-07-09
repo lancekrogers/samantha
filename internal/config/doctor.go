@@ -109,7 +109,6 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 		}
 	}
 
-
 	// pdftotext (Poppler) is optional; missing is a warning so non-PDF users stay clean.
 	if _, err := lookPath("pdftotext"); err != nil {
 		diags = append(diags, Diagnostic{
@@ -121,7 +120,6 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 	} else {
 		diags = append(diags, Diagnostic{Name: "pdftotext-binary", Severity: SeverityOK, Detail: "pdftotext"})
 	}
-
 
 	return diags
 }

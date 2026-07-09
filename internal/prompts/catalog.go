@@ -145,7 +145,9 @@ func catalogUserDocuments(userDir string) ([]Entry, error) {
 		kind := Kind(filepath.Base(filepath.Dir(path)))
 		doc, err := LoadFile(path, kind)
 		if err != nil {
-			return err
+			// Fail-safe: a broken user document must not brick listing — the
+			// resolver likewise falls back past unloadable files.
+			return nil
 		}
 		if isEmbeddedDefault(doc) {
 			return nil

@@ -17,11 +17,11 @@ import (
 
 // PlanOptions controls narrate plan generation.
 type PlanOptions struct {
-	Input     string
-	Out       string // plan YAML path
+	Input      string
+	Out        string // plan YAML path
 	ExtractDir string // default: <plan-dir>/extracted
-	Overwrite bool
-	Format    render.Format // auto when empty
+	Overwrite  bool
+	Format     render.Format // auto when empty
 }
 
 // PlanResult is the outcome of BuildPlan.
@@ -68,9 +68,9 @@ func BuildPlan(ctx context.Context, opts PlanOptions, pdf Extractor) (PlanResult
 	}
 
 	var (
-		sections []Section
-		method   = ExtractMethodNative
-		warnings []string
+		sections    []Section
+		method      = ExtractMethodNative
+		warnings    []string
 		extractOpts *ExtractOptions
 	)
 

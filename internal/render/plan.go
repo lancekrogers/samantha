@@ -3,6 +3,7 @@ package render
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 )
@@ -117,7 +118,7 @@ func synthSpans(ctx context.Context, spans []RenderSpan, synth Synthesizer, meta
 	speechCount := 0
 	reqSynth, useReq := synth.(RequestSynthesizer)
 
-	for i, sp := range spans {
+	for _, sp := range spans {
 		if err := ctx.Err(); err != nil {
 			return nil, 0, err
 		}
@@ -131,7 +132,7 @@ func synthSpans(ctx context.Context, spans []RenderSpan, synth Synthesizer, meta
 			var err error
 			if useReq {
 				m := cloneMeta(meta)
-				m["segment_index"] = fmt.Sprintf("%d", i+1)
+				m["segment_index"] = fmt.Sprintf("%d", speechCount+1)
 				samples, r, err = reqSynth.SynthesizeRequest(ctx, SynthesisRequest{
 					Text:     sp.Text,
 					Voice:    voice,
@@ -142,7 +143,7 @@ func synthSpans(ctx context.Context, spans []RenderSpan, synth Synthesizer, meta
 				samples, r, err = synth.Synthesize(ctx, sp.Text)
 			}
 			if err != nil {
-				return nil, 0, fmt.Errorf("synthesize segment %d: %w", i+1, err)
+				return nil, 0, fmt.Errorf("synthesize segment %d: %w", speechCount+1, err)
 			}
 			if rate == 0 {
 				rate = r
@@ -172,9 +173,7 @@ func synthSpans(ctx context.Context, spans []RenderSpan, synth Synthesizer, meta
 
 func cloneMeta(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in)+1)
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
 

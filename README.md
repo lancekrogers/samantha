@@ -139,17 +139,16 @@ samantha render article.md --out-dir out/article \
 ### Audiobook creation
 
 `samantha audiobook create` is a task-oriented wrapper over the same render
-runtime for EPUB books: one WAV per chapter (spine order) plus a manifest under
-`--out-dir` (required). It accepts render's pass-through flags (`--resume`,
-`--voice`, `--speed`, `--audio-format`, `--encoder`, `--json`, `--manifest`,
-`--overwrite`). Only EPUB input is supported yet; use `samantha render` for
+runtime for EPUB books and digital PDFs: one WAV per chapter (EPUB spine) or
+page (PDF) plus a manifest under `--out-dir` (required). It accepts render's
+pass-through flags (`--resume`, `--voice`, `--speed`, `--audio-format`,
+`--encoder`, `--json`, `--manifest`, `--overwrite`). Use `samantha render` for
 markdown, HTML, URL (including sectioned `--out-dir`), and text sources.
 
 ```bash
 samantha audiobook create book.epub --out-dir out/book
 samantha audiobook create book.epub --out-dir out/book --audio-format m4b --resume --json
 ```
-
 
 ### Narrate pipeline (prompt-controlled)
 

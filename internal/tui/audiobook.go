@@ -24,19 +24,19 @@ const (
 )
 
 type audiobookModel struct {
-	cfg       *config.Config
-	cursor    int
-	editing   bool
-	editBuf   string
-	input     string
-	outDir    string
-	voice     string
-	speed     string
-	resume    bool
-	audioFmt  string
-	command   string
-	message   string
-	errText   string
+	cfg      *config.Config
+	cursor   int
+	editing  bool
+	editBuf  string
+	input    string
+	outDir   string
+	voice    string
+	speed    string
+	resume   bool
+	audioFmt string
+	command  string
+	message  string
+	errText  string
 }
 
 func newAudiobook(cfg *config.Config) audiobookModel {

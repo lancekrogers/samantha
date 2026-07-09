@@ -32,12 +32,12 @@ type PrepareOptions struct {
 
 // PrepareResult summarizes prepare.
 type PrepareResult struct {
-	Prepared   int
-	Skipped    int
-	Failed     int
-	PlanPath   string
-	Provider   string
-	Model      string
+	Prepared int
+	Skipped  int
+	Failed   int
+	PlanPath string
+	Provider string
+	Model    string
 }
 
 // Prepare transforms each extracted section through the batch brain.
@@ -76,6 +76,14 @@ func Prepare(ctx context.Context, opts PrepareOptions) (PrepareResult, error) {
 		return PrepareResult{}, fmt.Errorf("narrate prepare: mkdir: %w", err)
 	}
 
+	var prevPrompts Prompts
+	if plan.Prompts != nil {
+		prevPrompts = *plan.Prompts
+	}
+	promptsUnchanged := prevPrompts.SystemSHA256 == sysHash &&
+		prevPrompts.StyleSHA256 == styleHash &&
+		prevPrompts.PronunciationSHA256 == pronHash
+
 	if plan.Prompts == nil {
 		plan.Prompts = &Prompts{}
 	}
@@ -101,16 +109,18 @@ func Prepare(ctx context.Context, opts PrepareOptions) (PrepareResult, error) {
 			return res, fmt.Errorf("narrate prepare: read %s: %w", extracted, err)
 		}
 		textHash := sha256Hex(textBytes)
+		extractedUnchanged := sec.ExtractedSHA256 == textHash
 		sec.ExtractedSHA256 = textHash
 
 		outPath := filepath.Join(outDir, sanitizeID(sec.ID)+".md")
 		sec.PreparedPath = relPrefer(base, outPath)
 
-		// Resume: skip when file exists and identity matches.
-		if opts.Resume && !opts.Overwrite {
+		// Resume: skip only when the prepared file exists AND the full identity
+		// is unchanged — extracted text hash, all prompt hashes, and a recorded
+		// provider/model. Any changed input re-prepares this section.
+		if opts.Resume && !opts.Overwrite && extractedUnchanged && promptsUnchanged {
 			if prev, err := os.ReadFile(outPath); err == nil && len(prev) > 0 {
 				if sec.PreparedProvider != "" && sec.PreparedModel != "" {
-					// Identity already recorded and extracted hash matches plan.
 					res.Skipped++
 					continue
 				}
@@ -127,9 +137,7 @@ func Prepare(ctx context.Context, opts PrepareOptions) (PrepareResult, error) {
 		})
 		if err != nil {
 			res.Failed++
-			if firstErr == nil {
-				firstErr = fmt.Errorf("narrate prepare: section %s: %w", sec.ID, err)
-			}
+			firstErr = fmt.Errorf("narrate prepare: section %s: %w", sec.ID, err)
 			break
 		}
 		if err := os.WriteFile(outPath, []byte(strings.TrimSpace(result.Text)+"\n"), 0o644); err != nil {

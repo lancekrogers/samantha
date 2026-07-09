@@ -29,7 +29,7 @@ func CleanPrintArtifacts(s string) string {
 	for i, p := range paras {
 		lines := strings.Split(p, "\n")
 		var b strings.Builder
-		for j, line := range lines {
+		for _, line := range lines {
 			line = strings.TrimSpace(line)
 			if line == "" {
 				continue
@@ -38,7 +38,6 @@ func CleanPrintArtifacts(s string) string {
 				b.WriteByte(' ')
 			}
 			b.WriteString(line)
-			_ = j
 		}
 		paras[i] = b.String()
 	}

@@ -162,26 +162,6 @@ func unitManifest(opts Options, segs []ManifestSegment, sampleRate int) RenderMa
 	}
 }
 
-// synthSegments synthesizes and concatenates the given text segments.
-func synthSegments(ctx context.Context, segments []string, synth Synthesizer) ([]float32, int, error) {
-	var all []float32
-	rate := 0
-	for i, seg := range segments {
-		if err := ctx.Err(); err != nil {
-			return nil, 0, err
-		}
-		samples, r, err := synth.Synthesize(ctx, seg)
-		if err != nil {
-			return nil, 0, fmt.Errorf("synthesize segment %d: %w", i+1, err)
-		}
-		if rate == 0 {
-			rate = r
-		}
-		all = append(all, samples...)
-	}
-	return all, rate, nil
-}
-
 func unitID(u RenderUnit, index int) string {
 	if u.ID != "" {
 		return u.ID

@@ -28,7 +28,7 @@ func newRenderCmd(run renderRunner) *cobra.Command {
 		Long: `Render documents to audio files without the live voice pipeline.
 
 Batch narration is noninteractive and scriptable: it reads text, Markdown, HTML,
-URL articles, or EPUB and writes WAV files plus a manifest.
+URL articles, EPUB, or digital PDF and writes WAV files plus a manifest.
 
 Examples:
   samantha render article.md --out out/article.wav
@@ -36,9 +36,9 @@ Examples:
   cat notes.txt | samantha render --stdin --out notes.wav
   samantha render book.epub --out-dir out/book --json
 
-Markdown, HTML, and URL accept either --out (one WAV) or --out-dir (one WAV per
-section/heading plus a manifest). EPUB requires --out-dir. Plain text is
-single-file only (--out).
+Markdown, HTML, URL, and PDF accept either --out (one WAV) or --out-dir (one
+WAV per section/heading/page plus a manifest). EPUB requires --out-dir. Plain
+text is single-file only (--out).
 
 Scripting:
   WAV is always written and is the source of truth. --audio-format mp3|m4a|m4b|
@@ -66,9 +66,9 @@ Scripting:
 
 	f := cmd.Flags()
 	f.BoolVar(&opts.Stdin, "stdin", false, "Read input text from stdin")
-	f.StringVar((*string)(&opts.Format), "format", string(render.FormatAuto), "Input format: text|markdown|html|url|epub|auto")
+	f.StringVar((*string)(&opts.Format), "format", string(render.FormatAuto), "Input format: text|markdown|html|url|epub|pdf|auto")
 	f.StringVar(&opts.Out, "out", "", "Write a single audio file to PATH")
-	f.StringVar(&opts.OutDir, "out-dir", "", "Write chapter/section files and a manifest to DIR (markdown/html/url/epub)")
+	f.StringVar(&opts.OutDir, "out-dir", "", "Write chapter/section files and a manifest to DIR (markdown/html/url/epub/pdf)")
 	f.StringVar(&opts.Title, "title", "", "Override the document title")
 	addRenderPassthroughFlags(cmd, &opts)
 
