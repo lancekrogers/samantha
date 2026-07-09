@@ -149,6 +149,169 @@ func TestNormalizeSTTWithModeMatchesLegacyAliases(t *testing.T) {
 	}
 }
 
+func TestProposeSTTConfigMigration(t *testing.T) {
+	tests := []struct {
+		name            string
+		cfg             *Config
+		wantErrContains string
+		want            STTConfigMigrationProposal
+	}{
+		{
+			name: "sherpa streaming alias proposes explicit provider and mode",
+			cfg:  &Config{STTProvider: "sherpa-streaming"},
+			want: STTConfigMigrationProposal{
+				ConfigPath:       "/tmp/config.yaml",
+				CurrentAlias:     "sherpa-streaming",
+				ProposedProvider: STTProviderSherpa,
+				ProposedMode:     STTModeStreaming,
+				Noop:             false,
+			},
+		},
+		{
+			name: "sherpa offline alias proposes explicit provider and mode",
+			cfg:  &Config{STTProvider: "sherpa-offline"},
+			want: STTConfigMigrationProposal{
+				ConfigPath:       "/tmp/config.yaml",
+				CurrentAlias:     "sherpa-offline",
+				ProposedProvider: STTProviderSherpa,
+				ProposedMode:     STTModeOffline,
+				Noop:             false,
+			},
+		},
+		{
+			name: "already explicit config is no-op",
+			cfg:  &Config{STTProvider: "sherpa", STTMode: "streaming"},
+			want: STTConfigMigrationProposal{
+				ConfigPath:       "/tmp/config.yaml",
+				CurrentAlias:     "sherpa-streaming",
+				ProposedProvider: STTProviderSherpa,
+				ProposedMode:     STTModeStreaming,
+				Noop:             true,
+			},
+		},
+		{
+			name:            "unknown provider reports actionable error",
+			cfg:             &Config{STTProvider: "google"},
+			wantErrContains: "unsupported stt_provider",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ProposeSTTConfigMigration(tt.cfg, "/tmp/config.yaml")
+			if tt.wantErrContains != "" {
+				if err == nil {
+					t.Fatalf("ProposeSTTConfigMigration() error = nil, want %q", tt.wantErrContains)
+				}
+				if !strings.Contains(err.Error(), tt.wantErrContains) {
+					t.Fatalf("error = %q, want it to contain %q", err, tt.wantErrContains)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ProposeSTTConfigMigration() error = %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("ProposeSTTConfigMigration() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWriteSTTConfigMigrationCreatesBackupAndWritesExplicitValues(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	original := []byte("tts_voice: af_heart\nstt_provider: sherpa-streaming\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := WriteSTTConfigMigration(&Config{STTProvider: "sherpa-streaming"}, path)
+	if err != nil {
+		t.Fatalf("WriteSTTConfigMigration() error = %v", err)
+	}
+	if !result.Wrote {
+		t.Fatal("Wrote = false, want true")
+	}
+	if result.BackupPath == "" {
+		t.Fatal("BackupPath empty, want backup for existing config")
+	}
+	backup, err := os.ReadFile(result.BackupPath)
+	if err != nil {
+		t.Fatalf("reading backup: %v", err)
+	}
+	if string(backup) != string(original) {
+		t.Fatalf("backup = %q, want original %q", backup, original)
+	}
+
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading written config: %v", err)
+	}
+	for _, want := range []string{"tts_voice: af_heart", "stt_provider: sherpa", "stt_mode: streaming"} {
+		if !strings.Contains(string(written), want) {
+			t.Errorf("written config = %q, want it to contain %q", written, want)
+		}
+	}
+}
+
+func TestWriteSTTConfigMigrationNoopDoesNotWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	original := []byte("stt_provider: sherpa\nstt_mode: streaming\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := WriteSTTConfigMigration(&Config{STTProvider: "sherpa", STTMode: "streaming"}, path)
+	if err != nil {
+		t.Fatalf("WriteSTTConfigMigration() error = %v", err)
+	}
+	if result.Wrote {
+		t.Fatal("Wrote = true, want false for no-op")
+	}
+	if result.BackupPath != "" {
+		t.Fatalf("BackupPath = %q, want empty for no-op", result.BackupPath)
+	}
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading config: %v", err)
+	}
+	if string(written) != string(original) {
+		t.Fatalf("config changed on no-op: %q", written)
+	}
+}
+
+func TestWriteSTTConfigMigrationInvalidConfigDoesNotBackupOrWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	original := []byte("- not\n- a mapping\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := WriteSTTConfigMigration(&Config{STTProvider: "sherpa-streaming"}, path)
+	if err == nil {
+		t.Fatal("WriteSTTConfigMigration() error = nil, want invalid YAML shape error")
+	}
+	if !strings.Contains(err.Error(), "YAML mapping") {
+		t.Fatalf("error = %q, want YAML mapping", err)
+	}
+	matches, err := filepath.Glob(path + ".bak.*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("backup created despite invalid config: %v", matches)
+	}
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading config: %v", err)
+	}
+	if string(written) != string(original) {
+		t.Fatalf("config changed after failure: %q", written)
+	}
+}
+
 // TestNormalizeSTTDoesNotMutateInput guards the migration rule that
 // normalization is purely in-memory and never rewrites the configured value.
 func TestNormalizeSTTDoesNotMutateInput(t *testing.T) {

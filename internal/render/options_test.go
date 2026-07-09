@@ -19,7 +19,17 @@ func TestOptionsValidate(t *testing.T) {
 		"stdin url rejected":  {Options{Stdin: true, Out: "x.wav", Format: FormatURL}, true},
 		"negative speed":      {Options{Stdin: true, Out: "x.wav", Format: FormatText, Speed: -1}, true},
 		"epub to single file": {Options{Input: "b.epub", Out: "x.wav", Format: FormatAuto}, true},
-		"markdown to dir":     {Options{Input: "a.md", OutDir: "out", Format: FormatAuto}, true},
+		"markdown to dir":     {Options{Input: "a.md", OutDir: "out", Format: FormatAuto}, false},
+		"html to dir":         {Options{Input: "a.html", OutDir: "out", Format: FormatAuto}, false},
+		"url to dir":          {Options{Input: "https://example.com/a", OutDir: "out", Format: FormatAuto}, false},
+		"text to dir":         {Options{Input: "a.txt", OutDir: "out", Format: FormatAuto}, true},
+		"markdown to file":    {Options{Input: "a.md", Out: "x.wav", Format: FormatAuto}, false},
+		"seg cap too small":   {Options{Stdin: true, Out: "x.wav", Format: FormatText, MaxSegmentChars: 50}, true},
+		"seg cap ok":          {Options{Stdin: true, Out: "x.wav", Format: FormatText, MaxSegmentChars: 200}, false},
+		"bad pause":           {Options{Stdin: true, Out: "x.wav", Format: FormatText, PauseHeading: "soon"}, true},
+		"pause ok":            {Options{Stdin: true, Out: "x.wav", Format: FormatText, PauseHeading: "750ms"}, false},
+		"bad code blocks":     {Options{Input: "a.md", Out: "x.wav", Format: FormatAuto, CodeBlocks: "summarize"}, true},
+		"code blocks read":    {Options{Input: "a.md", Out: "x.wav", Format: FormatAuto, CodeBlocks: "read"}, false},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -63,5 +73,12 @@ func TestOptionsMultiFile(t *testing.T) {
 	}
 	if !(Options{OutDir: "out"}).MultiFile() {
 		t.Error("--out-dir should be multi-file")
+	}
+}
+
+func TestValidateRejectsStdinPDF(t *testing.T) {
+	opts := Options{Stdin: true, Format: FormatPDF, Out: "x.wav"}
+	if err := opts.Validate(); err == nil {
+		t.Fatal("expected --format pdf --stdin to be rejected")
 	}
 }

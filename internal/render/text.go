@@ -18,6 +18,22 @@ type Synthesizer interface {
 	Synthesize(ctx context.Context, text string) (samples []float32, sampleRate int, err error)
 }
 
+// SynthesisRequest is a typed batch-render synthesis call with optional
+// voice/speed overrides and stable metadata for resume/manifest identity.
+type SynthesisRequest struct {
+	Text     string
+	Voice    string
+	Speed    float64
+	Metadata map[string]string
+}
+
+// RequestSynthesizer is implemented by synthesizers that accept typed requests.
+// When present, batch render prefers it over Synthesize so metadata reaches the
+// TTS provider; the plain Synthesize path remains for tests and live voice.
+type RequestSynthesizer interface {
+	SynthesizeRequest(ctx context.Context, req SynthesisRequest) (samples []float32, sampleRate int, err error)
+}
+
 // WAVWriter writes mono float32 PCM to a WAV file. The command layer injects the
 // real audio writer.
 type WAVWriter func(path string, sampleRate int, samples []float32) error
@@ -42,8 +58,14 @@ func RenderText(ctx context.Context, opts Options, text string, synth Synthesize
 	if opts.Out == "" {
 		return Result{}, fmt.Errorf("render: text rendering requires --out FILE")
 	}
-	segments := SegmentText(text, defaultMaxSegmentChars)
-	if len(segments) == 0 {
+	spans := PlanTextSpans(opts, text)
+	speechCount := 0
+	for _, sp := range spans {
+		if sp.Kind == SpanSpeech && strings.TrimSpace(sp.Text) != "" {
+			speechCount++
+		}
+	}
+	if speechCount == 0 {
 		return Result{}, fmt.Errorf("render: input contains no renderable text")
 	}
 
@@ -60,34 +82,42 @@ func RenderText(ctx context.Context, opts Options, text string, synth Synthesize
 		}
 	}
 
-	var all []float32
-	sampleRate := 0
-	manifestSegs := make([]ManifestSegment, 0, len(segments))
-	for i, seg := range segments {
-		if err := ctx.Err(); err != nil {
-			return Result{}, err
-		}
-		samples, rate, err := synth.Synthesize(ctx, seg)
-		if err != nil {
-			return Result{}, fmt.Errorf("render: synthesize segment %d: %w", i+1, err)
-		}
-		if sampleRate == 0 {
-			sampleRate = rate
-		}
-		all = append(all, samples...)
-		manifestSegs = append(manifestSegs, ManifestSegment{
-			Index:      i + 1,
-			ID:         fmt.Sprintf("seg-%03d", i+1),
-			TextSHA256: textHash(seg),
-			ResumeKey:  key,
-			Output:     opts.Out,
-			DurationMS: samplesDurationMS(len(samples), rate),
-			Status:     StatusComplete,
-		})
+	all, sampleRate, err := synthSpans(ctx, spans, synth, requestMeta(opts, "", opts.Title), opts.Voice, opts.Speed)
+	if err != nil {
+		return Result{}, err
 	}
 
 	if err := writeWAV(opts.Out, sampleRate, all); err != nil {
 		return Result{}, fmt.Errorf("render: write %s: %w", opts.Out, err)
+	}
+
+	// Manifest segment rows remain speech-only for schema compatibility; silence
+	// is reflected only in total duration.
+	manifestSegs := make([]ManifestSegment, 0, speechCount)
+	for _, sp := range spans {
+		if sp.Kind != SpanSpeech || strings.TrimSpace(sp.Text) == "" {
+			continue
+		}
+		manifestSegs = append(manifestSegs, ManifestSegment{
+			Index:      len(manifestSegs) + 1,
+			ID:         fmt.Sprintf("seg-%03d", len(manifestSegs)+1),
+			TextSHA256: textHash(sp.Text),
+			ResumeKey:  key,
+			Output:     opts.Out,
+			DurationMS: 0, // filled below from total after write
+			Status:     StatusComplete,
+		})
+	}
+	// Approximate per-speech duration from total samples evenly so tools that
+	// sum DurationMS still match wall audio length.
+	totalMS := samplesDurationMS(len(all), sampleRate)
+	if n := len(manifestSegs); n > 0 {
+		each := totalMS / int64(n)
+		for i := range manifestSegs {
+			manifestSegs[i].DurationMS = each
+		}
+		// Put remainder on the last segment.
+		manifestSegs[n-1].DurationMS += totalMS - each*int64(n)
 	}
 
 	var dur time.Duration
@@ -106,7 +136,7 @@ func RenderText(ctx context.Context, opts Options, text string, synth Synthesize
 	}
 	return Result{
 		Output:     opts.Out,
-		Segments:   len(segments),
+		Segments:   len(manifestSegs),
 		SampleRate: sampleRate,
 		Samples:    len(all),
 		Duration:   dur,

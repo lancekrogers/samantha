@@ -152,6 +152,8 @@ func Load() (*Config, error) {
 		"ollama_model":            "OLLAMA_MODEL",
 		"ollama_host":             "OLLAMA_HOST",
 		"voice_tools_enabled":     "VOICE_TOOLS_ENABLED",
+		"persona":                 "PERSONA",
+		"prompts_dir":             "PROMPTS_DIR",
 		"barge_in_enabled":        "BARGE_IN_ENABLED",
 		"vad_threshold":           "VAD_THRESHOLD",
 		"vad_min_speech_duration": "VAD_MIN_SPEECH_DURATION",

@@ -34,7 +34,7 @@ func Catalog(userDir string) ([]Entry, error) {
 		return nil, fmt.Errorf("reading embedded defaults: %w", err)
 	}
 
-	var entries []Entry
+	entries := map[string]Entry{}
 	for _, e := range embedded {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".yaml" {
 			continue
@@ -51,16 +51,28 @@ func Catalog(userDir string) ([]Entry, error) {
 		if err != nil {
 			return nil, err
 		}
-		entries = append(entries, entry)
+		entries[entryKey(entry.Kind, entry.Name)] = entry
 	}
 
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].Kind != entries[j].Kind {
-			return entries[i].Kind < entries[j].Kind
+	userEntries, err := catalogUserDocuments(userDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range userEntries {
+		entries[entryKey(entry.Kind, entry.Name)] = entry
+	}
+
+	list := make([]Entry, 0, len(entries))
+	for _, entry := range entries {
+		list = append(list, entry)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].Kind != list[j].Kind {
+			return list[i].Kind < list[j].Kind
 		}
-		return entries[i].Name < entries[j].Name
+		return list[i].Name < list[j].Name
 	})
-	return entries, nil
+	return list, nil
 }
 
 // Describe reports how the resolver would satisfy kind/name: a user document in
@@ -68,13 +80,14 @@ func Catalog(userDir string) ([]Entry, error) {
 func Describe(userDir string, kind Kind, name string) (Entry, error) {
 	if path, ok := userDocPath(userDir, kind, name); ok {
 		doc, err := LoadFile(path, kind)
-		if err != nil {
-			return Entry{}, err
+		if err == nil {
+			if isEmbeddedDefault(doc) {
+				return Entry{Kind: kind, Name: name, Source: SourceEmbedded, Hash: doc.Hash()}, nil
+			}
+			return Entry{Kind: kind, Name: name, Source: SourceUser, Path: path, Hash: doc.Hash()}, nil
 		}
-		if isEmbeddedDefault(doc) {
-			return Entry{Kind: kind, Name: name, Source: SourceEmbedded, Hash: doc.Hash()}, nil
-		}
-		return Entry{Kind: kind, Name: name, Source: SourceUser, Path: path, Hash: doc.Hash()}, nil
+		// Fail-safe: a broken override must not brick listing/status. The
+		// resolver falls back to the embedded default at runtime; report that.
 	}
 	doc, err := Default(kind)
 	if err != nil {
@@ -104,4 +117,81 @@ func userDocPath(userDir string, kind Kind, name string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func catalogUserDocuments(userDir string) ([]Entry, error) {
+	if userDir == "" {
+		return nil, nil
+	}
+	if _, err := os.Stat(userDir); os.IsNotExist(err) {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("checking prompts dir: %w", err)
+	}
+
+	entries := map[string]Entry{}
+	priorities := map[string]int{}
+	err := filepath.WalkDir(userDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		priority, ok := promptExtPriority(filepath.Ext(path))
+		if !ok {
+			return nil
+		}
+
+		kind := Kind(filepath.Base(filepath.Dir(path)))
+		doc, err := LoadFile(path, kind)
+		if err != nil {
+			// Fail-safe: a broken user document must not brick listing — the
+			// resolver likewise falls back past unloadable files.
+			return nil
+		}
+		if isEmbeddedDefault(doc) {
+			return nil
+		}
+
+		key := entryKey(doc.Prompt.Kind, doc.Prompt.Name)
+		if existing, ok := priorities[key]; ok && existing <= priority {
+			return nil
+		}
+		entries[key] = Entry{
+			Kind:   doc.Prompt.Kind,
+			Name:   doc.Prompt.Name,
+			Source: SourceUser,
+			Path:   path,
+			Hash:   doc.Hash(),
+		}
+		priorities[key] = priority
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cataloging user prompts: %w", err)
+	}
+
+	list := make([]Entry, 0, len(entries))
+	for _, entry := range entries {
+		list = append(list, entry)
+	}
+	return list, nil
+}
+
+func promptExtPriority(ext string) (int, bool) {
+	switch ext {
+	case ".yaml":
+		return 0, true
+	case ".yml":
+		return 1, true
+	case ".md":
+		return 2, true
+	default:
+		return 0, false
+	}
+}
+
+func entryKey(kind Kind, name string) string {
+	return string(kind) + "\x00" + name
 }

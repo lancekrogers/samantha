@@ -15,6 +15,7 @@ const (
 	screenLauncher screen = iota
 	screenSettings
 	screenConversation
+	screenAudiobook
 )
 
 // App is the top-level bubbletea model.
@@ -26,6 +27,7 @@ type App struct {
 	launcher     launcherModel
 	settings     settingsModel
 	conversation conversationModel
+	audiobook    audiobookModel
 
 	// Set after settings are saved to signal pipeline should start.
 	startPipeline bool
@@ -42,6 +44,7 @@ func NewApp(cfg *config.Config) App {
 		providers: providers,
 		launcher:  newLauncher(cfg, providers),
 		settings:  newSettings(cfg, providers),
+		audiobook: newAudiobook(cfg),
 	}
 }
 
@@ -77,6 +80,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Replacing the model must not orphan an in-flight preview or player.
 			a.settings.closePreview()
 			a.settings = newSettings(a.cfg, a.providers)
+		case screenAudiobook:
+			a.audiobook = newAudiobook(a.cfg)
 		}
 		return a, nil
 
@@ -99,6 +104,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.settings, cmd = a.settings.Update(msg)
 	case screenConversation:
 		a.conversation, cmd = a.conversation.Update(msg)
+	case screenAudiobook:
+		a.audiobook, cmd = a.audiobook.Update(msg)
 	}
 
 	return a, cmd
@@ -112,6 +119,8 @@ func (a App) View() string {
 		return a.settings.View()
 	case screenConversation:
 		return a.conversation.View()
+	case screenAudiobook:
+		return a.audiobook.View()
 	default:
 		return ""
 	}

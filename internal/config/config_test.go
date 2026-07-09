@@ -201,6 +201,31 @@ func TestVoiceToolsEnvOverride(t *testing.T) {
 	}
 }
 
+func TestPromptConfigEnvOverrides(t *testing.T) {
+	orig := configFile
+	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")
+	defer func() { configFile = orig }()
+
+	setDefaults(v)
+	t.Setenv("PERSONA", "work")
+	t.Setenv("PROMPTS_DIR", "/tmp/samantha-prompts")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.Persona != "work" {
+		t.Errorf("Persona = %q, want work from env", cfg.Persona)
+	}
+	if cfg.PromptsDir != "/tmp/samantha-prompts" {
+		t.Errorf("PromptsDir = %q, want /tmp/samantha-prompts from env", cfg.PromptsDir)
+	}
+	if got := PromptsDir(); got != "/tmp/samantha-prompts" {
+		t.Errorf("PromptsDir() = %q, want /tmp/samantha-prompts", got)
+	}
+}
+
 func TestModelsDirDefault(t *testing.T) {
 	orig := configFile
 	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")

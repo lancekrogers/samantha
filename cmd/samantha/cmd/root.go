@@ -41,8 +41,10 @@ var rootCmd = &cobra.Command{
 		// Best-effort: seed default prompt documents so users have editable
 		// starting files. A failure here (e.g. a read-only home) must not
 		// block commands — resolution falls back to the embedded defaults.
-		if _, err := prompts.Seed(config.PromptsDir()); err != nil {
-			fmt.Fprintf(os.Stderr, "samantha: seeding prompt defaults: %v\n", err)
+		if shouldSeedPrompts(cmd) {
+			if _, err := prompts.Seed(config.PromptsDir()); err != nil {
+				fmt.Fprintf(os.Stderr, "samantha: seeding prompt defaults: %v\n", err)
+			}
 		}
 		return nil
 	},
@@ -70,6 +72,10 @@ var rootCmd = &cobra.Command{
 
 		return startPipeline(cfg, nil)
 	},
+}
+
+func shouldSeedPrompts(cmd *cobra.Command) bool {
+	return cmd.CommandPath() != "samantha config migrate"
 }
 
 func init() {

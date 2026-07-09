@@ -45,6 +45,10 @@ func resumeKey(opts Options, synthID, text, output string) string {
 		"voice=" + opts.Voice,
 		"speed=" + strconv.FormatFloat(opts.Speed, 'f', -1, 64),
 		"synth=" + synthID,
+		"segcap=" + strconv.Itoa(opts.EffectiveMaxSegmentChars()),
+		"ph=" + strings.TrimSpace(opts.PauseHeading),
+		"pp=" + strings.TrimSpace(opts.PauseParagraph),
+		"code=" + opts.EffectiveCodeBlocks(),
 		"out=" + output,
 		"text=" + resumeTextFingerprint(text),
 	} {

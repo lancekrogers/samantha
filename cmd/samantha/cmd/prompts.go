@@ -23,7 +23,7 @@ var promptsCmd = &cobra.Command{
 
 var promptsListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List active prompt documents and whether each is embedded or overridden",
+	Short: "List embedded and user prompt documents",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		entries, err := prompts.Catalog(config.PromptsDir())

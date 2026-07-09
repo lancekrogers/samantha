@@ -9,13 +9,16 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/narrate"
 	"github.com/lancekrogers/samantha/internal/render"
 	"github.com/lancekrogers/samantha/internal/render/encoder"
 	"github.com/lancekrogers/samantha/internal/render/epub"
@@ -26,7 +29,8 @@ import (
 // runRenderText is the real batch render runner: it constructs the TTS provider
 // (the only heavy dependency batch rendering needs — no STT, brain, microphone,
 // or playback) and renders the input to WAV. EPUB is rendered per chapter into a
-// directory; other formats render to a single WAV.
+// directory; Markdown/HTML/URL use sectioned multi-file output when --out-dir is
+// set, otherwise a single WAV; plain text is always single-file.
 func runRenderText(cmd *cobra.Command, opts render.Options) error {
 	// Preflight the optional encoder BEFORE constructing the synthesizer so an
 	// unavailable encoder fails fast — no model load, no synthesis, no audio.
@@ -41,8 +45,15 @@ func runRenderText(cmd *cobra.Command, opts render.Options) error {
 	}
 	defer cleanup()
 
-	if opts.ResolveFormat() == render.FormatEPUB {
+	switch opts.ResolveFormat() {
+	case render.FormatEPUB:
 		return runRenderEPUB(cmd, opts, synth, enc)
+	case render.FormatPDF:
+		return runRenderPDF(cmd, opts, synth, enc)
+	}
+
+	if opts.MultiFile() {
+		return runRenderStructured(cmd, opts, synth, enc)
 	}
 
 	text, err := extractRenderText(cmd, &opts)
@@ -66,6 +77,104 @@ func runRenderText(cmd *cobra.Command, opts render.Options) error {
 		}
 		for _, e := range encoded {
 			fmt.Fprintf(out, "  Encoded:  %s\n", e)
+		}
+	})
+}
+
+// runRenderPDF extracts a digital PDF via pdftotext and renders pages as units
+// (--out-dir) or concatenated narration (--out). Low text density prints a
+// warning pointing at samantha narrate plan.
+func runRenderPDF(cmd *cobra.Command, opts render.Options, synth render.Synthesizer, enc encoder.Encoder) error {
+	pages, warnings, err := (narrate.PDFExtractor{}).ExtractPages(cmd.Context(), opts.Input)
+	if err != nil {
+		return err
+	}
+	for _, w := range warnings {
+		fmt.Fprintf(cmd.ErrOrStderr(), "  Warning: %s\n", w)
+		fmt.Fprintf(cmd.ErrOrStderr(), "         → use 'samantha narrate plan' for prompt-controlled cleanup\n")
+	}
+	if opts.Title == "" {
+		opts.Title = filepath.Base(opts.Input)
+	}
+	if opts.MultiFile() {
+		units := make([]render.RenderUnit, 0, len(pages))
+		for _, p := range pages {
+			units = append(units, render.RenderUnit{
+				ID:        fmt.Sprintf("page-%03d", p.Page),
+				Title:     fmt.Sprintf("Page %d", p.Page),
+				Text:      p.Text,
+				SourceRef: opts.Input,
+			})
+		}
+		manifest, renderErr := render.RenderUnits(cmd.Context(), opts, units, synth, audio.WriteWAVFloat32)
+		complete, skipped, failed := manifest.Counts()
+		return finishRender(cmd, opts, manifest, enc, renderReport{
+			outputKey: "output_dir",
+			output:    opts.OutDir,
+			wavs:      render.CompletedWAVPaths(opts.OutDir, manifest),
+		}, renderErr, func(out io.Writer, manifestPath string, encoded []string) {
+			fmt.Fprintf(out, "  Rendered %d page(s) to %s (%d skipped, %d failed)\n", complete, opts.OutDir, skipped, failed)
+			fmt.Fprintf(out, "  Manifest: %s\n", manifestPath)
+			if len(encoded) > 0 {
+				fmt.Fprintf(out, "  Encoded:  %d file(s) to .%s\n", len(encoded), enc.Ext())
+			}
+		})
+	}
+	// Single-file: join pages.
+	var b strings.Builder
+	for i, p := range pages {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(p.Text)
+	}
+	result, err := render.RenderText(cmd.Context(), opts, b.String(), synth, audio.WriteWAVFloat32)
+	if err != nil {
+		return err
+	}
+	return finishRender(cmd, opts, result.Manifest, enc, renderReport{
+		outputKey: "output",
+		output:    result.Output,
+		wavs:      []string{result.Output},
+	}, nil, func(out io.Writer, manifestPath string, encoded []string) {
+		fmt.Fprintf(out, "  Rendered %s (%d segment(s), %s)\n", result.Output, result.Segments, result.Duration.Round(10_000_000))
+		if manifestPath != "" {
+			fmt.Fprintf(out, "  Manifest: %s\n", manifestPath)
+		}
+		for _, e := range encoded {
+			fmt.Fprintf(out, "  Encoded:  %s\n", e)
+		}
+	})
+}
+
+// runRenderStructured renders Markdown/HTML/URL inputs as sectioned multi-file
+// output under --out-dir via Document.Units and RenderUnits.
+func runRenderStructured(cmd *cobra.Command, opts render.Options, synth render.Synthesizer, enc encoder.Encoder) error {
+	if opts.OutDir == "" {
+		return fmt.Errorf("render: sectioned rendering requires --out-dir DIR")
+	}
+
+	doc, err := extractRenderDocument(cmd, &opts)
+	if err != nil {
+		return err
+	}
+	if opts.Title == "" {
+		opts.Title = doc.Title
+	}
+
+	units := doc.Units()
+	manifest, renderErr := render.RenderUnits(cmd.Context(), opts, units, synth, audio.WriteWAVFloat32)
+
+	complete, skipped, failed := manifest.Counts()
+	return finishRender(cmd, opts, manifest, enc, renderReport{
+		outputKey: "output_dir",
+		output:    opts.OutDir,
+		wavs:      render.CompletedWAVPaths(opts.OutDir, manifest),
+	}, renderErr, func(out io.Writer, manifestPath string, encoded []string) {
+		fmt.Fprintf(out, "  Rendered %d section(s) to %s (%d skipped, %d failed)\n", complete, opts.OutDir, skipped, failed)
+		fmt.Fprintf(out, "  Manifest: %s\n", manifestPath)
+		if len(encoded) > 0 {
+			fmt.Fprintf(out, "  Encoded:  %d file(s) to .%s\n", len(encoded), enc.Ext())
 		}
 	})
 }
@@ -148,7 +257,12 @@ func newRenderSynth(ctx context.Context, opts *render.Options) (render.Synthesiz
 	if cleanup == nil {
 		cleanup = func() {}
 	}
-	return &ttsSynth{provider: provider, id: synthIdentityFor(cfg)}, cleanup, nil
+	return &ttsSynth{
+		provider: provider,
+		id:       synthIdentityFor(cfg),
+		voice:    cfg.TTSVoice,
+		speed:    cfg.SpeechSpeed,
+	}, cleanup, nil
 }
 
 // synthIdentityFor describes the TTS engine for resume keys: the provider,
@@ -224,47 +338,14 @@ func finishRender(cmd *cobra.Command, opts render.Options, manifest render.Rende
 // extractRenderText reads the input and converts it to narration text according
 // to the resolved format. It may set opts.Title from the extracted document.
 func extractRenderText(cmd *cobra.Command, opts *render.Options) (string, error) {
-	switch f := opts.ResolveFormat(); f {
-	case render.FormatText:
+	if opts.ResolveFormat() == render.FormatText {
 		data, err := readRenderBytes(cmd, *opts)
 		if err != nil {
 			return "", err
 		}
 		return string(data), nil
-	case render.FormatMarkdown:
-		data, err := readRenderBytes(cmd, *opts)
-		if err != nil {
-			return "", err
-		}
-		doc, err := extractors.ExtractMarkdown(renderSource(*opts), data)
-		return narrationFromDoc(opts, doc, err)
-	case render.FormatHTML:
-		data, err := readRenderBytes(cmd, *opts)
-		if err != nil {
-			return "", err
-		}
-		doc, err := extractors.ExtractHTML(renderSource(*opts), data)
-		if err != nil {
-			return "", err
-		}
-		return narrationFromDoc(opts, doc, nil)
-	case render.FormatURL:
-		data, err := extractors.FetchArticle(cmd.Context(), nil, opts.Input, extractors.FetchOptions{})
-		if err != nil {
-			return "", err
-		}
-		doc, err := extractors.ExtractHTML(opts.Input, data)
-		if err != nil {
-			return "", err
-		}
-		return narrationFromDoc(opts, doc, nil)
-	default:
-		return "", fmt.Errorf("render: --format %s is not implemented yet", f)
 	}
-}
-
-// narrationFromDoc returns the document's narration text, adopting its title.
-func narrationFromDoc(opts *render.Options, doc render.Document, err error) (string, error) {
+	doc, err := extractRenderDocument(cmd, opts)
 	if err != nil {
 		return "", err
 	}
@@ -272,6 +353,33 @@ func narrationFromDoc(opts *render.Options, doc render.Document, err error) (str
 		opts.Title = doc.Title
 	}
 	return doc.Narration(), nil
+}
+
+// extractRenderDocument extracts a structure-aware Document for Markdown, HTML,
+// or URL inputs. Plain text and EPUB are not handled here.
+func extractRenderDocument(cmd *cobra.Command, opts *render.Options) (render.Document, error) {
+	switch f := opts.ResolveFormat(); f {
+	case render.FormatMarkdown:
+		data, err := readRenderBytes(cmd, *opts)
+		if err != nil {
+			return render.Document{}, err
+		}
+		return extractors.ExtractMarkdownPolicy(renderSource(*opts), data, opts.EffectiveCodeBlocks())
+	case render.FormatHTML:
+		data, err := readRenderBytes(cmd, *opts)
+		if err != nil {
+			return render.Document{}, err
+		}
+		return extractors.ExtractHTML(renderSource(*opts), data)
+	case render.FormatURL:
+		data, err := extractors.FetchArticle(cmd.Context(), nil, opts.Input, extractors.FetchOptions{})
+		if err != nil {
+			return render.Document{}, err
+		}
+		return extractors.ExtractHTML(opts.Input, data)
+	default:
+		return render.Document{}, fmt.Errorf("render: --format %s does not support document extraction", f)
+	}
 }
 
 // readRenderBytes returns the raw input from stdin or the input file.
@@ -299,22 +407,58 @@ func renderSource(opts render.Options) string {
 
 // ttsSynth adapts the cgo tts.Provider into the cgo-free render.Synthesizer by
 // draining the PCM stream into a sample slice. It carries an id so resume keys
-// can invalidate when the underlying TTS engine changes.
+// can invalidate when the underlying TTS engine changes. When the provider
+// implements tts.RequestProvider, typed batch-render requests carry metadata.
 type ttsSynth struct {
 	provider tts.Provider
 	id       string
+	voice    string
+	speed    float64
 }
 
 // Identity implements render.SynthIdentity so resume keys fold in the TTS engine.
 func (s *ttsSynth) Identity() string { return s.id }
 
 func (s *ttsSynth) Synthesize(ctx context.Context, text string) ([]float32, int, error) {
-	stream, err := s.provider.Synthesize(ctx, text)
+	return s.SynthesizeRequest(ctx, render.SynthesisRequest{Text: text, Voice: s.voice, Speed: s.speed})
+}
+
+// SynthesizeRequest implements render.RequestSynthesizer.
+func (s *ttsSynth) SynthesizeRequest(ctx context.Context, req render.SynthesisRequest) ([]float32, int, error) {
+	if req.Voice == "" {
+		req.Voice = s.voice
+	}
+	if req.Speed == 0 {
+		req.Speed = s.speed
+	}
+	if rp, ok := s.provider.(tts.RequestProvider); ok {
+		result, err := rp.SynthesizeRequest(ctx, tts.SynthesisRequest{
+			Text:     req.Text,
+			Voice:    req.Voice,
+			Speed:    req.Speed,
+			Metadata: req.Metadata,
+		})
+		if err != nil {
+			return nil, 0, err
+		}
+		return drainPCMStream(ctx, result.Stream, result.SampleRate)
+	}
+	stream, err := s.provider.Synthesize(ctx, req.Text)
 	if err != nil {
 		return nil, 0, err
 	}
-	rate, err := stream.WaitReady(ctx)
-	if err != nil {
+	return drainPCMStream(ctx, stream, 0)
+}
+
+func drainPCMStream(ctx context.Context, stream *audio.PCMStream, knownRate int) ([]float32, int, error) {
+	rate := knownRate
+	if rate == 0 {
+		var err error
+		rate, err = stream.WaitReady(ctx)
+		if err != nil {
+			return nil, 0, err
+		}
+	} else if _, err := stream.WaitReady(ctx); err != nil {
 		return nil, 0, err
 	}
 	var samples []float32

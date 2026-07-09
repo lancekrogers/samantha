@@ -86,6 +86,8 @@ samantha --no-voice   # Voice input, text output
 ```bash
 samantha config                         # View all config
 samantha config tts_voice af_bella      # Set a config value
+samantha config migrate --dry-run       # Preview explicit STT config migration
+samantha config migrate --write         # Apply STT config migration with backup
 samantha voices                         # List available Kokoro voices
 samantha voices --locale en-US          # Filter voices by locale
 samantha providers                      # Show brain, TTS, and STT providers
@@ -95,6 +97,9 @@ samantha resume <session-id>            # Resume a saved session
 samantha continue                       # Continue the most recent session
 samantha doctor                         # Diagnose config, assets, and binaries (read-only)
 samantha models status                  # Which model assets are installed vs missing
+samantha models clean --unused --yes    # Delete model assets not required now
+samantha prompts list                   # List embedded and user prompt documents
+samantha prompts show persona           # Show an assembled prompt document
 samantha render notes.txt --out a.wav   # Batch-render a document to audio
 ```
 
@@ -111,31 +116,54 @@ samantha render article.md --out out/article.wav
 cat notes.txt | samantha render --stdin --out out/notes.wav
 samantha render https://example.com/post --out out/post.wav   # URL article
 
-# EPUB -> one WAV per chapter (spine order) + a manifest:
+# Sectioned multi-file: one WAV per heading/section + a manifest.
+# Works for Markdown, HTML, URL, and EPUB (EPUB requires --out-dir):
+samantha render article.md --out-dir out/article
 samantha render book.epub --out-dir out/book
 
 # Optional compressed output via an external encoder (default ffmpeg); WAV is
 # still written. A missing encoder fails before any synthesis:
 samantha render book.epub --out-dir out/book --audio-format mp3
 
-# Resume a long render: unchanged chapters are skipped, changed/failed ones
-# rebuild. --json prints completed/skipped/failed counts and exits non-zero if
-# any chapter failed, so scripts can branch:
+# Resume a long render: unchanged chapters/sections are skipped, changed/failed
+# ones rebuild. --json prints completed/skipped/failed counts and exits non-zero
+# if any unit failed, so scripts can branch:
 samantha render book.epub --out-dir out/book --resume --json | jq '.failed'
+
+# Optional planning controls (defaults preserve prior behavior):
+samantha render article.md --out-dir out/article \
+  --max-segment-chars 1200 --pause-heading 750ms --pause-paragraph 400ms \
+  --code-blocks skip
 ```
 
 ### Audiobook creation
 
 `samantha audiobook create` is a task-oriented wrapper over the same render
-runtime for EPUB books: one WAV per chapter (spine order) plus a manifest under
-`--out-dir` (required). It accepts render's pass-through flags (`--resume`,
-`--voice`, `--speed`, `--audio-format`, `--encoder`, `--json`, `--manifest`,
-`--overwrite`). Only EPUB input is supported yet; use `samantha render` for
-markdown, HTML, URL, and text sources.
+runtime for EPUB books and digital PDFs: one WAV per chapter (EPUB spine) or
+page (PDF) plus a manifest under `--out-dir` (required). It accepts render's
+pass-through flags (`--resume`, `--voice`, `--speed`, `--audio-format`,
+`--encoder`, `--json`, `--manifest`, `--overwrite`). Use `samantha render` for
+markdown, HTML, URL (including sectioned `--out-dir`), and text sources.
 
 ```bash
 samantha audiobook create book.epub --out-dir out/book
 samantha audiobook create book.epub --out-dir out/book --audio-format m4b --resume --json
+```
+
+### Narrate pipeline (prompt-controlled)
+
+```bash
+samantha narrate plan article.md --out narration.plan.yaml
+samantha narrate prepare narration.plan.yaml --resume
+samantha narrate render narration.plan.yaml --resume
+samantha narrate plan book.pdf --out out/book.plan.yaml   # requires pdftotext (Poppler)
+```
+
+Digital PDFs also work with direct render / audiobook create:
+
+```bash
+samantha render book.pdf --out-dir out/book
+samantha audiobook create book.pdf --out-dir out/book
 ```
 
 ## Configuration
@@ -165,6 +193,8 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `vad_min_speech_duration` | `0.25` | `VAD_MIN_SPEECH_DURATION` | Minimum speech length in seconds (raise to ignore brief noises) |
 | `voice_frontend_enabled` | `false` | `VOICE_FRONTEND_ENABLED` | Local AEC/NS/AGC on mic input (off by default: the noise suppressor currently over-suppresses normal-volume speech; enable only with barge-in) |
 | `agent_name` | `Samantha` | | Display name |
+| `persona` | `samantha` | `PERSONA` | Prompt document name for the interactive persona |
+| `prompts_dir` | empty | `PROMPTS_DIR` | Prompt document directory; defaults to `~/.obey/agents/voice/samantha/prompts` when unset |
 | `models_dir` | `~/.cache/samantha/models` | `MODELS_DIR` | Model download directory |
 | `language` | `en-US` | | Recognition language |
 | `max_history` | `10` | | Saved conversation history length |
@@ -172,6 +202,14 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `phrase_time_limit` | `30` | | Maximum phrase length in seconds |
 
 The preferred STT schema is `stt_provider` + `stt_mode` (e.g. `stt_provider: sherpa` with `stt_mode: streaming`). The legacy compound aliases (`sherpa-streaming`, `sherpa-offline`) still work with `stt_mode` unset and are never rewritten; combining a compound alias with a conflicting `stt_mode` is a config error.
+
+Use `samantha config migrate --dry-run` to preview the explicit
+`stt_provider`/`stt_mode` values that would preserve the current STT behavior.
+Dry runs report the config path and proposed values without writing files. Use
+`samantha config migrate --write` to apply the migration; it creates a
+timestamped `.bak` file before replacing an existing config. The write path
+updates YAML via `yaml.v3`, so comments and unrelated keys are preserved where
+possible, but scalar formatting around touched keys may be normalized.
 
 ## Development
 

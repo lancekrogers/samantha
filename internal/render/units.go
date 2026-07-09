@@ -115,8 +115,14 @@ func renderUnit(ctx context.Context, opts Options, i int, u RenderUnit, synthID 
 		return base, 0, nil
 	}
 
-	textSegments := SegmentText(u.Text, defaultMaxSegmentChars)
-	if len(textSegments) == 0 {
+	spans := PlanUnitSpans(opts, u.Text)
+	speechCount := 0
+	for _, sp := range spans {
+		if sp.Kind == SpanSpeech && strings.TrimSpace(sp.Text) != "" {
+			speechCount++
+		}
+	}
+	if speechCount == 0 {
 		// A unit with no narratable text (an image-only or fully
 		// boilerplate-stripped page) produces no audio. Record it as skipped
 		// with no output instead of writing a malformed zero-rate WAV that
@@ -127,7 +133,7 @@ func renderUnit(ctx context.Context, opts Options, i int, u RenderUnit, synthID 
 		return base, 0, nil
 	}
 
-	samples, rate, err := synthSegments(ctx, textSegments, synth)
+	samples, rate, err := synthSpans(ctx, spans, synth, requestMeta(opts, base.ID, u.Title), opts.Voice, opts.Speed)
 	if err == nil {
 		err = writeWAV(outPath, rate, samples)
 	}
@@ -154,26 +160,6 @@ func unitManifest(opts Options, segs []ManifestSegment, sampleRate int) RenderMa
 		SampleRate:   sampleRate,
 		Segments:     segs,
 	}
-}
-
-// synthSegments synthesizes and concatenates the given text segments.
-func synthSegments(ctx context.Context, segments []string, synth Synthesizer) ([]float32, int, error) {
-	var all []float32
-	rate := 0
-	for i, seg := range segments {
-		if err := ctx.Err(); err != nil {
-			return nil, 0, err
-		}
-		samples, r, err := synth.Synthesize(ctx, seg)
-		if err != nil {
-			return nil, 0, fmt.Errorf("synthesize segment %d: %w", i+1, err)
-		}
-		if rate == 0 {
-			rate = r
-		}
-		all = append(all, samples...)
-	}
-	return all, rate, nil
 }
 
 func unitID(u RenderUnit, index int) string {

@@ -59,6 +59,38 @@ func TestCatalogReportsUserOverride(t *testing.T) {
 	}
 }
 
+func TestCatalogIncludesUserOnlyDocuments(t *testing.T) {
+	dir := t.TempDir()
+	styleDir := filepath.Join(dir, "style")
+	if err := os.MkdirAll(styleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(styleDir, "casual.md")
+	if err := os.WriteFile(path, []byte("Speak casually.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := Catalog(dir)
+	if err != nil {
+		t.Fatalf("Catalog() error = %v", err)
+	}
+	var style Entry
+	for _, e := range entries {
+		if e.Kind == KindStyle && e.Name == "casual" {
+			style = e
+		}
+	}
+	if style.Source != SourceUser {
+		t.Errorf("style source = %s, want user", style.Source)
+	}
+	if style.Path != path {
+		t.Errorf("style path = %q, want %q", style.Path, path)
+	}
+	if style.Hash == "" {
+		t.Error("style hash empty")
+	}
+}
+
 func TestCatalogReportsSeededDefaultsAsEmbedded(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := Seed(dir); err != nil {
@@ -77,5 +109,33 @@ func TestCatalogReportsSeededDefaultsAsEmbedded(t *testing.T) {
 		if e.Path != "" {
 			t.Errorf("kind %s path = %q, want empty for seeded default", e.Kind, e.Path)
 		}
+	}
+}
+
+func TestCatalogSurvivesBrokenOverrideOfEmbeddedName(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "persona"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	broken := filepath.Join(dir, "persona", "samantha.yaml")
+	if err := os.WriteFile(broken, []byte("not: [valid prompt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := Catalog(dir)
+	if err != nil {
+		t.Fatalf("catalog must fail-safe past a broken override: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Kind == KindPersona && e.Name == "samantha" {
+			found = true
+			if e.Source != SourceEmbedded {
+				t.Fatalf("broken override must report embedded fallback, got %s", e.Source)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("embedded persona entry missing from catalog")
 	}
 }

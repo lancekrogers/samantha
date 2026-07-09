@@ -51,9 +51,27 @@ func isHorizontalRule(trimmed string) bool {
 	return count >= 3
 }
 
-// ExtractMarkdown parses Markdown bytes into a render.Document. source labels
-// the origin (file path) for the manifest.
+// ExtractMarkdown parses Markdown bytes into a render.Document with the default
+// code-blocks=skip policy. source labels the origin (file path) for the
+// manifest.
 func ExtractMarkdown(source string, data []byte) (render.Document, error) {
+	return ExtractMarkdownPolicy(source, data, "skip")
+}
+
+// ExtractMarkdownPolicy parses Markdown like ExtractMarkdown, but fenced code
+// blocks follow codeBlocks: "skip" (default) omits them, "read" includes their
+// plain text without labels.
+func ExtractMarkdownPolicy(source string, data []byte, codeBlocks string) (render.Document, error) {
+	policy := strings.ToLower(strings.TrimSpace(codeBlocks))
+	if policy == "" {
+		policy = "skip"
+	}
+	switch policy {
+	case "skip", "read":
+	default:
+		return render.Document{}, fmt.Errorf("extract markdown: unsupported code-blocks policy %q", codeBlocks)
+	}
+
 	body, frontTitle := stripFrontMatter(string(data))
 	lines := strings.Split(body, "\n")
 
@@ -99,6 +117,17 @@ func ExtractMarkdown(source string, data []byte) (render.Document, error) {
 			continue
 		}
 		if inCode {
+			if policy == "read" {
+				// Include fenced code as plain text without fence labels.
+				text := strings.TrimRight(line, "\r")
+				if text != "" {
+					started = true
+					if para.Len() > 0 {
+						para.WriteByte(' ')
+					}
+					para.WriteString(text)
+				}
+			}
 			continue
 		}
 		if trimmed == "" {

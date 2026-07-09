@@ -28,21 +28,26 @@ func newRenderCmd(run renderRunner) *cobra.Command {
 		Long: `Render documents to audio files without the live voice pipeline.
 
 Batch narration is noninteractive and scriptable: it reads text, Markdown, HTML,
-URL articles, or EPUB and writes WAV files plus a manifest.
+URL articles, EPUB, or digital PDF and writes WAV files plus a manifest.
 
 Examples:
   samantha render article.md --out out/article.wav
+  samantha render article.md --out-dir out/article
   cat notes.txt | samantha render --stdin --out notes.wav
   samantha render book.epub --out-dir out/book --json
+
+Markdown, HTML, URL, and PDF accept either --out (one WAV) or --out-dir (one
+WAV per section/heading/page plus a manifest). EPUB requires --out-dir. Plain
+text is single-file only (--out).
 
 Scripting:
   WAV is always written and is the source of truth. --audio-format mp3|m4a|m4b|
   aac|opus additionally encodes via an external encoder (default ffmpeg); a
-  missing encoder fails before any synthesis. A failed chapter is recorded in the
-  manifest and the rest still render; rerun with --resume to retry only the
-  failed/changed chapters (unchanged outputs are skipped). With --json the
-  summary reports completed/skipped/failed counts and exits non-zero if any
-  chapter failed, e.g.:
+  missing encoder fails before any synthesis. A failed chapter/section is
+  recorded in the manifest and the rest still render; rerun with --resume to
+  retry only the failed/changed units (unchanged outputs are skipped). With
+  --json the summary reports completed/skipped/failed counts and exits non-zero
+  if any unit failed, e.g.:
     samantha render book.epub --out-dir out/book --audio-format mp3 --json \
       | jq '.failed'`,
 		Args:          cobra.MaximumNArgs(1),
@@ -61,9 +66,9 @@ Scripting:
 
 	f := cmd.Flags()
 	f.BoolVar(&opts.Stdin, "stdin", false, "Read input text from stdin")
-	f.StringVar((*string)(&opts.Format), "format", string(render.FormatAuto), "Input format: text|markdown|html|url|epub|auto")
+	f.StringVar((*string)(&opts.Format), "format", string(render.FormatAuto), "Input format: text|markdown|html|url|epub|pdf|auto")
 	f.StringVar(&opts.Out, "out", "", "Write a single audio file to PATH")
-	f.StringVar(&opts.OutDir, "out-dir", "", "Write chapter/segment files and a manifest to DIR")
+	f.StringVar(&opts.OutDir, "out-dir", "", "Write chapter/section files and a manifest to DIR (markdown/html/url/epub/pdf)")
 	f.StringVar(&opts.Title, "title", "", "Override the document title")
 	addRenderPassthroughFlags(cmd, &opts)
 
@@ -82,6 +87,10 @@ func addRenderPassthroughFlags(cmd *cobra.Command, opts *render.Options) {
 	f.BoolVar(&opts.Overwrite, "overwrite", false, "Replace existing outputs")
 	f.StringVar(&opts.AudioFormat, "audio-format", "", "Also encode output to mp3|m4a|m4b|aac|opus via an external encoder (WAV is always written)")
 	f.StringVar(&opts.EncoderBin, "encoder", "", "External encoder binary to use (default: ffmpeg)")
+	f.IntVar(&opts.MaxSegmentChars, "max-segment-chars", 0, "Max characters per TTS segment (0 = default 1500; min 100 when set)")
+	f.StringVar(&opts.PauseHeading, "pause-heading", "", "Silence after section headings in --out-dir renders (Go duration, e.g. 750ms; default none)")
+	f.StringVar(&opts.PauseParagraph, "pause-paragraph", "", "Silence after paragraphs (Go duration, e.g. 500ms; default none)")
+	f.StringVar(&opts.CodeBlocks, "code-blocks", "", "Markdown fenced code policy: skip|read (default skip)")
 }
 
 // applyVoiceOverrides folds CLI --voice/--speed into cfg and writes the
