@@ -109,6 +109,20 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 		}
 	}
 
+
+	// pdftotext (Poppler) is optional; missing is a warning so non-PDF users stay clean.
+	if _, err := lookPath("pdftotext"); err != nil {
+		diags = append(diags, Diagnostic{
+			Name:        "pdftotext-binary",
+			Severity:    SeverityWarn,
+			Detail:      "pdftotext not found in PATH (optional; needed for PDF narrate/render)",
+			Remediation: "install Poppler (e.g. brew install poppler) to enable PDF extraction",
+		})
+	} else {
+		diags = append(diags, Diagnostic{Name: "pdftotext-binary", Severity: SeverityOK, Detail: "pdftotext"})
+	}
+
+
 	return diags
 }
 

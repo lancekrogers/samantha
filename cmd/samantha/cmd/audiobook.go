@@ -36,16 +36,17 @@ func newAudiobookCreateCmd(run renderRunner) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "create INPUT --out-dir DIR",
-		Short: "Create an audiobook from an EPUB (one file per chapter, resumable)",
-		Long: `Create an audiobook from an EPUB: one WAV per chapter (spine order) plus a
-manifest under --out-dir, using the same batch render runtime as
-'samantha render'.
+		Short: "Create an audiobook from an EPUB or PDF (one file per chapter/page, resumable)",
+		Long: `Create an audiobook from an EPUB or digital PDF: one WAV per chapter (EPUB
+spine) or page (PDF) plus a manifest under --out-dir, using the same batch
+render runtime as 'samantha render'.
 
-Only EPUB input is supported yet; use 'samantha render' for markdown, html,
-url, and text sources.
+Use 'samantha render' for markdown, html, url, and text sources. For
+prompt-controlled PDF cleanup, prefer 'samantha narrate plan|prepare|render'.
 
 Examples:
   samantha audiobook create book.epub --out-dir out/book
+  samantha audiobook create book.pdf --out-dir out/book
   samantha audiobook create book.epub --out-dir out/book --audio-format m4b
   samantha audiobook create book.epub --out-dir out/book --resume --json`,
 		Args:          cobra.MaximumNArgs(1),
@@ -58,7 +59,10 @@ Examples:
 			if err := validateAudiobookInput("create", opts); err != nil {
 				return err
 			}
-			opts.Format = render.FormatEPUB
+			// Preserve auto-detected format (epub or pdf).
+			if opts.Format == "" || opts.Format == render.FormatAuto {
+				opts.Format = opts.ResolveFormat()
+			}
 			if err := opts.Validate(); err != nil {
 				return err
 			}
@@ -98,7 +102,9 @@ Examples:
 			if err := validateAudiobookInput("preview", opts); err != nil {
 				return err
 			}
-			opts.Format = render.FormatEPUB
+			if opts.Format == "" || opts.Format == render.FormatAuto {
+				opts.Format = opts.ResolveFormat()
+			}
 			if err := opts.Validate(); err != nil {
 				return err
 			}
@@ -122,10 +128,12 @@ Examples:
 // subcommand for error messages.
 func validateAudiobookInput(verb string, opts render.Options) error {
 	if strings.TrimSpace(opts.Input) == "" {
-		return fmt.Errorf("audiobook %s: provide an EPUB input path", verb)
+		return fmt.Errorf("audiobook %s: provide an EPUB or PDF input path", verb)
 	}
-	if opts.ResolveFormat() != render.FormatEPUB {
-		return fmt.Errorf("audiobook %s: only EPUB input is supported yet; use samantha render for markdown, html, url, and text sources", verb)
+	switch opts.ResolveFormat() {
+	case render.FormatEPUB, render.FormatPDF:
+	default:
+		return fmt.Errorf("audiobook %s: only EPUB or PDF input is supported; use samantha render for markdown, html, url, and text sources", verb)
 	}
 	if opts.OutDir == "" {
 		return fmt.Errorf("audiobook %s: provide --out-dir DIR for chapter output", verb)

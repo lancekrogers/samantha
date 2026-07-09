@@ -9,13 +9,16 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/narrate"
 	"github.com/lancekrogers/samantha/internal/render"
 	"github.com/lancekrogers/samantha/internal/render/encoder"
 	"github.com/lancekrogers/samantha/internal/render/epub"
@@ -42,8 +45,11 @@ func runRenderText(cmd *cobra.Command, opts render.Options) error {
 	}
 	defer cleanup()
 
-	if opts.ResolveFormat() == render.FormatEPUB {
+	switch opts.ResolveFormat() {
+	case render.FormatEPUB:
 		return runRenderEPUB(cmd, opts, synth, enc)
+	case render.FormatPDF:
+		return runRenderPDF(cmd, opts, synth, enc)
 	}
 
 	if opts.MultiFile() {
@@ -60,6 +66,72 @@ func runRenderText(cmd *cobra.Command, opts render.Options) error {
 		return err
 	}
 
+	return finishRender(cmd, opts, result.Manifest, enc, renderReport{
+		outputKey: "output",
+		output:    result.Output,
+		wavs:      []string{result.Output},
+	}, nil, func(out io.Writer, manifestPath string, encoded []string) {
+		fmt.Fprintf(out, "  Rendered %s (%d segment(s), %s)\n", result.Output, result.Segments, result.Duration.Round(10_000_000))
+		if manifestPath != "" {
+			fmt.Fprintf(out, "  Manifest: %s\n", manifestPath)
+		}
+		for _, e := range encoded {
+			fmt.Fprintf(out, "  Encoded:  %s\n", e)
+		}
+	})
+}
+
+// runRenderPDF extracts a digital PDF via pdftotext and renders pages as units
+// (--out-dir) or concatenated narration (--out). Low text density prints a
+// warning pointing at samantha narrate plan.
+func runRenderPDF(cmd *cobra.Command, opts render.Options, synth render.Synthesizer, enc encoder.Encoder) error {
+	pages, warnings, err := (narrate.PDFExtractor{}).ExtractPages(cmd.Context(), opts.Input)
+	if err != nil {
+		return err
+	}
+	for _, w := range warnings {
+		fmt.Fprintf(cmd.ErrOrStderr(), "  Warning: %s\n", w)
+		fmt.Fprintf(cmd.ErrOrStderr(), "         → use 'samantha narrate plan' for prompt-controlled cleanup\n")
+	}
+	if opts.Title == "" {
+		opts.Title = filepath.Base(opts.Input)
+	}
+	if opts.MultiFile() {
+		units := make([]render.RenderUnit, 0, len(pages))
+		for _, p := range pages {
+			units = append(units, render.RenderUnit{
+				ID:        fmt.Sprintf("page-%03d", p.Page),
+				Title:     fmt.Sprintf("Page %d", p.Page),
+				Text:      p.Text,
+				SourceRef: opts.Input,
+			})
+		}
+		manifest, renderErr := render.RenderUnits(cmd.Context(), opts, units, synth, audio.WriteWAVFloat32)
+		complete, skipped, failed := manifest.Counts()
+		return finishRender(cmd, opts, manifest, enc, renderReport{
+			outputKey: "output_dir",
+			output:    opts.OutDir,
+			wavs:      render.CompletedWAVPaths(opts.OutDir, manifest),
+		}, renderErr, func(out io.Writer, manifestPath string, encoded []string) {
+			fmt.Fprintf(out, "  Rendered %d page(s) to %s (%d skipped, %d failed)\n", complete, opts.OutDir, skipped, failed)
+			fmt.Fprintf(out, "  Manifest: %s\n", manifestPath)
+			if len(encoded) > 0 {
+				fmt.Fprintf(out, "  Encoded:  %d file(s) to .%s\n", len(encoded), enc.Ext())
+			}
+		})
+	}
+	// Single-file: join pages.
+	var b strings.Builder
+	for i, p := range pages {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(p.Text)
+	}
+	result, err := render.RenderText(cmd.Context(), opts, b.String(), synth, audio.WriteWAVFloat32)
+	if err != nil {
+		return err
+	}
 	return finishRender(cmd, opts, result.Manifest, enc, renderReport{
 		outputKey: "output",
 		output:    result.Output,

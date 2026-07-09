@@ -45,9 +45,9 @@ func TestAudiobookCreateRejectsInvalidInvocations(t *testing.T) {
 		args    []string
 		wantErr string
 	}{
-		"missing input":   {args: []string{"create", "--out-dir", "out/book"}, wantErr: "provide an EPUB input path"},
+		"missing input":   {args: []string{"create", "--out-dir", "out/book"}, wantErr: "provide an EPUB or PDF input path"},
 		"missing out-dir": {args: []string{"create", "book.epub"}, wantErr: "provide --out-dir DIR"},
-		"markdown input":  {args: []string{"create", "notes.md", "--out-dir", "out/book"}, wantErr: "only EPUB input is supported yet"},
+		"markdown input":  {args: []string{"create", "notes.md", "--out-dir", "out/book"}, wantErr: "only EPUB or PDF input is supported"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -102,9 +102,9 @@ func TestAudiobookPreviewRejectsInvalidInvocations(t *testing.T) {
 		args    []string
 		wantErr string
 	}{
-		"missing input":   {args: []string{"preview", "--out-dir", "out/book"}, wantErr: "audiobook preview: provide an EPUB input path"},
+		"missing input":   {args: []string{"preview", "--out-dir", "out/book"}, wantErr: "provide an EPUB or PDF input path"},
 		"missing out-dir": {args: []string{"preview", "book.epub"}, wantErr: "audiobook preview: provide --out-dir DIR"},
-		"markdown input":  {args: []string{"preview", "notes.md", "--out-dir", "out/book"}, wantErr: "only EPUB input is supported yet"},
+		"markdown input":  {args: []string{"preview", "notes.md", "--out-dir", "out/book"}, wantErr: "only EPUB or PDF input is supported"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

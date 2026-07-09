@@ -37,4 +37,5 @@ func init() {
 	rootCmd.AddCommand(providersCmd)
 	rootCmd.AddCommand(newRenderCmd(runRenderPlan))
 	rootCmd.AddCommand(newAudiobookCmd(runRenderPlan, config.Load))
+	rootCmd.AddCommand(newNarrateCmd())
 }

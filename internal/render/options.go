@@ -23,6 +23,7 @@ const (
 	FormatHTML     Format = "html"
 	FormatURL      Format = "url"
 	FormatEPUB     Format = "epub"
+	FormatPDF      Format = "pdf"
 )
 
 // Options describes one `samantha render` invocation.
@@ -83,7 +84,7 @@ func (o Options) Validate() error {
 	}
 
 	switch o.Format {
-	case FormatAuto, FormatText, FormatMarkdown, FormatHTML, FormatURL, FormatEPUB:
+	case FormatAuto, FormatText, FormatMarkdown, FormatHTML, FormatURL, FormatEPUB, FormatPDF:
 	default:
 		return fmt.Errorf("render: unsupported --format %q", o.Format)
 	}
@@ -93,8 +94,8 @@ func (o Options) Validate() error {
 
 	// Cross-check the resolved format against the output mode so a mismatch fails
 	// fast here, before any TTS model is loaded. EPUB is multi-file only;
-	// Markdown/HTML/URL accept either --out (single file) or --out-dir (sectioned);
-	// plain text remains single-file only.
+	// Markdown/HTML/URL/PDF accept either --out (single file) or --out-dir (sectioned);
+	// plain text remains single-file only. EPUB requires --out-dir.
 	format := o.ResolveFormat()
 	switch {
 	case format == FormatEPUB && o.Out != "":
@@ -197,6 +198,8 @@ func (o Options) ResolveFormat() Format {
 		return FormatHTML
 	case strings.HasSuffix(lower, ".epub"):
 		return FormatEPUB
+	case strings.HasSuffix(lower, ".pdf"):
+		return FormatPDF
 	default:
 		return FormatText
 	}
@@ -210,7 +213,7 @@ func (o Options) MultiFile() bool { return o.OutDir != "" }
 // output under --out-dir (in addition to single-file --out where applicable).
 func supportsSectionedOutDir(f Format) bool {
 	switch f {
-	case FormatMarkdown, FormatHTML, FormatURL, FormatEPUB:
+	case FormatMarkdown, FormatHTML, FormatURL, FormatEPUB, FormatPDF:
 		return true
 	default:
 		return false

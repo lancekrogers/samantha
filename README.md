@@ -150,6 +150,23 @@ samantha audiobook create book.epub --out-dir out/book
 samantha audiobook create book.epub --out-dir out/book --audio-format m4b --resume --json
 ```
 
+
+### Narrate pipeline (prompt-controlled)
+
+```bash
+samantha narrate plan article.md --out narration.plan.yaml
+samantha narrate prepare narration.plan.yaml --resume
+samantha narrate render narration.plan.yaml --resume
+samantha narrate plan book.pdf --out out/book.plan.yaml   # requires pdftotext (Poppler)
+```
+
+Digital PDFs also work with direct render / audiobook create:
+
+```bash
+samantha render book.pdf --out-dir out/book
+samantha audiobook create book.pdf --out-dir out/book
+```
+
 ## Configuration
 
 Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be overridden with environment variables where listed.
