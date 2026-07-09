@@ -43,12 +43,13 @@ func runNarratePrepare(cmd *cobra.Command, opts narrate.PrepareOptions) error {
 	}
 	if opts.JSON {
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
-			"plan":     res.PlanPath,
-			"prepared": res.Prepared,
-			"skipped":  res.Skipped,
-			"failed":   res.Failed,
-			"provider": res.Provider,
-			"model":    res.Model,
+			"plan":        res.PlanPath,
+			"prepared":    res.Prepared,
+			"skipped":     res.Skipped,
+			"failed":      res.Failed,
+			"provider":    res.Provider,
+			"model":       res.Model,
+			"passthrough": res.Provider == "passthrough",
 		})
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "  Prepared %d section(s) (%d skipped, %d failed)\n", res.Prepared, res.Skipped, res.Failed)
@@ -73,26 +74,32 @@ func (identityBatch) Transform(ctx context.Context, req brain.BatchRequest) (bra
 }
 
 func loadPromptProfile(dir, name string) (system, style, pronunciation string, err error) {
+	// Candidates are strictly kind-scoped: a bare <dir>/<name>.md must not
+	// satisfy every kind at once, or one file would be duplicated into
+	// system, style, AND pronunciation. It remains a system-only fallback.
 	candidates := func(kind string) []string {
 		return []string{
 			filepath.Join(dir, kind, name+".yaml"),
 			filepath.Join(dir, kind, name+".yml"),
 			filepath.Join(dir, kind, name+".md"),
 			filepath.Join(dir, name+"."+kind+".md"),
-			filepath.Join(dir, name+".md"),
 		}
 	}
-	find := func(kind string) string {
-		for _, p := range candidates(kind) {
+	firstFile := func(paths ...string) string {
+		for _, p := range paths {
 			if st, e := os.Stat(p); e == nil && !st.IsDir() {
 				return p
 			}
 		}
 		return ""
 	}
+	find := func(kind string) string { return firstFile(candidates(kind)...) }
 	system = find("system")
 	if system == "" {
 		system = find("persona")
+	}
+	if system == "" {
+		system = firstFile(filepath.Join(dir, name+".md"))
 	}
 	style = find("style")
 	pronunciation = find("pronunciation")
@@ -143,6 +150,9 @@ func runNarrateRender(cmd *cobra.Command, opts narrate.RenderOptions) error {
 		return err
 	}
 	manifest, renderErr := render.RenderUnits(cmd.Context(), ropts, units, synth, audio.WriteWAVFloat32)
+	if err := narrate.RecordRenderOutputs(plan, opts.PlanPath, ropts.OutDir, manifest); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "  Warning: could not record audio paths in plan: %v\n", err)
+	}
 	complete, skipped, failed := manifest.Counts()
 	return finishRender(cmd, ropts, manifest, enc, renderReport{
 		outputKey: "output_dir",

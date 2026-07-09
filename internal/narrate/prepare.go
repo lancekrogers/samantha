@@ -117,10 +117,12 @@ func Prepare(ctx context.Context, opts PrepareOptions) (PrepareResult, error) {
 
 		// Resume: skip only when the prepared file exists AND the full identity
 		// is unchanged — extracted text hash, all prompt hashes, and a recorded
-		// provider/model. Any changed input re-prepares this section.
+		// provider/model. Any changed input re-prepares this section. A
+		// passthrough copy never counts as prepared: re-running it is free and
+		// a later real brain must not be blocked by it.
 		if opts.Resume && !opts.Overwrite && extractedUnchanged && promptsUnchanged {
 			if prev, err := os.ReadFile(outPath); err == nil && len(prev) > 0 {
-				if sec.PreparedProvider != "" && sec.PreparedModel != "" {
+				if sec.PreparedProvider != "" && sec.PreparedProvider != "passthrough" && sec.PreparedModel != "" {
 					res.Skipped++
 					continue
 				}
@@ -138,6 +140,14 @@ func Prepare(ctx context.Context, opts PrepareOptions) (PrepareResult, error) {
 		if err != nil {
 			res.Failed++
 			firstErr = fmt.Errorf("narrate prepare: section %s: %w", sec.ID, err)
+			// The failed section and every unvisited one after it were NOT
+			// prepared under the prompt hashes recorded above. Clear their
+			// prepared identity so a later --resume re-prepares them instead
+			// of skipping stale output from an earlier prompt set.
+			for j := i; j < len(plan.Sections); j++ {
+				plan.Sections[j].PreparedProvider = ""
+				plan.Sections[j].PreparedModel = ""
+			}
 			break
 		}
 		if err := os.WriteFile(outPath, []byte(strings.TrimSpace(result.Text)+"\n"), 0o644); err != nil {

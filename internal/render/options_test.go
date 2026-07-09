@@ -75,3 +75,10 @@ func TestOptionsMultiFile(t *testing.T) {
 		t.Error("--out-dir should be multi-file")
 	}
 }
+
+func TestValidateRejectsStdinPDF(t *testing.T) {
+	opts := Options{Stdin: true, Format: FormatPDF, Out: "x.wav"}
+	if err := opts.Validate(); err == nil {
+		t.Fatal("expected --format pdf --stdin to be rejected")
+	}
+}

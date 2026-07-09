@@ -80,13 +80,14 @@ func Catalog(userDir string) ([]Entry, error) {
 func Describe(userDir string, kind Kind, name string) (Entry, error) {
 	if path, ok := userDocPath(userDir, kind, name); ok {
 		doc, err := LoadFile(path, kind)
-		if err != nil {
-			return Entry{}, err
+		if err == nil {
+			if isEmbeddedDefault(doc) {
+				return Entry{Kind: kind, Name: name, Source: SourceEmbedded, Hash: doc.Hash()}, nil
+			}
+			return Entry{Kind: kind, Name: name, Source: SourceUser, Path: path, Hash: doc.Hash()}, nil
 		}
-		if isEmbeddedDefault(doc) {
-			return Entry{Kind: kind, Name: name, Source: SourceEmbedded, Hash: doc.Hash()}, nil
-		}
-		return Entry{Kind: kind, Name: name, Source: SourceUser, Path: path, Hash: doc.Hash()}, nil
+		// Fail-safe: a broken override must not brick listing/status. The
+		// resolver falls back to the embedded default at runtime; report that.
 	}
 	doc, err := Default(kind)
 	if err != nil {

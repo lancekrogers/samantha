@@ -88,7 +88,7 @@ func (o Options) Validate() error {
 	default:
 		return fmt.Errorf("render: unsupported --format %q", o.Format)
 	}
-	if o.Stdin && (o.Format == FormatURL || o.Format == FormatEPUB) {
+	if o.Stdin && (o.Format == FormatURL || o.Format == FormatEPUB || o.Format == FormatPDF) {
 		return fmt.Errorf("render: --format %s cannot read from --stdin", o.Format)
 	}
 

@@ -91,3 +91,36 @@ func EnsureRenderContext(ctx context.Context, planPath string) (*Plan, string, e
 	}
 	return plan, filepath.Dir(planPath), nil
 }
+
+// RecordRenderOutputs updates each section's audio_path to the file the render
+// manifest actually wrote (complete or resumed-skipped units), matched by
+// section ID, and saves the plan. Failed units keep their prior audio_path.
+func RecordRenderOutputs(plan *Plan, planPath, outDir string, manifest render.RenderManifest) error {
+	byID := make(map[string]string, len(manifest.Segments))
+	for _, seg := range manifest.Segments {
+		if seg.Output == "" {
+			continue
+		}
+		if seg.Status != render.StatusComplete && seg.Status != render.StatusSkipped {
+			continue
+		}
+		byID[seg.ID] = seg.Output
+	}
+	base := filepath.Dir(planPath)
+	changed := false
+	for i := range plan.Sections {
+		out, ok := byID[plan.Sections[i].ID]
+		if !ok {
+			continue
+		}
+		path := relPrefer(base, filepath.Join(outDir, out))
+		if plan.Sections[i].AudioPath != path {
+			plan.Sections[i].AudioPath = path
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return plan.Save(planPath)
+}

@@ -111,3 +111,31 @@ func TestCatalogReportsSeededDefaultsAsEmbedded(t *testing.T) {
 		}
 	}
 }
+
+func TestCatalogSurvivesBrokenOverrideOfEmbeddedName(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "persona"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	broken := filepath.Join(dir, "persona", "samantha.yaml")
+	if err := os.WriteFile(broken, []byte("not: [valid prompt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := Catalog(dir)
+	if err != nil {
+		t.Fatalf("catalog must fail-safe past a broken override: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Kind == KindPersona && e.Name == "samantha" {
+			found = true
+			if e.Source != SourceEmbedded {
+				t.Fatalf("broken override must report embedded fallback, got %s", e.Source)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("embedded persona entry missing from catalog")
+	}
+}

@@ -88,7 +88,7 @@ func addRenderPassthroughFlags(cmd *cobra.Command, opts *render.Options) {
 	f.StringVar(&opts.AudioFormat, "audio-format", "", "Also encode output to mp3|m4a|m4b|aac|opus via an external encoder (WAV is always written)")
 	f.StringVar(&opts.EncoderBin, "encoder", "", "External encoder binary to use (default: ffmpeg)")
 	f.IntVar(&opts.MaxSegmentChars, "max-segment-chars", 0, "Max characters per TTS segment (0 = default 1500; min 100 when set)")
-	f.StringVar(&opts.PauseHeading, "pause-heading", "", "Silence after headings (Go duration, e.g. 750ms; default none)")
+	f.StringVar(&opts.PauseHeading, "pause-heading", "", "Silence after section headings in --out-dir renders (Go duration, e.g. 750ms; default none)")
 	f.StringVar(&opts.PauseParagraph, "pause-paragraph", "", "Silence after paragraphs (Go duration, e.g. 500ms; default none)")
 	f.StringVar(&opts.CodeBlocks, "code-blocks", "", "Markdown fenced code policy: skip|read (default skip)")
 }

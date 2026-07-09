@@ -126,12 +126,15 @@ func BuildPlan(ctx context.Context, opts PlanOptions, pdf Extractor) (PlanResult
 		return PlanResult{}, fmt.Errorf("narrate plan: no extractable sections in %s", opts.Input)
 	}
 
-	// Relativize paths when possible for portable plans.
+	// Relativize paths when possible for portable plans. Prepared/audio paths
+	// use the same ID sanitization prepare applies, so a freshly written plan
+	// already points where later stages will write. Render overwrites
+	// audio_path with the real manifest filename after synthesis.
 	planDir := filepath.Dir(opts.Out)
 	for i := range sections {
 		sections[i].ExtractedPath = relPrefer(planDir, sections[i].ExtractedPath)
-		sections[i].PreparedPath = filepath.Join("prepared", sections[i].ID+".md")
-		sections[i].AudioPath = filepath.Join("audio", sections[i].ID+".wav")
+		sections[i].PreparedPath = filepath.Join("prepared", sanitizeID(sections[i].ID)+".md")
+		sections[i].AudioPath = filepath.Join("audio", sanitizeID(sections[i].ID)+".wav")
 	}
 
 	plan := &Plan{
