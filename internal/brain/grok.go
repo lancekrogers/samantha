@@ -130,14 +130,18 @@ func (g *GrokBrain) ThinkFull(ctx context.Context, input string) (string, error)
 }
 
 // runOptions builds the grok run options shared by the streaming and blocking
-// paths. bypassPermissions mirrors the Claude provider so Samantha can use tools
-// without repeated prompts; the grok SDK gates that mode behind AllowDangerousMode.
+// paths. Tool execution is gated by voice_tools_enabled: disabled leaves the
+// SDK's default permission mode (no auto-run tools, matching the batch
+// adapter); enabled uses bypassPermissions — which the grok SDK gates behind
+// AllowDangerousMode — so hands-free tool calls don't stall on prompts.
 func (g *GrokBrain) runOptions(format grok.OutputFormat) *grok.RunOptions {
 	opts := &grok.RunOptions{
 		Format:               format,
 		SystemPromptOverride: g.systemPrompt,
-		PermissionMode:       grok.PermissionBypassPermissions,
-		AllowDangerousMode:   true,
+	}
+	if g.cfg.VoiceToolsEnabled {
+		opts.PermissionMode = grok.PermissionBypassPermissions
+		opts.AllowDangerousMode = true
 	}
 	if g.cfg.GrokModel != "" {
 		opts.Model = g.cfg.GrokModel

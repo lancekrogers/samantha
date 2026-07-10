@@ -61,19 +61,32 @@ func (b *Brain) Available() bool {
 	return err == nil
 }
 
+// runOptions builds the per-turn claude run options. Tool execution is gated
+// by voice_tools_enabled: disabled runs the CLI in default permission mode —
+// headless print mode never auto-runs tools, the same no-tools shape the
+// batch adapter uses — while enabled keeps bypassPermissions so hands-free
+// tool calls don't stall on permission prompts.
+func (b *Brain) runOptions(format claude.OutputFormat, toolsEnabled bool) *claude.RunOptions {
+	mode := claude.PermissionModeDefault
+	if toolsEnabled {
+		mode = claude.PermissionModeBypassPermissions
+	}
+	return &claude.RunOptions{
+		Format:         format,
+		SystemPrompt:   b.systemPrompt,
+		PermissionMode: mode,
+	}
+}
+
 // ThinkStream sends input to Claude and returns a channel of streaming message chunks.
 // Each message on the channel may contain partial text.
-func (b *Brain) ThinkStream(ctx context.Context, input string, _ StreamOptions) (*Stream, error) {
+func (b *Brain) ThinkStream(ctx context.Context, input string, streamOpts StreamOptions) (*Stream, error) {
 	b.history = append(b.history, Turn{Role: "user", Content: input})
 	prompt := b.buildPrompt()
 
 	// Partial (stream_event) messages are not requested: chunking is
 	// per-assistant-message, so deltas would be discarded anyway.
-	opts := &claude.RunOptions{
-		Format:         claude.StreamJSONOutput,
-		SystemPrompt:   b.systemPrompt,
-		PermissionMode: claude.PermissionModeBypassPermissions,
-	}
+	opts := b.runOptions(claude.StreamJSONOutput, streamOpts.ToolsEnabled)
 
 	messages, errs := b.client.StreamPrompt(ctx, prompt, opts)
 
@@ -149,11 +162,7 @@ func (b *Brain) ThinkFull(ctx context.Context, input string) (string, error) {
 	b.history = append(b.history, Turn{Role: "user", Content: input})
 	prompt := b.buildPrompt()
 
-	opts := &claude.RunOptions{
-		Format:         claude.TextOutput,
-		SystemPrompt:   b.systemPrompt,
-		PermissionMode: claude.PermissionModeBypassPermissions,
-	}
+	opts := b.runOptions(claude.TextOutput, b.cfg.VoiceToolsEnabled)
 
 	result, err := b.client.RunPromptCtx(ctx, prompt, opts)
 	if err != nil {
