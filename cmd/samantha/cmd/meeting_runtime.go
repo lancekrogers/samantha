@@ -1,0 +1,206 @@
+//go:build !integration
+
+package cmd
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/listen"
+	"github.com/lancekrogers/samantha/internal/meetinglog"
+	"github.com/lancekrogers/samantha/internal/stt"
+)
+
+// runMeetingRecord wires the STT-only chain into listen.Loop with the file
+// writer and console/JSON sinks. Nothing is written to disk until the STT
+// stack has constructed successfully.
+func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	// One-shot provider override: clear stt_mode exactly as benchmark.go does
+	// so a compound alias never conflicts with a leftover configured mode.
+	cfgCopy := *cfg
+	if opts.STTProvider != "" {
+		cfgCopy.STTProvider = opts.STTProvider
+		cfgCopy.STTMode = ""
+	}
+
+	ctx, cancel := signalContext()
+	defer cancel()
+
+	capture, provider, sttLabel, cleanup, err := buildSTTOnly(ctx, &cfgCopy)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	outDir := opts.OutDir
+	if outDir == "" {
+		outDir = config.MeetingsDir()
+	}
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return fmt.Errorf("meeting record: create out dir: %w", err)
+	}
+	path := filepath.Join(outDir, meetingFilename(opts.Description, time.Now()))
+
+	writer, err := meetinglog.Create(path, opts.Description, sttLabel)
+	if err != nil {
+		return err
+	}
+
+	out := cmd.OutOrStdout()
+	var sinks []listen.Sink
+	sinks = append(sinks, writer)
+	if opts.JSON {
+		sinks = append(sinks, &jsonSink{enc: json.NewEncoder(out)})
+	} else {
+		fmt.Fprintf(out, "Recording meeting: %q\n", opts.Description)
+		fmt.Fprintf(out, "Writing to: %s\n", path)
+		fmt.Fprintln(out, "🎙 Listening... (say \"stop recording\" or press Ctrl+C to stop)")
+		sinks = append(sinks, &consoleSink{out: out, errOut: cmd.ErrOrStderr()})
+	}
+	sink := &stopPhraseSink{
+		inner:   multiSink(sinks),
+		phrases: stopPhraseSet(opts.StopPhrases),
+		stop:    cancel,
+	}
+
+	loopErr := listen.Loop(ctx, capture, provider, sink)
+	summary, closeErr := writer.Close()
+
+	if opts.JSON {
+		_ = json.NewEncoder(out).Encode(summary)
+	} else {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Meeting recording stopped.")
+		fmt.Fprintf(out, "  Description: %s\n", summary.Description)
+		fmt.Fprintf(out, "  File:        %s\n", summary.File)
+		fmt.Fprintf(out, "  Duration:    %s\n", summary.Duration().Round(time.Second))
+		fmt.Fprintf(out, "  Utterances:  %d\n", summary.Utterances)
+	}
+	if loopErr != nil {
+		return loopErr // partial log is on disk and valid up to the last synced line
+	}
+	return closeErr
+}
+
+// buildSTTOnly constructs asset preflight -> capture -> VAD -> STT provider,
+// with no Brain or TTS — the chain benchmark.go's runSingleSTTBenchmark
+// proves. VAD is required: every shipped STT backend rejects a nil VAD.
+// root.go's buildPipeline should eventually share this helper.
+func buildSTTOnly(ctx context.Context, cfg *config.Config) (capture *audio.Capture, provider stt.Provider, sttLabel string, cleanup func(), err error) {
+	if err := config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedSTT: true, NeedVAD: true}, modelProgress); err != nil {
+		return nil, nil, "", nil, err
+	}
+
+	var cleanups []func()
+	cleanup = func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
+	}
+	fail := func(e error) (*audio.Capture, stt.Provider, string, func(), error) {
+		cleanup()
+		return nil, nil, "", nil, e
+	}
+
+	capture = audio.NewCapture()
+	if err := capture.Start(ctx); err != nil {
+		return fail(fmt.Errorf("start capture: %w", err))
+	}
+	cleanups = append(cleanups, capture.Stop)
+
+	vad, err := audio.NewVAD(cfg)
+	if err != nil {
+		return fail(fmt.Errorf("init VAD: %w", err))
+	}
+	cleanups = append(cleanups, vad.Delete)
+
+	provider, sttCleanup, err := stt.NewProvider(cfg, capture, vad)
+	if err != nil {
+		return fail(fmt.Errorf("init STT: %w", err))
+	}
+	if sttCleanup != nil {
+		cleanups = append(cleanups, sttCleanup)
+	}
+
+	label := cfg.STTProvider
+	if norm, nerr := config.NormalizeSTTWithMode(cfg.STTProvider, cfg.STTMode); nerr == nil {
+		label = fmt.Sprintf("%s (%s)", norm.Provider, norm.Mode)
+	}
+	return capture, provider, label, cleanup, nil
+}
+
+// multiSink fans one event out to every sink.
+type multiSink []listen.Sink
+
+func (m multiSink) OnUtterance(u listen.Utterance) {
+	for _, s := range m {
+		s.OnUtterance(u)
+	}
+}
+func (m multiSink) OnTimeout() {
+	for _, s := range m {
+		s.OnTimeout()
+	}
+}
+func (m multiSink) OnError(err error) {
+	for _, s := range m {
+		s.OnError(err)
+	}
+}
+
+// stopPhraseSink intercepts stop phrases before they reach the log: a match
+// ends the recording (same path as Ctrl+C) and is not written as content.
+type stopPhraseSink struct {
+	inner   listen.Sink
+	phrases map[string]bool
+	stop    func()
+}
+
+func (s *stopPhraseSink) OnUtterance(u listen.Utterance) {
+	if s.phrases[normalizeStopPhrase(u.Text)] {
+		s.stop()
+		return
+	}
+	s.inner.OnUtterance(u)
+}
+func (s *stopPhraseSink) OnTimeout()        { s.inner.OnTimeout() }
+func (s *stopPhraseSink) OnError(err error) { s.inner.OnError(err) }
+
+// consoleSink echoes utterances to stdout and errors to stderr.
+type consoleSink struct {
+	out    io.Writer
+	errOut io.Writer
+}
+
+func (c *consoleSink) OnUtterance(u listen.Utterance) {
+	fmt.Fprintf(c.out, "[%s] %s\n", u.At.Format("15:04:05"), u.Text)
+}
+func (c *consoleSink) OnTimeout() {}
+func (c *consoleSink) OnError(err error) {
+	fmt.Fprintf(c.errOut, "  transcription error: %v (retrying)\n", err)
+}
+
+// jsonSink emits one JSON line per utterance for live scripting.
+type jsonSink struct{ enc *json.Encoder }
+
+func (j *jsonSink) OnUtterance(u listen.Utterance) {
+	_ = j.enc.Encode(struct {
+		TS   string `json:"ts"`
+		Text string `json:"text"`
+	}{TS: u.At.Format(time.RFC3339), Text: u.Text})
+}
+func (j *jsonSink) OnTimeout()      {}
+func (j *jsonSink) OnError(_ error) {}
