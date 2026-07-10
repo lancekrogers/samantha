@@ -62,19 +62,26 @@ func (b *Brain) Available() bool {
 }
 
 // runOptions builds the per-turn claude run options. Tool execution is gated
-// by voice_tools_enabled: disabled runs the CLI in default permission mode —
-// headless print mode never auto-runs tools, the same no-tools shape the
-// batch adapter uses — while enabled keeps bypassPermissions so hands-free
-// tool calls don't stall on permission prompts.
+// by voice_tools_enabled: disabled removes every built-in tool and uses the
+// default permission mode, while enabled keeps the default tool set with
+// bypassPermissions so hands-free tool calls don't stall on permission
+// prompts.
 func (b *Brain) runOptions(format claude.OutputFormat, toolsEnabled bool) *claude.RunOptions {
 	mode := claude.PermissionModeDefault
+	var tools []string
 	if toolsEnabled {
 		mode = claude.PermissionModeBypassPermissions
+	} else {
+		// The Claude CLI reserves an empty --tools value for disabling all
+		// built-ins. A one-element slice makes the SDK emit `--tools ""`;
+		// a nil/empty slice would omit the flag and leave all tools available.
+		tools = []string{""}
 	}
 	return &claude.RunOptions{
 		Format:         format,
 		SystemPrompt:   b.systemPrompt,
 		PermissionMode: mode,
+		Tools:          tools,
 	}
 }
 
