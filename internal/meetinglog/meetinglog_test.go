@@ -17,10 +17,18 @@ func TestWriterLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.OnUtterance(listen.Utterance{Text: "first point", At: time.Date(2026, 7, 10, 9, 30, 12, 0, time.Local)})
-	w.OnTimeout()
-	w.OnError(errors.New("session hiccup"))
-	w.OnUtterance(listen.Utterance{Text: "second point", At: time.Date(2026, 7, 10, 9, 31, 2, 0, time.Local)})
+	if err := w.OnUtterance(listen.Utterance{Text: "first point", At: time.Date(2026, 7, 10, 9, 30, 12, 0, time.Local)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.OnTimeout(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.OnError(errors.New("session hiccup")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.OnUtterance(listen.Utterance{Text: "second point", At: time.Date(2026, 7, 10, 9, 31, 2, 0, time.Local)}); err != nil {
+		t.Fatal(err)
+	}
 
 	sum, err := w.Close()
 	if err != nil {
@@ -63,5 +71,24 @@ func TestCreateRefusesToOverwrite(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	if string(data) != "existing" {
 		t.Fatal("existing file must be untouched")
+	}
+}
+
+func TestWriterReportsFailedUtteranceWithoutCountingIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "failed.log")
+	w, err := Create(path, "Failure test", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Closing the descriptor simulates a filesystem write failure while the
+	// recorder is active.
+	if err := w.f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.OnUtterance(listen.Utterance{Text: "must not be counted", At: time.Now()}); err == nil {
+		t.Fatal("OnUtterance must return the persistence failure")
+	}
+	if w.utterances != 0 {
+		t.Fatalf("utterances = %d, want 0 after failed write", w.utterances)
 	}
 }

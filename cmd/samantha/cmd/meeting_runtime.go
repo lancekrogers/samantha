@@ -5,6 +5,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -39,7 +40,8 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 
-	capture, provider, sttLabel, cleanup, err := buildSTTOnly(ctx, &cfgCopy)
+	progress := meetingAssetProgress(opts.JSON)
+	capture, provider, sttLabel, cleanup, err := buildSTTOnly(ctx, &cfgCopy, progress)
 	if err != nil {
 		return err
 	}
@@ -79,8 +81,9 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 	loopErr := listen.Loop(ctx, capture, provider, sink)
 	summary, closeErr := writer.Close()
 
+	var outputErr error
 	if opts.JSON {
-		_ = json.NewEncoder(out).Encode(summary)
+		outputErr = json.NewEncoder(out).Encode(summary)
 	} else {
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Meeting recording stopped.")
@@ -89,18 +92,24 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 		fmt.Fprintf(out, "  Duration:    %s\n", summary.Duration().Round(time.Second))
 		fmt.Fprintf(out, "  Utterances:  %d\n", summary.Utterances)
 	}
-	if loopErr != nil {
-		return loopErr // partial log is on disk and valid up to the last synced line
+	return errors.Join(loopErr, closeErr, outputErr)
+}
+
+func meetingAssetProgress(jsonOutput bool) func(string, float64) {
+	if jsonOutput {
+		// Machine-readable output must remain JSONL even on a first run that
+		// downloads model assets. modelProgress writes human text to stdout.
+		return nil
 	}
-	return closeErr
+	return modelProgress
 }
 
 // buildSTTOnly constructs asset preflight -> capture -> VAD -> STT provider,
 // with no Brain or TTS — the chain benchmark.go's runSingleSTTBenchmark
 // proves. VAD is required: every shipped STT backend rejects a nil VAD.
 // root.go's buildPipeline should eventually share this helper.
-func buildSTTOnly(ctx context.Context, cfg *config.Config) (capture *audio.Capture, provider stt.Provider, sttLabel string, cleanup func(), err error) {
-	if err := config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedSTT: true, NeedVAD: true}, modelProgress); err != nil {
+func buildSTTOnly(ctx context.Context, cfg *config.Config, progress func(string, float64)) (capture *audio.Capture, provider stt.Provider, sttLabel string, cleanup func(), err error) {
+	if err := config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedSTT: true, NeedVAD: true}, progress); err != nil {
 		return nil, nil, "", nil, err
 	}
 
@@ -145,20 +154,29 @@ func buildSTTOnly(ctx context.Context, cfg *config.Config) (capture *audio.Captu
 // multiSink fans one event out to every sink.
 type multiSink []listen.Sink
 
-func (m multiSink) OnUtterance(u listen.Utterance) {
+func (m multiSink) OnUtterance(u listen.Utterance) error {
 	for _, s := range m {
-		s.OnUtterance(u)
+		if err := s.OnUtterance(u); err != nil {
+			return err
+		}
 	}
+	return nil
 }
-func (m multiSink) OnTimeout() {
+func (m multiSink) OnTimeout() error {
 	for _, s := range m {
-		s.OnTimeout()
+		if err := s.OnTimeout(); err != nil {
+			return err
+		}
 	}
+	return nil
 }
-func (m multiSink) OnError(err error) {
+func (m multiSink) OnError(err error) error {
 	for _, s := range m {
-		s.OnError(err)
+		if sinkErr := s.OnError(err); sinkErr != nil {
+			return sinkErr
+		}
 	}
+	return nil
 }
 
 // stopPhraseSink intercepts stop phrases before they reach the log: a match
@@ -169,15 +187,15 @@ type stopPhraseSink struct {
 	stop    func()
 }
 
-func (s *stopPhraseSink) OnUtterance(u listen.Utterance) {
+func (s *stopPhraseSink) OnUtterance(u listen.Utterance) error {
 	if s.phrases[normalizeStopPhrase(u.Text)] {
 		s.stop()
-		return
+		return nil
 	}
-	s.inner.OnUtterance(u)
+	return s.inner.OnUtterance(u)
 }
-func (s *stopPhraseSink) OnTimeout()        { s.inner.OnTimeout() }
-func (s *stopPhraseSink) OnError(err error) { s.inner.OnError(err) }
+func (s *stopPhraseSink) OnTimeout() error        { return s.inner.OnTimeout() }
+func (s *stopPhraseSink) OnError(err error) error { return s.inner.OnError(err) }
 
 // consoleSink echoes utterances to stdout and errors to stderr.
 type consoleSink struct {
@@ -185,22 +203,26 @@ type consoleSink struct {
 	errOut io.Writer
 }
 
-func (c *consoleSink) OnUtterance(u listen.Utterance) {
-	fmt.Fprintf(c.out, "[%s] %s\n", u.At.Format("15:04:05"), u.Text)
+func (c *consoleSink) OnUtterance(u listen.Utterance) error {
+	_, err := fmt.Fprintf(c.out, "[%s] %s\n", u.At.Format("15:04:05"), u.Text)
+	return err
 }
-func (c *consoleSink) OnTimeout() {}
-func (c *consoleSink) OnError(err error) {
-	fmt.Fprintf(c.errOut, "  transcription error: %v (retrying)\n", err)
+func (c *consoleSink) OnTimeout() error { return nil }
+func (c *consoleSink) OnError(err error) error {
+	_, writeErr := fmt.Fprintf(c.errOut, "  transcription error: %v (retrying)\n", err)
+	return writeErr
 }
 
 // jsonSink emits one JSON line per utterance for live scripting.
 type jsonSink struct{ enc *json.Encoder }
 
-func (j *jsonSink) OnUtterance(u listen.Utterance) {
-	_ = j.enc.Encode(struct {
+func (j *jsonSink) OnUtterance(u listen.Utterance) error {
+	return j.enc.Encode(struct {
 		TS   string `json:"ts"`
 		Text string `json:"text"`
 	}{TS: u.At.Format(time.RFC3339), Text: u.Text})
 }
-func (j *jsonSink) OnTimeout()      {}
-func (j *jsonSink) OnError(_ error) {}
+func (j *jsonSink) OnTimeout() error { return nil }
+func (j *jsonSink) OnError(_ error) error {
+	return nil
+}

@@ -58,18 +58,24 @@ func Create(path, description, sttLabel string) (*Writer, error) {
 func (w *Writer) Path() string { return w.path }
 
 // OnUtterance implements listen.Sink.
-func (w *Writer) OnUtterance(u listen.Utterance) {
+func (w *Writer) OnUtterance(u listen.Utterance) error {
+	if err := w.writeSync(fmt.Sprintf("[%s] %s\n", u.At.Format("15:04:05"), u.Text)); err != nil {
+		return err
+	}
 	w.utterances++
-	_ = w.writeSync(fmt.Sprintf("[%s] %s\n", u.At.Format("15:04:05"), u.Text))
+	return nil
 }
 
 // OnTimeout implements listen.Sink. Silence writes nothing.
-func (w *Writer) OnTimeout() {}
+func (w *Writer) OnTimeout() error { return nil }
 
 // OnError implements listen.Sink: errors are part of the record.
-func (w *Writer) OnError(err error) {
+func (w *Writer) OnError(err error) error {
+	if writeErr := w.writeSync(fmt.Sprintf("[%s] [transcription error: %v]\n", time.Now().Format("15:04:05"), err)); writeErr != nil {
+		return writeErr
+	}
 	w.errors++
-	_ = w.writeSync(fmt.Sprintf("[%s] [transcription error: %v]\n", time.Now().Format("15:04:05"), err))
+	return nil
 }
 
 // Close writes the trailer and closes the file, returning the summary. If the

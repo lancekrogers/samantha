@@ -1,11 +1,14 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/huh"
+
+	"github.com/lancekrogers/samantha/internal/listen"
 )
 
 func TestResolveMeetingDescription(t *testing.T) {
@@ -85,3 +88,25 @@ func TestStopPhraseSetMatchesExactNormalizedOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestMeetingAssetProgressKeepsJSONOutputClean(t *testing.T) {
+	if got := meetingAssetProgress(true); got != nil {
+		t.Fatal("JSON mode must suppress human model-download progress")
+	}
+	if got := meetingAssetProgress(false); got == nil {
+		t.Fatal("plain mode should retain model-download progress")
+	}
+}
+
+func TestJSONSinkReturnsEncoderFailure(t *testing.T) {
+	want := errors.New("output closed")
+	sink := &jsonSink{enc: json.NewEncoder(errorWriter{err: want})}
+	err := sink.OnUtterance(listen.Utterance{Text: "hello", At: time.Now()})
+	if !errors.Is(err, want) {
+		t.Fatalf("OnUtterance error = %v, want %v", err, want)
+	}
+}
+
+type errorWriter struct{ err error }
+
+func (w errorWriter) Write([]byte) (int, error) { return 0, w.err }

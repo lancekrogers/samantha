@@ -3,6 +3,7 @@ package listen
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -57,18 +58,29 @@ type recordingSink struct {
 	utterances []Utterance
 	timeouts   int
 	errors     []error
+	writeErr   error
 }
 
-func (s *recordingSink) OnUtterance(u Utterance) {
+func (s *recordingSink) OnUtterance(u Utterance) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writeErr != nil {
+		return s.writeErr
+	}
 	s.utterances = append(s.utterances, u)
-	s.mu.Unlock()
+	return nil
 }
-func (s *recordingSink) OnTimeout() { s.mu.Lock(); s.timeouts++; s.mu.Unlock() }
-func (s *recordingSink) OnError(err error) {
+func (s *recordingSink) OnTimeout() error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.timeouts++
+	return s.writeErr
+}
+func (s *recordingSink) OnError(err error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.errors = append(s.errors, err)
-	s.mu.Unlock()
+	return s.writeErr
 }
 
 func TestLoopDispatchesUtterancesAcrossSessions(t *testing.T) {
@@ -153,5 +165,34 @@ func TestLoopSessionFailureEventsCountTowardThreshold(t *testing.T) {
 	sink := &recordingSink{}
 	if err := Loop(ctx, p, p, sink); err == nil {
 		t.Fatal("three in-session failures must trip the threshold")
+	}
+}
+
+func TestLoopReturnsSinkFailure(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p := &fakeProvider{
+		sessions: []*fakeSession{{events: []stt.Event{stt.FinalTranscript{Text: "cannot persist"}}}},
+		cancel:   cancel,
+	}
+	sink := &recordingSink{writeErr: errors.New("disk full")}
+	err := Loop(ctx, p, p, sink)
+	if err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("Loop error = %v, want sink failure", err)
+	}
+}
+
+func TestDrainSessionTreatsContextCancellationAsCleanStop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	session := &fakeSession{events: []stt.Event{stt.Failure{Err: context.Canceled}}}
+	sink := &recordingSink{}
+	failures := 0
+	failed, err := drainSession(ctx, session, sink, &failures)
+	if err != nil || failed {
+		t.Fatalf("drainSession = (%v, %v), want clean stop", failed, err)
+	}
+	if failures != 0 || len(sink.errors) != 0 {
+		t.Fatalf("cancellation recorded as failure: failures=%d errors=%v", failures, sink.errors)
 	}
 }
