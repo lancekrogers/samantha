@@ -53,11 +53,11 @@ func (g *GrokBrain) Available() bool {
 // ThinkStream sends input to Grok and returns a channel of streaming text chunks.
 // Only spoken "text" events are forwarded; "thought" (reasoning) events are
 // dropped so Samantha never voices her chain of thought.
-func (g *GrokBrain) ThinkStream(ctx context.Context, input string, _ StreamOptions) (*Stream, error) {
+func (g *GrokBrain) ThinkStream(ctx context.Context, input string, streamOpts StreamOptions) (*Stream, error) {
 	g.history = append(g.history, Turn{Role: "user", Content: input})
 	prompt := g.buildPrompt()
 
-	events, errs := g.client.StreamPrompt(ctx, prompt, g.runOptions(grok.StreamingJSONOutput))
+	events, errs := g.client.StreamPrompt(ctx, prompt, g.runOptions(grok.StreamingJSONOutput, streamOpts.ToolsEnabled))
 
 	out := make(chan string, 8)
 	done := make(chan StreamResult, 1)
@@ -112,7 +112,7 @@ func (g *GrokBrain) ThinkFull(ctx context.Context, input string) (string, error)
 	g.history = append(g.history, Turn{Role: "user", Content: input})
 	prompt := g.buildPrompt()
 
-	result, err := g.client.RunPromptCtx(ctx, prompt, g.runOptions(grok.PlainOutput))
+	result, err := g.client.RunPromptCtx(ctx, prompt, g.runOptions(grok.PlainOutput, g.cfg.VoiceToolsEnabled))
 	if err != nil {
 		return "", fmt.Errorf("grok error: %w", err)
 	}
@@ -130,14 +130,21 @@ func (g *GrokBrain) ThinkFull(ctx context.Context, input string) (string, error)
 }
 
 // runOptions builds the grok run options shared by the streaming and blocking
-// paths. bypassPermissions mirrors the Claude provider so Samantha can use tools
-// without repeated prompts; the grok SDK gates that mode behind AllowDangerousMode.
-func (g *GrokBrain) runOptions(format grok.OutputFormat) *grok.RunOptions {
+// paths. Tool execution is gated by voice_tools_enabled: disabled removes all
+// built-in tools; enabled uses bypassPermissions — which the grok SDK gates
+// behind AllowDangerousMode — so hands-free tool calls don't stall on prompts.
+func (g *GrokBrain) runOptions(format grok.OutputFormat, toolsEnabled bool) *grok.RunOptions {
 	opts := &grok.RunOptions{
 		Format:               format,
 		SystemPromptOverride: g.systemPrompt,
-		PermissionMode:       grok.PermissionBypassPermissions,
-		AllowDangerousMode:   true,
+	}
+	if toolsEnabled {
+		opts.PermissionMode = grok.PermissionBypassPermissions
+		opts.AllowDangerousMode = true
+	} else {
+		// The Grok CLI also uses an empty --tools value to disable every
+		// built-in. Keep one empty element so the SDK emits the flag.
+		opts.AllowedTools = []string{""}
 	}
 	if g.cfg.GrokModel != "" {
 		opts.Model = g.cfg.GrokModel
