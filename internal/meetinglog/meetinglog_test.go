@@ -1,6 +1,7 @@
 package meetinglog
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -57,6 +58,30 @@ func TestWriterLifecycle(t *testing.T) {
 	}
 	if strings.Contains(content, "timeout") {
 		t.Fatal("timeouts must not be written to the log")
+	}
+}
+
+func TestSummaryJSONIncludesDurationSeconds(t *testing.T) {
+	w, err := Create(filepath.Join(t.TempDir(), "standup.log"), "Standup", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.started = time.Now().Add(-92 * time.Second)
+	summary, err := w.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["duration_seconds"] != float64(92) {
+		t.Fatalf("duration_seconds = %v, want 92", got["duration_seconds"])
 	}
 }
 

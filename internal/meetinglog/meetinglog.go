@@ -14,12 +14,13 @@ import (
 // Summary describes a finished recording, for the file trailer and the
 // command's console/JSON summaries.
 type Summary struct {
-	Description string    `json:"description"`
-	File        string    `json:"file"`
-	StartedAt   time.Time `json:"started_at"`
-	EndedAt     time.Time `json:"ended_at"`
-	Utterances  int       `json:"utterances"`
-	Errors      int       `json:"errors"`
+	Description     string    `json:"description"`
+	File            string    `json:"file"`
+	StartedAt       time.Time `json:"started_at"`
+	EndedAt         time.Time `json:"ended_at"`
+	DurationSeconds int64     `json:"duration_seconds"`
+	Utterances      int       `json:"utterances"`
+	Errors          int       `json:"errors"`
 }
 
 // Duration reports the recording length.
@@ -90,6 +91,7 @@ func (w *Writer) Close() (Summary, error) {
 		Utterances:  w.utterances,
 		Errors:      w.errors,
 	}
+	s.DurationSeconds = int64(s.Duration().Round(time.Second) / time.Second)
 	trailer := fmt.Sprintf("\n# Ended: %s (duration %s, %d utterances, %d errors)\n",
 		s.EndedAt.Format(time.RFC3339), s.Duration().Round(time.Second), s.Utterances, s.Errors)
 	werr := w.writeSync(trailer)
