@@ -301,6 +301,11 @@ func SessionsDir() string {
 	return filepath.Join(configDir, "sessions")
 }
 
+// MeetingsDir returns the meeting transcripts directory.
+func MeetingsDir() string {
+	return filepath.Join(configDir, "meetings")
+}
+
 // ConfigDir returns the config directory path.
 func ConfigDir() string {
 	return configDir

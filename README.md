@@ -166,6 +166,26 @@ samantha render book.pdf --out-dir out/book
 samantha audiobook create book.pdf --out-dir out/book
 ```
 
+### Meeting recording
+
+`samantha meeting record` listens continuously (STT only — no Brain, no TTS)
+and appends every utterance to a timestamped log file, synced per line so a
+crash never loses what was already heard. Interactive runs prompt once for a
+description; `--description`, `--no-tui`, or a non-TTY stdin/stdout skip the
+prompt so cron jobs and hotkey launchers can never hang on it. Stop with
+Ctrl+C or by saying "stop recording" / "end meeting" / "stop listening"
+(exact phrase; `--stop-phrase` adds more).
+
+```bash
+samantha meeting record
+samantha meeting record --description "Weekly planning sync"
+samantha meeting record --description "Standup" --out-dir ~/notes/meetings --json
+```
+
+Logs default to `~/.obey/agents/voice/samantha/meetings/<slug>-<timestamp>.log`.
+`--json` additionally emits one JSON line per utterance plus a final summary
+object on stdout for live scripting; the plain-text file is always written.
+
 ## Configuration
 
 Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be overridden with environment variables where listed.
