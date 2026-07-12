@@ -15,42 +15,54 @@ import (
 )
 
 const (
-	maxVoiceFailures  = 3
-	voiceRetryBackoff = 500 * time.Millisecond
+	maxVoiceFailures = 3
+	// RetryBackoff is the pause between voice-turn retries after a transient
+	// failure.
+	RetryBackoff = 500 * time.Millisecond
 )
 
-type voiceFailureAction int
+// VoiceFailureAction is the policy decision after a failed voice turn.
+type VoiceFailureAction int
 
 const (
-	voiceRetry voiceFailureAction = iota
-	voiceFallback
-	voiceShutdown
+	VoiceRetry VoiceFailureAction = iota
+	VoiceFallback
+	VoiceShutdown
 )
 
-func classifyVoiceFailure(err, ctxErr error, consecutiveFailures int) voiceFailureAction {
+// ClassifyVoiceFailure decides whether a failed voice turn should retry,
+// fall back to text input, or shut the loop down.
+func ClassifyVoiceFailure(err, ctxErr error, consecutiveFailures int) VoiceFailureAction {
 	if errors.Is(err, context.Canceled) || ctxErr != nil {
-		return voiceShutdown
+		return VoiceShutdown
 	}
 	if consecutiveFailures >= maxVoiceFailures {
-		return voiceFallback
+		return VoiceFallback
 	}
-	return voiceRetry
+	return VoiceRetry
 }
 
-func isResumeVoiceCommand(cmd string) bool {
+// IsResumeVoiceCommand matches the command that re-enables voice turns after
+// a fallback to text.
+func IsResumeVoiceCommand(cmd string) bool {
 	return cmd == "/voice" || cmd == "/v"
 }
 
-// normalizeCommand prepares a transcript for command matching: Whisper output
+// IsExitCommand matches a normalized transcript against the exit phrases.
+func IsExitCommand(cmd string) bool {
+	return exitPhrases[cmd]
+}
+
+// NormalizeCommand prepares a transcript for command matching: Whisper output
 // carries casing and trailing punctuation ("Goodbye.") that exact matches miss.
-func normalizeCommand(s string) string {
+func NormalizeCommand(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	return strings.TrimSpace(strings.TrimRight(s, ".,!?"))
 }
 
-// isClearCommand matches exactly — substring matching wiped history on
+// IsClearCommand matches exactly — substring matching wiped history on
 // sentences that merely mentioned "reset".
-func isClearCommand(cmd string) bool {
+func IsClearCommand(cmd string) bool {
 	return cmd == "/clear" || cmd == "/c" || slices.Contains(clearPhrases, cmd)
 }
 
@@ -102,22 +114,22 @@ func Run(ctx context.Context, p *pipeline.Pipeline, in io.Reader, textMode, noVo
 		} else {
 			turnText, err := p.RunTurn(ctx)
 			if err != nil {
-				switch classifyVoiceFailure(err, ctx.Err(), voiceFailures+1) {
-				case voiceShutdown:
+				switch ClassifyVoiceFailure(err, ctx.Err(), voiceFailures+1) {
+				case VoiceShutdown:
 					return nil
-				case voiceFallback:
+				case VoiceFallback:
 					p.Events.Emit(events.Error{Message: err.Error()})
 					p.Events.Emit(events.Info{Message: "Voice input keeps failing — switching to text. Type /voice to switch back."})
 					textMode = true
 					voiceFailures = 0
 					continue
-				case voiceRetry:
+				case VoiceRetry:
 					voiceFailures++
 					p.Events.Emit(events.Error{Message: err.Error()})
 					select {
 					case <-ctx.Done():
 						return nil
-					case <-time.After(voiceRetryBackoff):
+					case <-time.After(RetryBackoff):
 					}
 					continue
 				}
@@ -129,7 +141,7 @@ func Run(ctx context.Context, p *pipeline.Pipeline, in io.Reader, textMode, noVo
 			text = turnText
 		}
 
-		cmd := normalizeCommand(text)
+		cmd := NormalizeCommand(text)
 
 		// Exit check
 		if exitPhrases[cmd] {
@@ -137,7 +149,7 @@ func Run(ctx context.Context, p *pipeline.Pipeline, in io.Reader, textMode, noVo
 		}
 
 		// Resume voice after a fallback.
-		if textMode && voiceAvailable && isResumeVoiceCommand(cmd) {
+		if textMode && voiceAvailable && IsResumeVoiceCommand(cmd) {
 			textMode = false
 			voiceFailures = 0
 			p.Events.Emit(events.Info{Message: "Switching back to voice mode."})
@@ -145,7 +157,7 @@ func Run(ctx context.Context, p *pipeline.Pipeline, in io.Reader, textMode, noVo
 		}
 
 		// Clear check
-		if isClearCommand(cmd) {
+		if IsClearCommand(cmd) {
 			p.Brain.ClearHistory()
 			p.Events.Emit(events.ConversationCleared{})
 			continue

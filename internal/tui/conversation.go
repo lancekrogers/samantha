@@ -34,6 +34,14 @@ type conversationModel struct {
 
 	bridge      *eventBridge
 	lastMetrics events.TurnMetrics
+
+	deps          conversationDeps
+	turnState     turnState
+	turnCancel    func()
+	pendingText   string
+	voiceEnabled  bool
+	voiceFailures int
+	quitting      bool
 }
 
 func newConversation(agentName string) conversationModel {
@@ -61,11 +69,22 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 		m.handleEvent(msg.event)
 		return m, m.rearm()
 
+	case voiceTurnDoneMsg:
+		return m, m.handleVoiceTurnDone(msg)
+
+	case textTurnDoneMsg:
+		return m, m.handleTextTurnDone(msg)
+
+	case voiceRetryMsg:
+		return m, m.handleVoiceRetry()
+
 	case tea.KeyMsg:
 		// PgUp/PgDn (and home/end) scroll the transcript; every other key —
 		// including ↑/↓ for cursor movement — belongs to the input line, so
 		// typing never needs a mode switch.
 		switch msg.String() {
+		case "enter":
+			return m, m.handleSubmit()
 		case "pgup", "pgdown":
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
@@ -143,6 +162,12 @@ func (m conversationModel) rearm() tea.Cmd {
 // handleEvent maps one bus event onto viewport/status state. The mapping
 // mirrors internal/ui's stdout renderer, minus the per-stage timing noise.
 func (m *conversationModel) handleEvent(e events.Event) {
+	// A final transcript means the brain now owns this turn: a text submit
+	// past this point would kill a response in flight, so Enter waits.
+	if _, ok := e.(events.UserInput); ok && m.turnState == turnVoiceListening {
+		m.turnState = turnVoiceResponding
+	}
+
 	switch e := e.(type) {
 	case events.STTPhase:
 		switch e.Phase {
