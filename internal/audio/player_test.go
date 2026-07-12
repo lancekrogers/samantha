@@ -9,9 +9,9 @@ import (
 
 // The playback readiness gate (setReadyFrames / maybeReadyLocked / waitReady)
 // is the path every spoken sentence passes through. These tests pin its
-// semantics after a fix→revert churn left it uncovered: the streaming
-// threshold, the zero-clamp, the input-done fallback, and the append/writeTo
-// locking exercised under -race.
+// semantics: full-buffer playback for batch-generated audio, an optional
+// streaming threshold, the input-done fallback, and append/writeTo locking
+// exercised under -race.
 
 func segmentReady(s *playbackSegment) bool {
 	select {
@@ -38,16 +38,21 @@ func TestPlaybackSegmentThresholdReadiness(t *testing.T) {
 	}
 }
 
-func TestPlaybackSegmentZeroThresholdClampsToOneFrame(t *testing.T) {
-	// setReadyFrames(0) must mean "ready on the first frame", not "wait for the
-	// whole input": readiness gated on inputDone defers playback start to full
-	// synthesis and stalls streaming TTS.
+func TestPlaybackSegmentZeroThresholdWaitsForCompleteInput(t *testing.T) {
+	// Kokoro generates a complete sentence before publishing PCM. A zero
+	// threshold keeps the device callback away from that buffer until the pump
+	// has copied the whole sentence, preventing mid-sentence underruns.
 	s := newPlaybackSegment()
 	s.setReadyFrames(0)
 
 	s.append([]int16{1})
+	if segmentReady(s) {
+		t.Fatal("segment ready before input completed with a zero threshold")
+	}
+
+	s.finishInput(nil)
 	if !segmentReady(s) {
-		t.Fatal("segment not ready after first frame with a zero threshold (clamp lost)")
+		t.Fatal("segment not ready after input completed with a zero threshold")
 	}
 }
 

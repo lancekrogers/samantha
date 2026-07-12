@@ -7,14 +7,12 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/gen2brain/malgo"
 )
 
 const (
 	playbackChannels         = 1
-	initialPlaybackBuffer    = 120 * time.Millisecond
 	playbackCompactionFrames = 4096
 )
 
@@ -166,7 +164,11 @@ func (p *Player) pumpSegment(ctx context.Context, segment *playbackSegment, stre
 		return
 	}
 
-	segment.setReadyFrames(int(float64(outputRate) * initialPlaybackBuffer.Seconds()))
+	// Kokoro produces the complete sentence before exposing its PCM samples.
+	// Buffer that already-generated sentence before handing it to the real-time
+	// device callback. Starting from a partial buffer lets a brief scheduler
+	// delay drain the segment and insert silence in the middle of speech.
+	segment.setReadyFrames(0)
 
 	for {
 		select {
@@ -339,9 +341,6 @@ func (s *playbackSegment) setReadyFrames(frames int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if frames <= 0 {
-		frames = 1
-	}
 	s.readyFrames = frames
 	s.maybeReadyLocked()
 }
@@ -484,7 +483,7 @@ func (s *playbackSegment) maybeReadyLocked() {
 
 	pending := s.pendingLocked()
 	switch {
-	case pending > 0 && (s.readyFrames == 0 || pending >= s.readyFrames):
+	case pending > 0 && s.readyFrames > 0 && pending >= s.readyFrames:
 		s.readyClosed = true
 		close(s.ready)
 	case s.inputDone:
