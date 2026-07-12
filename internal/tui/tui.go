@@ -39,12 +39,13 @@ func NewApp(cfg *config.Config) App {
 	providers := discovery.DiscoverProviders(cfg)
 
 	return App{
-		screen:    screenLauncher,
-		cfg:       cfg,
-		providers: providers,
-		launcher:  newLauncher(cfg, providers),
-		settings:  newSettings(cfg, providers),
-		audiobook: newAudiobook(cfg),
+		screen:       screenLauncher,
+		cfg:          cfg,
+		providers:    providers,
+		launcher:     newLauncher(cfg, providers),
+		settings:     newSettings(cfg, providers),
+		conversation: newConversation(cfg.AgentName),
+		audiobook:    newAudiobook(cfg),
 	}
 }
 
@@ -68,6 +69,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.settings.closePreview()
 			a.quitting = true
 			return a, tea.Quit
+		}
+
+	case tea.WindowSizeMsg:
+		// The conversation screen needs dimensions even while another screen
+		// is active, or entering it later renders at zero size.
+		if a.screen != screenConversation {
+			a.conversation, _ = a.conversation.Update(msg)
 		}
 
 	case switchScreenMsg:
