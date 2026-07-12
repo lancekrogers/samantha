@@ -23,11 +23,11 @@ type turnRunner interface {
 type turnState int
 
 const (
-	turnIdle           turnState = iota
-	turnVoiceListening           // voice turn in flight, no final transcript yet — cancelable
-	turnVoiceResponding          // voice turn past transcription — a submit must wait
-	turnVoiceCanceling           // canceled for a text submit, awaiting voiceTurnDoneMsg
-	turnTextRunning              // text turn in flight
+	turnIdle            turnState = iota
+	turnVoiceListening            // voice turn in flight, no final transcript yet — cancelable
+	turnVoiceResponding           // voice turn past transcription — a submit must wait
+	turnVoiceCanceling            // canceled for a text submit, awaiting voiceTurnDoneMsg
+	turnTextRunning               // text turn in flight
 )
 
 type voiceTurnDoneMsg struct {

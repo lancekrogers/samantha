@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -228,6 +230,9 @@ func (m *conversationModel) handleEvent(e events.Event) {
 
 	case events.TurnMetrics:
 		m.lastMetrics = e
+		if line := formatTurnMetrics(e); line != "" {
+			m.appendTranscript(dimStyle.Render("    " + line))
+		}
 
 	case events.Error:
 		msg := e.Message
@@ -239,6 +244,27 @@ func (m *conversationModel) handleEvent(e events.Event) {
 	case events.Info:
 		m.appendTranscript(dimStyle.Render("  " + e.Message))
 	}
+}
+
+// formatTurnMetrics compacts a turn's latency milestones into one dim
+// trailing line under the turn (the status bar is overwritten by the next
+// listening state almost immediately, so timings live in the transcript).
+func formatTurnMetrics(e events.TurnMetrics) string {
+	var parts []string
+	if e.ModelCompleteElapsed > 0 {
+		parts = append(parts, "model "+formatSeconds(e.ModelCompleteElapsed))
+	}
+	if e.FirstAudioReadyElapsed > 0 {
+		parts = append(parts, "voice "+formatSeconds(e.FirstAudioReadyElapsed))
+	}
+	if e.PlaybackCompleteElapsed > 0 {
+		parts = append(parts, "spoke "+formatSeconds(e.PlaybackCompleteElapsed))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func formatSeconds(d time.Duration) string {
+	return strconv.FormatFloat(d.Seconds(), 'f', 1, 64) + "s"
 }
 
 // renderUserTurn and renderAgentTurn are the single rendering path for both
@@ -270,8 +296,15 @@ func (m conversationModel) View() string {
 	rule := dimStyle.Render(strings.Repeat("─", max(m.width, 1)))
 	footer := dimStyle.Render("  pgup/pgdn scroll • /clear • /voice • ctrl+c quit")
 
+	// The prompt glyph shows the input source: the mic while a voice turn is
+	// listening, a plain prompt otherwise. Typing never needs a mode switch.
+	input := m.input
+	if m.turnState == turnVoiceListening && m.voiceOn() {
+		input.Prompt = "🎙 > "
+	}
+
 	return header + "\n" + rule + "\n" +
 		m.viewport.View() + "\n" +
-		"  " + m.input.View() + "\n" +
+		"  " + input.View() + "\n" +
 		footer
 }
