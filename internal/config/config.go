@@ -50,6 +50,11 @@ type Config struct {
 	OllamaModel       string `mapstructure:"ollama_model"`
 	OllamaHost        string `mapstructure:"ollama_host"`
 	VoiceToolsEnabled bool   `mapstructure:"voice_tools_enabled"`
+	// RemoteToolsEnabled gates tool calls for turns triggered over the
+	// network (samantha serve). Deliberately separate from
+	// voice_tools_enabled: remote turns default-deny tools regardless of
+	// the local flag.
+	RemoteToolsEnabled bool `mapstructure:"remote_tools_enabled"`
 
 	// Paths
 	ModelsDir string `mapstructure:"models_dir"`
@@ -113,6 +118,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ollama_model", "")
 	v.SetDefault("ollama_host", "http://localhost:11434")
 	v.SetDefault("voice_tools_enabled", false)
+	v.SetDefault("remote_tools_enabled", false)
 
 	v.SetDefault("agent_name", "Samantha")
 	v.SetDefault("persona", "samantha")
