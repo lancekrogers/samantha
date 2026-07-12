@@ -88,32 +88,61 @@ func runConnect(addr string) error {
 
 	go printStream(ctx, ws)
 
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
+	// Read stdin off the main select so the first Ctrl+C (ctx cancel) can
+	// close the WebSocket immediately instead of wedging on Scan.
+	lines := make(chan string)
+	scanErr := make(chan error, 1)
+	go func() {
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			select {
+			case lines <- scanner.Text():
+			case <-ctx.Done():
+				return
+			}
 		}
-
-		msg := map[string]string{"type": "text_input", "text": line}
-		switch line {
-		case "/quit", "/q", "/exit":
-			return nil
-		case "/interrupt", "/i":
-			msg = map[string]string{"type": "interrupt"}
-		case "/clear", "/c":
-			msg = map[string]string{"type": "clear_history"}
+		if err := scanner.Err(); err != nil {
+			scanErr <- err
+			return
 		}
+		close(lines)
+	}()
 
-		data, err := json.Marshal(msg)
-		if err != nil {
+	for {
+		select {
+		case <-ctx.Done():
+			_ = ws.Close(websocket.StatusNormalClosure, "interrupted")
+			return ctx.Err()
+		case err := <-scanErr:
 			return err
-		}
-		if err := ws.Write(ctx, websocket.MessageText, data); err != nil {
-			return fmt.Errorf("connection lost: %w", err)
+		case line, ok := <-lines:
+			if !ok {
+				return nil
+			}
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+
+			msg := map[string]string{"type": "text_input", "text": line}
+			switch line {
+			case "/quit", "/q", "/exit":
+				return nil
+			case "/interrupt", "/i":
+				msg = map[string]string{"type": "interrupt"}
+			case "/clear", "/c":
+				msg = map[string]string{"type": "clear_history"}
+			}
+
+			data, err := json.Marshal(msg)
+			if err != nil {
+				return err
+			}
+			if err := ws.Write(ctx, websocket.MessageText, data); err != nil {
+				return fmt.Errorf("connection lost: %w", err)
+			}
 		}
 	}
-	return scanner.Err()
 }
 
 // printStream renders incoming envelopes until the connection or ctx dies.
@@ -121,6 +150,9 @@ func printStream(ctx context.Context, ws *websocket.Conn) {
 	for {
 		_, data, err := ws.Read(ctx)
 		if err != nil {
+			if ctx.Err() == nil {
+				fmt.Println(dimStyle.Render("  disconnected"))
+			}
 			return
 		}
 		var env map[string]any

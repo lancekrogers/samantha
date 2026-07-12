@@ -60,7 +60,9 @@ func (h *hub) remove(c *streamConn) {
 	delete(h.conns, c)
 }
 
-// broadcast never blocks: a full queue evicts that client.
+// broadcast never blocks: a full queue evicts that client and reclaims the
+// hub slot immediately so maxStreamClients capacity is available for new
+// connections without waiting for handleStream to return.
 func (h *hub) broadcast(msg []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -69,6 +71,7 @@ func (h *hub) broadcast(msg []byte) {
 		case c.out <- msg:
 		default:
 			c.evict()
+			delete(h.conns, c)
 		}
 	}
 }

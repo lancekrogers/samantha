@@ -16,8 +16,9 @@ import (
 // Options configures a Server. All fields except AllowPublic are required.
 type Options struct {
 	// Bind is the host:port to listen on. The host must resolve to a
-	// loopback, private (RFC1918), or link-local address unless AllowPublic
-	// is set — serve refuses broader exposure by default.
+	// loopback, private (RFC1918), link-local, or trusted overlay
+	// (Tailscale/CGNAT 100.64/10) address unless AllowPublic is set —
+	// serve refuses broader exposure by default.
 	Bind        string
 	AllowPublic bool
 
@@ -26,6 +27,9 @@ type Options struct {
 	Dispatcher   *Dispatcher
 	ListSessions func() []SessionSummary
 	Providers    Providers
+	// OnListening is called once the TCP listener is bound, before Accept
+	// loops run. Use it to print banners with the real bound address.
+	OnListening func(addr net.Addr)
 }
 
 // Server is the LAN-facing HTTPS + WebSocket surface around one pipeline.
@@ -95,6 +99,10 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.started = time.Now()
 	s.mu.Unlock()
 
+	if s.opts.OnListening != nil {
+		s.opts.OnListening(ln.Addr())
+	}
+
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.ServeTLS(ln, "", "") }()
 
@@ -123,8 +131,24 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// validateBind refuses to listen beyond loopback/private/link-local unless
-// explicitly overridden.
+// cgnatRange is RFC 6598 carrier-grade NAT (100.64.0.0/10). Tailscale assigns
+// addresses from this range; net.IP.IsPrivate does not cover it.
+var cgnatRange = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+
+// IsTrustedServeIP reports whether ip is safe to bind without --allow-public:
+// loopback, RFC1918 private, link-local, or Tailscale/CGNAT overlay.
+func IsTrustedServeIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+		return true
+	}
+	return cgnatRange.Contains(ip)
+}
+
+// validateBind refuses to listen beyond loopback/private/link-local/tailnet
+// unless explicitly overridden.
 func validateBind(bind string, allowPublic bool) error {
 	host, _, err := net.SplitHostPort(bind)
 	if err != nil {
@@ -140,7 +164,7 @@ func validateBind(bind string, allowPublic bool) error {
 	if ip.IsUnspecified() {
 		return fmt.Errorf("refusing to bind %s: it exposes every interface — bind a private address or pass --allow-public", host)
 	}
-	if !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() {
+	if !IsTrustedServeIP(ip) {
 		return fmt.Errorf("refusing to bind non-private address %s without --allow-public", host)
 	}
 	return nil

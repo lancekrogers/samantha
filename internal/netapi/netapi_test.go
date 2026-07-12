@@ -248,6 +248,8 @@ func TestValidateBind(t *testing.T) {
 		{"127.0.0.1:0", false, false},
 		{"192.168.1.10:7262", false, false},
 		{"10.0.0.5:7262", false, false},
+		{"100.64.1.2:7262", false, false}, // Tailscale / CGNAT
+		{"100.127.0.1:7262", false, false},
 		{"0.0.0.0:7262", false, true},
 		{"[::]:7262", false, true},
 		{"8.8.8.8:7262", false, true},
@@ -295,6 +297,62 @@ func TestHubEvictsSlowClients(t *testing.T) {
 	case <-slow.kick:
 	case <-time.After(time.Second):
 		t.Fatal("slow client not evicted")
+	}
+
+	// Eviction reclaims the hub slot immediately.
+	h.mu.Lock()
+	n := len(h.conns)
+	h.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("hub still holds %d conns after evict, want 0", n)
+	}
+}
+
+// A resume whose waiter canceled before apply must not run the resume callback.
+func TestResumeSkippedAfterWaiterCancel(t *testing.T) {
+	resumed := make(chan string, 1)
+	// Park the first turn so resume sits behind it in the queue.
+	runner := &scriptedRunner{block: true, runs: make(chan struct{}, 1)}
+	d := NewDispatcher(runner, events.NewBus(), nil, func(id string) error {
+		resumed <- id
+		return nil
+	})
+	runCtx, runCancel := context.WithCancel(context.Background())
+	defer runCancel()
+	go d.Run(runCtx)
+
+	if err := d.SubmitText("hold the queue"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runner.runs:
+	case <-time.After(time.Second):
+		t.Fatal("blocking turn never started")
+	}
+
+	waitCtx, waitCancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.ResumeSession(waitCtx, "sess-1") }()
+
+	// Cancel the waiter while resume is still queued behind the blocked turn.
+	time.Sleep(20 * time.Millisecond)
+	waitCancel()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("ResumeSession error = %v, want canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ResumeSession did not return after cancel")
+	}
+
+	// Unblock the turn so the resume op reaches apply; it must be skipped.
+	d.Interrupt()
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case id := <-resumed:
+		t.Fatalf("resume callback ran for %q after waiter canceled", id)
+	default:
 	}
 }
 

@@ -35,6 +35,10 @@ type dispatchOp struct {
 	text string
 	id   string
 	done chan error // non-nil for ops whose caller waits on the result
+	// waitCtx is the caller's context for waitable ops (resume). If it is
+	// already canceled when the op reaches apply, the work is skipped so a
+	// timed-out client cannot still mutate session state later.
+	waitCtx context.Context
 }
 
 // Dispatcher serializes pipeline access: pipeline turn methods assume one
@@ -99,11 +103,19 @@ func (d *Dispatcher) apply(ctx context.Context, op dispatchOp) {
 		d.bus.Emit(events.ConversationCleared{})
 
 	case opResume:
+		if op.waitCtx != nil && op.waitCtx.Err() != nil {
+			if op.done != nil {
+				op.done <- op.waitCtx.Err()
+			}
+			return
+		}
 		err := errors.New("resume is not supported")
 		if d.resume != nil {
 			err = d.resume(op.id)
 		}
-		op.done <- err
+		if op.done != nil {
+			op.done <- err
+		}
 	}
 }
 
@@ -124,10 +136,11 @@ func (d *Dispatcher) ClearHistory() error {
 }
 
 // ResumeSession loads a session behind any in-flight turn and reports the
-// result.
+// result. If ctx is canceled while waiting, apply skips the resume so a
+// timed-out client does not swap session state later.
 func (d *Dispatcher) ResumeSession(ctx context.Context, id string) error {
 	done := make(chan error, 1)
-	if err := d.enqueue(dispatchOp{kind: opResume, id: id, done: done}); err != nil {
+	if err := d.enqueue(dispatchOp{kind: opResume, id: id, done: done, waitCtx: ctx}); err != nil {
 		return err
 	}
 	select {

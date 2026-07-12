@@ -69,16 +69,24 @@ func runServe(cfg *config.Config) error {
 	bus := events.NewBus()
 	ui.New(bus, cfg.AgentName) // local terminal mirrors the event stream
 
+	// Remote turns are gated by remote_tools_enabled only. Brains' ThinkFull
+	// path reads cfg.VoiceToolsEnabled, and RunTurnTextMode never passes
+	// p.VoiceToolsEnabled — so clone config and align the flag before the
+	// pipeline/brains are built. The local voice_tools_enabled setting must
+	// not leak tool power to the network (and the reverse must not claim
+	// tools are on when they are not).
+	serveCfg := *cfg
+	serveCfg.VoiceToolsEnabled = cfg.RemoteToolsEnabled
+
 	// text=true: serve runs no local input loop and the mic never goes hot;
 	// every turn arrives over the wire.
-	p, cleanup, err := buildPipeline(ctx, cfg, bus, true, serveNoVoice)
+	p, cleanup, err := buildPipeline(ctx, &serveCfg, bus, true, serveNoVoice)
 	if err != nil {
 		return fmt.Errorf("init pipeline: %w", err)
 	}
 	defer cleanup()
 
-	// Remote turns are gated by the serve-scoped policy only — the local
-	// voice_tools_enabled flag must not leak tool power to the network.
+	// Keep pipeline streaming options in lockstep with the serve policy.
 	p.VoiceToolsEnabled = cfg.RemoteToolsEnabled
 
 	if w, ok := p.Brain.(brain.Warmer); ok {
@@ -120,20 +128,27 @@ func runServe(cfg *config.Config) error {
 	addr := net.JoinHostPort(bind, strconv.Itoa(servePort))
 
 	server := netapi.New(netapi.Options{
-		Bind:         addr,
-		AllowPublic:  serveAllowPublic,
-		Credentials:  creds,
-		Bus:          bus,
-		Dispatcher:   dispatcher,
+		Bind:        addr,
+		AllowPublic: serveAllowPublic,
+		Credentials: creds,
+		Bus:         bus,
+		Dispatcher:  dispatcher,
 		ListSessions: listSessionSummaries,
 		Providers: netapi.Providers{
 			Brain: cfg.BrainProvider,
 			STT:   "", // no STT in serve mode
 			TTS:   serveTTSName(cfg),
 		},
+		OnListening: func(bound net.Addr) {
+			// Prefer the real bound address (port 0, dual-stack formatting).
+			listenAddr := bound.String()
+			if listenAddr == "" {
+				listenAddr = addr
+			}
+			printServeBanner(listenAddr, creds, cfg)
+		},
 	})
 
-	printServeBanner(addr, creds, cfg)
 	return server.ListenAndServe(ctx)
 }
 
@@ -192,22 +207,35 @@ func listSessionSummaries() []netapi.SessionSummary {
 	return out
 }
 
-// defaultServeBind picks the machine's private LAN address, falling back to
-// loopback when none is found — never a public interface by default.
+// defaultServeBind picks the machine's private LAN or tailnet (CGNAT) address,
+// falling back to loopback when none is found — never a public interface by
+// default.
 func defaultServeBind() string {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return "127.0.0.1"
 	}
+	var tailscale string
 	for _, addr := range addrs {
 		ipNet, ok := addr.(*net.IPNet)
 		if !ok {
 			continue
 		}
 		ip := ipNet.IP.To4()
-		if ip != nil && ip.IsPrivate() {
+		if ip == nil {
+			continue
+		}
+		if ip.IsPrivate() {
 			return ip.String()
 		}
+		// Prefer RFC1918 when present; remember a Tailscale/CGNAT address as
+		// a secondary choice for machines that only have a tailnet IP.
+		if tailscale == "" && netapi.IsTrustedServeIP(ip) && !ip.IsLoopback() {
+			tailscale = ip.String()
+		}
+	}
+	if tailscale != "" {
+		return tailscale
 	}
 	return "127.0.0.1"
 }
