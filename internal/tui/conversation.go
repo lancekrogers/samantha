@@ -7,6 +7,8 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/lancekrogers/samantha/internal/events"
 )
 
 // Rows of chrome around the viewport: header, rule, input line, footer.
@@ -29,6 +31,9 @@ type conversationModel struct {
 	transcript []string
 	status     string
 	statusErr  bool
+
+	bridge      *eventBridge
+	lastMetrics events.TurnMetrics
 }
 
 func newConversation(agentName string) conversationModel {
@@ -51,6 +56,10 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.setSize(msg.Width, msg.Height)
 		return m, nil
+
+	case busEventMsg:
+		m.handleEvent(msg.event)
+		return m, m.rearm()
 
 	case tea.KeyMsg:
 		// PgUp/PgDn (and home/end) scroll the transcript; every other key —
@@ -120,6 +129,75 @@ func (m *conversationModel) refreshContent() {
 	content := strings.Join(m.transcript, "\n")
 	// lipgloss wraps to width so long turns don't overflow the viewport.
 	m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width).Render(content))
+}
+
+// rearm re-issues the bridge drain Cmd; it must follow every consumed
+// busEventMsg or the model stops receiving bus events.
+func (m conversationModel) rearm() tea.Cmd {
+	if m.bridge == nil {
+		return nil
+	}
+	return m.bridge.wait()
+}
+
+// handleEvent maps one bus event onto viewport/status state. The mapping
+// mirrors internal/ui's stdout renderer, minus the per-stage timing noise.
+func (m *conversationModel) handleEvent(e events.Event) {
+	switch e := e.(type) {
+	case events.STTPhase:
+		switch e.Phase {
+		case "listening":
+			m.setStatus("🎙 Listening...", false)
+		case "hearing":
+			m.setStatus("🎙 Hearing you...", false)
+		case "transcribing":
+			m.setStatus("● Transcribing...", false)
+		}
+
+	case events.TranscriptPartial:
+		m.setStatus("🎙 "+e.Text, false)
+
+	case events.UserInput:
+		m.appendTranscript(renderUserTurn(e.Text))
+
+	case events.ThinkingStarted:
+		m.setStatus("● "+m.agentName+" thinking...", false)
+
+	case events.GeneratingVoice:
+		m.setStatus("● Synthesizing voice...", false)
+
+	case events.SpeakingStarted:
+		m.setStatus("● Speaking...", false)
+
+	case events.SpeakingComplete:
+		m.setStatus("", false)
+
+	case events.SpeakingInterrupted:
+		m.setStatus("speech interrupted ("+e.Reason+")", false)
+
+	case events.TurnInterrupted:
+		m.setStatus("turn interrupted ("+e.Reason+")", false)
+
+	case events.ResponseReady:
+		m.appendTranscript(renderAgentTurn(m.agentName, e.Response), "")
+
+	case events.ConversationCleared:
+		m.clearTranscript()
+		m.appendTranscript(dimStyle.Render("  Conversation cleared."))
+
+	case events.TurnMetrics:
+		m.lastMetrics = e
+
+	case events.Error:
+		msg := e.Message
+		if e.Stage != "" {
+			msg = "[" + e.Stage + "] " + e.Message
+		}
+		m.setStatus("Error: "+msg, true)
+
+	case events.Info:
+		m.appendTranscript(dimStyle.Render("  " + e.Message))
+	}
 }
 
 // renderUserTurn and renderAgentTurn are the single rendering path for both
