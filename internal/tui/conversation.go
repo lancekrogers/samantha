@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/events"
 )
 
@@ -148,6 +149,21 @@ func (m *conversationModel) refreshContent() {
 	content := strings.Join(m.transcript, "\n")
 	// lipgloss wraps to width so long turns don't overflow the viewport.
 	m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width).Render(content))
+}
+
+// seedTranscript pre-populates the viewport from persisted session turns.
+// Roles are the normalized on-disk scheme ("user"/"assistant"); anything
+// else (e.g. "tool") is dropped, matching brain.LoadHistory. Rendering goes
+// through the same functions live events use so the two paths cannot drift.
+func (m *conversationModel) seedTranscript(turns []brain.Turn) {
+	for _, t := range turns {
+		switch t.Role {
+		case "user":
+			m.appendTranscript(renderUserTurn(t.Content))
+		case "assistant":
+			m.appendTranscript(renderAgentTurn(m.agentName, t.Content), "")
+		}
+	}
 }
 
 // rearm re-issues the bridge drain Cmd; it must follow every consumed

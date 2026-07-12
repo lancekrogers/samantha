@@ -128,6 +128,59 @@ func TestRuntimeBuildFailureQuitsWithError(t *testing.T) {
 	}
 }
 
+// Resumed sessions land in the conversation screen with the viewport seeded
+// from persisted turns: normalized roles map through the same rendering
+// functions live events use, and non-user/assistant roles are dropped.
+func TestRuntimeSeedPopulatesViewport(t *testing.T) {
+	rt := fakeRuntime()
+	rt.Seed = []brain.Turn{
+		{Role: "user", Content: "what did we decide yesterday"},
+		{Role: "assistant", Content: "you locked D1 through D3"},
+		{Role: "tool", Content: "tool output that must not render"},
+	}
+	app := wiredApp(func(ctx context.Context, progress func(string, float64)) (*ConversationRuntime, error) {
+		return rt, nil
+	})
+	model, _ := app.Update(startPipelineMsg{})
+	app = model.(App)
+	model, _ = app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app = model.(App)
+
+	msg := buildRuntime(app.builder, app.runCtx, app.progress)()
+	model, _ = app.Update(msg)
+	app = model.(App)
+
+	view := app.conversation.View()
+	for _, want := range []string{"what did we decide yesterday", "you locked D1 through D3"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("seeded viewport missing %q", want)
+		}
+	}
+	if strings.Contains(view, "tool output") {
+		t.Error("tool turn rendered; seeding must drop non-user/assistant roles")
+	}
+}
+
+// resume/continue start the program directly in the conversation screen.
+func TestInitStartsConversationWhenResuming(t *testing.T) {
+	app := wiredApp(func(ctx context.Context, progress func(string, float64)) (*ConversationRuntime, error) {
+		return fakeRuntime(), nil
+	})
+	app.startInConversation = true
+
+	cmd := app.Init()
+	if cmd == nil {
+		t.Fatal("Init returned no cmd despite startInConversation")
+	}
+	if _, ok := cmd().(startPipelineMsg); !ok {
+		t.Fatal("Init cmd did not produce startPipelineMsg")
+	}
+
+	if NewApp(&config.Config{}).Init() != nil {
+		t.Fatal("launcher entry must keep a nil Init")
+	}
+}
+
 // Without runtime wiring (unit-test Apps), startPipelineMsg must be inert
 // rather than panicking on a nil builder.
 func TestStartPipelineWithoutBuilderIsInert(t *testing.T) {

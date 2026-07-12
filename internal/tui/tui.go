@@ -42,6 +42,9 @@ type App struct {
 	runtime  *ConversationRuntime
 	fatalErr error
 
+	// startInConversation skips the launcher (resume/continue).
+	startInConversation bool
+
 	quitting bool
 }
 
@@ -61,6 +64,9 @@ func NewApp(cfg *config.Config) App {
 }
 
 func (a App) Init() tea.Cmd {
+	if a.startInConversation {
+		return func() tea.Msg { return startPipelineMsg{} }
+	}
 	return nil
 }
 
@@ -130,6 +136,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.runtime = msg.rt
 		a.conversation.setStatus("", false)
+		a.conversation.seedTranscript(msg.rt.Seed)
 		cmd := a.conversation.startConversation(conversationDeps{
 			runner:       msg.rt.Pipeline,
 			bus:          msg.rt.Bus,
@@ -181,11 +188,22 @@ func (a App) View() string {
 // entering the conversation screen (D2) and torn down here after the program
 // exits.
 func Run(cfg *config.Config, build RuntimeBuilder) error {
+	return run(cfg, build, false)
+}
+
+// RunConversation starts the TUI directly in the conversation screen —
+// resume/continue land in the live conversation, not the launcher.
+func RunConversation(cfg *config.Config, build RuntimeBuilder) error {
+	return run(cfg, build, true)
+}
+
+func run(cfg *config.Config, build RuntimeBuilder, startInConversation bool) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	app := NewApp(cfg)
 	app.builder = build
+	app.startInConversation = startInConversation
 	app.runCtx = ctx
 	app.wg = &sync.WaitGroup{}
 	app.progress = newEventBridge(16)
