@@ -9,6 +9,7 @@ require (
 	github.com/charmbracelet/fang v1.0.0
 	github.com/charmbracelet/huh v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/coder/websocket v1.8.15
 	github.com/gen2brain/malgo v0.11.24
 	github.com/k2-fsa/sherpa-onnx-go v1.12.29
 	github.com/lancekrogers/claude-code-go v1.2.1
