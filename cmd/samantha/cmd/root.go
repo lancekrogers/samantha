@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/charmbracelet/fang"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
 	"github.com/lancekrogers/samantha/internal/app"
@@ -54,20 +55,11 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("load config: %w", err)
 		}
 
-		// Launch TUI unless --text or --no-voice flags skip it.
-		if !skipTUI && !textMode && !noVoice {
-			shouldStart, err := appTUI.Run(cfg)
-			if err != nil {
-				return err
-			}
-			if !shouldStart {
-				return nil // user quit from TUI
-			}
-			// Reload config in case settings changed.
-			cfg, err = config.Load()
-			if err != nil {
-				return fmt.Errorf("reload config: %w", err)
-			}
+		// The TUI serves every interactive invocation — including --text,
+		// which enters with voice off (D3). Non-TTY, --no-tui, and
+		// --no-voice runs keep the plain stdout loop.
+		if !skipTUI && !noVoice && stdinIsTerminal() {
+			return appTUI.Run(cfg, conversationRuntimeBuilder(nil))
 		}
 
 		return startPipeline(cfg, nil)
@@ -87,6 +79,89 @@ func init() {
 // Execute runs the root command.
 func Execute() error {
 	return fang.Execute(context.Background(), rootCmd)
+}
+
+func stdinIsTerminal() bool {
+	fd := os.Stdin.Fd()
+	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
+}
+
+func modelName(cfg *config.Config) string {
+	switch cfg.BrainProvider {
+	case "claude":
+		return "claude"
+	case "grok":
+		if cfg.GrokModel != "" {
+			return cfg.GrokModel
+		}
+		return "grok"
+	default:
+		return cfg.OllamaModel
+	}
+}
+
+// conversationRuntimeBuilder returns the RuntimeBuilder the TUI invokes on
+// entering the conversation screen: assets are ensured with in-screen
+// progress and the mic goes hot here, not in the launcher (D2). A non-nil
+// resume session seeds both the brain history and the viewport.
+func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBuilder {
+	return func(ctx context.Context, progress func(name string, pct float64)) (*appTUI.ConversationRuntime, error) {
+		// Reload config in case settings changed inside the TUI.
+		cfg, err := config.Load()
+		if err != nil {
+			return nil, fmt.Errorf("reload config: %w", err)
+		}
+
+		req := config.AssetRequest{
+			NeedTTS: !noVoice,
+			NeedSTT: !textMode,
+			NeedVAD: !textMode && cfg.VADEnabled,
+		}
+		if err := config.EnsureRuntimeAssets(ctx, cfg, req, progress); err != nil {
+			return nil, fmt.Errorf("ensure runtime assets: %w", err)
+		}
+
+		bus := events.NewBus()
+		p, cleanup, err := buildPipeline(ctx, cfg, bus, textMode, noVoice)
+		if err != nil {
+			return nil, fmt.Errorf("init pipeline: %w", err)
+		}
+
+		// Preload the model while the user reads the empty screen so their
+		// first turn isn't the cold one. Best-effort — failures are ignored.
+		if w, ok := p.Brain.(brain.Warmer); ok {
+			go w.Warmup(ctx)
+		}
+
+		sess := resumeSession
+		if sess == nil {
+			sess = session.New(cfg.BrainProvider, modelName(cfg))
+		} else {
+			p.Brain.LoadHistory(sess.Turns)
+		}
+
+		p.OnTurn = func() {
+			if err := sess.Save(p.Brain.History()); err != nil {
+				bus.Emit(events.Error{Stage: "session", Message: fmt.Sprintf("save session: %v", err)})
+			}
+		}
+
+		rt := &appTUI.ConversationRuntime{
+			Pipeline: p,
+			Bus:      bus,
+			Voice:    p.STT != nil,
+			Cleanup: func() {
+				if err := sess.Save(p.Brain.History()); err != nil {
+					fmt.Fprintf(os.Stderr, "  warning: failed to save session %s: %v\n", sess.ID, err)
+				}
+				cleanup()
+			},
+		}
+		if resumeSession != nil {
+			rt.Seed = resumeSession.Turns
+		}
+		return rt, nil
+	}
 }
 
 func startPipeline(cfg *config.Config, resumeSession *session.Session) error {
@@ -118,21 +193,9 @@ func startPipeline(cfg *config.Config, resumeSession *session.Session) error {
 	}
 
 	// Create or resume session.
-	var model string
-	switch cfg.BrainProvider {
-	case "claude":
-		model = "claude"
-	case "grok":
-		model = cfg.GrokModel
-		if model == "" {
-			model = "grok"
-		}
-	default:
-		model = cfg.OllamaModel
-	}
 	sess := resumeSession
 	if sess == nil {
-		sess = session.New(cfg.BrainProvider, model)
+		sess = session.New(cfg.BrainProvider, modelName(cfg))
 	} else {
 		// Restore conversation history.
 		if sess.Provider != "" && sess.Provider != cfg.BrainProvider {

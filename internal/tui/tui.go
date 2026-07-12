@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"context"
 	"fmt"
+	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -29,9 +31,18 @@ type App struct {
 	conversation conversationModel
 	audiobook    audiobookModel
 
-	// Set after settings are saved to signal pipeline should start.
-	startPipeline bool
-	quitting      bool
+	// Conversation runtime wiring, set by Run before the program starts.
+	builder  RuntimeBuilder
+	runCtx   context.Context
+	wg       *sync.WaitGroup
+	progress *eventBridge
+
+	// Set once the conversation runtime is built; Run tears it down after
+	// the program exits.
+	runtime  *ConversationRuntime
+	fatalErr error
+
+	quitting bool
 }
 
 // NewApp creates the TUI application.
@@ -56,7 +67,8 @@ func (a App) Init() tea.Cmd {
 // switchScreen is a message to change screens.
 type switchScreenMsg screen
 
-// startPipelineMsg signals the TUI should exit and start the voice pipeline.
+// startPipelineMsg enters the conversation screen and builds the pipeline
+// there (D2) — the TUI no longer exits to hand off.
 type startPipelineMsg struct{}
 
 // quitMsg signals the app should exit.
@@ -95,8 +107,38 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case startPipelineMsg:
 		a.settings.closePreview()
-		a.startPipeline = true
-		return a, tea.Quit
+		if a.builder == nil {
+			// No runtime wiring (tests): nothing to build.
+			return a, nil
+		}
+		a.screen = screenConversation
+		a.conversation.setStatus("Preparing...", false)
+		return a, tea.Batch(a.progress.wait(), buildRuntime(a.builder, a.runCtx, a.progress))
+
+	case assetProgressMsg:
+		a.conversation.setStatus(formatAssetProgress(msg), false)
+		return a, a.progress.wait()
+
+	case progressClosedMsg:
+		return a, nil
+
+	case runtimeReadyMsg:
+		if msg.err != nil {
+			a.fatalErr = msg.err
+			a.quitting = true
+			return a, tea.Quit
+		}
+		a.runtime = msg.rt
+		a.conversation.setStatus("", false)
+		cmd := a.conversation.startConversation(conversationDeps{
+			runner:       msg.rt.Pipeline,
+			bus:          msg.rt.Bus,
+			clearHistory: msg.rt.Pipeline.Brain.ClearHistory,
+			voice:        msg.rt.Voice,
+			ctx:          a.runCtx,
+			wg:           a.wg,
+		})
+		return a, cmd
 
 	case quitMsg:
 		a.quitting = true
@@ -134,21 +176,35 @@ func (a App) View() string {
 	}
 }
 
-// ShouldStartPipeline returns true if the TUI exited to start voice mode.
-func (a App) ShouldStartPipeline() bool {
-	return a.startPipeline
-}
+// Run starts the TUI as one continuous program: launcher, settings, and the
+// live conversation all run inside it. The pipeline is built lazily on
+// entering the conversation screen (D2) and torn down here after the program
+// exits.
+func Run(cfg *config.Config, build RuntimeBuilder) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-// Run starts the TUI and returns whether the pipeline should start.
-func Run(cfg *config.Config) (bool, error) {
 	app := NewApp(cfg)
-	p := tea.NewProgram(app, tea.WithAltScreen())
+	app.builder = build
+	app.runCtx = ctx
+	app.wg = &sync.WaitGroup{}
+	app.progress = newEventBridge(16)
 
-	m, err := p.Run()
-	if err != nil {
-		return false, fmt.Errorf("TUI error: %w", err)
+	p := tea.NewProgram(app, tea.WithAltScreen())
+	m, runErr := p.Run()
+
+	// Stop the in-flight turn, drain it, then tear the pipeline down — the
+	// same order app.Run's defer chain guarantees on the non-TTY path.
+	cancel()
+	waitTimeout(app.wg, drainTimeout)
+
+	final, _ := m.(App)
+	if final.runtime != nil && final.runtime.Cleanup != nil {
+		final.runtime.Cleanup()
 	}
 
-	final := m.(App)
-	return final.ShouldStartPipeline(), nil
+	if runErr != nil {
+		return fmt.Errorf("TUI error: %w", runErr)
+	}
+	return final.fatalErr
 }
