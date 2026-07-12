@@ -16,6 +16,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/session"
 	"github.com/lancekrogers/samantha/internal/stt"
 	"github.com/lancekrogers/samantha/internal/tts"
+	appTUI "github.com/lancekrogers/samantha/internal/tui"
 )
 
 var (
@@ -212,7 +213,7 @@ var resumeCmd = &cobra.Command{
 			if err != nil {
 				return fmt.Errorf("load session: %w", err)
 			}
-			return startPipeline(cfg, sess)
+			return startResumed(cfg, sess)
 		}
 
 		// List sessions and let user pick.
@@ -260,8 +261,18 @@ var continueCmd = &cobra.Command{
 			return nil
 		}
 
-		return startPipeline(cfg, sess)
+		return startResumed(cfg, sess)
 	},
+}
+
+// startResumed lands an interactive resume directly in the conversation
+// screen with history seeded. The gate matches root: non-TTY, --no-tui, and
+// --no-voice keep the plain stdout loop (D3).
+func startResumed(cfg *config.Config, sess *session.Session) error {
+	if !skipTUI && !noVoice && stdinIsTerminal() {
+		return appTUI.RunConversation(cfg, conversationRuntimeBuilder(sess))
+	}
+	return startPipeline(cfg, sess)
 }
 
 func fmtAge(t time.Time) string {

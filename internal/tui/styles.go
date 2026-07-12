@@ -8,6 +8,11 @@ var (
 			Foreground(lipgloss.Color("205")).
 			MarginBottom(1)
 
+	// headerStyle is titleStyle without the margin, for single-line headers.
+	headerStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("205"))
+
 	subtitleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240"))
 

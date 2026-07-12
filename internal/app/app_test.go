@@ -22,21 +22,21 @@ func TestClassifyVoiceFailure(t *testing.T) {
 		err                 error
 		ctxErr              error
 		consecutiveFailures int
-		want                voiceFailureAction
+		want                VoiceFailureAction
 	}{
-		{"context canceled error stops", context.Canceled, nil, 1, voiceShutdown},
-		{"wrapped context canceled stops", fmt.Errorf("brain: %w", context.Canceled), nil, 1, voiceShutdown},
-		{"cancelled context wins over transient error", transient, context.Canceled, 1, voiceShutdown},
-		{"first transient failure retries", transient, nil, 1, voiceRetry},
-		{"second transient failure retries", transient, nil, 2, voiceRetry},
-		{"sustained failures fall back", transient, nil, maxVoiceFailures, voiceFallback},
-		{"beyond threshold falls back", transient, nil, maxVoiceFailures + 1, voiceFallback},
+		{"context canceled error stops", context.Canceled, nil, 1, VoiceShutdown},
+		{"wrapped context canceled stops", fmt.Errorf("brain: %w", context.Canceled), nil, 1, VoiceShutdown},
+		{"cancelled context wins over transient error", transient, context.Canceled, 1, VoiceShutdown},
+		{"first transient failure retries", transient, nil, 1, VoiceRetry},
+		{"second transient failure retries", transient, nil, 2, VoiceRetry},
+		{"sustained failures fall back", transient, nil, maxVoiceFailures, VoiceFallback},
+		{"beyond threshold falls back", transient, nil, maxVoiceFailures + 1, VoiceFallback},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := classifyVoiceFailure(tt.err, tt.ctxErr, tt.consecutiveFailures); got != tt.want {
-				t.Fatalf("classifyVoiceFailure(%v, %v, %d) = %d, want %d",
+			if got := ClassifyVoiceFailure(tt.err, tt.ctxErr, tt.consecutiveFailures); got != tt.want {
+				t.Fatalf("ClassifyVoiceFailure(%v, %v, %d) = %d, want %d",
 					tt.err, tt.ctxErr, tt.consecutiveFailures, got, tt.want)
 			}
 		})
@@ -55,8 +55,8 @@ func TestNormalizeCommand(t *testing.T) {
 		{"what's up", "what's up"}, // internal punctuation kept
 		{"", ""},
 	} {
-		if got := normalizeCommand(tt.in); got != tt.want {
-			t.Errorf("normalizeCommand(%q) = %q, want %q", tt.in, got, tt.want)
+		if got := NormalizeCommand(tt.in); got != tt.want {
+			t.Errorf("NormalizeCommand(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
 }
@@ -83,12 +83,12 @@ func TestVoiceCommandMatching(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cmd := normalizeCommand(tt.in)
-			if got := exitPhrases[cmd]; got != tt.exit {
-				t.Errorf("exitPhrases[normalizeCommand(%q)] = %v, want %v", tt.in, got, tt.exit)
+			cmd := NormalizeCommand(tt.in)
+			if got := IsExitCommand(cmd); got != tt.exit {
+				t.Errorf("exitPhrases[NormalizeCommand(%q)] = %v, want %v", tt.in, got, tt.exit)
 			}
-			if got := isClearCommand(cmd); got != tt.clear {
-				t.Errorf("isClearCommand(normalizeCommand(%q)) = %v, want %v", tt.in, got, tt.clear)
+			if got := IsClearCommand(cmd); got != tt.clear {
+				t.Errorf("IsClearCommand(NormalizeCommand(%q)) = %v, want %v", tt.in, got, tt.clear)
 			}
 		})
 	}
@@ -106,8 +106,8 @@ func TestIsResumeVoiceCommand(t *testing.T) {
 		{"hello", false},
 		{"", false},
 	} {
-		if got := isResumeVoiceCommand(tt.cmd); got != tt.want {
-			t.Errorf("isResumeVoiceCommand(%q) = %v, want %v", tt.cmd, got, tt.want)
+		if got := IsResumeVoiceCommand(tt.cmd); got != tt.want {
+			t.Errorf("IsResumeVoiceCommand(%q) = %v, want %v", tt.cmd, got, tt.want)
 		}
 	}
 }
