@@ -33,6 +33,7 @@ func wiredApp(build RuntimeBuilder) App {
 	app.runCtx = context.Background()
 	app.wg = &sync.WaitGroup{}
 	app.progress = newEventBridge(16)
+	app.slot = &runtimeSlot{}
 	return app
 }
 
@@ -77,7 +78,7 @@ func TestRuntimeBuildProgressAndReady(t *testing.T) {
 	model, _ := app.Update(startPipelineMsg{})
 	app = model.(App)
 
-	msg := buildRuntime(app.builder, app.runCtx, app.progress)()
+	msg := buildRuntime(app.builder, app.runCtx, app.progress, app.slot)()
 	ready, ok := msg.(runtimeReadyMsg)
 	if !ok || ready.err != nil {
 		t.Fatalf("buildRuntime returned %#v, want clean runtimeReadyMsg", msg)
@@ -113,7 +114,7 @@ func TestRuntimeBuildFailureQuitsWithError(t *testing.T) {
 	model, _ := app.Update(startPipelineMsg{})
 	app = model.(App)
 
-	msg := buildRuntime(app.builder, app.runCtx, app.progress)()
+	msg := buildRuntime(app.builder, app.runCtx, app.progress, app.slot)()
 	model, cmd := app.Update(msg)
 	app = model.(App)
 
@@ -125,6 +126,34 @@ func TestRuntimeBuildFailureQuitsWithError(t *testing.T) {
 	}
 	if _, ok := cmd().(tea.QuitMsg); !ok {
 		t.Fatal("build failure cmd is not tea.Quit")
+	}
+}
+
+// If the program context is canceled while the builder is still running, the
+// finished runtime must be cleaned up by the slot — not leaked because the
+// ready message never reaches Update.
+func TestRuntimeBuildCancelsCleanupViaSlot(t *testing.T) {
+	cleaned := false
+	rt := fakeRuntime()
+	rt.Cleanup = func() { cleaned = true }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	app := wiredApp(func(context.Context, func(string, float64)) (*ConversationRuntime, error) {
+		return rt, nil
+	})
+	app.runCtx = ctx
+	cancel() // simulate quit-during-build before the Cmd finishes
+
+	msg := buildRuntime(app.builder, app.runCtx, app.progress, app.slot)()
+	ready, ok := msg.(runtimeReadyMsg)
+	if !ok {
+		t.Fatalf("buildRuntime returned %#v", msg)
+	}
+	if ready.err == nil {
+		t.Fatal("expected canceled context error when building after cancel")
+	}
+	if !cleaned {
+		t.Fatal("runtime Cleanup not called when ctx was canceled after build")
 	}
 }
 
@@ -146,7 +175,7 @@ func TestRuntimeSeedPopulatesViewport(t *testing.T) {
 	model, _ = app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app = model.(App)
 
-	msg := buildRuntime(app.builder, app.runCtx, app.progress)()
+	msg := buildRuntime(app.builder, app.runCtx, app.progress, app.slot)()
 	model, _ = app.Update(msg)
 	app = model.(App)
 

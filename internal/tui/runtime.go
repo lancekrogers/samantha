@@ -31,6 +31,34 @@ type ConversationRuntime struct {
 // in-screen.
 type RuntimeBuilder func(ctx context.Context, progress func(name string, pct float64)) (*ConversationRuntime, error)
 
+// runtimeSlot owns the built ConversationRuntime across the race between the
+// builder Cmd finishing and the Bubble Tea program quitting. Without it, a
+// runtimeReadyMsg that never reaches Update would leak mic/player resources.
+type runtimeSlot struct {
+	mu sync.Mutex
+	rt *ConversationRuntime
+}
+
+func (s *runtimeSlot) store(rt *ConversationRuntime) {
+	s.mu.Lock()
+	old := s.rt
+	s.rt = rt
+	s.mu.Unlock()
+	if old != nil && old != rt && old.Cleanup != nil {
+		old.Cleanup()
+	}
+}
+
+func (s *runtimeSlot) cleanup() {
+	s.mu.Lock()
+	rt := s.rt
+	s.rt = nil
+	s.mu.Unlock()
+	if rt != nil && rt.Cleanup != nil {
+		rt.Cleanup()
+	}
+}
+
 // assetProgressMsg carries EnsureRuntimeAssets progress into the update loop.
 type assetProgressMsg struct {
 	name string
@@ -48,12 +76,24 @@ type runtimeReadyMsg struct {
 
 // buildRuntime runs the builder off the update loop, streaming progress
 // through the feed so the conversation screen can render it.
-func buildRuntime(build RuntimeBuilder, ctx context.Context, feed *eventBridge) tea.Cmd {
+func buildRuntime(build RuntimeBuilder, ctx context.Context, feed *eventBridge, slot *runtimeSlot) tea.Cmd {
 	return func() tea.Msg {
 		rt, err := build(ctx, func(name string, pct float64) {
 			feed.send(assetProgressMsg{name: name, pct: pct})
 		})
 		feed.send(progressClosedMsg{})
+		if err != nil {
+			return runtimeReadyMsg{err: err}
+		}
+		if rt != nil && slot != nil {
+			// Claim ownership before returning so run() can always clean up,
+			// even if the ready message is never applied (quit mid-build).
+			slot.store(rt)
+			if ctx.Err() != nil {
+				slot.cleanup()
+				return runtimeReadyMsg{err: ctx.Err()}
+			}
+		}
 		return runtimeReadyMsg{rt: rt, err: err}
 	}
 }

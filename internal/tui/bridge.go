@@ -29,20 +29,17 @@ func newEventBridge(capacity int) *eventBridge {
 	return &eventBridge{ch: make(chan tea.Msg, capacity)}
 }
 
-// attach subscribes the bridge to every event type on the bus — all 18, not
-// internal/ui's 16: the conversation view also needs TurnInterrupted and
-// TurnMetrics.
+// attach subscribes the bridge only to events the conversation view renders.
+// High-volume intermediate events (segments, stream chunks, voice frames)
+// would otherwise fill the drop-oldest queue and risk losing durable
+// transcript events (UserInput, ResponseReady) under pressure.
 func (b *eventBridge) attach(bus *events.Bus) {
 	forward[events.STTPhase](b, bus)
 	forward[events.UserInput](b, bus)
 	forward[events.TranscriptPartial](b, bus)
 	forward[events.ThinkingStarted](b, bus)
-	forward[events.ThinkingComplete](b, bus)
 	forward[events.TurnMetrics](b, bus)
-	forward[events.ResponseStreamingStarted](b, bus)
-	forward[events.SpeechSegmentReady](b, bus)
 	forward[events.GeneratingVoice](b, bus)
-	forward[events.VoiceGenerated](b, bus)
 	forward[events.SpeakingStarted](b, bus)
 	forward[events.SpeakingComplete](b, bus)
 	forward[events.SpeakingInterrupted](b, bus)

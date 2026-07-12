@@ -3,6 +3,7 @@ package tui
 import (
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -16,6 +17,13 @@ import (
 
 // Rows of chrome around the viewport: header, rule, input line, footer.
 const conversationChromeRows = 4
+
+// Prompt strings for the input line. The mic glyph is wider than the plain
+// prompt, so setSize always sizes the field for the longer of the two.
+const (
+	conversationPrompt    = "> "
+	conversationMicPrompt = "🎙 > "
+)
 
 // conversationModel renders the live conversation screen: a scrollable
 // transcript viewport, a persistent status indicator, and an always-focused
@@ -41,10 +49,16 @@ type conversationModel struct {
 	deps          conversationDeps
 	turnState     turnState
 	turnCancel    func()
-	pendingText   string
-	voiceEnabled  bool
-	voiceFailures int
-	quitting      bool
+	// canCancelVoice is true only while STT is still listening (before the
+	// final transcript). Updated synchronously from the bus handler on the
+	// pipeline goroutine so Enter cannot race the async bridge drain of
+	// UserInput into turnVoiceResponding. Pointer so Bubble Tea model copies
+	// share one gate with the bus subscription.
+	canCancelVoice *atomic.Bool
+	pendingText    string
+	voiceEnabled   bool
+	voiceFailures  int
+	quitting       bool
 }
 
 func newConversation(agentName string) conversationModel {
@@ -53,12 +67,13 @@ func newConversation(agentName string) conversationModel {
 	}
 
 	input := textinput.New()
-	input.Prompt = "> "
+	input.Prompt = conversationPrompt
 	input.Focus()
 
 	return conversationModel{
-		agentName: agentName,
-		input:     input,
+		agentName:      agentName,
+		input:          input,
+		canCancelVoice: &atomic.Bool{},
 	}
 }
 
@@ -119,7 +134,10 @@ func (m *conversationModel) setSize(width, height int) {
 		m.viewport.Width = width
 		m.viewport.Height = vpHeight
 	}
-	m.input.Width = max(width-len(m.input.Prompt)-3, 10)
+	// Always reserve room for the mic prompt so the input never overflows
+	// when View swaps the glyph in during listening.
+	promptCells := lipgloss.Width(conversationMicPrompt)
+	m.input.Width = max(width-promptCells-3, 10)
 	m.refreshContent()
 }
 
@@ -222,6 +240,9 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		m.setStatus("turn interrupted ("+e.Reason+")", false)
 
 	case events.ResponseReady:
+		// Text-only / no-TTS turns never emit SpeakingComplete; clear the
+		// thinking status here so it does not stick after a successful reply.
+		m.setStatus("", false)
 		m.appendTranscript(renderAgentTurn(m.agentName, e.Response), "")
 
 	case events.ConversationCleared:
@@ -300,7 +321,7 @@ func (m conversationModel) View() string {
 	// listening, a plain prompt otherwise. Typing never needs a mode switch.
 	input := m.input
 	if m.turnState == turnVoiceListening && m.voiceOn() {
-		input.Prompt = "🎙 > "
+		input.Prompt = conversationMicPrompt
 	}
 
 	return header + "\n" + rule + "\n" +

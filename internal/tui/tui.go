@@ -36,6 +36,9 @@ type App struct {
 	runCtx   context.Context
 	wg       *sync.WaitGroup
 	progress *eventBridge
+	// slot owns the built runtime for shutdown cleanup even when a ready
+	// message is dropped because the user quit mid-build.
+	slot *runtimeSlot
 
 	// Set once the conversation runtime is built; Run tears it down after
 	// the program exits.
@@ -119,7 +122,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.screen = screenConversation
 		a.conversation.setStatus("Preparing...", false)
-		return a, tea.Batch(a.progress.wait(), buildRuntime(a.builder, a.runCtx, a.progress))
+		return a, tea.Batch(a.progress.wait(), buildRuntime(a.builder, a.runCtx, a.progress, a.slot))
 
 	case assetProgressMsg:
 		a.conversation.setStatus(formatAssetProgress(msg), false)
@@ -133,6 +136,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.fatalErr = msg.err
 			a.quitting = true
 			return a, tea.Quit
+		}
+		// Build finished after quit: slot already cleaned (or will be in run).
+		if a.quitting || a.runCtx.Err() != nil {
+			return a, nil
 		}
 		a.runtime = msg.rt
 		a.conversation.setStatus("", false)
@@ -207,6 +214,7 @@ func run(cfg *config.Config, build RuntimeBuilder, startInConversation bool) err
 	app.runCtx = ctx
 	app.wg = &sync.WaitGroup{}
 	app.progress = newEventBridge(16)
+	app.slot = &runtimeSlot{}
 
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	m, runErr := p.Run()
@@ -216,9 +224,14 @@ func run(cfg *config.Config, build RuntimeBuilder, startInConversation bool) err
 	cancel()
 	waitTimeout(app.wg, drainTimeout)
 
+	// Prefer the slot: it still holds a runtime if build finished after quit
+	// and the ready message never reached Update. final.runtime is only set
+	// when Update applied runtimeReadyMsg.
 	final, _ := m.(App)
-	if final.runtime != nil && final.runtime.Cleanup != nil {
-		final.runtime.Cleanup()
+	if final.slot != nil {
+		final.slot.cleanup()
+	} else if app.slot != nil {
+		app.slot.cleanup()
 	}
 
 	if runErr != nil {

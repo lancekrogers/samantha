@@ -140,6 +140,7 @@ func TestConversationEventMapping(t *testing.T) {
 		{"generating", events.GeneratingVoice{}, "● Synthesizing voice...", false},
 		{"speaking", events.SpeakingStarted{}, "● Speaking...", false},
 		{"speaking done", events.SpeakingComplete{}, "", false},
+		{"response ready clears status", events.ResponseReady{Response: "hi"}, "", false},
 		{"interrupted", events.TurnInterrupted{Reason: "barge-in"}, "turn interrupted (barge-in)", false},
 		{"error", events.Error{Stage: "stt", Message: "mic gone"}, "Error: [stt] mic gone", true},
 	}
@@ -177,5 +178,22 @@ func TestConversationMetricsStored(t *testing.T) {
 	m.handleEvent(events.TurnMetrics{Outcome: "completed", ModelCompleteElapsed: 400 * time.Millisecond})
 	if m.lastMetrics.Outcome != "completed" {
 		t.Error("TurnMetrics not retained on the model")
+	}
+}
+
+// Text-only turns never see SpeakingComplete; ResponseReady must clear the
+// thinking status so the bar does not stick.
+func TestResponseReadyClearsThinkingStatus(t *testing.T) {
+	m := sizedConversation(t, 80, 24)
+	m.handleEvent(events.ThinkingStarted{})
+	if m.status == "" {
+		t.Fatal("precondition: thinking status not set")
+	}
+	m.handleEvent(events.ResponseReady{Response: "plain text reply"})
+	if m.status != "" {
+		t.Errorf("status = %q after ResponseReady, want empty", m.status)
+	}
+	if !strings.Contains(m.View(), "plain text reply") {
+		t.Error("agent turn not appended on ResponseReady")
 	}
 }

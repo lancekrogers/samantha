@@ -186,6 +186,40 @@ func TestSubmitWhileRespondingKeepsDraft(t *testing.T) {
 	}
 }
 
+// UserInput can clear the cancel gate on the pipeline goroutine before the
+// bridge delivers the event into Update — turnState may still be listening.
+func TestSubmitAfterTranscriptGateKeepsDraft(t *testing.T) {
+	runner := &fakeTurnRunner{voiceQueue: []voiceScript{{block: true}}}
+	m, bus := startedConversation(t, runner, true)
+
+	if m.turnState != turnVoiceListening {
+		t.Fatalf("turnState = %d, want listening", m.turnState)
+	}
+	if !m.canCancelVoice.Load() {
+		t.Fatal("canCancelVoice should be true while listening")
+	}
+
+	// Synchronous bus emit flips the gate without going through handleEvent.
+	bus.Emit(events.UserInput{Text: "spoken already in brain history"})
+	if m.canCancelVoice.Load() {
+		t.Fatal("canCancelVoice still true after UserInput emit")
+	}
+	if m.turnState != turnVoiceListening {
+		t.Fatalf("turnState = %d, want still listening (bridge not drained)", m.turnState)
+	}
+
+	m, cmd := typeAndEnter(m, "my draft")
+	if cmd != nil {
+		t.Fatal("submit after transcript gate must not cancel/dispatch")
+	}
+	if m.input.Value() != "my draft" {
+		t.Errorf("draft lost: input = %q", m.input.Value())
+	}
+	if m.turnState == turnVoiceCanceling {
+		t.Fatal("voice turn was canceled after transcript gate closed")
+	}
+}
+
 func TestSpokenExitPhraseQuits(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	m, _ := startedConversation(t, runner, true)

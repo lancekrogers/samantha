@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -59,6 +60,20 @@ func (m *conversationModel) startConversation(deps conversationDeps) tea.Cmd {
 	m.bridge = newEventBridge(0)
 	m.bridge.attach(deps.bus)
 
+	// Mark the voice turn non-cancelable the moment the final transcript is
+	// emitted — synchronously on the pipeline goroutine, before the bridge
+	// drains UserInput into Update. Without this, Enter can still cancel
+	// mid-think while turnState is still turnVoiceListening.
+	if m.canCancelVoice == nil {
+		m.canCancelVoice = &atomic.Bool{}
+	}
+	if deps.bus != nil {
+		gate := m.canCancelVoice
+		events.Subscribe(deps.bus, func(events.UserInput) {
+			gate.Store(false)
+		})
+	}
+
 	cmds := []tea.Cmd{m.bridge.wait()}
 	if m.voiceOn() {
 		cmds = append(cmds, m.dispatchVoiceTurn())
@@ -83,6 +98,9 @@ func (m *conversationModel) dispatchVoiceTurn() tea.Cmd {
 	ctx, cancel := context.WithCancel(m.deps.ctx)
 	m.turnCancel = cancel
 	m.turnState = turnVoiceListening
+	if m.canCancelVoice != nil {
+		m.canCancelVoice.Store(true)
+	}
 
 	runner, wg := m.deps.runner, m.deps.wg
 	if wg != nil {
@@ -149,6 +167,12 @@ func (m *conversationModel) handleSubmit() tea.Cmd {
 		m.input.Reset()
 		return m.submitText(text)
 	case turnVoiceListening:
+		// Prefer the synchronous cancel gate over turnState: UserInput can
+		// already have been emitted (brain thinking) while the bridge has
+		// not yet delivered it into handleEvent.
+		if m.canCancelVoice != nil && !m.canCancelVoice.Load() {
+			return nil
+		}
 		m.pendingText = text
 		m.input.Reset()
 		m.turnState = turnVoiceCanceling
@@ -192,6 +216,9 @@ func (m *conversationModel) submitText(text string) tea.Cmd {
 
 func (m *conversationModel) handleVoiceTurnDone(msg voiceTurnDoneMsg) tea.Cmd {
 	m.turnCancel = nil
+	if m.canCancelVoice != nil {
+		m.canCancelVoice.Store(false)
+	}
 	wasCanceling := m.turnState == turnVoiceCanceling
 	m.turnState = turnIdle
 
