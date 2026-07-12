@@ -7,6 +7,10 @@ type Event interface {
 	eventType() string
 }
 
+// EventType returns the event's stable wire name (e.g. "response_ready"),
+// for consumers outside this package that need a type discriminator.
+func EventType(e Event) string { return e.eventType() }
+
 // STTPhase reports a speech-to-text phase transition.
 type STTPhase struct {
 	Phase   string        // "listening", "hearing", "transcribing"
