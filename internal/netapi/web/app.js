@@ -19,6 +19,9 @@
   let audioCtx = null;
   let nextPlayTime = 0;
   let connected = false;
+  let audioSuppressed = true;
+  const sourcesBySegment = new Map();
+  const canceledSegments = new Set();
 
   tokenEl.value = localStorage.getItem(TOKEN_KEY) || "";
 
@@ -55,8 +58,46 @@
     return Promise.resolve();
   }
 
-  function playPCM(base64, sampleRate) {
-    if (!audioCtx || !base64) return;
+  function segmentKey(segmentID) {
+    return segmentID == null ? "unknown" : String(segmentID);
+  }
+
+  function forgetSource(key, src) {
+    const sources = sourcesBySegment.get(key);
+    if (!sources) return;
+    sources.delete(src);
+    if (sources.size === 0) sourcesBySegment.delete(key);
+  }
+
+  function stopSegment(key, markCanceled) {
+    if (markCanceled) canceledSegments.add(key);
+    const sources = sourcesBySegment.get(key);
+    if (!sources) return;
+    for (const src of sources) {
+      src.onended = null;
+      try { src.stop(); } catch (_) {}
+      try { src.disconnect(); } catch (_) {}
+    }
+    sourcesBySegment.delete(key);
+  }
+
+  function stopAudio(suppress) {
+    if (suppress) audioSuppressed = true;
+    for (const key of Array.from(sourcesBySegment.keys())) {
+      stopSegment(key, true);
+    }
+    nextPlayTime = audioCtx ? audioCtx.currentTime : 0;
+  }
+
+  function applyAudioReset() {
+    stopAudio(false);
+    canceledSegments.clear();
+    audioSuppressed = false;
+  }
+
+  function playPCM(base64, sampleRate, segmentID) {
+    const key = segmentKey(segmentID);
+    if (!audioCtx || !base64 || audioSuppressed || canceledSegments.has(key)) return;
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -74,6 +115,13 @@
     const src = audioCtx.createBufferSource();
     src.buffer = buffer;
     src.connect(audioCtx.destination);
+    let sources = sourcesBySegment.get(key);
+    if (!sources) {
+      sources = new Set();
+      sourcesBySegment.set(key, sources);
+    }
+    sources.add(src);
+    src.onended = () => forgetSource(key, src);
     const startAt = Math.max(nextPlayTime, audioCtx.currentTime + 0.02);
     src.start(startAt);
     nextPlayTime = startAt + buffer.duration;
@@ -92,9 +140,12 @@
     }
     localStorage.setItem(TOKEN_KEY, token);
 
+    stopAudio(true);
+    canceledSegments.clear();
     if (ws) {
-      try { ws.close(); } catch (_) {}
+      const previous = ws;
       ws = null;
+      try { previous.close(); } catch (_) {}
     }
 
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -106,27 +157,38 @@
       encodeURIComponent(token);
 
     setStatus("connecting…");
-    ws = new WebSocket(url);
+    const socket = new WebSocket(url);
+    ws = socket;
 
-    ws.onopen = () => {
+    socket.onopen = () => {
+      if (ws !== socket) {
+        socket.close();
+        return;
+      }
       setConnected(true);
       setStatus("connected", true);
       log("connected — audio stream on", "sys");
-      sendJSON({ type: "audio_output", mode: "stream" });
+      audioSuppressed = false;
       nextPlayTime = 0;
+      socket.send(JSON.stringify({ type: "audio_output", mode: "stream" }));
     };
 
-    ws.onclose = () => {
+    socket.onclose = () => {
+      if (ws !== socket) return;
+      ws = null;
+      stopAudio(true);
       setConnected(false);
       setStatus("disconnected");
       log("disconnected", "sys");
     };
 
-    ws.onerror = () => {
+    socket.onerror = () => {
+      if (ws !== socket) return;
       log("websocket error", "err");
     };
 
-    ws.onmessage = (ev) => {
+    socket.onmessage = (ev) => {
+      if (ws !== socket) return;
       let env;
       try {
         env = JSON.parse(ev.data);
@@ -147,14 +209,19 @@
           log("audio: " + (env.mode || "?"), "sys");
           break;
         case "audio_chunk":
-          playPCM(env.data, env.sample_rate);
+          playPCM(env.data, env.sample_rate, env.segment_id);
           break;
         case "audio_end":
-          // gapless scheduler already tracks duration
+          if (env.reason === "interrupted" || env.reason === "error") {
+            stopSegment(segmentKey(env.segment_id), true);
+          }
+          break;
+        case "audio_reset":
+          applyAudioReset();
           break;
         case "turn_interrupted":
           log("interrupted", "sys");
-          nextPlayTime = 0;
+          stopAudio(false);
           break;
         case "conversation_cleared":
           log("conversation cleared", "sys");
@@ -189,12 +256,8 @@
   });
 
   interruptBtn.addEventListener("click", () => {
+    stopAudio(true);
     sendJSON({ type: "interrupt" });
-    nextPlayTime = 0;
-    if (audioCtx) {
-      // hard stop: recreate context is heavy; just reset schedule
-      nextPlayTime = audioCtx.currentTime;
-    }
   });
 
   clearBtn.addEventListener("click", () => {

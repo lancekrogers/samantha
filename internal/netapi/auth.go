@@ -114,9 +114,9 @@ func loadCredentials(dir, externalCert, externalKey string) (*Credentials, error
 	return creds, nil
 }
 
-// VerifyRequest checks the Authorization bearer header, or a token query
-// parameter. Browsers cannot set custom headers on WebSocket handshakes, so
-// the embedded voice page authenticates with ?token=.
+// VerifyRequest checks the Authorization bearer header on every protected
+// route. Browsers cannot set custom headers on WebSocket handshakes, so the
+// stream endpoint alone also accepts ?token=.
 func (c *Credentials) VerifyRequest(r *http.Request) bool {
 	const prefix = "Bearer "
 	header := r.Header.Get("Authorization")
@@ -126,7 +126,10 @@ func (c *Credentials) VerifyRequest(r *http.Request) bool {
 			return true
 		}
 	}
-	// Query token is for browser WS only — still constant-time compare.
+	if r.URL.Path != "/v1/stream" {
+		return false
+	}
+	// Query token is restricted to the browser WebSocket handshake.
 	q := r.URL.Query().Get("token")
 	if q == "" {
 		return false

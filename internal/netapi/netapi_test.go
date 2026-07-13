@@ -70,6 +70,9 @@ func TestVerifyRequest(t *testing.T) {
 	if !creds.VerifyRequest(req("", "/v1/stream?token=secret-token")) {
 		t.Error("valid query token rejected")
 	}
+	if creds.VerifyRequest(req("", "/v1/status?token=secret-token")) {
+		t.Error("query token accepted outside the WebSocket stream endpoint")
+	}
 	for _, bad := range []string{"", "Bearer wrong", "secret-token", "Basic secret-token"} {
 		if creds.VerifyRequest(req(bad, "")) {
 			t.Errorf("accepted invalid Authorization %q", bad)
@@ -130,15 +133,75 @@ func TestVoicePageIsPublic(t *testing.T) {
 		t.Fatalf("GET /v1/status without token = %d, want 401", resp2.StatusCode)
 	}
 
-	// Query-token auth works for API.
+	// Query-token auth is restricted to the browser WebSocket endpoint.
 	req, _ := http.NewRequest(http.MethodGet, "https://"+addr+"/v1/status?token="+creds.Token, nil)
 	resp3, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp3.Body.Close()
-	if resp3.StatusCode != http.StatusOK {
-		t.Fatalf("GET /v1/status?token = %d, want 200", resp3.StatusCode)
+	if resp3.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("GET /v1/status?token = %d, want 401", resp3.StatusCode)
+	}
+}
+
+func TestHubAudioResetDropsCanceledTailUntilNextTurn(t *testing.T) {
+	h := newHub()
+	bus := events.NewBus()
+	detach := h.attachBus(bus)
+	defer detach()
+	c := &streamConn{
+		out:   make(chan []byte, 1),
+		audio: make(chan []byte, audioQueueDepth),
+		kick:  make(chan struct{}),
+	}
+	if !h.add(c) {
+		t.Fatal("failed to add stream connection")
+	}
+	h.setConnAudio(c, true)
+
+	h.broadcastAudio([]byte(`{"type":"audio_chunk","segment_id":1}`))
+	h.resetAudio()
+	h.broadcastAudio([]byte(`{"type":"audio_chunk","segment_id":1}`))
+
+	select {
+	case got := <-c.audio:
+		if string(got) != string(audioResetEnvelope) {
+			t.Fatalf("first envelope after reset = %s, want %s", got, audioResetEnvelope)
+		}
+	default:
+		t.Fatal("audio_reset was not queued")
+	}
+	select {
+	case got := <-c.audio:
+		t.Fatalf("canceled tail crossed reset boundary: %s", got)
+	default:
+	}
+	late := &streamConn{
+		out:   make(chan []byte, 1),
+		audio: make(chan []byte, audioQueueDepth),
+		kick:  make(chan struct{}),
+	}
+	if !h.add(late) {
+		t.Fatal("failed to add late stream connection")
+	}
+	h.setConnAudio(late, true)
+	h.broadcastAudio([]byte(`{"type":"audio_chunk","segment_id":1}`))
+	select {
+	case got := <-late.audio:
+		t.Fatalf("connection added during reset received canceled audio: %s", got)
+	default:
+	}
+
+	bus.Emit(events.ThinkingStarted{})
+	h.broadcastAudio([]byte(`{"type":"audio_chunk","segment_id":2}`))
+	select {
+	case got := <-c.audio:
+		if !strings.Contains(string(got), `"segment_id":2`) {
+			t.Fatalf("next-turn audio = %s, want segment 2", got)
+		}
+	default:
+		t.Fatal("next-turn audio remained blocked")
 	}
 }
 
@@ -603,6 +666,23 @@ func TestServerStreamRejectsWithoutToken(t *testing.T) {
 	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("dial response = %v, want 401", resp)
 	}
+}
+
+func TestServerStreamAcceptsQueryToken(t *testing.T) {
+	_, addr, creds := startTestServer(t, &scriptedRunner{}, events.NewBus())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ws, resp, err := websocket.Dial(ctx, "wss://"+addr+"/v1/stream?token="+creds.Token, &websocket.DialOptions{
+		HTTPClient: insecureClient(),
+	})
+	if err != nil {
+		if resp != nil {
+			t.Fatalf("query-token WebSocket dial failed with status %d: %v", resp.StatusCode, err)
+		}
+		t.Fatalf("query-token WebSocket dial failed: %v", err)
+	}
+	defer ws.Close(websocket.StatusNormalClosure, "")
 }
 
 func TestServerRefusesPublicBind(t *testing.T) {

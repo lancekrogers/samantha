@@ -30,13 +30,17 @@ const maxStreamClients = 8
 
 type streamConn struct {
 	out   chan []byte // event / control envelopes
-	audio chan []byte // TTS audio_chunk / audio_end only
+	audio chan []byte // TTS audio_chunk / audio_end / audio_reset only
 	kick  chan struct{}
 	once  sync.Once
 
 	// audioStream is a per-connection preference set by the audio_output
 	// control message. atomic so the hub hot path never takes a second lock.
 	audioStream atomic.Bool
+	// audioBlocked is set for every stream client when the shared turn is
+	// interrupted. It stays set until the next turn starts, preventing tail
+	// chunks from the canceled turn from crossing the reset boundary.
+	audioBlocked atomic.Bool
 }
 
 func (c *streamConn) evict() {
@@ -51,8 +55,9 @@ func (c *streamConn) wantsAudio() bool {
 // The bus has one detachable SubscribeAll handler for the server's lifetime;
 // connections attach and detach here, never on the bus itself.
 type hub struct {
-	mu    sync.Mutex
-	conns map[*streamConn]struct{}
+	mu           sync.Mutex
+	conns        map[*streamConn]struct{}
+	audioBlocked bool
 
 	// streamers counts connections with audio_output mode "stream" so the
 	// TTS pump can skip encode/marshal when nobody is listening.
@@ -69,6 +74,7 @@ func (h *hub) add(c *streamConn) bool {
 	if len(h.conns) >= maxStreamClients {
 		return false
 	}
+	c.audioBlocked.Store(h.audioBlocked)
 	h.conns[c] = struct{}{}
 	return true
 }
@@ -138,7 +144,7 @@ func (h *hub) broadcastAudio(msg []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for c := range h.conns {
-		if !c.wantsAudio() {
+		if !c.wantsAudio() || c.audioBlocked.Load() {
 			continue
 		}
 		select {
@@ -149,8 +155,51 @@ func (h *hub) broadcastAudio(msg []byte) {
 	}
 }
 
+var audioResetEnvelope = []byte(`{"type":"audio_reset"}`)
+
+// resetAudio establishes an ordered cancellation boundary for every stream
+// client. Holding the hub lock excludes broadcastAudio while queued tail
+// chunks are drained and audio_reset is enqueued. The browser suppresses audio
+// as soon as it sends interrupt, then resumes when it receives this marker.
+func (h *hub) resetAudio() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.audioBlocked = true
+	for c := range h.conns {
+		if !c.wantsAudio() {
+			continue
+		}
+		c.audioBlocked.Store(true)
+		for {
+			select {
+			case <-c.audio:
+				continue
+			default:
+			}
+			break
+		}
+		// The queue was just drained while broadcasts were excluded, so this
+		// send cannot block.
+		c.audio <- audioResetEnvelope
+	}
+}
+
+// resumeAudio opens the next-turn side of the reset boundary. ThinkingStarted
+// is emitted before synthesis, so no new turn audio can race ahead of this.
+func (h *hub) resumeAudio() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.audioBlocked = false
+	for c := range h.conns {
+		c.audioBlocked.Store(false)
+	}
+}
+
 func (h *hub) attachBus(bus *events.Bus) (detach func()) {
 	return bus.SubscribeAll(func(e events.Event) {
+		if _, ok := e.(events.ThinkingStarted); ok {
+			h.resumeAudio()
+		}
 		msg, err := marshalEvent(e)
 		if err != nil {
 			return
@@ -232,6 +281,7 @@ func (s *Server) readControls(ctx context.Context, ws *websocket.Conn, conn *str
 				s.sendError(conn, dispatchErrText(err))
 			}
 		case "interrupt":
+			s.hub.resetAudio()
 			s.dispatcher.Interrupt()
 		case "clear_history":
 			if err := s.dispatcher.ClearHistory(); err != nil {
