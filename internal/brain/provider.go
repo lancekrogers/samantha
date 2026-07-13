@@ -22,7 +22,10 @@ type Stream struct {
 // Provider is the interface for all brain backends (Claude, Ollama, etc.).
 type Provider interface {
 	ThinkStream(ctx context.Context, input string, opts StreamOptions) (*Stream, error)
-	ThinkFull(ctx context.Context, input string) (string, error)
+	// ThinkFull runs a non-streaming turn. opts.ToolsEnabled is the sole
+	// runtime gate for tool calls — callers (pipeline) pass the same flag
+	// used for ThinkStream so text and voice paths cannot diverge.
+	ThinkFull(ctx context.Context, input string, opts StreamOptions) (string, error)
 	ClearHistory()
 	History() []Turn
 	LoadHistory(turns []Turn)

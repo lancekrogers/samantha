@@ -182,7 +182,27 @@ func Load() (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
+	applyOllamaToolsDefault(&cfg, v)
 	return &cfg, nil
+}
+
+// applyOllamaToolsDefault enables local tool calling for Ollama when the user
+// has not explicitly set voice_tools_enabled in the config file or
+// VOICE_TOOLS_ENABLED env. Ollama's tools (list/read/write/run_command) are
+// the only path to file I/O for local models; leaving them off by default
+// made tool-capable models look broken. Remote serve remains default-deny via
+// remote_tools_enabled. An explicit voice_tools_enabled: false still wins.
+func applyOllamaToolsDefault(cfg *Config, v *viper.Viper) {
+	if !strings.EqualFold(strings.TrimSpace(cfg.BrainProvider), "ollama") {
+		return
+	}
+	if os.Getenv("VOICE_TOOLS_ENABLED") != "" {
+		return
+	}
+	if v.InConfig("voice_tools_enabled") {
+		return
+	}
+	cfg.VoiceToolsEnabled = true
 }
 
 // Get returns a config value by key.

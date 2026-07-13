@@ -68,6 +68,25 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 		})
 	}
 
+	// File tools only run when the local tools gate is on (pipeline passes
+	// VoiceToolsEnabled into every brain turn). Ollama users hit this most.
+	if strings.EqualFold(strings.TrimSpace(cfg.BrainProvider), "ollama") {
+		if cfg.VoiceToolsEnabled {
+			diags = append(diags, Diagnostic{
+				Name:     "voice-tools",
+				Severity: SeverityOK,
+				Detail:   "voice_tools_enabled=true (list_files/read_file/write_file/run_command available)",
+			})
+		} else {
+			diags = append(diags, Diagnostic{
+				Name:        "voice-tools",
+				Severity:    SeverityWarn,
+				Detail:      "voice_tools_enabled=false — Ollama will not read or write files",
+				Remediation: "set voice_tools_enabled=true in config, or VOICE_TOOLS_ENABLED=true",
+			})
+		}
+	}
+
 	// whisper.cpp shells out to an external CLI; check it only when selected.
 	if sttErr == nil && norm.Provider == STTProviderWhisperCPP {
 		bin := strings.TrimSpace(cfg.WhisperCPPBinary)

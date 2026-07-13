@@ -165,11 +165,11 @@ func (b *Brain) ThinkStream(ctx context.Context, input string, streamOpts Stream
 }
 
 // ThinkFull sends input and waits for the complete response.
-func (b *Brain) ThinkFull(ctx context.Context, input string) (string, error) {
+func (b *Brain) ThinkFull(ctx context.Context, input string, streamOpts StreamOptions) (string, error) {
 	b.history = append(b.history, Turn{Role: "user", Content: input})
 	prompt := b.buildPrompt()
 
-	opts := b.runOptions(claude.TextOutput, b.cfg.VoiceToolsEnabled)
+	opts := b.runOptions(claude.TextOutput, streamOpts.ToolsEnabled)
 
 	result, err := b.client.RunPromptCtx(ctx, prompt, opts)
 	if err != nil {

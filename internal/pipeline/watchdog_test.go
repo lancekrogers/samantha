@@ -106,10 +106,12 @@ func (b *stallBrain) recordedCtx() context.Context {
 	return b.ctx
 }
 
-func (b *stallBrain) ThinkFull(context.Context, string) (string, error) { return "", nil }
-func (b *stallBrain) ClearHistory()                                     {}
-func (b *stallBrain) History() []brain.Turn                             { return nil }
-func (b *stallBrain) LoadHistory([]brain.Turn)                          {}
+func (b *stallBrain) ThinkFull(context.Context, string, brain.StreamOptions) (string, error) {
+	return "", nil
+}
+func (b *stallBrain) ClearHistory()            {}
+func (b *stallBrain) History() []brain.Turn    { return nil }
+func (b *stallBrain) LoadHistory([]brain.Turn) {}
 
 // stallPlayer accepts segments but never makes them audible. Its playback only
 // finishes when Stop is called, mimicking a wedged playback path.
