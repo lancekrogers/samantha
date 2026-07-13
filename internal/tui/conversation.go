@@ -17,8 +17,9 @@ import (
 	"github.com/lancekrogers/samantha/internal/events"
 )
 
-// Rows of chrome around the viewport: header, rule, input line, footer.
-const conversationChromeRows = 4
+// Rows of chrome around the viewport: header, rule, three-row input box, and
+// footer. The transcript/activity viewport receives every remaining row.
+const conversationChromeRows = 6
 
 // Prompt strings for the input line. The mic glyph is wider than the plain
 // prompt, so setSize always sizes the field for the longer of the two.
@@ -64,7 +65,6 @@ type conversationModel struct {
 	outputMuted     bool
 	outputAvailable bool
 	activityFocused bool
-	activityVisible bool
 	startedAt       time.Time
 	sessionID       string
 	inputDevice     string
@@ -83,11 +83,10 @@ func newConversation(agentName string) conversationModel {
 	input.Focus()
 
 	return conversationModel{
-		agentName:       agentName,
-		input:           input,
-		canCancelVoice:  &atomic.Bool{},
-		activityVisible: true,
-		startedAt:       time.Now(),
+		agentName:      agentName,
+		input:          input,
+		canCancelVoice: &atomic.Bool{},
+		startedAt:      time.Now(),
 	}
 }
 
@@ -158,11 +157,6 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 		if !tea.MouseEvent(msg).IsWheel() {
 			return m, nil
 		}
-		if m.activityPaneVisible() && msg.X >= m.viewport.Width+1 {
-			m.activityFocused = true
-		} else {
-			m.activityFocused = false
-		}
 		return m.updateScroll(msg)
 	}
 
@@ -174,39 +168,22 @@ func (m *conversationModel) setSize(width, height int) {
 	m.height = height
 
 	vpHeight := max(height-conversationChromeRows, 1)
-	activityHeight := vpHeight
-	if m.activityPaneVisible() {
-		activityHeight = max(vpHeight-1, 1) // one row for the pane label
-	}
-	transcriptWidth, activityWidth := m.paneWidths(width)
 	if !m.ready {
-		m.viewport = viewport.New(transcriptWidth, vpHeight)
-		m.activityViewport = viewport.New(activityWidth, activityHeight)
+		m.viewport = viewport.New(max(width, 1), vpHeight)
+		m.activityViewport = viewport.New(max(width, 1), vpHeight)
 		m.ready = true
 	} else {
-		m.viewport.Width = transcriptWidth
+		m.viewport.Width = max(width, 1)
 		m.viewport.Height = vpHeight
-		m.activityViewport.Width = activityWidth
-		m.activityViewport.Height = activityHeight
+		m.activityViewport.Width = max(width, 1)
+		m.activityViewport.Height = vpHeight
 	}
 	// Always reserve room for the mic prompt so the input never overflows
 	// when View swaps the glyph in during listening.
 	promptCells := lipgloss.Width(conversationMicPrompt)
-	m.input.Width = max(width-promptCells-3, 1)
+	m.input.Width = max(width-promptCells-8, 1)
 	m.refreshContent()
 	m.refreshActivity()
-}
-
-func (m conversationModel) activityPaneVisible() bool {
-	return m.activityVisible && m.width >= 100 && m.height >= 12
-}
-
-func (m conversationModel) paneWidths(width int) (int, int) {
-	if !m.activityPaneVisible() {
-		return max(width, 1), max(width, 1)
-	}
-	activityWidth := min(max(width/3, 28), 42)
-	return max(width-activityWidth-1, 1), activityWidth
 }
 
 func (m *conversationModel) activeViewport() *viewport.Model {
@@ -434,11 +411,11 @@ func formatSeconds(d time.Duration) string {
 // renderUserTurn and renderAgentTurn are the single rendering path for both
 // live events and replayed session history, so the two cannot drift apart.
 func renderUserTurn(text string) string {
-	return "  " + userStyle.Render("You:") + " " + text
+	return "  " + userStyle.Render("› You") + "\n  " + text
 }
 
 func renderAgentTurn(name, text string) string {
-	return "  " + samanthaStyle.Render(name+":") + " " + text
+	return "  " + samanthaStyle.Render("● "+name) + "\n  " + text
 }
 
 func (m conversationModel) View() string {
@@ -452,9 +429,9 @@ func (m conversationModel) View() string {
 		style = errorStyle
 	}
 
-	header := "  " + headerStyle.Render(m.agentName)
+	header := "  " + headerStyle.Render(m.agentName) + "  " + m.renderTabs()
 	if m.sessionID != "" {
-		header += "  " + dimStyle.Render(shortSessionID(m.sessionID))
+		header += "  " + dimStyle.Render("session "+shortSessionID(m.sessionID))
 	}
 	if status != "" {
 		header += "  " + style.Render(status)
@@ -473,18 +450,20 @@ func (m conversationModel) View() string {
 			outputState = "audio off"
 		}
 	}
-	footerText := "  " + micState + "  •  " + outputState
+	footerLeft := "  " + micState + "  •  " + outputState
 	activeViewport := m.activeViewport()
 	if activeViewport.TotalLineCount() > activeViewport.VisibleLineCount() {
-		footerText += fmt.Sprintf("  •  %d%%", int(activeViewport.ScrollPercent()*100))
+		footerLeft += fmt.Sprintf("  •  %d%%", int(activeViewport.ScrollPercent()*100))
 	}
+	footerHelp := "^G mic  ^O audio  ^T switch  PgUp/PgDn scroll"
+	footerText := footerLeft
 	switch {
-	case m.width >= 100:
-		footerText += "  •  ctrl+g mic  ctrl+o audio  ctrl+t activity  pgup/pgdn scroll"
+	case m.width >= lipgloss.Width(footerLeft)+lipgloss.Width(footerHelp)+4:
+		footerText += strings.Repeat(" ", m.width-lipgloss.Width(footerLeft)-lipgloss.Width(footerHelp)) + footerHelp
 	case m.width >= 60:
-		footerText += "  •  ^G mic  ^O audio  ^T activity  PgUp/PgDn"
+		footerText += "  •  ^G mic  ^O audio  ^T switch"
 	default:
-		footerText += "  ^G  ^O  ^T  PgUp/PgDn"
+		footerText += "  ^G  ^O  ^T"
 	}
 	footer := dimStyle.Render(ansi.Truncate(footerText, max(m.width, 1), "…"))
 
@@ -496,21 +475,32 @@ func (m conversationModel) View() string {
 	}
 
 	content := m.viewport.View()
-	if m.activityPaneVisible() {
-		activityHeader := dimStyle.Render("activity")
-		if m.activityFocused {
-			activityHeader = selectedStyle.Render("activity")
-		}
-		activity := activityHeader + "\n" + m.activityViewport.View()
-		content = lipgloss.JoinHorizontal(lipgloss.Top, content, dimStyle.Render("│"), activity)
-	} else if m.activityFocused {
+	if m.activityFocused {
 		content = m.activityViewport.View()
 	}
 
+	inputBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		Padding(0, 1).
+		Width(max(m.width-4, 1)).
+		Render(input.View())
+
 	return header + "\n" + rule + "\n" +
 		content + "\n" +
-		"  " + input.View() + "\n" +
+		inputBox + "\n" +
 		footer
+}
+
+func (m conversationModel) renderTabs() string {
+	chat := dimStyle.Render("Chat")
+	activity := dimStyle.Render("Activity")
+	if m.activityFocused {
+		activity = selectedStyle.Copy().Background(lipgloss.Color("236")).Padding(0, 1).Render("Activity")
+	} else {
+		chat = selectedStyle.Copy().Background(lipgloss.Color("236")).Padding(0, 1).Render("Chat")
+	}
+	return chat + "  " + activity
 }
 
 func shortSessionID(id string) string {

@@ -35,7 +35,7 @@ func TestConversationAppendAndView(t *testing.T) {
 	m.appendTranscript(renderAgentTurn("Samantha", "hi!"))
 
 	view := m.View()
-	for _, want := range []string{"hello there", "hi!", "You:", "Samantha:"} {
+	for _, want := range []string{"hello there", "hi!", "› You", "● Samantha"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("View missing %q:\n%s", want, view)
 		}
@@ -154,19 +154,47 @@ func TestConversationActivityFeedAndFocus(t *testing.T) {
 	m.handleEvent(events.ThinkingStarted{})
 	m.handleEvent(events.ThinkingComplete{Elapsed: 1500 * time.Millisecond})
 
-	view := stripANSI(m.View())
-	for _, want := range []string{"activity", "model", "complete", "1.5s"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("activity view missing %q:\n%s", want, view)
-		}
+	chatView := stripANSI(m.View())
+	if strings.Contains(chatView, "model  complete  1.5s") {
+		t.Fatalf("activity detail should not displace the conversation until selected:\n%s", chatView)
 	}
 
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 	if !m.activityFocused {
 		t.Fatal("ctrl+t did not focus activity feed")
 	}
+	view := stripANSI(m.View())
+	for _, want := range []string{"Activity", "model", "complete", "1.5s"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("activity view missing %q:\n%s", want, view)
+		}
+	}
+
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if m.activityFocused {
 		t.Fatal("esc did not return focus to transcript")
+	}
+}
+
+func TestConversationUsesFullWidthAtLargeTerminalSizes(t *testing.T) {
+	m := sizedConversation(t, 160, 30)
+	m.appendTranscript(renderAgentTurn("Samantha", "full-width conversation"))
+	m.appendActivity("model", "complete", 1500*time.Millisecond)
+
+	if got := m.viewport.Width; got != 160 {
+		t.Fatalf("conversation viewport width = %d, want full terminal width 160", got)
+	}
+	if got := m.activityViewport.Width; got != 160 {
+		t.Fatalf("activity viewport width = %d, want full terminal width 160", got)
+	}
+
+	view := stripANSI(m.View())
+	if strings.Contains(view, "model  complete  1.5s") {
+		t.Fatalf("large chat layout contains a persistent activity sidebar:\n%s", view)
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if got := len([]rune(line)); got > 160 {
+			t.Errorf("line %d is %d cells wide, want at most 160: %q", i+1, got, line)
+		}
 	}
 }
