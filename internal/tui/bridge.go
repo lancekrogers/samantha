@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"sync"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/lancekrogers/samantha/internal/events"
@@ -20,6 +22,9 @@ type busEventMsg struct {
 // re-arming Cmd drains it.
 type eventBridge struct {
 	ch chan tea.Msg
+	// mu serializes full-queue eviction rebuilds so concurrent Emit handlers
+	// cannot interleave drain/reinsert and drop durable transcript events.
+	mu sync.Mutex
 }
 
 func newEventBridge(capacity int) *eventBridge {
@@ -59,21 +64,86 @@ func forward[T events.Event](b *eventBridge, bus *events.Bus) {
 	events.Subscribe(bus, func(e T) { b.send(busEventMsg{event: e}) })
 }
 
+// isDurableBridgeMsg reports events the transcript must not lose under pressure.
+func isDurableBridgeMsg(msg tea.Msg) bool {
+	be, ok := msg.(busEventMsg)
+	if !ok {
+		return false
+	}
+	switch be.event.(type) {
+	case events.UserInput, events.ResponseReady, events.ConversationCleared, events.Error:
+		return true
+	default:
+		return false
+	}
+}
+
 // send never blocks: Bus.Emit runs handlers synchronously on the emitting
 // pipeline goroutine, so back-pressure here would stall a turn mid-flight.
-// When the channel is full the oldest message is dropped to make room.
+// When the channel is full, non-durable activity is dropped first so durable
+// transcript events (UserInput / ResponseReady) survive multi-segment floods.
 func (b *eventBridge) send(msg tea.Msg) {
+	select {
+	case b.ch <- msg:
+		return
+	default:
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// Another sender may have freed a slot while we waited for the lock.
+	select {
+	case b.ch <- msg:
+		return
+	default:
+	}
+
+	// Drain, append the new message, drop oldest non-durable first until the
+	// queue fits capacity, then reinsert. Capacity is small (≤256), so the
+	// rebuild is cheap compared to stalling synthesis.
+	q := make([]tea.Msg, 0, cap(b.ch)+1)
 	for {
 		select {
-		case b.ch <- msg:
-			return
+		case m := <-b.ch:
+			q = append(q, m)
 		default:
-		}
-		select {
-		case <-b.ch:
-		default:
+			goto drained
 		}
 	}
+drained:
+	q = append(q, msg)
+	q = fitBridgeQueue(q, cap(b.ch))
+	for _, m := range q {
+		select {
+		case b.ch <- m:
+		default:
+			// Should be impossible after fitBridgeQueue; drop rather than block.
+		}
+	}
+}
+
+// fitBridgeQueue keeps at most capacity messages, dropping oldest non-durable
+// activity first. If only durable events remain, the oldest durable is dropped.
+func fitBridgeQueue(q []tea.Msg, capacity int) []tea.Msg {
+	if capacity <= 0 {
+		return nil
+	}
+	for len(q) > capacity {
+		drop := -1
+		for i, m := range q {
+			if !isDurableBridgeMsg(m) {
+				drop = i
+				break
+			}
+		}
+		if drop < 0 {
+			q = q[1:]
+			continue
+		}
+		q = append(q[:drop], q[drop+1:]...)
+	}
+	return q
 }
 
 // wait blocks on the next bridged message; Update re-issues it after every

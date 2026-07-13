@@ -58,9 +58,17 @@ func countTurnMetrics(bus *events.Bus) *capturedMetrics {
 }
 
 // failPlayer rejects every stream, modeling an unavailable output device.
+// Per Engine contract it still drains the stream so synth producers are not
+// left blocked when playback is refused.
 type failPlayer struct{ err error }
 
 func (p *failPlayer) PlayStream(ctx context.Context, stream *audio.PCMStream) (*audio.Playback, error) {
+	if stream != nil {
+		go func() {
+			for range stream.Frames() {
+			}
+		}()
+	}
 	return nil, p.err
 }
 func (p *failPlayer) Stop()           {}
@@ -235,14 +243,18 @@ func TestTerminalTextModePlaybackErrorCompletesDegraded(t *testing.T) {
 		playbackErr = e
 		sawErr = true
 	})
+	var responses, onTurns atomic.Int32
+	events.Subscribe(bus, func(events.ResponseReady) { responses.Add(1) })
 
 	// Voice is best-effort in text mode: a playback failure surfaces an Error
-	// event but the turn still completes (returns nil) with one metrics event.
+	// event but the turn still completes (returns nil) with one metrics event
+	// and a single OnTurn so session save is not skipped.
 	p := &Pipeline{
 		Brain:  &fakeBrain{chunks: []string{"Reply."}},
 		TTS:    &fakeTTS{delay: time.Millisecond},
 		Player: &failPlayer{err: errors.New("device busy")},
 		Events: bus,
+		OnTurn: func() { onTurns.Add(1) },
 	}
 
 	if err := p.RunTurnTextMode(context.Background(), "hi"); err != nil {
@@ -256,6 +268,41 @@ func TestTerminalTextModePlaybackErrorCompletesDegraded(t *testing.T) {
 	}
 	if got := metrics.Outcome(); got != "completed" {
 		t.Fatalf("TurnMetrics.Outcome = %q, want completed", got)
+	}
+	if got := responses.Load(); got != 1 {
+		t.Fatalf("ResponseReady emitted %d times, want 1", got)
+	}
+	if got := onTurns.Load(); got != 1 {
+		t.Fatalf("OnTurn called %d times, want 1", got)
+	}
+}
+
+func TestTerminalTextModeTTSErrorCompletesWithOnTurn(t *testing.T) {
+	bus := events.NewBus()
+	metrics := countTurnMetrics(bus)
+	var responses, onTurns atomic.Int32
+	events.Subscribe(bus, func(events.ResponseReady) { responses.Add(1) })
+
+	p := &Pipeline{
+		Brain:  &fakeBrain{chunks: []string{"Still useful text."}},
+		TTS:    &errTTS{err: errors.New("model missing")},
+		Player: newFakePlayer(time.Millisecond),
+		Events: bus,
+		OnTurn: func() { onTurns.Add(1) },
+	}
+	defer p.Player.(*fakePlayer).Close()
+
+	if err := p.RunTurnTextMode(context.Background(), "hi"); err != nil {
+		t.Fatalf("RunTurnTextMode() error = %v, want nil (voice degraded)", err)
+	}
+	if got := responses.Load(); got != 1 {
+		t.Fatalf("ResponseReady = %d, want 1", got)
+	}
+	if got := onTurns.Load(); got != 1 {
+		t.Fatalf("OnTurn = %d, want 1", got)
+	}
+	if got := metrics.Load(); got != 1 || metrics.Outcome() != "completed" {
+		t.Fatalf("metrics n=%d outcome=%q", metrics.Load(), metrics.Outcome())
 	}
 }
 

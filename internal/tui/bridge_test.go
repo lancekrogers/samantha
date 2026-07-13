@@ -95,9 +95,8 @@ func TestBridgeDropsOldestUnderPressure(t *testing.T) {
 }
 
 // Durable transcript events must survive a multi-segment activity flood.
-// Segment-level voice events are not bridged; this stress test still floods
-// with high-volume bridged events (partials + generating) and asserts the
-// newest UserInput/ResponseReady remain when capacity is tight.
+// Segment-level voice events are not bridged; high-volume partials/generating
+// must be dropped before UserInput or ResponseReady.
 func TestBridgeDurableEventsSurviveSegmentFlood(t *testing.T) {
 	bus := events.NewBus()
 	bridge := newEventBridge(8)
@@ -121,7 +120,7 @@ func TestBridgeDurableEventsSurviveSegmentFlood(t *testing.T) {
 			switch e := msg.(busEventMsg).event.(type) {
 			case events.UserInput:
 				sawUser = true
-				types = append(types, "UserInput")
+				types = append(types, "UserInput:"+e.Text)
 			case events.ResponseReady:
 				sawResponse = true
 				types = append(types, "ResponseReady:"+e.Response)
@@ -136,16 +135,35 @@ func TestBridgeDurableEventsSurviveSegmentFlood(t *testing.T) {
 		break
 	}
 
+	if !sawUser {
+		t.Fatalf("UserInput dropped under flood; drained=%v", types)
+	}
 	if !sawResponse {
 		t.Fatalf("ResponseReady dropped under flood; drained=%v", types)
 	}
-	// With drop-oldest, the early UserInput may be displaced — the contract
-	// we care about is that the terminal durable event survives. Prefer both
-	// when capacity allows; always require ResponseReady.
-	if len(types) == 0 || types[len(types)-1] != "ResponseReady:final answer" {
+	if types[len(types)-1] != "ResponseReady:final answer" {
 		t.Fatalf("queue tail = %v, want ResponseReady last", types)
 	}
-	_ = sawUser // optional under tight capacity; ResponseReady is mandatory
+}
+
+func TestFitBridgeQueueDropsNonDurableFirst(t *testing.T) {
+	q := []tea.Msg{
+		busEventMsg{event: events.UserInput{Text: "keep-me"}},
+		busEventMsg{event: events.TranscriptPartial{Text: "noise-1"}},
+		busEventMsg{event: events.GeneratingVoice{Sentence: "noise-2"}},
+		busEventMsg{event: events.ResponseReady{Response: "keep-reply"}},
+		busEventMsg{event: events.Info{Message: "noise-3"}},
+	}
+	got := fitBridgeQueue(q, 2)
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if _, ok := got[0].(busEventMsg).event.(events.UserInput); !ok {
+		t.Fatalf("first kept = %T, want UserInput", got[0].(busEventMsg).event)
+	}
+	if _, ok := got[1].(busEventMsg).event.(events.ResponseReady); !ok {
+		t.Fatalf("second kept = %T, want ResponseReady", got[1].(busEventMsg).event)
+	}
 }
 
 // waitForEvent must re-arm after every delivered message: consuming N events
