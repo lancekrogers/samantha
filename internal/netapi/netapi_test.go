@@ -1087,3 +1087,35 @@ func TestAudioQueueDropDoesNotKick(t *testing.T) {
 		t.Fatal("event not delivered after audio drop")
 	}
 }
+
+func TestDecodePCMS16LE(t *testing.T) {
+	// two samples: 0 and 16384 (~0.5)
+	raw := []byte{0x00, 0x00, 0x00, 0x40}
+	b64 := base64.StdEncoding.EncodeToString(raw)
+	samples, err := decodePCMS16LE(b64, 16000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 2 {
+		t.Fatalf("len=%d", len(samples))
+	}
+	if samples[0] != 0 {
+		t.Fatalf("s0=%v", samples[0])
+	}
+	if samples[1] < 0.49 || samples[1] > 0.51 {
+		t.Fatalf("s1=%v", samples[1])
+	}
+	if _, err := decodePCMS16LE(b64, 48000); err == nil {
+		t.Fatal("want sample_rate error")
+	}
+}
+
+func TestSubmitVoiceRequiresVoiceRunner(t *testing.T) {
+	d := NewDispatcher(&scriptedRunner{}, events.NewBus(), nil, nil)
+	if d.VoiceEnabled() {
+		t.Fatal("scriptedRunner is not a VoiceTurnRunner")
+	}
+	if err := d.SubmitVoice(); err == nil {
+		t.Fatal("SubmitVoice must fail without voice runner")
+	}
+}

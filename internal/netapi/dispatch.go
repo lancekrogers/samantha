@@ -9,11 +9,17 @@ import (
 	"github.com/lancekrogers/samantha/internal/events"
 )
 
-// TurnRunner is the slice of pipeline.Pipeline serve drives. Turns are text
-// only in V1 — there is no local input loop; every turn arrives over the
-// wire.
+// TurnRunner is the slice of pipeline.Pipeline serve drives. Text turns
+// always work; voice turns require VoiceTurnRunner (STT + remote ingress).
 type TurnRunner interface {
 	RunTurnTextMode(ctx context.Context, input string) error
+}
+
+// VoiceTurnRunner is optional: when the serve pipeline has STT wired to a
+// remote audio ingress, voice push-to-talk uses RunTurn.
+type VoiceTurnRunner interface {
+	TurnRunner
+	RunTurn(ctx context.Context) (string, error)
 }
 
 // ErrBusy reports a full dispatch queue — the pipeline is saturated and the
@@ -28,6 +34,7 @@ const (
 	opText opKind = iota
 	opClear
 	opResume
+	opVoice
 )
 
 type dispatchOp struct {
@@ -96,6 +103,23 @@ func (d *Dispatcher) apply(ctx context.Context, op dispatchOp) {
 			d.bus.Emit(events.Error{Stage: "turn", Message: err.Error()})
 		}
 
+	case opVoice:
+		voice, ok := d.runner.(VoiceTurnRunner)
+		if !ok {
+			d.bus.Emit(events.Error{Stage: "turn", Message: "remote mic is not enabled on this serve instance"})
+			return
+		}
+		turnCtx, cancel := context.WithCancel(ctx)
+		d.setCancel(cancel)
+		d.active.Store(true)
+		_, err := voice.RunTurn(turnCtx)
+		d.active.Store(false)
+		d.setCancel(nil)
+		cancel()
+		if err != nil && !errors.Is(err, context.Canceled) {
+			d.bus.Emit(events.Error{Stage: "turn", Message: err.Error()})
+		}
+
 	case opClear:
 		if d.clearHistory != nil {
 			d.clearHistory()
@@ -128,6 +152,22 @@ func (d *Dispatcher) setCancel(cancel context.CancelFunc) {
 // SubmitText enqueues one text turn; ErrBusy when the queue is full.
 func (d *Dispatcher) SubmitText(text string) error {
 	return d.enqueue(dispatchOp{kind: opText, text: text})
+}
+
+// SubmitVoice enqueues one remote-mic voice turn (STT → brain → TTS). The
+// remote client must stream audio_input frames and voice_end on the ingress
+// while this turn is active.
+func (d *Dispatcher) SubmitVoice() error {
+	if _, ok := d.runner.(VoiceTurnRunner); !ok {
+		return errors.New("remote mic is not enabled")
+	}
+	return d.enqueue(dispatchOp{kind: opVoice})
+}
+
+// VoiceEnabled reports whether the runner can execute remote-mic turns.
+func (d *Dispatcher) VoiceEnabled() bool {
+	_, ok := d.runner.(VoiceTurnRunner)
+	return ok
 }
 
 // ClearHistory enqueues a history wipe, serialized against turns.

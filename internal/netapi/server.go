@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/events"
 )
 
@@ -30,6 +31,9 @@ type Options struct {
 	// Audio, when set, is attached to the server hub so Phase 3 stream
 	// clients receive TTS audio_chunk envelopes from the pipeline player.
 	Audio *AudioFanout
+	// Ingress, when set, enables remote push-to-talk (Phase 4 / WI-62e19b).
+	// The serve pipeline's STT must already be wired to this same ingress.
+	Ingress *audio.Ingress
 	// OnListening is called once the TCP listener is bound, before Accept
 	// loops run. Use it to print banners with the real bound address.
 	OnListening func(addr net.Addr)
@@ -53,6 +57,9 @@ func New(opts Options) *Server {
 	h := newHub()
 	if opts.Audio != nil {
 		opts.Audio.AttachHub(h)
+	}
+	if opts.Ingress != nil {
+		h.setIngress(opts.Ingress)
 	}
 	return &Server{
 		opts:         opts,
