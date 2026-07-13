@@ -182,11 +182,11 @@ func sendChunk(ctx context.Context, out chan<- string, chunk string) error {
 }
 
 // ThinkFull sends input and waits for the complete response.
-func (o *OllamaBrain) ThinkFull(ctx context.Context, input string) (string, error) {
+func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOptions) (string, error) {
 	o.history = append(o.history, api.Message{Role: "user", Content: input})
 
 	var tools api.Tools
-	if o.cfg.VoiceToolsEnabled {
+	if opts.ToolsEnabled {
 		tools = voiceAssistantTools()
 	}
 
@@ -242,10 +242,12 @@ func (o *OllamaBrain) ThinkFull(ctx context.Context, input string) (string, erro
 
 // chat issues a chat request, retrying once without tools if the model reports
 // it doesn't support them — so a non-tool model degrades to plain chat instead
-// of failing the turn.
+// of failing the turn. The degradation is logged so "tools silently vanished"
+// is never invisible.
 func (o *OllamaBrain) chat(ctx context.Context, req *api.ChatRequest, fn api.ChatResponseFunc) error {
 	err := o.client.Chat(ctx, req, fn)
 	if err != nil && req.Tools != nil && modelRejectedTools(err) {
+		fmt.Fprintf(os.Stderr, "samantha: ollama model %q rejected tools (%v); continuing without tool calling — file read/write will not run\n", o.model, err)
 		req.Tools = nil
 		return o.client.Chat(ctx, req, fn)
 	}

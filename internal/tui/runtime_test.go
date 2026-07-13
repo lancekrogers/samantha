@@ -22,10 +22,12 @@ type stubBrain struct {
 func (b *stubBrain) ThinkStream(context.Context, string, brain.StreamOptions) (*brain.Stream, error) {
 	return nil, errors.New("not implemented")
 }
-func (b *stubBrain) ThinkFull(context.Context, string) (string, error) { return "", nil }
-func (b *stubBrain) ClearHistory()                                     { b.cleared = true }
-func (b *stubBrain) History() []brain.Turn                             { return nil }
-func (b *stubBrain) LoadHistory([]brain.Turn)                          {}
+func (b *stubBrain) ThinkFull(context.Context, string, brain.StreamOptions) (string, error) {
+	return "", nil
+}
+func (b *stubBrain) ClearHistory()            { b.cleared = true }
+func (b *stubBrain) History() []brain.Turn    { return nil }
+func (b *stubBrain) LoadHistory([]brain.Turn) {}
 
 func wiredApp(build RuntimeBuilder) App {
 	app := NewApp(&config.Config{})

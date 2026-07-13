@@ -247,7 +247,9 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	p.emit(events.ThinkingStarted{})
 	thinkingStarted := time.Now()
 
-	response, err := p.Brain.ThinkFull(ctx, input)
+	response, err := p.Brain.ThinkFull(ctx, input, brain.StreamOptions{
+		ToolsEnabled: p.VoiceToolsEnabled,
+	})
 	if err != nil {
 		turn.finish(TurnFailed)
 		return fmt.Errorf("brain: %w", err)

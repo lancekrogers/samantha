@@ -483,7 +483,7 @@ func (f *fakeBrain) ThinkStream(ctx context.Context, input string, opts brain.St
 	return &brain.Stream{Chunks: out, Done: done}, nil
 }
 
-func (f *fakeBrain) ThinkFull(ctx context.Context, input string) (string, error) {
+func (f *fakeBrain) ThinkFull(ctx context.Context, input string, _ brain.StreamOptions) (string, error) {
 	if f.fullErr != nil {
 		return "", f.fullErr
 	}
@@ -515,10 +515,12 @@ func (b *bargeCancelBrain) ThinkStream(ctx context.Context, input string, opts b
 	return &brain.Stream{Chunks: out, Done: done}, nil
 }
 
-func (b *bargeCancelBrain) ThinkFull(context.Context, string) (string, error) { return "", nil }
-func (b *bargeCancelBrain) ClearHistory()                                     {}
-func (b *bargeCancelBrain) History() []brain.Turn                             { return nil }
-func (b *bargeCancelBrain) LoadHistory([]brain.Turn)                          {}
+func (b *bargeCancelBrain) ThinkFull(context.Context, string, brain.StreamOptions) (string, error) {
+	return "", nil
+}
+func (b *bargeCancelBrain) ClearHistory()            {}
+func (b *bargeCancelBrain) History() []brain.Turn    { return nil }
+func (b *bargeCancelBrain) LoadHistory([]brain.Turn) {}
 
 type fakeTTS struct {
 	mu        sync.Mutex

@@ -268,7 +268,7 @@ func (f *fixtureBrain) ThinkStream(ctx context.Context, input string, opts brain
 	return &brain.Stream{Chunks: chunks, Done: done}, nil
 }
 
-func (f *fixtureBrain) ThinkFull(ctx context.Context, input string) (string, error) {
+func (f *fixtureBrain) ThinkFull(ctx context.Context, input string, _ brain.StreamOptions) (string, error) {
 	return f.response, nil
 }
 
