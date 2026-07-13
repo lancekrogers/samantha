@@ -77,6 +77,35 @@ func TestConversationTypingGoesToInput(t *testing.T) {
 	}
 }
 
+func TestConversationComposerSupportsMultilineDrafts(t *testing.T) {
+	m := sizedConversation(t, 80, 24)
+	for _, r := range "first line" {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	for _, r := range "second line" {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+
+	if got, want := m.input.Value(), "first line\nsecond line"; got != want {
+		t.Fatalf("multiline draft = %q, want %q", got, want)
+	}
+	if got := m.input.Height(); got != conversationInputHeight {
+		t.Fatalf("composer height = %d, want %d", got, conversationInputHeight)
+	}
+}
+
+func TestConversationComposerCompactsInShortSplit(t *testing.T) {
+	m := sizedConversation(t, 40, 8)
+	if got := m.input.Height(); got != 1 {
+		t.Fatalf("compact composer height = %d, want 1", got)
+	}
+	view := stripANSI(m.View())
+	if got := len(strings.Split(view, "\n")); got != 8 {
+		t.Fatalf("compact view has %d rows, want 8:\n%s", got, view)
+	}
+}
+
 func TestConversationScrollAndFollow(t *testing.T) {
 	m := sizedConversation(t, 80, 10)
 
@@ -98,7 +127,7 @@ func TestConversationScrollAndFollow(t *testing.T) {
 		t.Error("append while scrolled up must not auto-follow")
 	}
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlEnd})
 	if !m.viewport.AtBottom() {
 		t.Error("end key did not jump to bottom")
 	}

@@ -296,6 +296,18 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 			turn.finish(TurnCompleted)
 			return nil
 		}
+		// PlayStream waits for the complete sentence buffer. Output may have
+		// been muted while it was waiting, after SetOutputMuted's first Stop
+		// saw an empty queue. Stop again so that late-enqueued audio cannot play.
+		if p.OutputMuted() {
+			p.Player.Stop()
+			p.emit(events.ResponseReady{Response: response})
+			turn.finish(TurnCompleted)
+			if p.OnTurn != nil {
+				p.OnTurn()
+			}
+			return nil
+		}
 
 		p.handlePlaybackLifecycle(response, synthStarted, playback, metrics)
 	}
@@ -595,6 +607,13 @@ func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct
 		if ctx.Err() == nil {
 			p.emit(events.Error{Stage: "playback", Message: fmt.Sprintf("playback: %v", err)})
 		}
+		return false
+	}
+	// PlayStream buffers a complete sentence before enqueueing it. Muting can
+	// race that wait, so the initial Stop may see nothing; close the race by
+	// checking once more after enqueue and stopping the late segment.
+	if p.OutputMuted() {
+		p.Player.Stop()
 		return false
 	}
 

@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/lancekrogers/samantha/internal/app"
@@ -85,7 +86,7 @@ func (m *conversationModel) startConversation(deps conversationDeps) tea.Cmd {
 		})
 	}
 
-	cmds := []tea.Cmd{m.bridge.wait()}
+	cmds := []tea.Cmd{m.bridge.wait(), textarea.Blink}
 	m.appendActivity("session", shortSessionID(deps.sessionID), 0)
 	if deps.voice {
 		m.appendActivity("input", deviceLabel(deps.inputDevice), 0)

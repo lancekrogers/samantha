@@ -9,18 +9,18 @@ import (
 	"github.com/lancekrogers/samantha/internal/events"
 )
 
-// The input prompt shows the mic glyph only while a voice turn is actively
+// The input label shows the mic glyph only while a voice turn is actively
 // listening for the user.
 func TestInputGlyphTracksListeningState(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	m, _ := startedConversation(t, runner, true)
 
-	if !strings.Contains(m.View(), "🎙 >") {
-		t.Error("listening state must show the mic glyph on the prompt")
+	if !strings.Contains(m.View(), "🎙 Listening") {
+		t.Error("listening state must show the mic glyph on the composer")
 	}
 
 	m.handleEvent(events.UserInput{Text: "spoken"}) // listening -> responding
-	if strings.Contains(m.View(), "🎙 >") {
+	if strings.Contains(m.View(), "🎙 Listening") {
 		t.Error("mic glyph must drop once the turn is responding")
 	}
 }

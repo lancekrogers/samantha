@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -17,16 +17,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/events"
 )
 
-// Rows of chrome around the viewport: header, rule, three-row input box, and
-// footer. The transcript/activity viewport receives every remaining row.
-const conversationChromeRows = 6
-
-// Prompt strings for the input line. The mic glyph is wider than the plain
-// prompt, so setSize always sizes the field for the longer of the two.
-const (
-	conversationPrompt    = "> "
-	conversationMicPrompt = "🎙 > "
-)
+const conversationInputHeight = 3
 
 // conversationModel renders the live conversation screen: a scrollable
 // transcript viewport, a persistent status indicator, and an always-focused
@@ -41,7 +32,7 @@ type conversationModel struct {
 
 	viewport         viewport.Model
 	activityViewport viewport.Model
-	input            textinput.Model
+	input            textarea.Model
 
 	transcript []string
 	activity   []activityEntry
@@ -78,8 +69,13 @@ func newConversation(agentName string) conversationModel {
 		agentName = "Samantha"
 	}
 
-	input := textinput.New()
-	input.Prompt = conversationPrompt
+	input := textarea.New()
+	input.Placeholder = "Type a message…"
+	input.CharLimit = 1000
+	input.ShowLineNumbers = false
+	input.KeyMap.InsertNewline.SetKeys("ctrl+j")
+	input.KeyMap.InsertNewline.SetHelp("ctrl+j", "new line")
+	input.SetHeight(conversationInputHeight)
 	input.Focus()
 
 	return conversationModel{
@@ -117,9 +113,8 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 		return m, m.handleVoiceRetry()
 
 	case tea.KeyMsg:
-		// PgUp/PgDn (and home/end) scroll the transcript; every other key —
-		// including ↑/↓ for cursor movement — belongs to the input line, so
-		// typing never needs a mode switch.
+		// Page keys scroll history. Editing keys stay with the always-focused
+		// composer so multiline drafting never needs a mode switch.
 		switch msg.String() {
 		case "enter":
 			return m, m.handleSubmit()
@@ -138,12 +133,22 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 			}
 		case "pgup", "pgdown", "ctrl+u", "ctrl+d":
 			return m.updateScroll(msg)
-		case "home":
+		case "ctrl+home":
 			m.activeViewport().GotoTop()
 			return m, nil
-		case "end":
+		case "ctrl+end":
 			m.activeViewport().GotoBottom()
 			return m, nil
+		case "home":
+			if m.activityFocused {
+				m.activeViewport().GotoTop()
+				return m, nil
+			}
+		case "end":
+			if m.activityFocused {
+				m.activeViewport().GotoBottom()
+				return m, nil
+			}
 		case "up", "down":
 			if m.activityFocused {
 				return m.updateScroll(msg)
@@ -167,7 +172,13 @@ func (m *conversationModel) setSize(width, height int) {
 	m.width = width
 	m.height = height
 
-	vpHeight := max(height-conversationChromeRows, 1)
+	inputHeight := conversationInputHeight
+	if height < 12 {
+		inputHeight = 1
+	}
+	// Header + rule + label + input border + footer consume six rows in
+	// addition to the textarea's own height.
+	vpHeight := max(height-inputHeight-6, 1)
 	if !m.ready {
 		m.viewport = viewport.New(max(width, 1), vpHeight)
 		m.activityViewport = viewport.New(max(width, 1), vpHeight)
@@ -178,10 +189,8 @@ func (m *conversationModel) setSize(width, height int) {
 		m.activityViewport.Width = max(width, 1)
 		m.activityViewport.Height = vpHeight
 	}
-	// Always reserve room for the mic prompt so the input never overflows
-	// when View swaps the glyph in during listening.
-	promptCells := lipgloss.Width(conversationMicPrompt)
-	m.input.Width = max(width-promptCells-8, 1)
+	m.input.SetWidth(max(width-4, 1))
+	m.input.SetHeight(inputHeight)
 	m.refreshContent()
 	m.refreshActivity()
 }
@@ -455,7 +464,7 @@ func (m conversationModel) View() string {
 	if activeViewport.TotalLineCount() > activeViewport.VisibleLineCount() {
 		footerLeft += fmt.Sprintf("  •  %d%%", int(activeViewport.ScrollPercent()*100))
 	}
-	footerHelp := "^G mic  ^O audio  ^T switch  PgUp/PgDn scroll"
+	footerHelp := "enter send  ^J newline  ^G mic  ^O audio  ^T switch  PgUp/PgDn scroll"
 	footerText := footerLeft
 	switch {
 	case m.width >= lipgloss.Width(footerLeft)+lipgloss.Width(footerHelp)+4:
@@ -467,27 +476,27 @@ func (m conversationModel) View() string {
 	}
 	footer := dimStyle.Render(ansi.Truncate(footerText, max(m.width, 1), "…"))
 
-	// The prompt glyph shows the input source: the mic while a voice turn is
-	// listening, a plain prompt otherwise. Typing never needs a mode switch.
-	input := m.input
-	if m.turnState == turnVoiceListening && m.voiceOn() {
-		input.Prompt = conversationMicPrompt
-	}
-
 	content := m.viewport.View()
 	if m.activityFocused {
 		content = m.activityViewport.View()
 	}
 
+	inputLabel := "Your message:"
+	switch m.turnState {
+	case turnVoiceListening:
+		inputLabel = "🎙 Listening — type to interrupt:"
+	case turnVoiceResponding, turnVoiceCanceling, turnTextRunning:
+		inputLabel = "⏳ Samantha is responding — keep drafting:"
+	}
 	inputBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("240")).
+		BorderForeground(lipgloss.Color("14")).
 		Padding(0, 1).
-		Width(max(m.width-4, 1)).
-		Render(input.View())
+		Render(m.input.View())
 
 	return header + "\n" + rule + "\n" +
 		content + "\n" +
+		dimStyle.Render(ansi.Truncate(inputLabel, max(m.width, 1), "…")) + "\n" +
 		inputBox + "\n" +
 		footer
 }

@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,6 +21,28 @@ func (e *errTTS) Synthesize(ctx context.Context, text string) (*audio.PCMStream,
 }
 func (e *errTTS) Available() bool                              { return true }
 func (e *errTTS) ListVoices(locale, gender string) []tts.Voice { return nil }
+
+// bufferingPlayer lets a test mute output after PlayStream begins but before
+// it returns, matching the complete-sentence buffering window in audio.Player.
+type bufferingPlayer struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+	stops   atomic.Int32
+}
+
+func newBufferingPlayer() *bufferingPlayer {
+	return &bufferingPlayer{entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (p *bufferingPlayer) PlayStream(context.Context, *audio.PCMStream) (*audio.Playback, error) {
+	p.once.Do(func() { close(p.entered) })
+	<-p.release
+	return audio.NewPlayback(make(chan struct{}), make(chan audio.PlaybackResult, 1)), nil
+}
+func (p *bufferingPlayer) Stop()           { p.stops.Add(1) }
+func (p *bufferingPlayer) IsPlaying() bool { return false }
+func (p *bufferingPlayer) Close() error    { return nil }
 
 func drainPlaybackKinds(t *testing.T, out <-chan playbackEvent, n int) []playbackEventType {
 	t.Helper()
@@ -62,6 +85,37 @@ func TestSynthesizeSegmentEnqueuesPlayback(t *testing.T) {
 	}
 	if !audioStarted.Load() {
 		t.Fatal("audioStarted was not set by the playback watcher")
+	}
+}
+
+func TestSynthesizeSegmentStopsAudioEnqueuedAfterMute(t *testing.T) {
+	player := newBufferingPlayer()
+	p := &Pipeline{TTS: &fakeTTS{}, Player: player, Events: events.NewBus()}
+	var audioStarted atomic.Bool
+	result := make(chan bool, 1)
+
+	go func() {
+		result <- p.synthesizeSegment(context.Background(), make(chan struct{}), "late sentence", &audioStarted, make(chan playbackEvent, 1))
+	}()
+
+	select {
+	case <-player.entered:
+	case <-time.After(time.Second):
+		t.Fatal("PlayStream did not enter buffering window")
+	}
+	p.SetOutputMuted(true)
+	close(player.release)
+
+	select {
+	case enqueued := <-result:
+		if enqueued {
+			t.Fatal("late playback reported as enqueued after output was muted")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("synthesizeSegment did not return after buffering completed")
+	}
+	if got := player.stops.Load(); got != 2 {
+		t.Fatalf("Stop calls = %d, want 2 (initial mute and late-enqueue guard)", got)
 	}
 }
 

@@ -107,13 +107,15 @@ samantha render notes.txt --out a.wav   # Batch-render a document to audio
 
 The launcher offers the most recent conversation first, a scrollable recent
 session list, and an explicit new-conversation action. During a conversation,
-the transcript follows new messages until you scroll away from the tail. The
-responsive activity feed shows speech recognition, model, synthesis, playback,
-and total turn timings; it becomes a side pane in wide terminals and a focused
-view in narrow splits.
+the transcript follows new messages until you scroll away from the tail. Chat
+and the activity timeline are separate full-width views, so the transcript does
+not lose space in wide terminals. The composer supports wrapped, multiline
+drafts and compacts to one row in short terminal splits.
 
 | Key | Action |
 |-----|--------|
+| `Enter` | Send the current draft |
+| `Ctrl+J` | Insert a newline in the draft |
 | `Page Up` / `Page Down` | Scroll the transcript or focused activity feed |
 | `Ctrl+T` | Focus/unfocus the activity timeline |
 | `Ctrl+G` | Mute/unmute microphone input |
