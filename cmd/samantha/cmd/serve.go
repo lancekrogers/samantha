@@ -19,6 +19,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/netapi"
 	"github.com/lancekrogers/samantha/internal/pipeline"
 	"github.com/lancekrogers/samantha/internal/session"
+	"github.com/lancekrogers/samantha/internal/stt"
 	"github.com/lancekrogers/samantha/internal/tts"
 	"github.com/lancekrogers/samantha/internal/ui"
 )
@@ -32,6 +33,7 @@ var (
 	serveAllowPublic bool
 	serveTLSCert     string
 	serveTLSKey      string
+	serveRemoteMic   bool
 )
 
 var serveCmd = &cobra.Command{
@@ -47,14 +49,15 @@ this machine's speaker unless --no-voice is set (host muted; stream clients
 still hear).
 
 An embedded phone voice page is served at https://<host>:<port>/ — paste the
-token, tap Start (unlocks audio), and type (or use iOS dictation). For iOS
-Safari, load a real certificate via --tls-cert/--tls-key from
-` + "`tailscale cert <name>.<tailnet>.ts.net`" + ` so the page is a secure
-context.
+token, tap Start (unlocks audio), hold Talk for push-to-talk, or type (iOS
+dictation works too). For iOS Safari, load a real certificate via
+--tls-cert/--tls-key from ` + "`tailscale cert <name>.<tailnet>.ts.net`" + `
+so the page is a secure context.
 
-Auth is mandatory: a bearer token is generated on first run (and self-signed
-TLS when no external cert is provided). Remote turns never get tool access
-unless remote_tools_enabled is set in config.`,
+Remote mic (push-to-talk) is on by default and streams 16 kHz PCM to the
+server's STT; disable with --no-remote-mic. Automatic barge-in over the
+network is not supported — use Interrupt (tap). Auth is mandatory. Remote
+turns never get tool access unless remote_tools_enabled is set in config.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
@@ -72,6 +75,7 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveAllowPublic, "allow-public", false, "Allow binding a non-private interface (dangerous)")
 	serveCmd.Flags().StringVar(&serveTLSCert, "tls-cert", "", "TLS certificate PEM (e.g. from tailscale cert)")
 	serveCmd.Flags().StringVar(&serveTLSKey, "tls-key", "", "TLS private key PEM (e.g. from tailscale cert)")
+	serveCmd.Flags().BoolVar(&serveRemoteMic, "remote-mic", true, "Enable phone push-to-talk (remote STT over the WebSocket)")
 	rootCmd.AddCommand(serveCmd)
 }
 
@@ -79,9 +83,13 @@ func runServe(cfg *config.Config) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 
-	// Phase 3: TTS is always required so stream clients can hear responses
-	// even when the host speaker is muted (--no-voice).
-	req := config.AssetRequest{NeedTTS: true}
+	// Phase 3: TTS always required for stream clients. Phase 4 remote mic
+	// also needs STT + VAD models when --remote-mic is set (default on).
+	req := config.AssetRequest{
+		NeedTTS: true,
+		NeedSTT: serveRemoteMic,
+		NeedVAD: serveRemoteMic,
+	}
 	if err := config.EnsureRuntimeAssets(ctx, cfg, req, modelProgress); err != nil {
 		return fmt.Errorf("ensure runtime assets: %w", err)
 	}
@@ -97,7 +105,7 @@ func runServe(cfg *config.Config) error {
 	serveCfg := *cfg
 	serveCfg.VoiceToolsEnabled = cfg.RemoteToolsEnabled
 
-	p, fanout, cleanup, err := buildServePipeline(ctx, &serveCfg, bus, serveNoVoice)
+	p, fanout, ingress, cleanup, err := buildServePipeline(ctx, &serveCfg, bus, serveNoVoice, serveRemoteMic)
 	if err != nil {
 		return fmt.Errorf("init serve pipeline: %w", err)
 	}
@@ -150,6 +158,10 @@ func runServe(cfg *config.Config) error {
 	}
 	addr := net.JoinHostPort(bind, strconv.Itoa(servePort))
 
+	sttName := ""
+	if ingress != nil {
+		sttName = cfg.STTProvider
+	}
 	server := netapi.New(netapi.Options{
 		Bind:         addr,
 		AllowPublic:  serveAllowPublic,
@@ -157,10 +169,11 @@ func runServe(cfg *config.Config) error {
 		Bus:          bus,
 		Dispatcher:   dispatcher,
 		Audio:        fanout,
+		Ingress:      ingress,
 		ListSessions: listSessionSummaries,
 		Providers: netapi.Providers{
 			Brain: cfg.BrainProvider,
-			STT:   "", // no STT in serve mode
+			STT:   sttName,
 			TTS:   cfg.TTSProvider,
 		},
 		OnListening: func(bound net.Addr) {
@@ -176,17 +189,18 @@ func runServe(cfg *config.Config) error {
 	return server.ListenAndServe(ctx)
 }
 
-// buildServePipeline constructs the serve-mode pipeline: text turns only
-// (no mic), always-on TTS for stream clients, and an AudioFanout player.
+// buildServePipeline constructs the serve-mode pipeline: text turns always,
+// optional remote-mic STT on an audio.Ingress (no host capture device),
+// always-on TTS for stream clients, and an AudioFanout player.
 // muteHost skips the local speaker but still synthesizes for the wire.
 //
 // Fanout always owns the local player (if any) so cleanup is single-owner —
 // no double Close between serve and buildPipeline.
-func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, muteHost bool) (*pipeline.Pipeline, *netapi.AudioFanout, func(), error) {
-	// Brain only first (text=true, silent=true): no mic, no default TTS/player.
+func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, muteHost, remoteMic bool) (*pipeline.Pipeline, *netapi.AudioFanout, *audio.Ingress, func(), error) {
+	// Brain only first (text=true, silent=true): no host mic, no default TTS/player.
 	p, baseCleanup, err := buildPipeline(ctx, cfg, bus, true, true)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	var cleanups []func()
@@ -196,9 +210,9 @@ func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus
 			cleanups[i]()
 		}
 	}
-	fail := func(err error) (*pipeline.Pipeline, *netapi.AudioFanout, func(), error) {
+	fail := func(err error) (*pipeline.Pipeline, *netapi.AudioFanout, *audio.Ingress, func(), error) {
 		cleanup()
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	ttsProvider, ttsCleanup, err := tts.NewProvider(cfg)
@@ -219,7 +233,36 @@ func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus
 	cleanups = append(cleanups, func() { _ = fanout.Close() })
 	p.Player = fanout
 
-	return p, fanout, cleanup, nil
+	var ingress *audio.Ingress
+	if remoteMic {
+		// Remote push-to-talk: STT reads from network PCM, not the host mic.
+		// Force VAD so sherpa/whisper paths can build (config may leave it off).
+		serveSTTCfg := *cfg
+		if !serveSTTCfg.VADEnabled {
+			serveSTTCfg.VADEnabled = true
+		}
+		ingress = audio.NewIngress()
+		cleanups = append(cleanups, func() { _ = ingress.Close() })
+
+		vad, err := audio.NewVAD(&serveSTTCfg)
+		if err != nil {
+			return fail(fmt.Errorf("init VAD for remote mic: %w", err))
+		}
+		cleanups = append(cleanups, vad.Delete)
+
+		sttProvider, sttCleanup, err := stt.NewProvider(&serveSTTCfg, ingress, vad)
+		if err != nil {
+			return fail(fmt.Errorf("init STT for remote mic: %w", err))
+		}
+		if sttCleanup != nil {
+			cleanups = append(cleanups, sttCleanup)
+		}
+		p.STT = sttProvider
+		p.VAD = vad
+		// Capture stays nil: barge-in on host mic is not used in serve mode.
+	}
+
+	return p, fanout, ingress, cleanup, nil
 }
 
 func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config) {
@@ -248,6 +291,11 @@ func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config
 		fmt.Println(dimStyle.Render("  Host speaker: muted (--no-voice); stream clients can still request audio_output"))
 	} else {
 		fmt.Println(dimStyle.Render("  Host speaker: on; clients opt in with {\"type\":\"audio_output\",\"mode\":\"stream\"}"))
+	}
+	if serveRemoteMic {
+		fmt.Println(dimStyle.Render("  Remote mic: push-to-talk enabled (hold Talk on the voice page)"))
+	} else {
+		fmt.Println(dimStyle.Render("  Remote mic: off (--remote-mic=false)"))
 	}
 	fmt.Println(dimStyle.Render("  Try: samantha connect " + addr + " --token <token>"))
 	fmt.Println()
