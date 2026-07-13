@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -11,11 +12,14 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/netapi"
+	"github.com/lancekrogers/samantha/internal/pipeline"
 	"github.com/lancekrogers/samantha/internal/session"
+	"github.com/lancekrogers/samantha/internal/tts"
 	"github.com/lancekrogers/samantha/internal/ui"
 )
 
@@ -33,8 +37,12 @@ var serveCmd = &cobra.Command{
 	Short: "Serve Samantha to your LAN over HTTPS + WebSocket",
 	Long: `Run Samantha as a network-accessible instance: other devices on your
 LAN (or tailnet) send text turns and stream the live conversation over
-/v1/stream. Turns are text-only in serve mode — the mic stays off — and
-responses speak through this machine's speaker unless --no-voice is set.
+/v1/stream. Turns are text-only in serve mode — the mic stays off.
+
+TTS always runs so clients can opt into phone-side audio with the
+audio_output control message (mode "stream"). Responses also speak through
+this machine's speaker unless --no-voice is set (host muted; stream clients
+still hear).
 
 Auth is mandatory: a bearer token and self-signed TLS certificate are
 generated on first run. Remote turns never get tool access unless
@@ -61,7 +69,9 @@ func runServe(cfg *config.Config) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 
-	req := config.AssetRequest{NeedTTS: !serveNoVoice}
+	// Phase 3: TTS is always required so stream clients can hear responses
+	// even when the host speaker is muted (--no-voice).
+	req := config.AssetRequest{NeedTTS: true}
 	if err := config.EnsureRuntimeAssets(ctx, cfg, req, modelProgress); err != nil {
 		return fmt.Errorf("ensure runtime assets: %w", err)
 	}
@@ -78,11 +88,9 @@ func runServe(cfg *config.Config) error {
 	serveCfg := *cfg
 	serveCfg.VoiceToolsEnabled = cfg.RemoteToolsEnabled
 
-	// text=true: serve runs no local input loop and the mic never goes hot;
-	// every turn arrives over the wire.
-	p, cleanup, err := buildPipeline(ctx, &serveCfg, bus, true, serveNoVoice)
+	p, fanout, cleanup, err := buildServePipeline(ctx, &serveCfg, bus, serveNoVoice)
 	if err != nil {
-		return fmt.Errorf("init pipeline: %w", err)
+		return fmt.Errorf("init serve pipeline: %w", err)
 	}
 	defer cleanup()
 
@@ -128,16 +136,17 @@ func runServe(cfg *config.Config) error {
 	addr := net.JoinHostPort(bind, strconv.Itoa(servePort))
 
 	server := netapi.New(netapi.Options{
-		Bind:        addr,
-		AllowPublic: serveAllowPublic,
-		Credentials: creds,
-		Bus:         bus,
-		Dispatcher:  dispatcher,
+		Bind:         addr,
+		AllowPublic:  serveAllowPublic,
+		Credentials:  creds,
+		Bus:          bus,
+		Dispatcher:   dispatcher,
+		Audio:        fanout,
 		ListSessions: listSessionSummaries,
 		Providers: netapi.Providers{
 			Brain: cfg.BrainProvider,
 			STT:   "", // no STT in serve mode
-			TTS:   serveTTSName(cfg),
+			TTS:   cfg.TTSProvider,
 		},
 		OnListening: func(bound net.Addr) {
 			// Prefer the real bound address (port 0, dual-stack formatting).
@@ -150,6 +159,52 @@ func runServe(cfg *config.Config) error {
 	})
 
 	return server.ListenAndServe(ctx)
+}
+
+// buildServePipeline constructs the serve-mode pipeline: text turns only
+// (no mic), always-on TTS for stream clients, and an AudioFanout player.
+// muteHost skips the local speaker but still synthesizes for the wire.
+//
+// Fanout always owns the local player (if any) so cleanup is single-owner —
+// no double Close between serve and buildPipeline.
+func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, muteHost bool) (*pipeline.Pipeline, *netapi.AudioFanout, func(), error) {
+	// Brain only first (text=true, silent=true): no mic, no default TTS/player.
+	p, baseCleanup, err := buildPipeline(ctx, cfg, bus, true, true)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	var cleanups []func()
+	cleanups = append(cleanups, baseCleanup)
+	cleanup := func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
+	}
+	fail := func(err error) (*pipeline.Pipeline, *netapi.AudioFanout, func(), error) {
+		cleanup()
+		return nil, nil, nil, err
+	}
+
+	ttsProvider, ttsCleanup, err := tts.NewProvider(cfg)
+	if err != nil {
+		return fail(fmt.Errorf("init TTS: %w", err))
+	}
+	if ttsCleanup != nil {
+		cleanups = append(cleanups, ttsCleanup)
+	}
+	p.TTS = ttsProvider
+
+	var local audio.Engine
+	if !muteHost {
+		local = audio.NewPlayer()
+	}
+	// Fanout owns local so Close is exactly once via cleanup.
+	fanout := netapi.NewOwnedAudioFanout(local)
+	cleanups = append(cleanups, func() { _ = fanout.Close() })
+	p.Player = fanout
+
+	return p, fanout, cleanup, nil
 }
 
 func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config) {
@@ -168,6 +223,11 @@ func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config
 	} else {
 		fmt.Println(dimStyle.Render("  Remote tool calls: disabled (remote_tools_enabled=false)"))
 	}
+	if serveNoVoice {
+		fmt.Println(dimStyle.Render("  Host speaker: muted (--no-voice); stream clients can still request audio_output"))
+	} else {
+		fmt.Println(dimStyle.Render("  Host speaker: on; clients opt in with {\"type\":\"audio_output\",\"mode\":\"stream\"}"))
+	}
 	fmt.Println(dimStyle.Render("  Try: samantha connect " + addr + " --token <token>"))
 	fmt.Println()
 }
@@ -184,13 +244,6 @@ func serveModelName(cfg *config.Config) string {
 	default:
 		return cfg.OllamaModel
 	}
-}
-
-func serveTTSName(cfg *config.Config) string {
-	if serveNoVoice {
-		return ""
-	}
-	return cfg.TTSProvider
 }
 
 func listSessionSummaries() []netapi.SessionSummary {

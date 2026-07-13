@@ -76,6 +76,7 @@ func ms(d time.Duration) int64 { return d.Milliseconds() }
 
 // controlMessage is one client -> server message on /v1/stream.
 type controlMessage struct {
-	Type string `json:"type"` // "text_input" | "interrupt" | "clear_history"
+	Type string `json:"type"` // "text_input" | "interrupt" | "clear_history" | "audio_output"
 	Text string `json:"text,omitempty"`
+	Mode string `json:"mode,omitempty"` // audio_output: "stream" | "local" | "off"
 }
