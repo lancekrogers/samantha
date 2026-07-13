@@ -2,6 +2,8 @@ package netapi
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/events"
 )
 
@@ -31,7 +34,7 @@ const maxStreamClients = 8
 type streamConn struct {
 	out   chan []byte // event / control envelopes
 	audio chan []byte // TTS audio_chunk / audio_end / audio_reset only
-	kick  chan struct{}
+	kick  chan string
 	once  sync.Once
 
 	// audioStream is a per-connection preference set by the audio_output
@@ -43,8 +46,8 @@ type streamConn struct {
 	audioBlocked atomic.Bool
 }
 
-func (c *streamConn) evict() {
-	c.once.Do(func() { close(c.kick) })
+func (c *streamConn) evict(reason string) {
+	c.once.Do(func() { c.kick <- reason })
 }
 
 func (c *streamConn) wantsAudio() bool {
@@ -62,10 +65,78 @@ type hub struct {
 	// streamers counts connections with audio_output mode "stream" so the
 	// TTS pump can skip encode/marshal when nobody is listening.
 	streamers atomic.Int32
+
+	// micClaimant is the exclusive remote-mic owner (push-to-talk).
+	micClaimant *streamConn
+	// ingress receives remote PCM when remote mic is enabled.
+	ingress *audio.Ingress
 }
 
 func newHub() *hub {
 	return &hub{conns: make(map[*streamConn]struct{})}
+}
+
+// setIngress wires the remote audio ingress used by push-to-talk turns.
+func (h *hub) setIngress(ing *audio.Ingress) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.ingress = ing
+}
+
+func (h *hub) claimMic(c *streamConn) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.ingress == nil {
+		return errors.New("remote mic is not enabled on this serve instance")
+	}
+	if h.micClaimant != nil && h.micClaimant != c {
+		return errors.New("microphone claimed by another client")
+	}
+	h.micClaimant = c
+	h.ingress.Reset()
+	return nil
+}
+
+func (h *hub) releaseMic(c *streamConn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.micClaimant == c {
+		h.micClaimant = nil
+		// If the client disconnects mid-utterance, finalize so STT is not
+		// left blocked waiting for more frames.
+		if h.ingress != nil {
+			h.ingress.Finalize()
+		}
+	}
+}
+
+func (h *hub) writeMic(c *streamConn, samples []float32) error {
+	h.mu.Lock()
+	ing := h.ingress
+	claim := h.micClaimant
+	h.mu.Unlock()
+	if ing == nil {
+		return errors.New("remote mic is not enabled")
+	}
+	if claim != c {
+		return errors.New("microphone not claimed by this client")
+	}
+	return ing.Write(samples)
+}
+
+func (h *hub) endMicUtterance(c *streamConn) error {
+	h.mu.Lock()
+	ing := h.ingress
+	claim := h.micClaimant
+	h.mu.Unlock()
+	if ing == nil {
+		return errors.New("remote mic is not enabled")
+	}
+	if claim != c {
+		return errors.New("microphone not claimed by this client")
+	}
+	ing.Finalize()
+	return nil
 }
 
 func (h *hub) add(c *streamConn) bool {
@@ -88,6 +159,20 @@ func (h *hub) remove(c *streamConn) {
 	delete(h.conns, c)
 	if c.audioStream.Swap(false) {
 		h.streamers.Add(-1)
+	}
+}
+
+// evictAll terminates every live stream at a security boundary such as token
+// revocation. Handlers remove themselves from the hub as their sockets close.
+func (h *hub) evictAll(reason string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.conns {
+		c.evict(reason)
+	}
+	if h.micClaimant != nil && h.ingress != nil {
+		h.ingress.Finalize()
+		h.micClaimant = nil
 	}
 }
 
@@ -127,7 +212,7 @@ func (h *hub) broadcast(msg []byte) {
 		select {
 		case c.out <- msg:
 		default:
-			c.evict()
+			c.evict("client too slow")
 			// If this client was streaming, drop the streamer count now —
 			// remove() will also run later, so clear the flag first.
 			if c.audioStream.Swap(false) {
@@ -218,13 +303,16 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	conn := &streamConn{
 		out:   make(chan []byte, connQueueDepth),
 		audio: make(chan []byte, audioQueueDepth),
-		kick:  make(chan struct{}),
+		kick:  make(chan string, 1),
 	}
 	if !s.hub.add(conn) {
 		ws.Close(websocket.StatusTryAgainLater, "too many clients")
 		return
 	}
-	defer s.hub.remove(conn)
+	defer func() {
+		s.hub.releaseMic(conn)
+		s.hub.remove(conn)
+	}()
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -236,8 +324,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-conn.kick:
-				ws.Close(websocket.StatusPolicyViolation, "client too slow")
+			case reason := <-conn.kick:
+				ws.Close(websocket.StatusPolicyViolation, reason)
 				return
 			case msg := <-conn.out:
 				if err := ws.Write(ctx, websocket.MessageText, msg); err != nil {
@@ -262,6 +350,10 @@ func (s *Server) readControls(ctx context.Context, ws *websocket.Conn, conn *str
 	for {
 		_, data, err := ws.Read(ctx)
 		if err != nil {
+			return
+		}
+		if !s.opts.Credentials.tokenActive() {
+			conn.evict("credentials revoked")
 			return
 		}
 
@@ -297,10 +389,63 @@ func (s *Server) readControls(ctx context.Context, ws *websocket.Conn, conn *str
 			}
 			s.hub.setConnAudio(conn, mode == "stream")
 			s.sendAudioOutputAck(conn, mode)
+		case "voice_start":
+			// Phase 4 / WI-62e19b: exclusive push-to-talk. Claim mic, reset
+			// ingress, and enqueue a voice turn that blocks on remote PCM.
+			if err := s.hub.claimMic(conn); err != nil {
+				s.sendError(conn, err.Error())
+				continue
+			}
+			if err := s.dispatcher.SubmitVoice(); err != nil {
+				s.hub.releaseMic(conn)
+				s.sendError(conn, dispatchErrText(err))
+			}
+		case "audio_input":
+			samples, err := decodePCMS16LE(msg.Data, msg.SampleRate)
+			if err != nil {
+				s.sendError(conn, "audio_input: "+err.Error())
+				continue
+			}
+			if err := s.hub.writeMic(conn, samples); err != nil {
+				s.sendError(conn, err.Error())
+			}
+		case "voice_end":
+			if err := s.hub.endMicUtterance(conn); err != nil {
+				s.sendError(conn, err.Error())
+				continue
+			}
+			// Drop exclusive claim after finalizing so another client can talk
+			// while TTS plays. releaseMic finalizes again (idempotent).
+			s.hub.releaseMic(conn)
 		default:
 			s.sendError(conn, "unknown control message type: "+msg.Type)
 		}
 	}
+}
+
+// decodePCMS16LE decodes base64 little-endian mono PCM into float32 samples
+// at the capture sample rate. Non-16 kHz input is rejected (client resamples).
+func decodePCMS16LE(b64 string, sampleRate int) ([]float32, error) {
+	if b64 == "" {
+		return nil, errors.New("empty data")
+	}
+	if sampleRate != 0 && sampleRate != audio.SampleRate {
+		return nil, errors.New("sample_rate must be 16000 (resample on the client)")
+	}
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return nil, errors.New("invalid base64")
+	}
+	if len(raw)%2 != 0 {
+		return nil, errors.New("odd pcm byte length")
+	}
+	n := len(raw) / 2
+	out := make([]float32, n)
+	for i := 0; i < n; i++ {
+		s := int16(binary.LittleEndian.Uint16(raw[i*2:]))
+		out[i] = float32(s) / 32768
+	}
+	return out, nil
 }
 
 // sendAudioOutputAck confirms the applied stream preference on the event
@@ -316,7 +461,7 @@ func (s *Server) sendAudioOutputAck(conn *streamConn, mode string) {
 	select {
 	case conn.out <- msg:
 	default:
-		conn.evict()
+		conn.evict("client too slow")
 	}
 }
 
@@ -330,7 +475,7 @@ func (s *Server) sendError(conn *streamConn, text string) {
 	select {
 	case conn.out <- msg:
 	default:
-		conn.evict()
+		conn.evict("client too slow")
 	}
 }
 

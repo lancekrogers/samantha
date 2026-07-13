@@ -1,6 +1,6 @@
 /* Minimal voice surface for samantha serve (WI-62e19b).
- * V1: text / iOS dictation in, pcm_s16le audio_chunk playback out.
- * Mic uplink is intentionally deferred.
+ * Text / iOS dictation in, push-to-talk mic uplink, pcm_s16le TTS out.
+ * No automatic barge-in — use Interrupt.
  */
 (function () {
   const $ = (id) => document.getElementById(id);
@@ -8,6 +8,7 @@
   const pairCodeEl = $("pairCode");
   const pairBtn = $("pair");
   const startBtn = $("start");
+  const talkBtn = $("talk");
   const sendBtn = $("send");
   const interruptBtn = $("interrupt");
   const clearBtn = $("clear");
@@ -16,12 +17,17 @@
   const statusEl = $("status");
 
   const TOKEN_KEY = "samantha.serve.token";
+  const CAPTURE_RATE = 16000;
 
   let ws = null;
   let audioCtx = null;
   let nextPlayTime = 0;
   let connected = false;
   let audioSuppressed = true;
+  let talking = false;
+  let mediaStream = null;
+  let captureNode = null;
+  let captureSource = null;
   const sourcesBySegment = new Map();
   const canceledSegments = new Set();
 
@@ -46,7 +52,102 @@
     sendBtn.disabled = !on;
     interruptBtn.disabled = !on;
     clearBtn.disabled = !on;
+    talkBtn.disabled = !on;
     startBtn.textContent = on ? "Reconnect" : "Start";
+    if (!on) stopTalk(true);
+  }
+
+  function floatTo16BitPCM(float32) {
+    const buf = new ArrayBuffer(float32.length * 2);
+    const view = new DataView(buf);
+    for (let i = 0; i < float32.length; i++) {
+      let s = Math.max(-1, Math.min(1, float32[i]));
+      view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    const bytes = new Uint8Array(buf);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+  }
+
+  function downsample(buffer, fromRate, toRate) {
+    if (fromRate === toRate) return buffer;
+    const ratio = fromRate / toRate;
+    const newLen = Math.round(buffer.length / ratio);
+    const result = new Float32Array(newLen);
+    for (let i = 0; i < newLen; i++) {
+      const idx = Math.floor(i * ratio);
+      result[i] = buffer[idx] || 0;
+    }
+    return result;
+  }
+
+  async function ensureMic() {
+    if (mediaStream) return mediaStream;
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+      },
+      video: false,
+    });
+    return mediaStream;
+  }
+
+  async function startTalk() {
+    if (!connected || talking) return;
+    await ensureAudio();
+    await ensureMic();
+    talking = true;
+    talkBtn.textContent = "Release…";
+    talkBtn.classList.add("danger");
+    sendJSON({ type: "voice_start" });
+    log("listening (hold)…", "sys");
+
+    const stream = mediaStream;
+    captureSource = audioCtx.createMediaStreamSource(stream);
+    // ScriptProcessor is deprecated but works in iOS Safari without a worklet file.
+    const bufferSize = 4096;
+    captureNode = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+    captureNode.onaudioprocess = (e) => {
+      if (!talking || !ws || ws.readyState !== WebSocket.OPEN) return;
+      const input = e.inputBuffer.getChannelData(0);
+      const rate = e.inputBuffer.sampleRate || audioCtx.sampleRate;
+      const mono = downsample(input, rate, CAPTURE_RATE);
+      if (mono.length === 0) return;
+      sendJSON({
+        type: "audio_input",
+        sample_rate: CAPTURE_RATE,
+        data: floatTo16BitPCM(mono),
+      });
+    };
+    captureSource.connect(captureNode);
+    // Must connect to destination (or a silent gain) for processing to run.
+    const mute = audioCtx.createGain();
+    mute.gain.value = 0;
+    captureNode.connect(mute);
+    mute.connect(audioCtx.destination);
+  }
+
+  function stopTalk(silent) {
+    if (!talking && !captureNode) return;
+    talking = false;
+    talkBtn.textContent = "Hold to Talk";
+    talkBtn.classList.remove("danger");
+    if (captureNode) {
+      try { captureNode.disconnect(); } catch (_) {}
+      captureNode.onaudioprocess = null;
+      captureNode = null;
+    }
+    if (captureSource) {
+      try { captureSource.disconnect(); } catch (_) {}
+      captureSource = null;
+    }
+    if (!silent && connected) {
+      sendJSON({ type: "voice_end" });
+      log("sent utterance", "sys");
+    }
   }
 
   function ensureAudio() {
@@ -271,9 +372,28 @@
 
   startBtn.addEventListener("click", () => {
     ensureAudio()
+      .then(() => ensureMic().catch(() => null))
       .then(connect)
       .catch((err) => log("audio unlock failed: " + err, "err"));
   });
+
+  function bindTalk(el) {
+    const down = (e) => {
+      e.preventDefault();
+      startTalk().catch((err) => log("mic failed: " + err, "err"));
+    };
+    const up = (e) => {
+      e.preventDefault();
+      stopTalk(false);
+    };
+    el.addEventListener("mousedown", down);
+    el.addEventListener("mouseup", up);
+    el.addEventListener("mouseleave", up);
+    el.addEventListener("touchstart", down, { passive: false });
+    el.addEventListener("touchend", up);
+    el.addEventListener("touchcancel", up);
+  }
+  bindTalk(talkBtn);
 
   sendBtn.addEventListener("click", () => {
     const text = inputEl.value.trim();
@@ -290,6 +410,7 @@
   });
 
   interruptBtn.addEventListener("click", () => {
+    stopTalk(false);
     stopAudio(true);
     sendJSON({ type: "interrupt" });
   });

@@ -72,8 +72,6 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		return
 	}
-	// Issue a fresh code so the banner/QR can be reused without restarting.
-	s.opts.Credentials.RefreshPairingCode()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token":       token,
 		"fingerprint": s.opts.Credentials.Fingerprint,

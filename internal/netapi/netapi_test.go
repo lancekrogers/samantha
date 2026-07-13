@@ -102,7 +102,11 @@ func TestPairingCodeExchangeAndSingleUse(t *testing.T) {
 		t.Fatal("second exchange with same code must fail")
 	}
 	// Fresh code after refresh works once.
-	code := creds.RefreshPairingCode().Code
+	refreshed, err := creds.RefreshPairingCode()
+	if err != nil {
+		t.Fatalf("refresh pairing code: %v", err)
+	}
+	code := refreshed.Code
 	if _, err := creds.ExchangePairingCode(code); err != nil {
 		t.Fatalf("refresh exchange: %v", err)
 	}
@@ -124,6 +128,53 @@ func TestPairingCodeExpires(t *testing.T) {
 	}
 }
 
+type entropyFailureReader struct{}
+
+func (entropyFailureReader) Read([]byte) (int, error) {
+	return 0, errors.New("entropy unavailable")
+}
+
+func TestPairingCodeEntropyFailureFailsClosed(t *testing.T) {
+	if _, err := pairingCodeFrom(entropyFailureReader{}, time.Now()); err == nil {
+		t.Fatal("pairing code generation succeeded without entropy")
+	}
+}
+
+func TestPairingCodeConcurrentExchangeIsSingleUse(t *testing.T) {
+	creds, err := LoadOrCreateCredentials(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := creds.Pairing.Code
+
+	const attempts = 32
+	start := make(chan struct{})
+	results := make(chan error, attempts)
+	var wg sync.WaitGroup
+	for range attempts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := creds.ExchangePairingCode(code)
+			results <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	var successes int
+	for err := range results {
+		if err == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("successful concurrent exchanges = %d, want exactly 1", successes)
+	}
+}
+
 func TestRevokeTokensForcesNewToken(t *testing.T) {
 	dir := t.TempDir()
 	first, err := LoadOrCreateCredentials(dir)
@@ -132,6 +183,14 @@ func TestRevokeTokensForcesNewToken(t *testing.T) {
 	}
 	if err := RevokeTokens(dir); err != nil {
 		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, "/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer "+first.Token)
+	if first.VerifyRequest(req) {
+		t.Fatal("revoked credentials still authorize requests")
+	}
+	if _, err := first.ExchangePairingCode(first.Pairing.Code); err == nil {
+		t.Fatal("pairing returned a revoked bearer token")
 	}
 	second, err := LoadOrCreateCredentials(dir)
 	if err != nil {
@@ -142,6 +201,61 @@ func TestRevokeTokensForcesNewToken(t *testing.T) {
 	}
 	if second.Token == first.Token {
 		t.Fatal("token unchanged after revoke")
+	}
+}
+
+func TestRevokeTokensStopsRunningServerAndClosesStream(t *testing.T) {
+	dir := t.TempDir()
+	creds, err := LoadOrCreateCredentials(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bus := events.NewBus()
+	dispatcher := NewDispatcher(&scriptedRunner{}, bus, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go dispatcher.Run(ctx)
+
+	server := New(Options{
+		Bind:        "127.0.0.1:0",
+		Credentials: creds,
+		Bus:         bus,
+		Dispatcher:  dispatcher,
+	})
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.ListenAndServe(ctx) }()
+	deadline := time.After(2 * time.Second)
+	for server.Addr() == nil {
+		select {
+		case <-deadline:
+			t.Fatal("server never bound")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	readCtx, stopRead := context.WithTimeout(context.Background(), 3*time.Second)
+	defer stopRead()
+	ws, _, err := websocket.Dial(readCtx, "wss://"+server.Addr().String()+"/v1/stream?token="+creds.Token, &websocket.DialOptions{
+		HTTPClient: insecureClient(),
+	})
+	if err != nil {
+		t.Fatalf("dial stream: %v", err)
+	}
+	defer ws.Close(websocket.StatusNormalClosure, "")
+
+	if err := RevokeTokens(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ws.Read(readCtx); err == nil {
+		t.Fatal("stream remained open after token revocation")
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("server exit after revoke: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("server did not stop after token revocation")
 	}
 }
 
@@ -288,7 +402,7 @@ func TestHubAudioResetDropsCanceledTailUntilNextTurn(t *testing.T) {
 	c := &streamConn{
 		out:   make(chan []byte, 1),
 		audio: make(chan []byte, audioQueueDepth),
-		kick:  make(chan struct{}),
+		kick:  make(chan string, 1),
 	}
 	if !h.add(c) {
 		t.Fatal("failed to add stream connection")
@@ -315,7 +429,7 @@ func TestHubAudioResetDropsCanceledTailUntilNextTurn(t *testing.T) {
 	late := &streamConn{
 		out:   make(chan []byte, 1),
 		audio: make(chan []byte, audioQueueDepth),
-		kick:  make(chan struct{}),
+		kick:  make(chan string, 1),
 	}
 	if !h.add(late) {
 		t.Fatal("failed to add late stream connection")
@@ -538,6 +652,20 @@ func TestValidateBind(t *testing.T) {
 	}
 }
 
+func TestStartDiscoverySkipsUnreachableBindAddresses(t *testing.T) {
+	discovery, err := StartDiscovery("127.0.0.1:7262", "fingerprint", "Samantha")
+	if err != nil {
+		t.Fatalf("loopback discovery: %v", err)
+	}
+	if discovery != nil {
+		discovery.Stop()
+		t.Fatal("loopback listener must not advertise on LAN interfaces")
+	}
+	if _, err := StartDiscovery("0.0.0.0:7262", "fingerprint", "Samantha"); err == nil {
+		t.Fatal("unspecified bind advertised without a concrete endpoint")
+	}
+}
+
 func TestRateLimiterCapsPerWindow(t *testing.T) {
 	l := newRateLimiter(3, time.Minute)
 	now := time.Now()
@@ -564,7 +692,7 @@ func TestHubEvictsSlowClients(t *testing.T) {
 	slow := &streamConn{
 		out:   make(chan []byte, 1),
 		audio: make(chan []byte, audioQueueDepth),
-		kick:  make(chan struct{}),
+		kick:  make(chan string, 1),
 	}
 	h.add(slow)
 
@@ -947,7 +1075,7 @@ func newTestConn(outDepth, audioDepth int) *streamConn {
 	return &streamConn{
 		out:   make(chan []byte, outDepth),
 		audio: make(chan []byte, audioDepth),
-		kick:  make(chan struct{}),
+		kick:  make(chan string, 1),
 	}
 }
 
@@ -1220,5 +1348,37 @@ func TestAudioQueueDropDoesNotKick(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("event not delivered after audio drop")
+	}
+}
+
+func TestDecodePCMS16LE(t *testing.T) {
+	// two samples: 0 and 16384 (~0.5)
+	raw := []byte{0x00, 0x00, 0x00, 0x40}
+	b64 := base64.StdEncoding.EncodeToString(raw)
+	samples, err := decodePCMS16LE(b64, 16000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 2 {
+		t.Fatalf("len=%d", len(samples))
+	}
+	if samples[0] != 0 {
+		t.Fatalf("s0=%v", samples[0])
+	}
+	if samples[1] < 0.49 || samples[1] > 0.51 {
+		t.Fatalf("s1=%v", samples[1])
+	}
+	if _, err := decodePCMS16LE(b64, 48000); err == nil {
+		t.Fatal("want sample_rate error")
+	}
+}
+
+func TestSubmitVoiceRequiresVoiceRunner(t *testing.T) {
+	d := NewDispatcher(&scriptedRunner{}, events.NewBus(), nil, nil)
+	if d.VoiceEnabled() {
+		t.Fatal("scriptedRunner is not a VoiceTurnRunner")
+	}
+	if err := d.SubmitVoice(); err == nil {
+		t.Fatal("SubmitVoice must fail without voice runner")
 	}
 }

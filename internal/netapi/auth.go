@@ -12,12 +12,14 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -42,6 +44,8 @@ type Credentials struct {
 	// Pairing is a short-lived code clients exchange for Token over TLS.
 	// Regenerated each serve start; single-use once exchanged.
 	Pairing *PairingCode
+
+	pairingMu sync.Mutex
 }
 
 // PairingCode is a single-use, short-lived code for LAN/tailnet device
@@ -126,7 +130,10 @@ func loadCredentials(dir, externalCert, externalKey string) (*Credentials, error
 	creds.Certificate = cert
 	sum := sha256.Sum256(cert.Certificate[0])
 	creds.Fingerprint = hex.EncodeToString(sum[:])
-	creds.Pairing = newPairingCode()
+	creds.Pairing, err = newPairingCode()
+	if err != nil {
+		return nil, err
+	}
 
 	return creds, nil
 }
@@ -141,40 +148,48 @@ func generateToken() (string, error) {
 
 // newPairingCode builds a 6-digit decimal code (cryptographically random)
 // valid for pairingTTL.
-func newPairingCode() *PairingCode {
-	// 1_000_000 possibilities; fine for LAN with short TTL + TLS + rate limit.
-	n := make([]byte, 4)
-	if _, err := rand.Read(n); err != nil {
-		// Extremely unlikely; fall back to a deterministic-looking code so
-		// serve still starts (tests inject their own codes when needed).
-		return &PairingCode{Code: "000000", ExpiresAt: time.Now().Add(pairingTTL)}
-	}
-	code := int(n[0])<<24 | int(n[1])<<16 | int(n[2])<<8 | int(n[3])
-	if code < 0 {
-		code = -code
+func newPairingCode() (*PairingCode, error) {
+	return pairingCodeFrom(rand.Reader, time.Now())
+}
+
+func pairingCodeFrom(random io.Reader, now time.Time) (*PairingCode, error) {
+	// Sampling with rand.Int avoids modulo bias while preserving all one
+	// million six-digit values, including leading zeroes.
+	n, err := rand.Int(random, big.NewInt(1_000_000))
+	if err != nil {
+		return nil, fmt.Errorf("generate pairing code: %w", err)
 	}
 	return &PairingCode{
-		Code:      fmt.Sprintf("%06d", code%1000000),
-		ExpiresAt: time.Now().Add(pairingTTL),
-	}
+		Code:      fmt.Sprintf("%06d", n.Int64()),
+		ExpiresAt: now.Add(pairingTTL),
+	}, nil
 }
 
 // RefreshPairingCode issues a new pairing code (e.g. after the previous one
 // expires or is used).
-func (c *Credentials) RefreshPairingCode() *PairingCode {
-	c.Pairing = newPairingCode()
-	return c.Pairing
+func (c *Credentials) RefreshPairingCode() (*PairingCode, error) {
+	c.pairingMu.Lock()
+	defer c.pairingMu.Unlock()
+	pairing, err := newPairingCode()
+	if err != nil {
+		return nil, err
+	}
+	c.Pairing = pairing
+	return pairing, nil
 }
 
 // ExchangePairingCode validates a pairing code and returns the long-lived
 // bearer token. The code is single-use; on success it is marked used.
 func (c *Credentials) ExchangePairingCode(code string) (token string, err error) {
+	c.pairingMu.Lock()
+	defer c.pairingMu.Unlock()
+
 	code = strings.TrimSpace(code)
 	if c.Pairing == nil {
 		return "", fmt.Errorf("no pairing code available")
 	}
 	if c.Pairing.used {
-		return "", fmt.Errorf("pairing code already used — restart serve or wait for a new code")
+		return "", fmt.Errorf("pairing code already used — restart serve to issue a new code")
 	}
 	if time.Now().After(c.Pairing.ExpiresAt) {
 		return "", fmt.Errorf("pairing code expired")
@@ -182,13 +197,16 @@ func (c *Credentials) ExchangePairingCode(code string) (token string, err error)
 	if subtle.ConstantTimeCompare([]byte(code), []byte(c.Pairing.Code)) != 1 {
 		return "", fmt.Errorf("invalid pairing code")
 	}
+	if !c.tokenActive() {
+		return "", fmt.Errorf("serve token has been revoked")
+	}
 	c.Pairing.used = true
 	return c.Token, nil
 }
 
-// RevokeTokens deletes the long-lived bearer token file so the next serve
-// start mints a fresh one. Callers should stop serve (or refuse connections)
-// before or immediately after revoke. Pairing codes are also cleared.
+// RevokeTokens deletes the long-lived bearer token file. A running server
+// observes the deletion, rejects further controls, closes active streams, and
+// exits; the next serve start mints a fresh token and pairing code.
 func RevokeTokens(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create serve credentials dir: %w", err)
@@ -198,6 +216,21 @@ func RevokeTokens(dir string) error {
 		return fmt.Errorf("remove token: %w", err)
 	}
 	return nil
+}
+
+// tokenActive reports whether this credentials view still matches the
+// authoritative on-disk token. Credentials assembled directly in tests have
+// no Dir and retain the original in-memory-only behavior.
+func (c *Credentials) tokenActive() bool {
+	if c.Dir == "" {
+		return true
+	}
+	tokenBytes, err := os.ReadFile(filepath.Join(c.Dir, tokenFile))
+	if err != nil {
+		return false
+	}
+	onDisk := strings.TrimSpace(string(tokenBytes))
+	return subtle.ConstantTimeCompare([]byte(onDisk), []byte(c.Token)) == 1
 }
 
 // RotateToken regenerates the long-lived token in place and returns the new
@@ -214,6 +247,9 @@ func RotateToken(dir string) (*Credentials, error) {
 // route. Browsers cannot set custom headers on WebSocket handshakes, so the
 // stream endpoint alone also accepts ?token=.
 func (c *Credentials) VerifyRequest(r *http.Request) bool {
+	if !c.tokenActive() {
+		return false
+	}
 	const prefix = "Bearer "
 	header := r.Header.Get("Authorization")
 	if strings.HasPrefix(header, prefix) {

@@ -24,8 +24,8 @@ type Discovery struct {
 
 // StartDiscovery registers a Bonjour service for the given TCP bind address.
 // host is a human-readable instance name (defaults to hostname).
-// Returns nil, nil when the bind address cannot be parsed (discovery is
-// best-effort and must not block serve).
+// Returns nil, nil for loopback because advertising a LAN service that is not
+// reachable from the LAN would mislead clients.
 func StartDiscovery(bind string, fingerprint string, instance string) (*Discovery, error) {
 	host, portStr, err := net.SplitHostPort(bind)
 	if err != nil {
@@ -35,11 +35,23 @@ func StartDiscovery(bind string, fingerprint string, instance string) (*Discover
 	if err != nil {
 		return nil, fmt.Errorf("parse bind port for mDNS: %w", err)
 	}
+	ip := net.ParseIP(host)
+	if ip == nil || ip.IsUnspecified() {
+		return nil, fmt.Errorf("mDNS requires a concrete bind IP, got %q", host)
+	}
+	if ip.IsLoopback() {
+		return nil, nil
+	}
+	iface, err := interfaceForIP(ip)
+	if err != nil {
+		return nil, err
+	}
+	hostname, _ := os.Hostname()
+	if hostname == "" {
+		hostname = "samantha"
+	}
 	if instance == "" {
-		instance, _ = os.Hostname()
-		if instance == "" {
-			instance = "samantha"
-		}
+		instance = hostname
 	}
 	// Truncate fingerprint for TXT; full fingerprint is available over TLS
 	// pair/status for clients that already connected.
@@ -51,15 +63,18 @@ func StartDiscovery(bind string, fingerprint string, instance string) (*Discover
 		"path=/v1/stream",
 		"fp=" + hint,
 	}
-	// Prefer advertising on the bound interface when the host is a concrete IP.
-	var ifaces []net.Interface
-	if ip := net.ParseIP(host); ip != nil && !ip.IsUnspecified() && !ip.IsLoopback() {
-		if iface, err := interfaceForIP(ip); err == nil && iface != nil {
-			ifaces = []net.Interface{*iface}
-		}
-	}
-
-	server, err := zeroconf.Register(instance, ServiceType, "local.", port, txt, ifaces)
+	// RegisterProxy keeps the DNS answers aligned with the exact address the
+	// HTTPS listener bound. Register would publish every address on iface.
+	server, err := zeroconf.RegisterProxy(
+		instance,
+		ServiceType,
+		"local.",
+		port,
+		hostname,
+		[]string{ip.String()},
+		txt,
+		[]net.Interface{*iface},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("mdns register: %w", err)
 	}
@@ -108,14 +123,29 @@ func WaitDiscovery(ctx context.Context, timeout time.Duration) ([]*zeroconf.Serv
 	var found []*zeroconf.ServiceEntry
 	browseCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	go func() {
-		for e := range entries {
-			found = append(found, e)
-		}
-	}()
 	if err := resolver.Browse(browseCtx, ServiceType, "local.", entries); err != nil {
 		return found, err
 	}
-	<-browseCtx.Done()
-	return found, nil
+	for {
+		select {
+		case entry, ok := <-entries:
+			if !ok {
+				return found, nil
+			}
+			found = append(found, entry)
+		case <-browseCtx.Done():
+			// Drain entries already delivered before the cancellation boundary.
+			for {
+				select {
+				case entry, ok := <-entries:
+					if !ok {
+						return found, nil
+					}
+					found = append(found, entry)
+				default:
+					return found, nil
+				}
+			}
+		}
+	}
 }

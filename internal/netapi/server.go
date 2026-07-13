@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/events"
 )
 
@@ -30,6 +31,9 @@ type Options struct {
 	// Audio, when set, is attached to the server hub so Phase 3 stream
 	// clients receive TTS audio_chunk envelopes from the pipeline player.
 	Audio *AudioFanout
+	// Ingress, when set, enables remote push-to-talk (Phase 4 / WI-62e19b).
+	// The serve pipeline's STT must already be wired to this same ingress.
+	Ingress *audio.Ingress
 	// OnListening is called once the TCP listener is bound, before Accept
 	// loops run. Use it to print banners with the real bound address.
 	OnListening func(addr net.Addr)
@@ -53,6 +57,9 @@ func New(opts Options) *Server {
 	h := newHub()
 	if opts.Audio != nil {
 		opts.Audio.AttachHub(h)
+	}
+	if opts.Ingress != nil {
+		h.setIngress(opts.Ingress)
 	}
 	return &Server{
 		opts:         opts,
@@ -119,9 +126,18 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.ServeTLS(ln, "", "") }()
+	monitorCtx, stopMonitor := context.WithCancel(ctx)
+	defer stopMonitor()
+	revoked := s.watchToken(monitorCtx)
 
 	select {
 	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+		return nil
+	case <-revoked:
+		s.hub.evictAll("credentials revoked")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
@@ -132,6 +148,32 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		}
 		return err
 	}
+}
+
+// watchToken closes its result when another process revokes or rotates the
+// credentials file. A nil result disables the select case for credentials
+// assembled directly in tests without a backing directory.
+func (s *Server) watchToken(ctx context.Context) <-chan struct{} {
+	if s.opts.Credentials == nil || s.opts.Credentials.Dir == "" {
+		return nil
+	}
+	revoked := make(chan struct{})
+	go func() {
+		defer close(revoked)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if !s.opts.Credentials.tokenActive() {
+					return
+				}
+			}
+		}
+	}()
+	return revoked
 }
 
 // authMiddleware enforces the mandatory bearer token on every endpoint
