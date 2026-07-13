@@ -138,22 +138,6 @@ func TestConversationScrollAndFollow(t *testing.T) {
 	}
 }
 
-func TestConversationMouseWheelScrollsHistory(t *testing.T) {
-	m := sizedConversation(t, 80, 10)
-	for i := range 50 {
-		m.appendTranscript(fmt.Sprintf("line %d", i))
-	}
-	if !m.viewport.AtBottom() {
-		t.Fatal("viewport did not start at the tail")
-	}
-	m, _ = m.Update(tea.MouseMsg{
-		X: 5, Y: 4, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress,
-	})
-	if m.viewport.AtBottom() {
-		t.Fatal("mouse wheel did not scroll conversation history")
-	}
-}
-
 func TestConversationResizeKeepsContent(t *testing.T) {
 	m := sizedConversation(t, 80, 24)
 	m.appendTranscript(renderUserTurn("survives resize"))

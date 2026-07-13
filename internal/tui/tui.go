@@ -231,7 +231,10 @@ func run(cfg *config.Config, build RuntimeBuilder, startInConversation bool) err
 	app.progress = newEventBridge(16)
 	app.slot = &runtimeSlot{}
 
-	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	// Do not enable Bubble Tea mouse reporting here. Claiming the mouse makes
+	// terminals send clicks and drags to Samantha instead of allowing native
+	// text selection, copy, and link activation.
+	p := tea.NewProgram(app, tea.WithAltScreen())
 	m, runErr := p.Run()
 
 	// Stop the in-flight turn, drain it, then tear the pipeline down — the

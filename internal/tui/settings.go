@@ -236,10 +236,16 @@ func (m *settingsModel) ensureCursorVisible() {
 }
 
 func (m settingsModel) visibleRows() int {
-	if m.height > 0 && m.height < 12 {
-		return max(m.height-4, 1)
+	if m.height <= 0 {
+		return 10
 	}
-	return max(m.height-10, 3)
+	// Compact: title, tabs, footer. Full: title, tabs, rule, status, footer.
+	// The list receives every other row instead of reserving guessed whitespace.
+	chrome := 5
+	if m.height < 12 {
+		chrome = 3
+	}
+	return max(m.height-chrome, 1)
 }
 
 // cancelPreview stops any in-flight voice preview. Safe to call when idle.
@@ -434,16 +440,8 @@ func (m settingsModel) View() string {
 	width := m.renderWidth()
 	compact := m.height > 0 && m.height < 12
 
-	title := titleStyle.Render("  Settings")
-	if compact {
-		title = headerStyle.Render("  Settings")
-	}
-	b.WriteString(title)
-	if compact {
-		b.WriteString("\n")
-	} else {
-		b.WriteString("\n\n")
-	}
+	b.WriteString(headerStyle.Render("  Settings"))
+	b.WriteString("\n")
 
 	tabs := []string{"Provider", "Model", "Voice", "Input", "Output"}
 	var tabLine strings.Builder
@@ -460,8 +458,8 @@ func (m settingsModel) View() string {
 	b.WriteString(ansi.Truncate("  "+tabLine.String(), width, "…"))
 	b.WriteString("\n")
 	if !compact {
-		b.WriteString(dimStyle.Render(strings.Repeat("─", max(min(width, 35), 1))))
-		b.WriteString("\n\n")
+		b.WriteString(dimStyle.Render(strings.Repeat("─", max(width, 1))))
+		b.WriteString("\n")
 	}
 
 	// Render active section list.
@@ -528,15 +526,14 @@ func (m settingsModel) View() string {
 		}
 		b.WriteString(ansi.Truncate(footer, width, "…"))
 	} else {
-		b.WriteString("\n")
 		if m.message != "" {
 			b.WriteString(ansi.Truncate("  "+statusStyle.Render(m.message), width, "…"))
-			b.WriteString("\n")
+		} else {
+			b.WriteString(" ")
 		}
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render(ansi.Truncate(help, width, "…")))
 	}
-	b.WriteString("\n")
 
 	return b.String()
 }

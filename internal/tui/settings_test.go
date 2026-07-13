@@ -62,6 +62,41 @@ func TestSettingsCompactsForSmallTerminal(t *testing.T) {
 	}
 }
 
+func TestSettingsListUsesAllAvailableRows(t *testing.T) {
+	items := []string{"one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"}
+	m := settingsModel{cfg: &config.Config{}, providerItems: items}
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 13})
+
+	if got := m.visibleRows(); got != 8 {
+		t.Fatalf("visible rows = %d, want 8 at a 13-row terminal", got)
+	}
+	view := stripANSI(m.View())
+	for _, item := range items[:8] {
+		if !strings.Contains(view, item) {
+			t.Errorf("expanded settings view missing %q:\n%s", item, view)
+		}
+	}
+	if strings.Contains(view, items[8]) {
+		t.Fatalf("settings rendered more choices than fit:\n%s", view)
+	}
+	if got := len(strings.Split(view, "\n")); got != 13 {
+		t.Fatalf("settings view has %d rows, want exactly 13:\n%s", got, view)
+	}
+}
+
+func TestSettingsShowsEntireListWhenItFits(t *testing.T) {
+	items := []string{"one", "two", "three", "four", "five", "six"}
+	m := settingsModel{cfg: &config.Config{}, providerItems: items}
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	view := stripANSI(m.View())
+	for _, item := range items {
+		if !strings.Contains(view, item) {
+			t.Errorf("settings hid %q even though the list fits:\n%s", item, view)
+		}
+	}
+}
+
 func TestVoicePreviewDoneGatingSameVoice(t *testing.T) {
 	m := settingsModel{previewing: "af_heart", previewID: 2, message: "playing"}
 

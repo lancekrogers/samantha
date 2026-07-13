@@ -158,11 +158,6 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
 
-	case tea.MouseMsg:
-		if !tea.MouseEvent(msg).IsWheel() {
-			return m, nil
-		}
-		return m.updateScroll(msg)
 	}
 
 	return m, nil

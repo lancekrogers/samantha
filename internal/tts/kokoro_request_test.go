@@ -164,6 +164,24 @@ func TestSynthesizeRequestAppliesVoiceAndSpeed(t *testing.T) {
 	}
 }
 
+func TestSynthesizeRequestPreparesTextAtKokoroBoundary(t *testing.T) {
+	var got string
+	k := newTestKokoro(func(text string, sid int, speed float32) *sherpa.GeneratedAudio {
+		got = text
+		return &sherpa.GeneratedAudio{SampleRate: 24000, Samples: []float32{0.1}}
+	})
+
+	result, err := k.SynthesizeRequest(context.Background(), SynthesisRequest{Text: "I had written the button label."})
+	if err != nil {
+		t.Fatalf("SynthesizeRequest() error = %v", err)
+	}
+	drainStream(t, result.Stream)
+
+	if want := "I had writ-ten the but-ton label."; got != want {
+		t.Fatalf("generate text = %q, want %q", got, want)
+	}
+}
+
 func TestSynthesizeMatchesRequestPath(t *testing.T) {
 	var got generateCall
 	k := newTestKokoro(func(text string, sid int, speed float32) *sherpa.GeneratedAudio {
