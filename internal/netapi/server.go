@@ -87,6 +87,8 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("GET /v1/sessions", s.handleSessions)
 	mux.HandleFunc("POST /v1/sessions/{id}/resume", s.handleResume)
+	// Phase 2: public pairing exchange (short code → long-lived token).
+	mux.HandleFunc("POST /v1/pair", s.handlePair)
 	// Embedded phone voice client (public HTML/JS; WS still authenticated).
 	web := webFileServer()
 	mux.Handle("GET /{$}", web)

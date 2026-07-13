@@ -83,6 +83,141 @@ func TestVerifyRequest(t *testing.T) {
 	}
 }
 
+func TestPairingCodeExchangeAndSingleUse(t *testing.T) {
+	creds, err := LoadOrCreateCredentials(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if creds.Pairing == nil || len(creds.Pairing.Code) != 6 {
+		t.Fatalf("pairing code = %+v, want 6 digits", creds.Pairing)
+	}
+	token, err := creds.ExchangePairingCode(creds.Pairing.Code)
+	if err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+	if token != creds.Token {
+		t.Fatal("exchange returned wrong token")
+	}
+	if _, err := creds.ExchangePairingCode(creds.Pairing.Code); err == nil {
+		t.Fatal("second exchange with same code must fail")
+	}
+	// Fresh code after refresh works once.
+	code := creds.RefreshPairingCode().Code
+	if _, err := creds.ExchangePairingCode(code); err != nil {
+		t.Fatalf("refresh exchange: %v", err)
+	}
+	if _, err := creds.ExchangePairingCode("999999"); err == nil {
+		t.Fatal("wrong code must fail")
+	}
+}
+
+func TestPairingCodeExpires(t *testing.T) {
+	creds := &Credentials{
+		Token: "tok",
+		Pairing: &PairingCode{
+			Code:      "123456",
+			ExpiresAt: time.Now().Add(-time.Second),
+		},
+	}
+	if _, err := creds.ExchangePairingCode("123456"); err == nil {
+		t.Fatal("expired pairing code must fail")
+	}
+}
+
+func TestRevokeTokensForcesNewToken(t *testing.T) {
+	dir := t.TempDir()
+	first, err := LoadOrCreateCredentials(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RevokeTokens(dir); err != nil {
+		t.Fatal(err)
+	}
+	second, err := LoadOrCreateCredentials(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.TokenCreated {
+		t.Fatal("load after revoke must mint a new token")
+	}
+	if second.Token == first.Token {
+		t.Fatal("token unchanged after revoke")
+	}
+}
+
+func TestPairHTTPEndpoint(t *testing.T) {
+	creds, err := LoadOrCreateCredentials(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := creds.Pairing.Code
+	bus := events.NewBus()
+	disp := NewDispatcher(&scriptedRunner{}, bus, nil, nil)
+	go disp.Run(context.Background())
+
+	srv := New(Options{
+		Bind:        "127.0.0.1:0",
+		Credentials: creds,
+		Bus:         bus,
+		Dispatcher:  disp,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.ListenAndServe(ctx) }()
+
+	// Wait for bind.
+	var addr string
+	for i := 0; i < 50; i++ {
+		if a := srv.Addr(); a != nil {
+			addr = a.String()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if addr == "" {
+		t.Fatal("server never bound")
+	}
+
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	body := strings.NewReader(`{"code":"` + code + `"}`)
+	req, _ := http.NewRequest(http.MethodPost, "https://"+addr+"/v1/pair", body)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("pair status = %d body=%s", resp.StatusCode, b)
+	}
+	var out struct {
+		Token       string `json:"token"`
+		Fingerprint string `json:"fingerprint"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Token != creds.Token || out.Fingerprint != creds.Fingerprint {
+		t.Fatalf("pair response = %+v", out)
+	}
+
+	// Second use of the same code must fail (single-use).
+	req2, _ := http.NewRequest(http.MethodPost, "https://"+addr+"/v1/pair", strings.NewReader(`{"code":"`+code+`"}`))
+	req2.Header.Set("Content-Type", "application/json")
+	resp2, err := client.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode == http.StatusOK {
+		t.Fatal("reused pairing code accepted")
+	}
+	cancel()
+	<-errCh
+}
+
 func TestLoadExternalTLSCertificate(t *testing.T) {
 	dir := t.TempDir()
 	// Mint a self-signed pair first, then reload it as "external".

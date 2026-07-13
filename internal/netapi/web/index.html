@@ -130,12 +130,19 @@
 <body>
   <header>
     <h1>Samantha</h1>
-    <p>Phone voice over Tailscale — text in, streamed TTS out. Tap Start once to unlock audio.</p>
+    <p>Phone voice over Tailscale — text in, streamed TTS out. Pair with a short code or paste the token, then Start once to unlock audio.</p>
   </header>
   <main>
     <div>
+      <label for="pairCode">Pairing code</label>
+      <div class="row">
+        <input id="pairCode" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code from Mac" style="flex:1" />
+        <button id="pair" class="secondary" type="button">Pair</button>
+      </div>
+    </div>
+    <div>
       <label for="token">Bearer token</label>
-      <input id="token" type="password" autocomplete="off" placeholder="paste serve token" />
+      <input id="token" type="password" autocomplete="off" placeholder="filled by Pair, or paste serve token" />
     </div>
     <div class="row">
       <button id="start" type="button">Start</button>

@@ -5,6 +5,8 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   const tokenEl = $("token");
+  const pairCodeEl = $("pairCode");
+  const pairBtn = $("pair");
   const startBtn = $("start");
   const sendBtn = $("send");
   const interruptBtn = $("interrupt");
@@ -234,6 +236,38 @@
       }
     };
   }
+
+  pairBtn.addEventListener("click", () => {
+    const code = pairCodeEl.value.trim();
+    if (!code) {
+      log("enter the 6-digit pairing code from the Mac", "err");
+      return;
+    }
+    setStatus("pairing…");
+    fetch("/v1/pair", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: code }),
+    })
+      .then(async (resp) => {
+        const body = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          throw new Error(body.error || "pair failed (" + resp.status + ")");
+        }
+        if (!body.token) {
+          throw new Error("pair response missing token");
+        }
+        tokenEl.value = body.token;
+        localStorage.setItem(TOKEN_KEY, body.token);
+        pairCodeEl.value = "";
+        log("paired — token saved on this device", "sys");
+        setStatus("paired (token ready)");
+      })
+      .catch((err) => {
+        log("pair failed: " + err.message, "err");
+        setStatus("pair failed");
+      });
+  });
 
   startBtn.addEventListener("click", () => {
     ensureAudio()

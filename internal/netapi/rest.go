@@ -27,6 +27,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"turn_active":    s.dispatcher.TurnActive(),
 		"providers":      s.providers,
 		"uptime_seconds": int64(time.Since(s.started).Seconds()),
+		"fingerprint":    s.opts.Credentials.Fingerprint,
 	})
 }
 
@@ -49,6 +50,34 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"resumed": id})
+}
+
+// handlePair exchanges a short-lived pairing code for the long-lived bearer
+// token. Public (no auth) so a phone can pair without already knowing the
+// token; rate-limited by the global serve limiter.
+func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST required"})
+		return
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "malformed JSON body"})
+		return
+	}
+	token, err := s.opts.Credentials.ExchangePairingCode(body.Code)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+	// Issue a fresh code so the banner/QR can be reused without restarting.
+	s.opts.Credentials.RefreshPairingCode()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token":       token,
+		"fingerprint": s.opts.Credentials.Fingerprint,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

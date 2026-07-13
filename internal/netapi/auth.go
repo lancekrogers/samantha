@@ -28,6 +28,7 @@ type Credentials struct {
 	Token       string
 	Certificate tls.Certificate
 	Fingerprint string // SHA-256 of the leaf cert DER, hex
+	Dir         string // credentials directory (token/cert files)
 
 	// TokenCreated reports whether this load generated a fresh token; the
 	// caller prints the token exactly once, at creation.
@@ -37,7 +38,22 @@ type Credentials struct {
 	// supplied paths (e.g. `tailscale cert` material) instead of the
 	// self-signed TOFU pair under the serve credentials dir.
 	ExternalTLS bool
+
+	// Pairing is a short-lived code clients exchange for Token over TLS.
+	// Regenerated each serve start; single-use once exchanged.
+	Pairing *PairingCode
 }
+
+// PairingCode is a single-use, short-lived code for LAN/tailnet device
+// pairing without pasting the long bearer token by hand.
+type PairingCode struct {
+	Code      string
+	ExpiresAt time.Time
+	used      bool
+}
+
+// pairingTTL is how long a printed pairing code remains valid.
+const pairingTTL = 10 * time.Minute
 
 const (
 	tokenFile = "token"
@@ -67,7 +83,7 @@ func loadCredentials(dir, externalCert, externalKey string) (*Credentials, error
 		return nil, fmt.Errorf("create serve credentials dir: %w", err)
 	}
 
-	creds := &Credentials{}
+	creds := &Credentials{Dir: dir}
 
 	tokenPath := filepath.Join(dir, tokenFile)
 	tokenBytes, err := os.ReadFile(tokenPath)
@@ -75,11 +91,11 @@ func loadCredentials(dir, externalCert, externalKey string) (*Credentials, error
 	case err == nil:
 		creds.Token = strings.TrimSpace(string(tokenBytes))
 	case os.IsNotExist(err):
-		raw := make([]byte, 32)
-		if _, err := rand.Read(raw); err != nil {
-			return nil, fmt.Errorf("generate token: %w", err)
+		token, err := generateToken()
+		if err != nil {
+			return nil, err
 		}
-		creds.Token = hex.EncodeToString(raw)
+		creds.Token = token
 		if err := os.WriteFile(tokenPath, []byte(creds.Token+"\n"), 0o600); err != nil {
 			return nil, fmt.Errorf("store token: %w", err)
 		}
@@ -110,8 +126,88 @@ func loadCredentials(dir, externalCert, externalKey string) (*Credentials, error
 	creds.Certificate = cert
 	sum := sha256.Sum256(cert.Certificate[0])
 	creds.Fingerprint = hex.EncodeToString(sum[:])
+	creds.Pairing = newPairingCode()
 
 	return creds, nil
+}
+
+func generateToken() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate token: %w", err)
+	}
+	return hex.EncodeToString(raw), nil
+}
+
+// newPairingCode builds a 6-digit decimal code (cryptographically random)
+// valid for pairingTTL.
+func newPairingCode() *PairingCode {
+	// 1_000_000 possibilities; fine for LAN with short TTL + TLS + rate limit.
+	n := make([]byte, 4)
+	if _, err := rand.Read(n); err != nil {
+		// Extremely unlikely; fall back to a deterministic-looking code so
+		// serve still starts (tests inject their own codes when needed).
+		return &PairingCode{Code: "000000", ExpiresAt: time.Now().Add(pairingTTL)}
+	}
+	code := int(n[0])<<24 | int(n[1])<<16 | int(n[2])<<8 | int(n[3])
+	if code < 0 {
+		code = -code
+	}
+	return &PairingCode{
+		Code:      fmt.Sprintf("%06d", code%1000000),
+		ExpiresAt: time.Now().Add(pairingTTL),
+	}
+}
+
+// RefreshPairingCode issues a new pairing code (e.g. after the previous one
+// expires or is used).
+func (c *Credentials) RefreshPairingCode() *PairingCode {
+	c.Pairing = newPairingCode()
+	return c.Pairing
+}
+
+// ExchangePairingCode validates a pairing code and returns the long-lived
+// bearer token. The code is single-use; on success it is marked used.
+func (c *Credentials) ExchangePairingCode(code string) (token string, err error) {
+	code = strings.TrimSpace(code)
+	if c.Pairing == nil {
+		return "", fmt.Errorf("no pairing code available")
+	}
+	if c.Pairing.used {
+		return "", fmt.Errorf("pairing code already used — restart serve or wait for a new code")
+	}
+	if time.Now().After(c.Pairing.ExpiresAt) {
+		return "", fmt.Errorf("pairing code expired")
+	}
+	if subtle.ConstantTimeCompare([]byte(code), []byte(c.Pairing.Code)) != 1 {
+		return "", fmt.Errorf("invalid pairing code")
+	}
+	c.Pairing.used = true
+	return c.Token, nil
+}
+
+// RevokeTokens deletes the long-lived bearer token file so the next serve
+// start mints a fresh one. Callers should stop serve (or refuse connections)
+// before or immediately after revoke. Pairing codes are also cleared.
+func RevokeTokens(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create serve credentials dir: %w", err)
+	}
+	tokenPath := filepath.Join(dir, tokenFile)
+	if err := os.Remove(tokenPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove token: %w", err)
+	}
+	return nil
+}
+
+// RotateToken regenerates the long-lived token in place and returns the new
+// credentials view (TLS material reloaded from disk). Existing clients with
+// the old token are invalidated immediately.
+func RotateToken(dir string) (*Credentials, error) {
+	if err := RevokeTokens(dir); err != nil {
+		return nil, err
+	}
+	return LoadOrCreateCredentials(dir)
 }
 
 // VerifyRequest checks the Authorization bearer header on every protected

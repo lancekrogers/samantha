@@ -26,12 +26,14 @@ import (
 const defaultServePort = 7262 // "SAMA"
 
 var (
-	serveBind        string
-	servePort        int
-	serveNoVoice     bool
-	serveAllowPublic bool
-	serveTLSCert     string
-	serveTLSKey      string
+	serveBind         string
+	servePort         int
+	serveNoVoice      bool
+	serveAllowPublic  bool
+	serveTLSCert      string
+	serveTLSKey       string
+	serveNoMDNS       bool
+	serveRevokeTokens bool
 )
 
 var serveCmd = &cobra.Command{
@@ -47,16 +49,22 @@ this machine's speaker unless --no-voice is set (host muted; stream clients
 still hear).
 
 An embedded phone voice page is served at https://<host>:<port>/ — paste the
-token, tap Start (unlocks audio), and type (or use iOS dictation). For iOS
-Safari, load a real certificate via --tls-cert/--tls-key from
-` + "`tailscale cert <name>.<tailnet>.ts.net`" + ` so the page is a secure
-context.
+token (or enter the short pairing code), tap Start (unlocks audio), and type
+(or use iOS dictation). For iOS Safari, load a real certificate via
+--tls-cert/--tls-key from ` + "`tailscale cert <name>.<tailnet>.ts.net`" + `
+so the page is a secure context.
 
 Auth is mandatory: a bearer token is generated on first run (and self-signed
-TLS when no external cert is provided). Remote turns never get tool access
-unless remote_tools_enabled is set in config.`,
+TLS when no external cert is provided). A short-lived pairing code is printed
+each start so phones can pair without pasting the long token. Use
+--revoke-tokens to invalidate all issued tokens. mDNS advertises
+_samantha._tcp on the LAN (disable with --no-mdns). Remote turns never get
+tool access unless remote_tools_enabled is set in config.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if serveRevokeTokens {
+			return runRevokeTokens()
+		}
 		cfg, err := config.Load()
 		if err != nil {
 			return fmt.Errorf("load config: %w", err)
@@ -72,7 +80,19 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveAllowPublic, "allow-public", false, "Allow binding a non-private interface (dangerous)")
 	serveCmd.Flags().StringVar(&serveTLSCert, "tls-cert", "", "TLS certificate PEM (e.g. from tailscale cert)")
 	serveCmd.Flags().StringVar(&serveTLSKey, "tls-key", "", "TLS private key PEM (e.g. from tailscale cert)")
+	serveCmd.Flags().BoolVar(&serveNoMDNS, "no-mdns", false, "Do not advertise via mDNS/Bonjour")
+	serveCmd.Flags().BoolVar(&serveRevokeTokens, "revoke-tokens", false, "Delete the serve bearer token and exit (next serve mints a new one)")
 	rootCmd.AddCommand(serveCmd)
+}
+
+func runRevokeTokens() error {
+	dir := filepath.Join(config.ConfigDir(), "serve")
+	if err := netapi.RevokeTokens(dir); err != nil {
+		return err
+	}
+	fmt.Printf("  Revoked serve token under %s\n", dir)
+	fmt.Println(dimStyle.Render("  Next `samantha serve` will mint a new token (and pairing code)."))
+	return nil
 }
 
 func runServe(cfg *config.Config) error {
@@ -160,7 +180,7 @@ func runServe(cfg *config.Config) error {
 		ListSessions: listSessionSummaries,
 		Providers: netapi.Providers{
 			Brain: cfg.BrainProvider,
-			STT:   "", // no STT in serve mode
+			STT:   "", // no STT in serve mode (remote mic is a later slice)
 			TTS:   cfg.TTSProvider,
 		},
 		OnListening: func(bound net.Addr) {
@@ -170,6 +190,17 @@ func runServe(cfg *config.Config) error {
 				listenAddr = addr
 			}
 			printServeBanner(listenAddr, creds, cfg)
+			if !serveNoMDNS {
+				if disc, err := netapi.StartDiscovery(listenAddr, creds.Fingerprint, cfg.AgentName); err != nil {
+					fmt.Printf("  warning: mDNS advertise failed: %v\n", err)
+				} else {
+					go func() {
+						<-ctx.Done()
+						disc.Stop()
+					}()
+					fmt.Println(dimStyle.Render("  mDNS: advertising " + netapi.ServiceType + " (disable with --no-mdns)"))
+				}
+			}
 		},
 	})
 
@@ -228,7 +259,11 @@ func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config
 	fmt.Printf("  %s %s\n", keyStyle.Render("Listening:"), "https://"+addr)
 	fmt.Printf("  %s %s\n", keyStyle.Render("Voice page:"), "https://"+addr+"/")
 	if creds.ExternalTLS {
-		fmt.Printf("  %s %s\n", keyStyle.Render("TLS:"), "external cert ("+creds.Fingerprint[:16]+"…)")
+		fp := creds.Fingerprint
+		if len(fp) > 16 {
+			fp = fp[:16] + "…"
+		}
+		fmt.Printf("  %s %s\n", keyStyle.Render("TLS:"), "external cert ("+fp+")")
 	} else {
 		fmt.Printf("  %s %s\n", keyStyle.Render("Cert SHA-256:"), creds.Fingerprint)
 		fmt.Println(dimStyle.Render("  Self-signed — for iOS Safari use --tls-cert/--tls-key from tailscale cert"))
@@ -239,6 +274,15 @@ func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config
 	} else {
 		fmt.Println(dimStyle.Render("  Token on file at " + config.ConfigDir() + "/serve/token"))
 	}
+	if creds.Pairing != nil {
+		fmt.Printf("  %s %s  (expires %s)\n",
+			keyStyle.Render("Pairing code:"),
+			creds.Pairing.Code,
+			creds.Pairing.ExpiresAt.Format("15:04:05"))
+		fmt.Println(dimStyle.Render("  Phone: open voice page → enter code → Pair (POST /v1/pair)"))
+		fmt.Println(dimStyle.Render("  Or: curl -k -X POST https://" + addr + "/v1/pair -d '{\"code\":\"" + creds.Pairing.Code + "\"}'"))
+	}
+	fmt.Println(dimStyle.Render("  Revoke: samantha serve --revoke-tokens"))
 	if cfg.RemoteToolsEnabled {
 		fmt.Println(failStyle.Render("  WARNING: remote_tools_enabled=true — network clients can trigger tool calls on this machine."))
 	} else {

@@ -24,10 +24,11 @@ func webFileServer() http.Handler {
 }
 
 // isPublicPath reports routes that must be reachable without a bearer token
-// so the embedded client can load. API and stream stay authenticated.
+// so the embedded client can load and pair. Stream and other API routes stay
+// authenticated.
 func isPublicPath(path string) bool {
 	switch path {
-	case "/", "/index.html", "/app.js":
+	case "/", "/index.html", "/app.js", "/v1/pair":
 		return true
 	default:
 		return false
