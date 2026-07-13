@@ -108,11 +108,11 @@ func (g *GrokBrain) ThinkStream(ctx context.Context, input string, streamOpts St
 }
 
 // ThinkFull sends input and waits for the complete response.
-func (g *GrokBrain) ThinkFull(ctx context.Context, input string) (string, error) {
+func (g *GrokBrain) ThinkFull(ctx context.Context, input string, streamOpts StreamOptions) (string, error) {
 	g.history = append(g.history, Turn{Role: "user", Content: input})
 	prompt := g.buildPrompt()
 
-	result, err := g.client.RunPromptCtx(ctx, prompt, g.runOptions(grok.PlainOutput, g.cfg.VoiceToolsEnabled))
+	result, err := g.client.RunPromptCtx(ctx, prompt, g.runOptions(grok.PlainOutput, streamOpts.ToolsEnabled))
 	if err != nil {
 		return "", fmt.Errorf("grok error: %w", err)
 	}
