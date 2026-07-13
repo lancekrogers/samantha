@@ -26,10 +26,28 @@ type streamConn struct {
 	out  chan []byte
 	kick chan struct{} // closed exactly once to evict a slow client
 	once sync.Once
+
+	// audioStream is a per-connection preference set by the audio_output
+	// control message. When true, this client receives TTS audio_chunk /
+	// audio_end envelopes in addition to the normal event stream.
+	mu          sync.Mutex
+	audioStream bool
 }
 
 func (c *streamConn) evict() {
 	c.once.Do(func() { close(c.kick) })
+}
+
+func (c *streamConn) setAudioStream(on bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.audioStream = on
+}
+
+func (c *streamConn) wantsAudio() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.audioStream
 }
 
 // hub owns the single bus subscription and fans events out to connections.
@@ -64,9 +82,22 @@ func (h *hub) remove(c *streamConn) {
 // hub slot immediately so maxStreamClients capacity is available for new
 // connections without waiting for handleStream to return.
 func (h *hub) broadcast(msg []byte) {
+	h.enqueue(msg, false)
+}
+
+// broadcastAudio delivers TTS wire chunks only to clients that opted into
+// stream mode. Event-only clients stay quiet on the wire.
+func (h *hub) broadcastAudio(msg []byte) {
+	h.enqueue(msg, true)
+}
+
+func (h *hub) enqueue(msg []byte, audioOnly bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for c := range h.conns {
+		if audioOnly && !c.wantsAudio() {
+			continue
+		}
 		select {
 		case c.out <- msg:
 		default:
@@ -159,6 +190,12 @@ func (s *Server) readControls(ctx context.Context, ws *websocket.Conn, conn *str
 			if err := s.dispatcher.ClearHistory(); err != nil {
 				s.sendError(conn, dispatchErrText(err))
 			}
+		case "audio_output":
+			// Phase 3: per-connection preference. mode "stream" opts into
+			// TTS audio_chunk delivery; anything else (including "local" /
+			// "off" / empty) turns it off. Default is off so event-only
+			// clients are unaffected.
+			conn.setAudioStream(msg.Mode == "stream")
 		default:
 			s.sendError(conn, "unknown control message type: "+msg.Type)
 		}

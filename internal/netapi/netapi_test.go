@@ -3,17 +3,20 @@ package netapi
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/events"
 )
 
@@ -592,5 +595,286 @@ func TestResumeEndpoint(t *testing.T) {
 	}
 	if code := post("/v1/sessions/missing/resume"); code != http.StatusUnprocessableEntity {
 		t.Fatalf("missing resume = %d, want 422", code)
+	}
+}
+
+// --- Phase 3 audio stream ---
+
+// drainEngine consumes a PCM stream without hardware — local-mute path.
+type drainEngine struct {
+	streams atomic.Int32
+}
+
+func (d *drainEngine) PlayStream(ctx context.Context, stream *audio.PCMStream) (*audio.Playback, error) {
+	d.streams.Add(1)
+	if _, err := stream.WaitReady(ctx); err != nil {
+		return nil, err
+	}
+	started := make(chan struct{})
+	done := make(chan audio.PlaybackResult, 1)
+	go func() {
+		first := true
+		for {
+			select {
+			case <-ctx.Done():
+				if first {
+					close(started)
+				}
+				done <- audio.PlaybackResult{Interrupted: true, Err: ctx.Err()}
+				close(done)
+				return
+			case frames, ok := <-stream.Frames():
+				if !ok {
+					if first {
+						close(started)
+					}
+					done <- audio.PlaybackResult{Err: stream.Err()}
+					close(done)
+					return
+				}
+				if first && len(frames) > 0 {
+					first = false
+					close(started)
+				}
+			}
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-started:
+	}
+	return audio.NewPlayback(started, done), nil
+}
+
+func (d *drainEngine) Stop()           {}
+func (d *drainEngine) IsPlaying() bool { return false }
+func (d *drainEngine) Close() error    { return nil }
+
+func TestAudioFanoutStreamsWithoutLocalSpeaker(t *testing.T) {
+	h := newHub()
+	conn := &streamConn{out: make(chan []byte, 16), kick: make(chan struct{})}
+	conn.setAudioStream(true)
+	h.add(conn)
+
+	fanout := NewAudioFanout(nil)
+	fanout.AttachHub(h)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	stream := audio.NewPCMStream(ctx)
+	if err := stream.SetSampleRate(24000); err != nil {
+		t.Fatal(err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		playback, err := fanout.PlayStream(ctx, stream)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		<-playback.Done()
+		errCh <- nil
+	}()
+
+	// Give PlayStream a moment to enter WaitReady (already satisfied) and pump.
+	time.Sleep(10 * time.Millisecond)
+	if err := stream.Write([]float32{0.5, -0.5, 0.25}); err != nil {
+		t.Fatal(err)
+	}
+	stream.Close()
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("PlayStream: %v", err)
+	}
+
+	var sawChunk, sawEnd bool
+	deadline := time.After(2 * time.Second)
+	for !sawChunk || !sawEnd {
+		select {
+		case msg := <-conn.out:
+			var env map[string]any
+			if err := json.Unmarshal(msg, &env); err != nil {
+				t.Fatal(err)
+			}
+			switch env["type"] {
+			case "audio_chunk":
+				sawChunk = true
+				if env["format"] != audioWireFormat {
+					t.Fatalf("format = %v", env["format"])
+				}
+				if env["sample_rate"] != float64(24000) {
+					t.Fatalf("sample_rate = %v", env["sample_rate"])
+				}
+				data, _ := env["data"].(string)
+				raw, err := base64.StdEncoding.DecodeString(data)
+				if err != nil || len(raw) != 6 {
+					t.Fatalf("pcm payload = %d bytes err=%v, want 6", len(raw), err)
+				}
+			case "audio_end":
+				sawEnd = true
+				if env["reason"] != "complete" {
+					t.Fatalf("audio_end reason = %v", env["reason"])
+				}
+			}
+		case <-deadline:
+			t.Fatalf("chunk=%v end=%v — timed out waiting for audio envelopes", sawChunk, sawEnd)
+		}
+	}
+}
+
+func TestAudioFanoutWithLocalEngine(t *testing.T) {
+	local := &drainEngine{}
+	fanout := NewAudioFanout(local)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	stream := audio.NewPCMStream(ctx)
+	_ = stream.SetSampleRate(16000)
+
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		_ = stream.Write([]float32{0.1, 0.2, 0.3, 0.4})
+		stream.Close()
+	}()
+
+	playback, err := fanout.PlayStream(ctx, stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := <-playback.Done()
+	if result.Err != nil {
+		t.Fatalf("playback result: %v", result.Err)
+	}
+	if local.streams.Load() != 1 {
+		t.Fatalf("local PlayStream calls = %d, want 1", local.streams.Load())
+	}
+}
+
+func TestAudioOutputPreferenceGatesChunks(t *testing.T) {
+	bus := events.NewBus()
+	creds, err := LoadOrCreateCredentials(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fanout := NewAudioFanout(nil)
+	d := NewDispatcher(&scriptedRunner{runs: make(chan struct{}, 1)}, bus, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go d.Run(ctx)
+
+	s := New(Options{
+		Bind:        "127.0.0.1:0",
+		Credentials: creds,
+		Bus:         bus,
+		Dispatcher:  d,
+		Audio:       fanout,
+	})
+	go func() { _ = s.ListenAndServe(ctx) }()
+	deadline := time.After(2 * time.Second)
+	for s.Addr() == nil {
+		select {
+		case <-deadline:
+			t.Fatal("server never bound")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	addr := s.Addr().String()
+
+	dial := func() *websocket.Conn {
+		t.Helper()
+		header := http.Header{}
+		header.Set("Authorization", "Bearer "+creds.Token)
+		ws, _, err := websocket.Dial(ctx, "wss://"+addr+"/v1/stream", &websocket.DialOptions{
+			HTTPClient: insecureClient(),
+			HTTPHeader: header,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ws
+	}
+
+	wsStream := dial()
+	defer wsStream.Close(websocket.StatusNormalClosure, "")
+	wsQuiet := dial()
+	defer wsQuiet.Close(websocket.StatusNormalClosure, "")
+
+	// Only one client opts into audio.
+	optIn, _ := json.Marshal(controlMessage{Type: "audio_output", Mode: "stream"})
+	if err := wsStream.Write(ctx, websocket.MessageText, optIn); err != nil {
+		t.Fatal(err)
+	}
+	// Give the server a beat to apply the preference.
+	time.Sleep(20 * time.Millisecond)
+
+	// Push a synthetic TTS stream through the fanout.
+	pcmStream := audio.NewPCMStream(ctx)
+	_ = pcmStream.SetSampleRate(24000)
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		_ = pcmStream.Write([]float32{0.9, -0.9})
+		pcmStream.Close()
+	}()
+	if _, err := fanout.PlayStream(ctx, pcmStream); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stream client must see audio_chunk; quiet client must only see (or nothing).
+	readType := func(ws *websocket.Conn, timeout time.Duration) (string, bool) {
+		rctx, rcancel := context.WithTimeout(ctx, timeout)
+		defer rcancel()
+		_, data, err := ws.Read(rctx)
+		if err != nil {
+			return "", false
+		}
+		var env map[string]any
+		_ = json.Unmarshal(data, &env)
+		typ, _ := env["type"].(string)
+		return typ, true
+	}
+
+	typ, ok := readType(wsStream, 2*time.Second)
+	if !ok || typ != "audio_chunk" {
+		t.Fatalf("stream client got type %q ok=%v, want audio_chunk", typ, ok)
+	}
+	// Quiet client should not receive audio within a short window.
+	if typ, ok := readType(wsQuiet, 150*time.Millisecond); ok {
+		t.Fatalf("quiet client unexpectedly received %q", typ)
+	}
+}
+
+func TestHubBroadcastAudioSkipsOptOut(t *testing.T) {
+	h := newHub()
+	on := &streamConn{out: make(chan []byte, 2), kick: make(chan struct{})}
+	off := &streamConn{out: make(chan []byte, 2), kick: make(chan struct{})}
+	on.setAudioStream(true)
+	h.add(on)
+	h.add(off)
+
+	h.broadcastAudio([]byte(`{"type":"audio_chunk"}`))
+	h.broadcast([]byte(`{"type":"info"}`))
+
+	select {
+	case <-on.out:
+	default:
+		t.Fatal("opt-in client missed audio")
+	}
+	select {
+	case msg := <-off.out:
+		if string(msg) != `{"type":"info"}` {
+			t.Fatalf("opt-out client got %s, want only the event broadcast", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("opt-out client missed event broadcast")
+	}
+	// Ensure no audio leaked to opt-out.
+	select {
+	case msg := <-off.out:
+		t.Fatalf("opt-out client has extra message: %s", msg)
+	default:
 	}
 }

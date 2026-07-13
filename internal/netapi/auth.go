@@ -122,9 +122,9 @@ func generateSelfSignedCert(certPath, keyPath string) error {
 		NotAfter:     time.Now().AddDate(10, 0, 0),
 		// ECDSA: digital signature only (KeyEncipherment is an RSA concept).
 		KeyUsage:    x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:     []string{"localhost"},
-		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:    []string{"localhost"},
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
 	}
 	if hostname != "" {
 		tmpl.DNSNames = append(tmpl.DNSNames, hostname)

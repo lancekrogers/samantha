@@ -11,11 +11,13 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/netapi"
 	"github.com/lancekrogers/samantha/internal/session"
+	"github.com/lancekrogers/samantha/internal/tts"
 	"github.com/lancekrogers/samantha/internal/ui"
 )
 
@@ -33,8 +35,12 @@ var serveCmd = &cobra.Command{
 	Short: "Serve Samantha to your LAN over HTTPS + WebSocket",
 	Long: `Run Samantha as a network-accessible instance: other devices on your
 LAN (or tailnet) send text turns and stream the live conversation over
-/v1/stream. Turns are text-only in serve mode — the mic stays off — and
-responses speak through this machine's speaker unless --no-voice is set.
+/v1/stream. Turns are text-only in serve mode — the mic stays off.
+
+TTS always runs so clients can opt into phone-side audio with the
+audio_output control message (mode "stream"). Responses also speak through
+this machine's speaker unless --no-voice is set (host muted; stream clients
+still hear).
 
 Auth is mandatory: a bearer token and self-signed TLS certificate are
 generated on first run. Remote turns never get tool access unless
@@ -61,7 +67,9 @@ func runServe(cfg *config.Config) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 
-	req := config.AssetRequest{NeedTTS: !serveNoVoice}
+	// Phase 3: TTS is always required so stream clients can hear responses
+	// even when the host speaker is muted (--no-voice).
+	req := config.AssetRequest{NeedTTS: true}
 	if err := config.EnsureRuntimeAssets(ctx, cfg, req, modelProgress); err != nil {
 		return fmt.Errorf("ensure runtime assets: %w", err)
 	}
@@ -79,12 +87,45 @@ func runServe(cfg *config.Config) error {
 	serveCfg.VoiceToolsEnabled = cfg.RemoteToolsEnabled
 
 	// text=true: serve runs no local input loop and the mic never goes hot;
-	// every turn arrives over the wire.
-	p, cleanup, err := buildPipeline(ctx, &serveCfg, bus, true, serveNoVoice)
+	// every turn arrives over the wire. silent=true skips buildPipeline's
+	// TTS/player; we install TTS + AudioFanout ourselves for Phase 3.
+	p, pipelineCleanup, err := buildPipeline(ctx, &serveCfg, bus, true, true)
 	if err != nil {
 		return fmt.Errorf("init pipeline: %w", err)
 	}
-	defer cleanup()
+
+	// Host speaker is optional; remote stream clients always get a fanout.
+	var localPlayer audio.Engine
+	var playerCleanup func()
+	if !serveNoVoice {
+		player := audio.NewPlayer()
+		localPlayer = player
+		playerCleanup = func() { _ = player.Close() }
+	}
+
+	ttsProvider, ttsCleanup, err := tts.NewProvider(&serveCfg)
+	if err != nil {
+		if playerCleanup != nil {
+			playerCleanup()
+		}
+		pipelineCleanup()
+		return fmt.Errorf("init TTS: %w", err)
+	}
+
+	fanout := netapi.NewAudioFanout(localPlayer)
+	p.TTS = ttsProvider
+	p.Player = fanout
+
+	defer func() {
+		_ = fanout.Close()
+		if ttsCleanup != nil {
+			ttsCleanup()
+		}
+		if playerCleanup != nil {
+			playerCleanup()
+		}
+		pipelineCleanup()
+	}()
 
 	// Keep pipeline streaming options in lockstep with the serve policy.
 	p.VoiceToolsEnabled = cfg.RemoteToolsEnabled
@@ -128,16 +169,17 @@ func runServe(cfg *config.Config) error {
 	addr := net.JoinHostPort(bind, strconv.Itoa(servePort))
 
 	server := netapi.New(netapi.Options{
-		Bind:        addr,
-		AllowPublic: serveAllowPublic,
-		Credentials: creds,
-		Bus:         bus,
-		Dispatcher:  dispatcher,
+		Bind:         addr,
+		AllowPublic:  serveAllowPublic,
+		Credentials:  creds,
+		Bus:          bus,
+		Dispatcher:   dispatcher,
+		Audio:        fanout,
 		ListSessions: listSessionSummaries,
 		Providers: netapi.Providers{
 			Brain: cfg.BrainProvider,
 			STT:   "", // no STT in serve mode
-			TTS:   serveTTSName(cfg),
+			TTS:   cfg.TTSProvider,
 		},
 		OnListening: func(bound net.Addr) {
 			// Prefer the real bound address (port 0, dual-stack formatting).
@@ -168,6 +210,11 @@ func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config
 	} else {
 		fmt.Println(dimStyle.Render("  Remote tool calls: disabled (remote_tools_enabled=false)"))
 	}
+	if serveNoVoice {
+		fmt.Println(dimStyle.Render("  Host speaker: muted (--no-voice); stream clients can still request audio_output"))
+	} else {
+		fmt.Println(dimStyle.Render("  Host speaker: on; clients opt in with {\"type\":\"audio_output\",\"mode\":\"stream\"}"))
+	}
 	fmt.Println(dimStyle.Render("  Try: samantha connect " + addr + " --token <token>"))
 	fmt.Println()
 }
@@ -184,13 +231,6 @@ func serveModelName(cfg *config.Config) string {
 	default:
 		return cfg.OllamaModel
 	}
-}
-
-func serveTTSName(cfg *config.Config) string {
-	if serveNoVoice {
-		return ""
-	}
-	return cfg.TTSProvider
 }
 
 func listSessionSummaries() []netapi.SessionSummary {

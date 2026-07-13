@@ -27,6 +27,9 @@ type Options struct {
 	Dispatcher   *Dispatcher
 	ListSessions func() []SessionSummary
 	Providers    Providers
+	// Audio, when set, is attached to the server hub so Phase 3 stream
+	// clients receive TTS audio_chunk envelopes from the pipeline player.
+	Audio *AudioFanout
 	// OnListening is called once the TCP listener is bound, before Accept
 	// loops run. Use it to print banners with the real bound address.
 	OnListening func(addr net.Addr)
@@ -47,12 +50,16 @@ type Server struct {
 }
 
 func New(opts Options) *Server {
+	h := newHub()
+	if opts.Audio != nil {
+		opts.Audio.AttachHub(h)
+	}
 	return &Server{
 		opts:         opts,
 		dispatcher:   opts.Dispatcher,
 		listSessions: opts.ListSessions,
 		providers:    opts.Providers,
-		hub:          newHub(),
+		hub:          h,
 		limiter:      newRateLimiter(30, 10*time.Second),
 	}
 }

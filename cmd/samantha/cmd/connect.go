@@ -29,7 +29,11 @@ var connectCmd = &cobra.Command{
 	Short: "Debug REPL against a samantha serve instance",
 	Long: `Connect to a running "samantha serve" over its WebSocket protocol:
 type lines to send text turns, watch the live event stream come back.
-Commands: /interrupt, /clear, /quit.
+Commands: /interrupt, /clear, /audio on, /audio off, /quit.
+
+/audio on sends {"type":"audio_output","mode":"stream"} so the server pushes
+base64 PCM audio_chunk envelopes (Phase 3). This REPL only logs them —
+pipe a real client (or ffplay of a decoded dump) for playback.
 
 Pin the server with --fingerprint (printed by serve at startup); without it
 the certificate is accepted blindly and its fingerprint printed so you can
@@ -83,7 +87,7 @@ func runConnect(addr string) error {
 	defer ws.Close(websocket.StatusNormalClosure, "")
 
 	fmt.Printf("  %s %s\n", titleStyle.Render("Connected:"), addr)
-	fmt.Println(dimStyle.Render("  Type to talk • /interrupt • /clear • /quit"))
+	fmt.Println(dimStyle.Render("  Type to talk • /interrupt • /clear • /audio on|off • /quit"))
 	fmt.Println()
 
 	go printStream(ctx, ws)
@@ -125,13 +129,19 @@ func runConnect(addr string) error {
 			}
 
 			msg := map[string]string{"type": "text_input", "text": line}
-			switch line {
-			case "/quit", "/q", "/exit":
+			switch {
+			case line == "/quit" || line == "/q" || line == "/exit":
 				return nil
-			case "/interrupt", "/i":
+			case line == "/interrupt" || line == "/i":
 				msg = map[string]string{"type": "interrupt"}
-			case "/clear", "/c":
+			case line == "/clear" || line == "/c":
 				msg = map[string]string{"type": "clear_history"}
+			case line == "/audio" || line == "/audio on" || line == "/stream":
+				msg = map[string]string{"type": "audio_output", "mode": "stream"}
+				fmt.Println(dimStyle.Render("  audio stream: on (server will push audio_chunk envelopes)"))
+			case line == "/audio off":
+				msg = map[string]string{"type": "audio_output", "mode": "off"}
+				fmt.Println(dimStyle.Render("  audio stream: off"))
 			}
 
 			data, err := json.Marshal(msg)
@@ -176,6 +186,13 @@ func printStream(ctx context.Context, ws *websocket.Conn) {
 			fmt.Println(dimStyle.Render("  Conversation cleared."))
 		case "turn_interrupted":
 			fmt.Println(dimStyle.Render("  turn interrupted (" + asString("reason") + ")"))
+		case "audio_chunk":
+			// Debug REPL: count samples rather than trying to play them.
+			data, _ := env["data"].(string)
+			rate, _ := env["sample_rate"].(float64)
+			fmt.Printf("  %s %d B @ %.0f Hz\n", dimStyle.Render("audio_chunk"), len(data)*3/4, rate)
+		case "audio_end":
+			fmt.Println(dimStyle.Render("  audio_end (" + asString("reason") + ")"))
 		case "error":
 			fmt.Printf("  %s %s\n", failStyle.Render("Error:"), asString("message"))
 		case "info":
