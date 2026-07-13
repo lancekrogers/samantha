@@ -166,6 +166,130 @@ func TestVoiceResumesAfterTextTurn(t *testing.T) {
 	}
 }
 
+func TestRuntimeMuteControls(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	bus := events.NewBus()
+	outputMuted := false
+	m := sizedConversation(t, 80, 24)
+	m.startConversation(conversationDeps{
+		runner: runner, bus: bus, voice: true, output: true,
+		setOutputMuted: func(muted bool) { outputMuted = muted },
+		ctx:            context.Background(),
+	})
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	if m.voiceEnabled || m.voiceOn() {
+		t.Fatal("ctrl+g did not mute microphone input")
+	}
+	m.turnState = turnIdle
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	if !m.voiceEnabled || cmd == nil {
+		t.Fatal("second ctrl+g did not resume microphone input")
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	if !m.outputMuted || !outputMuted {
+		t.Fatal("ctrl+o did not mute pipeline output")
+	}
+}
+
+func TestAbsoluteMuteUnmuteCommands(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	m, _ := startedConversation(t, runner, true)
+	// startConversation dispatches a listening turn; park in idle so absolute
+	// unmute can redispatch cleanly after force-mute.
+	m.turnState = turnIdle
+	m.voiceEnabled = true
+
+	m, cmd := typeAndEnter(m, "/mute")
+	if m.voiceEnabled {
+		t.Fatal("/mute did not force voice input off")
+	}
+	if cmd != nil {
+		t.Fatal("/mute while idle must not dispatch a turn")
+	}
+
+	// Already muted: absolute /mute must stay muted (not toggle back on).
+	m, cmd = typeAndEnter(m, "/mute")
+	if m.voiceEnabled || cmd != nil {
+		t.Fatal("muted → /mute must stay muted without redispach")
+	}
+
+	m, cmd = typeAndEnter(m, "/unmute")
+	if !m.voiceEnabled || cmd == nil {
+		t.Fatal("/unmute did not force voice input on and resume listening")
+	}
+	// Drain the resume cmd so the fake runner is not left mid-turn.
+	_ = cmd()
+
+	// Already unmuted: absolute /unmute must stay unmuted (not toggle off).
+	before := runner.calls()
+	m.turnState = turnIdle
+	m, cmd = typeAndEnter(m, "/unmute")
+	if !m.voiceEnabled {
+		t.Fatal("unmuted → /unmute must stay unmuted")
+	}
+	if cmd != nil {
+		_ = cmd()
+	}
+	if runner.calls() != before {
+		t.Fatal("unmuted → /unmute must not redispatch another listening turn")
+	}
+
+	// /mic remains a toggle (Ctrl+G alias).
+	m.turnState = turnIdle
+	m, _ = typeAndEnter(m, "/mic")
+	if m.voiceEnabled {
+		t.Fatal("/mic did not toggle voice input off")
+	}
+}
+
+// Muting while STT is still listening cancels the in-flight turn and does not
+// redispatch voice listening while input stays paused. Ctrl+G mutes immediately;
+// a typed /mute is parked as pending text and applied after the cancel drains.
+func TestMuteWhileListeningCancelsWithoutRedispatch(t *testing.T) {
+	runner := &fakeTurnRunner{voiceQueue: []voiceScript{{block: true}}}
+	m, _ := startedConversation(t, runner, true)
+
+	voiceCmd := m.dispatchVoiceTurn()
+	voiceDone := make(chan tea.Msg, 1)
+	go func() { voiceDone <- voiceCmd() }()
+
+	if m.turnState != turnVoiceListening {
+		t.Fatalf("turnState = %d, want listening", m.turnState)
+	}
+
+	// Immediate mute (Ctrl+G): cancel listening now; no redispatch while off.
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	if m.voiceEnabled {
+		t.Fatal("ctrl+g did not pause voice input")
+	}
+	if m.turnState != turnVoiceCanceling {
+		t.Fatalf("turnState = %d, want canceling after mute while listening", m.turnState)
+	}
+	if cmd != nil {
+		t.Fatal("mute while listening must wait for cancel drain, not dispatch")
+	}
+
+	var msg tea.Msg
+	select {
+	case msg = <-voiceDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("listening turn was not canceled by mute")
+	}
+
+	m, cmd = m.Update(msg)
+	if m.voiceEnabled {
+		t.Fatal("voice re-enabled after cancel drain")
+	}
+	if m.turnState != turnIdle {
+		t.Fatalf("turnState = %d after cancel drain, want idle", m.turnState)
+	}
+	if cmd != nil {
+		t.Fatal("canceled listening mute must not redispatch while voice input is off")
+	}
+}
+
 // Enter while the voice turn is already responding must not cancel it; the
 // draft stays in the input box.
 func TestSubmitWhileRespondingKeepsDraft(t *testing.T) {

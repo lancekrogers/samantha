@@ -9,6 +9,7 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/discovery"
+	"github.com/lancekrogers/samantha/internal/session"
 )
 
 type screen int
@@ -17,6 +18,7 @@ const (
 	screenLauncher screen = iota
 	screenSettings
 	screenConversation
+	screenSessions
 	screenAudiobook
 )
 
@@ -29,6 +31,7 @@ type App struct {
 	launcher     launcherModel
 	settings     settingsModel
 	conversation conversationModel
+	sessions     sessionsModel
 	audiobook    audiobookModel
 
 	// Conversation runtime wiring, set by Run before the program starts.
@@ -54,14 +57,16 @@ type App struct {
 // NewApp creates the TUI application.
 func NewApp(cfg *config.Config) App {
 	providers := discovery.DiscoverProviders(cfg)
+	savedSessions := resumableSessions(session.List())
 
 	return App{
 		screen:       screenLauncher,
 		cfg:          cfg,
 		providers:    providers,
-		launcher:     newLauncher(cfg, providers),
+		launcher:     newLauncher(cfg, providers, savedSessions),
 		settings:     newSettings(cfg, providers),
 		conversation: newConversation(cfg.AgentName),
+		sessions:     newSessions(savedSessions),
 		audiobook:    newAudiobook(cfg),
 	}
 }
@@ -78,7 +83,7 @@ type switchScreenMsg screen
 
 // startPipelineMsg enters the conversation screen and builds the pipeline
 // there (D2) — the TUI no longer exits to hand off.
-type startPipelineMsg struct{}
+type startPipelineMsg struct{ sessionID string }
 
 // quitMsg signals the app should exit.
 type quitMsg struct{}
@@ -109,6 +114,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Replacing the model must not orphan an in-flight preview or player.
 			a.settings.closePreview()
 			a.settings = newSettings(a.cfg, a.providers)
+			return a, a.settings.loadDevices()
 		case screenAudiobook:
 			a.audiobook = newAudiobook(a.cfg)
 		}
@@ -122,7 +128,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.screen = screenConversation
 		a.conversation.setStatus("Preparing...", false)
-		return a, tea.Batch(a.progress.wait(), buildRuntime(a.builder, a.runCtx, a.progress, a.slot))
+		return a, tea.Batch(a.progress.wait(), buildRuntime(a.builder, a.runCtx, a.progress, a.slot, msg.sessionID))
 
 	case assetProgressMsg:
 		a.conversation.setStatus(formatAssetProgress(msg), false)
@@ -145,12 +151,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.conversation.setStatus("", false)
 		a.conversation.seedTranscript(msg.rt.Seed)
 		cmd := a.conversation.startConversation(conversationDeps{
-			runner:       msg.rt.Pipeline,
-			bus:          msg.rt.Bus,
-			clearHistory: msg.rt.Pipeline.Brain.ClearHistory,
-			voice:        msg.rt.Voice,
-			ctx:          a.runCtx,
-			wg:           a.wg,
+			runner:         msg.rt.Pipeline,
+			bus:            msg.rt.Bus,
+			clearHistory:   msg.rt.Pipeline.Brain.ClearHistory,
+			voice:          msg.rt.Voice,
+			output:         msg.rt.Output,
+			setOutputMuted: msg.rt.Pipeline.SetOutputMuted,
+			sessionID:      msg.rt.SessionID,
+			inputDevice:    msg.rt.InputDevice,
+			outputDevice:   msg.rt.OutputDevice,
+			ctx:            a.runCtx,
+			wg:             a.wg,
 		})
 		return a, cmd
 
@@ -168,6 +179,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.settings, cmd = a.settings.Update(msg)
 	case screenConversation:
 		a.conversation, cmd = a.conversation.Update(msg)
+	case screenSessions:
+		a.sessions, cmd = a.sessions.Update(msg)
 	case screenAudiobook:
 		a.audiobook, cmd = a.audiobook.Update(msg)
 	}
@@ -183,6 +196,8 @@ func (a App) View() string {
 		return a.settings.View()
 	case screenConversation:
 		return a.conversation.View()
+	case screenSessions:
+		return a.sessions.View()
 	case screenAudiobook:
 		return a.audiobook.View()
 	default:
@@ -216,6 +231,9 @@ func run(cfg *config.Config, build RuntimeBuilder, startInConversation bool) err
 	app.progress = newEventBridge(16)
 	app.slot = &runtimeSlot{}
 
+	// Do not enable Bubble Tea mouse reporting here. Claiming the mouse makes
+	// terminals send clicks and drags to Samantha instead of allowing native
+	// text selection, copy, and link activation.
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	m, runErr := p.Run()
 

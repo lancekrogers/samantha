@@ -50,7 +50,22 @@ type Pipeline struct {
 	// keepCapture preserves the capture buffer into the next turn after a
 	// barge-in, where the buffered audio is the user already mid-utterance.
 	keepCapture bool
+
+	// outputMuted is toggled by interactive clients while a turn may be active.
+	outputMuted atomic.Bool
 }
+
+// SetOutputMuted enables or disables spoken responses without rebuilding the
+// pipeline. Muting immediately stops any audio already in flight.
+func (p *Pipeline) SetOutputMuted(muted bool) {
+	p.outputMuted.Store(muted)
+	if muted && p.Player != nil {
+		p.Player.Stop()
+	}
+}
+
+// OutputMuted reports whether spoken responses are currently disabled.
+func (p *Pipeline) OutputMuted() bool { return p.outputMuted.Load() }
 
 type playbackEventType int
 
@@ -249,7 +264,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 		Elapsed:  time.Since(thinkingStarted),
 	})
 
-	if p.TTS != nil && p.Player != nil && p.TTS.Available() {
+	if !p.OutputMuted() && p.TTS != nil && p.Player != nil && p.TTS.Available() {
 		turn.to(TurnSpeaking)
 		if metrics.firstSegment.IsZero() {
 			metrics.firstSegment = time.Now()
@@ -267,12 +282,35 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 			turn.finish(TurnCompleted)
 			return nil
 		}
+		if p.OutputMuted() {
+			// Drop the stream so the synth producer is not left blocked on a
+			// full frames channel after we skip PlayStream.
+			discardPCMStream(stream)
+			p.emit(events.ResponseReady{Response: response})
+			turn.finish(TurnCompleted)
+			if p.OnTurn != nil {
+				p.OnTurn()
+			}
+			return nil
+		}
 
 		playback, err := p.Player.PlayStream(ctx, stream)
 		if err != nil {
 			p.emit(events.Error{Stage: "playback", Message: fmt.Sprintf("playback: %v", err)})
 			p.emit(events.ResponseReady{Response: response})
 			turn.finish(TurnCompleted)
+			return nil
+		}
+		// PlayStream waits for the complete sentence buffer. Output may have
+		// been muted while it was waiting, after SetOutputMuted's first Stop
+		// saw an empty queue. Stop again so that late-enqueued audio cannot play.
+		if p.OutputMuted() {
+			p.Player.Stop()
+			p.emit(events.ResponseReady{Response: response})
+			turn.finish(TurnCompleted)
+			if p.OnTurn != nil {
+				p.OnTurn()
+			}
 			return nil
 		}
 
@@ -499,7 +537,7 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 			}
 			fullResponse.WriteString(sentence)
 
-			if interrupted || p.TTS == nil || p.Player == nil || !p.TTS.Available() {
+			if interrupted || p.OutputMuted() || p.TTS == nil || p.Player == nil || !p.TTS.Available() {
 				continue
 			}
 
@@ -543,6 +581,19 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 	return strings.TrimSpace(fullResponse.String()), interrupted, nil
 }
 
+// discardPCMStream drains a synthesized stream that will not be played so the
+// producer goroutine is not left blocked on a full frames channel. Drain runs
+// asynchronously: the caller must not wait on synth completion after mute.
+func discardPCMStream(stream *audio.PCMStream) {
+	if stream == nil {
+		return
+	}
+	go func() {
+		for range stream.Frames() {
+		}
+	}()
+}
+
 // synthesizeSegment is the synth scheduler stage, run on the ordered synth
 // worker: it announces the segment, synthesizes it, starts playback, and hands
 // the playback to the watcher goroutine, returning true when a playback was
@@ -551,7 +602,7 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 // are swallowed so teardown stays quiet. It never blocks on a full queue —
 // backpressure is the loop's job via the pending count.
 func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct{}, sentence string, audioStarted *atomic.Bool, out chan<- playbackEvent) bool {
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || p.OutputMuted() {
 		return false // canceled while queued: drain without synthesizing
 	}
 	p.emit(events.SpeechSegmentReady{Text: sentence})
@@ -565,12 +616,25 @@ func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct
 		}
 		return false
 	}
+	if p.OutputMuted() {
+		// Synthesize already started a producer goroutine. Drain so it is not
+		// left blocked on the buffered frames channel until turn cancel.
+		discardPCMStream(stream)
+		return false
+	}
 
 	playback, err := p.Player.PlayStream(ctx, stream)
 	if err != nil {
 		if ctx.Err() == nil {
 			p.emit(events.Error{Stage: "playback", Message: fmt.Sprintf("playback: %v", err)})
 		}
+		return false
+	}
+	// PlayStream buffers a complete sentence before enqueueing it. Muting can
+	// race that wait, so the initial Stop may see nothing; close the race by
+	// checking once more after enqueue and stopping the late segment.
+	if p.OutputMuted() {
+		p.Player.Stop()
 		return false
 	}
 

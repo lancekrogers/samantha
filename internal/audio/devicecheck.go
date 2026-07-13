@@ -3,6 +3,7 @@ package audio
 import (
 	"context"
 	"fmt"
+	"unsafe"
 
 	"github.com/gen2brain/malgo"
 )
@@ -74,4 +75,30 @@ func malgoDeviceNames(kind malgo.DeviceType) ([]string, error) {
 		names = append(names, infos[i].Name())
 	}
 	return names, nil
+}
+
+// selectDevice configures sub with the named device from ctx. An empty name
+// deliberately leaves DeviceID nil so miniaudio follows the operating-system
+// default. Device names are used in config because miniaudio IDs are backend-
+// specific and can change across boots; a missing configured name is reported
+// instead of silently routing private audio to a different device.
+func selectDevice(ctx malgo.Context, kind malgo.DeviceType, name string, sub *malgo.SubConfig) error {
+	if name == "" {
+		return nil
+	}
+	infos, err := ctx.Devices(kind)
+	if err != nil {
+		return fmt.Errorf("enumerate devices: %w", err)
+	}
+	for i := range infos {
+		if infos[i].Name() == name {
+			// DeviceConfig retains this unsafe pointer until InitDevice returns;
+			// the ID is pointer-free Go memory and miniaudio copies it during
+			// initialization. Avoid DeviceID.Pointer here because it allocates C
+			// memory with no matching public release API.
+			sub.DeviceID = unsafe.Pointer(&infos[i].ID[0])
+			return nil
+		}
+	}
+	return fmt.Errorf("audio device %q is not available", name)
 }

@@ -18,18 +18,22 @@ import (
 // Cleanup runs exactly once, after the program exits and in-flight turns
 // have drained.
 type ConversationRuntime struct {
-	Pipeline *pipeline.Pipeline
-	Bus      *events.Bus
-	Voice    bool         // STT is configured; voice turns may run
-	Seed     []brain.Turn // resumed history to pre-populate the viewport
-	Cleanup  func()       // tears down pipeline resources and saves the session
+	Pipeline     *pipeline.Pipeline
+	Bus          *events.Bus
+	Voice        bool // STT is configured; voice turns may run
+	Output       bool // TTS and playback are configured
+	SessionID    string
+	InputDevice  string
+	OutputDevice string
+	Seed         []brain.Turn // resumed history to pre-populate the viewport
+	Cleanup      func()       // tears down pipeline resources and saves the session
 }
 
 // RuntimeBuilder constructs the runtime when the user enters the
 // conversation screen (D2: the mic goes hot here, not in the launcher).
 // Asset download progress is reported through progress and rendered
 // in-screen.
-type RuntimeBuilder func(ctx context.Context, progress func(name string, pct float64)) (*ConversationRuntime, error)
+type RuntimeBuilder func(ctx context.Context, progress func(name string, pct float64), sessionID string) (*ConversationRuntime, error)
 
 // runtimeSlot owns the built ConversationRuntime across the race between the
 // builder Cmd finishing and the Bubble Tea program quitting. Without it, a
@@ -76,11 +80,15 @@ type runtimeReadyMsg struct {
 
 // buildRuntime runs the builder off the update loop, streaming progress
 // through the feed so the conversation screen can render it.
-func buildRuntime(build RuntimeBuilder, ctx context.Context, feed *eventBridge, slot *runtimeSlot) tea.Cmd {
+func buildRuntime(build RuntimeBuilder, ctx context.Context, feed *eventBridge, slot *runtimeSlot, sessionIDs ...string) tea.Cmd {
+	sessionID := ""
+	if len(sessionIDs) > 0 {
+		sessionID = sessionIDs[0]
+	}
 	return func() tea.Msg {
 		rt, err := build(ctx, func(name string, pct float64) {
 			feed.send(assetProgressMsg{name: name, pct: pct})
-		})
+		}, sessionID)
 		feed.send(progressClosedMsg{})
 		if err != nil {
 			return runtimeReadyMsg{err: err}

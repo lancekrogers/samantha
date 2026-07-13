@@ -157,7 +157,7 @@ func (k *KokoroTTS) SynthesizeRequest(ctx context.Context, req SynthesisRequest)
 			return
 		}
 
-		audioResult := k.generate(textclean.StripUnsupportedKokoroMarks(req.Text), sid, speed)
+		audioResult := k.generate(textclean.PrepareKokoroText(req.Text), sid, speed)
 		if audioResult == nil {
 			stream.CloseWithError(fmt.Errorf("TTS generation returned nil"))
 			return

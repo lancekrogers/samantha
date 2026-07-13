@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -31,6 +32,68 @@ func TestVoicePreviewDoneGating(t *testing.T) {
 	}
 	if m.message != "Previewed af_bella" {
 		t.Fatalf("matching completion did not set message: got %q", m.message)
+	}
+}
+
+func TestSettingsLoadsAudioDevices(t *testing.T) {
+	m := settingsModel{inputItems: []string{""}, outputItems: []string{""}}
+	m, _ = m.Update(deviceListsMsg{
+		inputs: []string{"Studio Mic"}, outputs: []string{"Desk Speakers"},
+	})
+	if m.devicesLoading {
+		t.Fatal("device loading flag was not cleared")
+	}
+	if got := m.inputItems; len(got) != 2 || got[1] != "Studio Mic" {
+		t.Fatalf("input items = %v", got)
+	}
+	if got := m.outputItems; len(got) != 2 || got[1] != "Desk Speakers" {
+		t.Fatalf("output items = %v", got)
+	}
+}
+
+func TestSettingsCompactsForSmallTerminal(t *testing.T) {
+	m := settingsModel{
+		cfg: &config.Config{}, providerItems: []string{"claude", "ollama", "grok", "other"},
+	}
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 36, Height: 8})
+	view := stripANSI(m.View())
+	if got := len(strings.Split(view, "\n")); got > 8 {
+		t.Fatalf("compact settings rendered %d lines in 8-row terminal:\n%s", got, view)
+	}
+}
+
+func TestSettingsListUsesAllAvailableRows(t *testing.T) {
+	items := []string{"one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"}
+	m := settingsModel{cfg: &config.Config{}, providerItems: items}
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 13})
+
+	if got := m.visibleRows(); got != 8 {
+		t.Fatalf("visible rows = %d, want 8 at a 13-row terminal", got)
+	}
+	view := stripANSI(m.View())
+	for _, item := range items[:8] {
+		if !strings.Contains(view, item) {
+			t.Errorf("expanded settings view missing %q:\n%s", item, view)
+		}
+	}
+	if strings.Contains(view, items[8]) {
+		t.Fatalf("settings rendered more choices than fit:\n%s", view)
+	}
+	if got := len(strings.Split(view, "\n")); got != 13 {
+		t.Fatalf("settings view has %d rows, want exactly 13:\n%s", got, view)
+	}
+}
+
+func TestSettingsShowsEntireListWhenItFits(t *testing.T) {
+	items := []string{"one", "two", "three", "four", "five", "six"}
+	m := settingsModel{cfg: &config.Config{}, providerItems: items}
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	view := stripANSI(m.View())
+	for _, item := range items {
+		if !strings.Contains(view, item) {
+			t.Errorf("settings hid %q even though the list fits:\n%s", item, view)
+		}
 	}
 }
 

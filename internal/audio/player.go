@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -62,11 +63,18 @@ type Player struct {
 	queue      []*playbackSegment
 	playing    atomic.Bool
 	closed     bool
+	deviceName string
 }
 
 // NewPlayer creates a new audio player.
 func NewPlayer() *Player {
-	return &Player{}
+	return NewPlayerWithDevice("")
+}
+
+// NewPlayerWithDevice creates a player routed to deviceName. An empty name
+// follows the operating-system default.
+func NewPlayerWithDevice(deviceName string) *Player {
+	return &Player{deviceName: deviceName}
 }
 
 // SetFrontend installs an audio front-end that can observe playback
@@ -222,6 +230,11 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 	deviceConfig.Playback.Channels = playbackChannels
 	deviceConfig.SampleRate = uint32(sampleRate)
 	deviceConfig.Alsa.NoMMap = 1
+	if err := selectDevice(ctx.Context, malgo.Playback, p.deviceName, &deviceConfig.Playback); err != nil {
+		_ = ctx.Uninit()
+		ctx.Free()
+		return 0, fmt.Errorf("select playback device: %w", err)
+	}
 
 	device, err := malgo.InitDevice(ctx.Context, deviceConfig, malgo.DeviceCallbacks{
 		Data: p.onData,

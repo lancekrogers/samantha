@@ -1,29 +1,23 @@
 package tui
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	ansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/events"
 )
 
-// Rows of chrome around the viewport: header, rule, input line, footer.
-const conversationChromeRows = 4
-
-// Prompt strings for the input line. The mic glyph is wider than the plain
-// prompt, so setSize always sizes the field for the longer of the two.
-const (
-	conversationPrompt    = "> "
-	conversationMicPrompt = "🎙 > "
-)
+const conversationInputHeight = 3
 
 // conversationModel renders the live conversation screen: a scrollable
 // transcript viewport, a persistent status indicator, and an always-focused
@@ -36,29 +30,38 @@ type conversationModel struct {
 	height int
 	ready  bool
 
-	viewport viewport.Model
-	input    textinput.Model
+	viewport         viewport.Model
+	activityViewport viewport.Model
+	input            textarea.Model
 
 	transcript []string
+	activity   []activityEntry
 	status     string
 	statusErr  bool
 
 	bridge      *eventBridge
 	lastMetrics events.TurnMetrics
 
-	deps          conversationDeps
-	turnState     turnState
-	turnCancel    func()
+	deps       conversationDeps
+	turnState  turnState
+	turnCancel func()
 	// canCancelVoice is true only while STT is still listening (before the
 	// final transcript). Updated synchronously from the bus handler on the
 	// pipeline goroutine so Enter cannot race the async bridge drain of
 	// UserInput into turnVoiceResponding. Pointer so Bubble Tea model copies
 	// share one gate with the bus subscription.
-	canCancelVoice *atomic.Bool
-	pendingText    string
-	voiceEnabled   bool
-	voiceFailures  int
-	quitting       bool
+	canCancelVoice  *atomic.Bool
+	pendingText     string
+	voiceEnabled    bool
+	outputMuted     bool
+	outputAvailable bool
+	activityFocused bool
+	startedAt       time.Time
+	sessionID       string
+	inputDevice     string
+	outputDevice    string
+	voiceFailures   int
+	quitting        bool
 }
 
 func newConversation(agentName string) conversationModel {
@@ -66,15 +69,28 @@ func newConversation(agentName string) conversationModel {
 		agentName = "Samantha"
 	}
 
-	input := textinput.New()
-	input.Prompt = conversationPrompt
+	input := textarea.New()
+	input.Placeholder = "Type a message…"
+	input.CharLimit = 1000
+	input.ShowLineNumbers = false
+	input.KeyMap.InsertNewline.SetKeys("ctrl+j")
+	input.KeyMap.InsertNewline.SetHelp("ctrl+j", "new line")
+	input.SetHeight(conversationInputHeight)
 	input.Focus()
 
 	return conversationModel{
 		agentName:      agentName,
 		input:          input,
 		canCancelVoice: &atomic.Bool{},
+		startedAt:      time.Now(),
 	}
+}
+
+type activityEntry struct {
+	at      time.Duration
+	stage   string
+	detail  string
+	elapsed time.Duration
 }
 
 func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
@@ -97,48 +113,105 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 		return m, m.handleVoiceRetry()
 
 	case tea.KeyMsg:
-		// PgUp/PgDn (and home/end) scroll the transcript; every other key —
-		// including ↑/↓ for cursor movement — belongs to the input line, so
-		// typing never needs a mode switch.
+		// Page keys scroll history. Editing keys stay with the always-focused
+		// composer so multiline drafting never needs a mode switch.
 		switch msg.String() {
 		case "enter":
 			return m, m.handleSubmit()
-		case "pgup", "pgdown":
-			var cmd tea.Cmd
-			m.viewport, cmd = m.viewport.Update(msg)
-			return m, cmd
+		case "ctrl+g":
+			return m, m.toggleInputMuted()
+		case "ctrl+o":
+			m.toggleOutputMuted()
+			return m, nil
+		case "ctrl+t":
+			m.activityFocused = !m.activityFocused
+			return m, nil
+		case "esc":
+			if m.activityFocused {
+				m.activityFocused = false
+				return m, nil
+			}
+		case "pgup", "pgdown", "ctrl+u", "ctrl+d":
+			return m.updateScroll(msg)
+		case "ctrl+home":
+			m.activeViewport().GotoTop()
+			return m, nil
+		case "ctrl+end":
+			m.activeViewport().GotoBottom()
+			return m, nil
 		case "home":
-			m.viewport.GotoTop()
-			return m, nil
+			// Activity always jumps; Chat only when the composer is empty so
+			// bare Home/End still navigate the transcript without fighting
+			// line-start/end editing while drafting.
+			if m.activityFocused || m.input.Value() == "" {
+				m.activeViewport().GotoTop()
+				return m, nil
+			}
 		case "end":
-			m.viewport.GotoBottom()
-			return m, nil
+			if m.activityFocused || m.input.Value() == "" {
+				m.activeViewport().GotoBottom()
+				return m, nil
+			}
+		case "up", "down":
+			if m.activityFocused {
+				return m.updateScroll(msg)
+			}
 		}
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
-	}
 
-	return m, nil
+	default:
+		// Non-key messages (notably textarea.Blink ticks) must reach the
+		// composer so the cursor blink chain stays alive.
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
+	}
 }
 
 func (m *conversationModel) setSize(width, height int) {
 	m.width = width
 	m.height = height
 
-	vpHeight := max(height-conversationChromeRows, 1)
+	inputHeight := conversationInputHeight
+	if height < 12 {
+		inputHeight = 1
+	}
+	// Header + rule + label + input border + footer consume six rows in
+	// addition to the textarea's own height.
+	vpHeight := max(height-inputHeight-6, 1)
 	if !m.ready {
-		m.viewport = viewport.New(width, vpHeight)
+		m.viewport = viewport.New(max(width, 1), vpHeight)
+		m.activityViewport = viewport.New(max(width, 1), vpHeight)
 		m.ready = true
 	} else {
-		m.viewport.Width = width
+		m.viewport.Width = max(width, 1)
 		m.viewport.Height = vpHeight
+		m.activityViewport.Width = max(width, 1)
+		m.activityViewport.Height = vpHeight
 	}
-	// Always reserve room for the mic prompt so the input never overflows
-	// when View swaps the glyph in during listening.
-	promptCells := lipgloss.Width(conversationMicPrompt)
-	m.input.Width = max(width-promptCells-3, 10)
+	m.input.SetWidth(max(width-4, 1))
+	m.input.SetHeight(inputHeight)
 	m.refreshContent()
+	m.refreshActivity()
+}
+
+func (m *conversationModel) activeViewport() *viewport.Model {
+	if m.activityFocused {
+		return &m.activityViewport
+	}
+	return &m.viewport
+}
+
+func (m conversationModel) updateScroll(msg tea.Msg) (conversationModel, tea.Cmd) {
+	var cmd tea.Cmd
+	if m.activityFocused {
+		m.activityViewport, cmd = m.activityViewport.Update(msg)
+	} else {
+		m.viewport, cmd = m.viewport.Update(msg)
+	}
+	return m, cmd
 }
 
 // appendTranscript adds rendered lines to the transcript, following the tail
@@ -169,6 +242,40 @@ func (m *conversationModel) refreshContent() {
 	content := strings.Join(m.transcript, "\n")
 	// lipgloss wraps to width so long turns don't overflow the viewport.
 	m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width).Render(content))
+}
+
+func (m *conversationModel) appendActivity(stage, detail string, elapsed time.Duration) {
+	follow := !m.ready || m.activityViewport.AtBottom()
+	m.activity = append(m.activity, activityEntry{
+		at: time.Since(m.startedAt), stage: stage, detail: detail, elapsed: elapsed,
+	})
+	if len(m.activity) > 500 {
+		m.activity = append([]activityEntry(nil), m.activity[len(m.activity)-500:]...)
+	}
+	m.refreshActivity()
+	if follow {
+		m.activityViewport.GotoBottom()
+	}
+}
+
+func (m *conversationModel) refreshActivity() {
+	if !m.ready {
+		return
+	}
+	var lines []string
+	for _, entry := range m.activity {
+		when := fmt.Sprintf("%6.1fs", entry.at.Seconds())
+		line := when + "  " + entry.stage
+		if entry.detail != "" {
+			line += "  " + entry.detail
+		}
+		if entry.elapsed > 0 {
+			line += "  " + formatSeconds(entry.elapsed)
+		}
+		lines = append(lines, line)
+	}
+	content := strings.Join(lines, "\n")
+	m.activityViewport.SetContent(lipgloss.NewStyle().Width(max(m.activityViewport.Width, 1)).Render(content))
 }
 
 // seedTranscript pre-populates the viewport from persisted session turns.
@@ -206,6 +313,7 @@ func (m *conversationModel) handleEvent(e events.Event) {
 
 	switch e := e.(type) {
 	case events.STTPhase:
+		m.appendActivity("input", e.Phase, e.Elapsed)
 		switch e.Phase {
 		case "listening":
 			m.setStatus("🎙 Listening...", false)
@@ -219,27 +327,47 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		m.setStatus("🎙 "+e.Text, false)
 
 	case events.UserInput:
+		m.appendActivity("input", "final", 0)
 		m.appendTranscript(renderUserTurn(e.Text))
 
 	case events.ThinkingStarted:
+		m.appendActivity("model", "started", 0)
 		m.setStatus("● "+m.agentName+" thinking...", false)
 
+	case events.ResponseStreamingStarted:
+		m.appendActivity("model", "first response", e.Elapsed)
+
+	case events.ThinkingComplete:
+		m.appendActivity("model", "complete", e.Elapsed)
+
+	case events.SpeechSegmentReady:
+		m.appendActivity("voice", "segment ready", 0)
+
 	case events.GeneratingVoice:
+		m.appendActivity("voice", "synthesizing", 0)
 		m.setStatus("● Synthesizing voice...", false)
 
+	case events.VoiceGenerated:
+		m.appendActivity("voice", "generated", e.Elapsed)
+
 	case events.SpeakingStarted:
+		m.appendActivity("output", "playing", 0)
 		m.setStatus("● Speaking...", false)
 
 	case events.SpeakingComplete:
+		m.appendActivity("output", "complete", e.Elapsed)
 		m.setStatus("", false)
 
 	case events.SpeakingInterrupted:
+		m.appendActivity("output", "interrupted: "+e.Reason, 0)
 		m.setStatus("speech interrupted ("+e.Reason+")", false)
 
 	case events.TurnInterrupted:
+		m.appendActivity("turn", "interrupted: "+e.Reason, 0)
 		m.setStatus("turn interrupted ("+e.Reason+")", false)
 
 	case events.ResponseReady:
+		m.appendActivity("turn", "response ready", 0)
 		// Text-only / no-TTS turns never emit SpeakingComplete; clear the
 		// thinking status here so it does not stick after a successful reply.
 		m.setStatus("", false)
@@ -250,12 +378,14 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		m.appendTranscript(dimStyle.Render("  Conversation cleared."))
 
 	case events.TurnMetrics:
+		m.appendActivity("turn", e.Outcome, e.PlaybackCompleteElapsed)
 		m.lastMetrics = e
 		if line := formatTurnMetrics(e); line != "" {
 			m.appendTranscript(dimStyle.Render("    " + line))
 		}
 
 	case events.Error:
+		m.appendActivity("error", e.Stage, 0)
 		msg := e.Message
 		if e.Stage != "" {
 			msg = "[" + e.Stage + "] " + e.Message
@@ -263,6 +393,7 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		m.setStatus("Error: "+msg, true)
 
 	case events.Info:
+		m.appendActivity("info", e.Message, 0)
 		m.appendTranscript(dimStyle.Render("  " + e.Message))
 	}
 }
@@ -291,11 +422,11 @@ func formatSeconds(d time.Duration) string {
 // renderUserTurn and renderAgentTurn are the single rendering path for both
 // live events and replayed session history, so the two cannot drift apart.
 func renderUserTurn(text string) string {
-	return "  " + userStyle.Render("You:") + " " + text
+	return "  " + userStyle.Render("› You") + "\n  " + text
 }
 
 func renderAgentTurn(name, text string) string {
-	return "  " + samanthaStyle.Render(name+":") + " " + text
+	return "  " + samanthaStyle.Render("● "+name) + "\n  " + text
 }
 
 func (m conversationModel) View() string {
@@ -309,23 +440,85 @@ func (m conversationModel) View() string {
 		style = errorStyle
 	}
 
-	header := "  " + headerStyle.Render(m.agentName)
+	header := "  " + headerStyle.Render(m.agentName) + "  " + m.renderTabs()
+	if m.sessionID != "" {
+		header += "  " + dimStyle.Render("session "+shortSessionID(m.sessionID))
+	}
 	if status != "" {
 		header += "  " + style.Render(status)
 	}
+	header = ansi.Truncate(header, max(m.width, 1), "…")
 
 	rule := dimStyle.Render(strings.Repeat("─", max(m.width, 1)))
-	footer := dimStyle.Render("  pgup/pgdn scroll • /clear • /voice • ctrl+c quit")
+	// Capture stays armed while voice input is paused; wording must not claim
+	// the OS microphone was released.
+	micState := "voice input off"
+	if m.voiceOn() {
+		micState = "voice input on"
+	}
+	outputState := "audio unavailable"
+	if m.outputAvailable {
+		outputState = "audio on"
+		if m.outputMuted {
+			outputState = "audio off"
+		}
+	}
+	footerLeft := "  " + micState + "  •  " + outputState
+	activeViewport := m.activeViewport()
+	if activeViewport.TotalLineCount() > activeViewport.VisibleLineCount() {
+		footerLeft += fmt.Sprintf("  •  %d%%", int(activeViewport.ScrollPercent()*100))
+	}
+	footerHelp := "enter send  ^J newline  ^G mic  ^O audio  ^T switch  PgUp/PgDn scroll"
+	footerText := footerLeft
+	switch {
+	case m.width >= lipgloss.Width(footerLeft)+lipgloss.Width(footerHelp)+4:
+		footerText += strings.Repeat(" ", m.width-lipgloss.Width(footerLeft)-lipgloss.Width(footerHelp)) + footerHelp
+	case m.width >= 60:
+		footerText += "  •  ^G mic  ^O audio  ^T switch"
+	default:
+		footerText += "  ^G  ^O  ^T"
+	}
+	footer := dimStyle.Render(ansi.Truncate(footerText, max(m.width, 1), "…"))
 
-	// The prompt glyph shows the input source: the mic while a voice turn is
-	// listening, a plain prompt otherwise. Typing never needs a mode switch.
-	input := m.input
-	if m.turnState == turnVoiceListening && m.voiceOn() {
-		input.Prompt = conversationMicPrompt
+	content := m.viewport.View()
+	if m.activityFocused {
+		content = m.activityViewport.View()
 	}
 
+	inputLabel := "Your message:"
+	switch m.turnState {
+	case turnVoiceListening:
+		inputLabel = "🎙 Listening — type to interrupt:"
+	case turnVoiceResponding, turnVoiceCanceling, turnTextRunning:
+		inputLabel = "⏳ Samantha is responding — keep drafting:"
+	}
+	inputBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("14")).
+		Padding(0, 1).
+		Render(m.input.View())
+
 	return header + "\n" + rule + "\n" +
-		m.viewport.View() + "\n" +
-		"  " + input.View() + "\n" +
+		content + "\n" +
+		dimStyle.Render(ansi.Truncate(inputLabel, max(m.width, 1), "…")) + "\n" +
+		inputBox + "\n" +
 		footer
+}
+
+func (m conversationModel) renderTabs() string {
+	chat := dimStyle.Render("Chat")
+	activity := dimStyle.Render("Activity")
+	if m.activityFocused {
+		activity = selectedStyle.Copy().Background(lipgloss.Color("236")).Padding(0, 1).Render("Activity")
+	} else {
+		chat = selectedStyle.Copy().Background(lipgloss.Color("236")).Padding(0, 1).Render("Chat")
+	}
+	return chat + "  " + activity
+}
+
+func shortSessionID(id string) string {
+	if len(id) <= 18 {
+		return id
+	}
+	return id[:18]
 }

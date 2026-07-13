@@ -4,8 +4,12 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/session"
 )
 
 func TestLauncherDisplaysConfiguredBrainModel(t *testing.T) {
@@ -38,6 +42,30 @@ func TestLauncherDisplaysConfiguredBrainModel(t *testing.T) {
 				t.Fatalf("launcher view missing %q:\n%s", tt.want, view)
 			}
 		})
+	}
+}
+
+func TestLauncherDefaultsToContinueWhenSessionExists(t *testing.T) {
+	saved := []session.Session{{ID: "session-123", Summary: "Fix the TUI", UpdatedAt: time.Now()}}
+	m := newLauncher(&config.Config{}, nil, saved)
+	if len(m.items) == 0 || m.items[0].action != actionContinue {
+		t.Fatal("most recent session is not the default launcher action")
+	}
+	msg := m.items[0]
+	if msg.sessionID != "session-123" || !strings.Contains(msg.label, "Fix the TUI") {
+		t.Fatalf("continue item = %+v", msg)
+	}
+}
+
+func TestLauncherCompactsForSmallTerminal(t *testing.T) {
+	saved := []session.Session{{
+		ID: "session-123", Summary: strings.Repeat("long summary ", 10), UpdatedAt: time.Now(),
+	}}
+	m := newLauncher(&config.Config{}, nil, saved)
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 36, Height: 8})
+	view := stripANSI(m.View())
+	if got := len(strings.Split(view, "\n")); got > 8 {
+		t.Fatalf("compact launcher rendered %d lines in 8-row terminal:\n%s", got, view)
 	}
 }
 

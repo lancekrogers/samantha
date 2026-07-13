@@ -196,7 +196,7 @@ func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus
 
 	var local audio.Engine
 	if !muteHost {
-		local = audio.NewPlayer()
+		local = audio.NewPlayerWithDevice(cfg.OutputDevice)
 	}
 	// Fanout owns local so Close is exactly once via cleanup.
 	fanout := netapi.NewOwnedAudioFanout(local)

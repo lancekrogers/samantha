@@ -124,7 +124,7 @@ func buildSTTOnly(ctx context.Context, cfg *config.Config, progress func(string,
 		return nil, nil, "", nil, e
 	}
 
-	capture = audio.NewCapture()
+	capture = audio.NewCaptureWithDevice(cfg.InputDevice)
 	if err := capture.Start(ctx); err != nil {
 		return fail(fmt.Errorf("start capture: %w", err))
 	}

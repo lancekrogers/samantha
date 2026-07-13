@@ -50,7 +50,7 @@ func fakeRuntime() *ConversationRuntime {
 // "Start conversation" switches screens in place and kicks off the build —
 // no tea.Quit hop (D2).
 func TestStartPipelineEntersConversationScreen(t *testing.T) {
-	app := wiredApp(func(ctx context.Context, progress func(string, float64)) (*ConversationRuntime, error) {
+	app := wiredApp(func(ctx context.Context, progress func(string, float64), _ string) (*ConversationRuntime, error) {
 		return fakeRuntime(), nil
 	})
 
@@ -71,7 +71,7 @@ func TestStartPipelineEntersConversationScreen(t *testing.T) {
 // status updates and the finished runtime wires the conversation model.
 func TestRuntimeBuildProgressAndReady(t *testing.T) {
 	rt := fakeRuntime()
-	build := func(ctx context.Context, progress func(string, float64)) (*ConversationRuntime, error) {
+	build := func(ctx context.Context, progress func(string, float64), _ string) (*ConversationRuntime, error) {
 		progress("kokoro-v1", 0)
 		progress("kokoro-v1", 42)
 		return rt, nil
@@ -108,8 +108,22 @@ func TestRuntimeBuildProgressAndReady(t *testing.T) {
 	}
 }
 
+func TestRuntimeBuildReceivesSelectedSession(t *testing.T) {
+	var selected string
+	app := wiredApp(func(_ context.Context, _ func(string, float64), sessionID string) (*ConversationRuntime, error) {
+		selected = sessionID
+		return fakeRuntime(), nil
+	})
+	model, _ := app.Update(startPipelineMsg{sessionID: "saved-session"})
+	app = model.(App)
+	_ = buildRuntime(app.builder, app.runCtx, app.progress, app.slot, "saved-session")()
+	if selected != "saved-session" {
+		t.Fatalf("builder session = %q, want saved-session", selected)
+	}
+}
+
 func TestRuntimeBuildFailureQuitsWithError(t *testing.T) {
-	build := func(ctx context.Context, progress func(string, float64)) (*ConversationRuntime, error) {
+	build := func(ctx context.Context, progress func(string, float64), _ string) (*ConversationRuntime, error) {
 		return nil, errors.New("no assets, no pipeline")
 	}
 	app := wiredApp(build)
@@ -140,7 +154,7 @@ func TestRuntimeBuildCancelsCleanupViaSlot(t *testing.T) {
 	rt.Cleanup = func() { cleaned = true }
 
 	ctx, cancel := context.WithCancel(context.Background())
-	app := wiredApp(func(context.Context, func(string, float64)) (*ConversationRuntime, error) {
+	app := wiredApp(func(context.Context, func(string, float64), string) (*ConversationRuntime, error) {
 		return rt, nil
 	})
 	app.runCtx = ctx
@@ -169,7 +183,7 @@ func TestRuntimeSeedPopulatesViewport(t *testing.T) {
 		{Role: "assistant", Content: "you locked D1 through D3"},
 		{Role: "tool", Content: "tool output that must not render"},
 	}
-	app := wiredApp(func(ctx context.Context, progress func(string, float64)) (*ConversationRuntime, error) {
+	app := wiredApp(func(ctx context.Context, progress func(string, float64), _ string) (*ConversationRuntime, error) {
 		return rt, nil
 	})
 	model, _ := app.Update(startPipelineMsg{})
@@ -194,7 +208,7 @@ func TestRuntimeSeedPopulatesViewport(t *testing.T) {
 
 // resume/continue start the program directly in the conversation screen.
 func TestInitStartsConversationWhenResuming(t *testing.T) {
-	app := wiredApp(func(ctx context.Context, progress func(string, float64)) (*ConversationRuntime, error) {
+	app := wiredApp(func(ctx context.Context, progress func(string, float64), _ string) (*ConversationRuntime, error) {
 		return fakeRuntime(), nil
 	})
 	app.startInConversation = true
