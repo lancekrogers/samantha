@@ -237,6 +237,18 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 	return text, nil
 }
 
+// completeTextTurn finishes a successful text-mode turn exactly once:
+// ResponseReady for the transcript, terminal metrics via finish, and OnTurn
+// for session auto-save. Every degraded and mute short-circuit must use this
+// so finish logic cannot drift across early returns.
+func (p *Pipeline) completeTextTurn(turn *turnConductor, response string) {
+	p.emit(events.ResponseReady{Response: response})
+	turn.finish(TurnCompleted)
+	if p.OnTurn != nil {
+		p.OnTurn()
+	}
+}
+
 // RunTurnTextMode runs a turn with text input instead of mic.
 func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	metrics := newTurnMetrics()
@@ -278,27 +290,23 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 			// Voice is best-effort in text mode: the text response still
 			// completed, so the turn is completed (degraded), not failed.
 			p.emit(events.Error{Stage: "tts", Message: fmt.Sprintf("TTS: %v", err)})
-			p.emit(events.ResponseReady{Response: response})
-			turn.finish(TurnCompleted)
+			p.completeTextTurn(turn, response)
 			return nil
 		}
 		if p.OutputMuted() {
 			// Drop the stream so the synth producer is not left blocked on a
 			// full frames channel after we skip PlayStream.
 			discardPCMStream(stream)
-			p.emit(events.ResponseReady{Response: response})
-			turn.finish(TurnCompleted)
-			if p.OnTurn != nil {
-				p.OnTurn()
-			}
+			p.completeTextTurn(turn, response)
 			return nil
 		}
 
 		playback, err := p.Player.PlayStream(ctx, stream)
 		if err != nil {
+			// Engine.PlayStream owns the stream once called (even on error) and
+			// must drain it; the pipeline does not discard here.
 			p.emit(events.Error{Stage: "playback", Message: fmt.Sprintf("playback: %v", err)})
-			p.emit(events.ResponseReady{Response: response})
-			turn.finish(TurnCompleted)
+			p.completeTextTurn(turn, response)
 			return nil
 		}
 		// PlayStream waits for the complete sentence buffer. Output may have
@@ -306,24 +314,14 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 		// saw an empty queue. Stop again so that late-enqueued audio cannot play.
 		if p.OutputMuted() {
 			p.Player.Stop()
-			p.emit(events.ResponseReady{Response: response})
-			turn.finish(TurnCompleted)
-			if p.OnTurn != nil {
-				p.OnTurn()
-			}
+			p.completeTextTurn(turn, response)
 			return nil
 		}
 
 		p.handlePlaybackLifecycle(response, synthStarted, playback, metrics)
 	}
 
-	p.emit(events.ResponseReady{Response: response})
-	turn.finish(TurnCompleted)
-
-	if p.OnTurn != nil {
-		p.OnTurn()
-	}
-
+	p.completeTextTurn(turn, response)
 	return nil
 }
 
@@ -625,6 +623,8 @@ func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct
 
 	playback, err := p.Player.PlayStream(ctx, stream)
 	if err != nil {
+		// PlayStream owns stream once invoked (real Player pumps even when
+		// waitReady fails); do not discard here or two consumers race.
 		if ctx.Err() == nil {
 			p.emit(events.Error{Stage: "playback", Message: fmt.Sprintf("playback: %v", err)})
 		}

@@ -231,6 +231,26 @@ func TestSynthesizeSegmentPlaybackErrorEmitsError(t *testing.T) {
 	}
 }
 
+// Engines that reject PlayStream must still drain the stream (Engine contract).
+// failPlayer models that so a flooding synth is not left blocked.
+func TestSynthesizeSegmentPlaybackErrorEngineDrainsStream(t *testing.T) {
+	flood := &floodingTTS{started: make(chan struct{}), done: make(chan struct{})}
+	p := &Pipeline{
+		TTS:    flood,
+		Player: &failPlayer{err: errors.New("device busy")},
+		Events: events.NewBus(),
+	}
+	var audioStarted atomic.Bool
+	if p.synthesizeSegment(context.Background(), make(chan struct{}), "hi", &audioStarted, make(chan playbackEvent, 1)) {
+		t.Fatal("expected false on playback error")
+	}
+	select {
+	case <-flood.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("PCM producer still blocked after PlayStream rejection")
+	}
+}
+
 func TestSynthesizeSegmentSuppressesErrorsAfterCancel(t *testing.T) {
 	// After the turn context is canceled (cancel or barge-in), synthesis
 	// failures must not produce noisy Error events.

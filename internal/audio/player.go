@@ -45,6 +45,9 @@ func (p *Playback) Done() <-chan PlaybackResult {
 }
 
 // Engine is the playback interface used by the pipeline.
+// Engine plays synthesized PCM. PlayStream takes ownership of stream even when
+// it returns an error: implementations must drain (or cancel) the stream so
+// synth producers are not left blocked on a full frames channel.
 type Engine interface {
 	PlayStream(ctx context.Context, stream *PCMStream) (*Playback, error)
 	Stop()
