@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -51,21 +53,92 @@ func TestCredentialsGeneratedOnceAndReloaded(t *testing.T) {
 func TestVerifyRequest(t *testing.T) {
 	creds := &Credentials{Token: "secret-token"}
 
-	req := func(header string) *http.Request {
-		r, _ := http.NewRequest(http.MethodGet, "/v1/status", nil)
+	req := func(header, rawURL string) *http.Request {
+		if rawURL == "" {
+			rawURL = "/v1/status"
+		}
+		r, _ := http.NewRequest(http.MethodGet, rawURL, nil)
 		if header != "" {
 			r.Header.Set("Authorization", header)
 		}
 		return r
 	}
 
-	if !creds.VerifyRequest(req("Bearer secret-token")) {
+	if !creds.VerifyRequest(req("Bearer secret-token", "")) {
 		t.Error("valid token rejected")
 	}
+	if !creds.VerifyRequest(req("", "/v1/stream?token=secret-token")) {
+		t.Error("valid query token rejected")
+	}
 	for _, bad := range []string{"", "Bearer wrong", "secret-token", "Basic secret-token"} {
-		if creds.VerifyRequest(req(bad)) {
+		if creds.VerifyRequest(req(bad, "")) {
 			t.Errorf("accepted invalid Authorization %q", bad)
 		}
+	}
+	if creds.VerifyRequest(req("", "/v1/stream?token=wrong")) {
+		t.Error("accepted wrong query token")
+	}
+}
+
+func TestLoadExternalTLSCertificate(t *testing.T) {
+	dir := t.TempDir()
+	// Mint a self-signed pair first, then reload it as "external".
+	first, err := LoadOrCreateCredentials(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPath := filepath.Join(dir, certFile)
+	keyPath := filepath.Join(dir, keyFile)
+
+	second, err := LoadOrCreateCredentialsWithTLS(t.TempDir(), certPath, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.ExternalTLS {
+		t.Fatal("expected ExternalTLS")
+	}
+	if second.Fingerprint != first.Fingerprint {
+		t.Fatalf("fingerprint mismatch: %s vs %s", second.Fingerprint, first.Fingerprint)
+	}
+}
+
+func TestVoicePageIsPublic(t *testing.T) {
+	_, addr, creds := startTestServer(t, &scriptedRunner{}, events.NewBus())
+	client := insecureClient()
+
+	// HTML must load without a token (browser entrypoint).
+	resp, err := client.Get("https://" + addr + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET / = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "Samantha") {
+		t.Fatalf("voice page body missing title, got %q", string(body)[:min(80, len(body))])
+	}
+
+	// API still requires auth.
+	resp2, err := client.Get("https://" + addr + "/v1/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("GET /v1/status without token = %d, want 401", resp2.StatusCode)
+	}
+
+	// Query-token auth works for API.
+	req, _ := http.NewRequest(http.MethodGet, "https://"+addr+"/v1/status?token="+creds.Token, nil)
+	resp3, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp3.Body.Close()
+	if resp3.StatusCode != http.StatusOK {
+		t.Fatalf("GET /v1/status?token = %d, want 200", resp3.StatusCode)
 	}
 }
 

@@ -30,6 +30,8 @@ var (
 	servePort        int
 	serveNoVoice     bool
 	serveAllowPublic bool
+	serveTLSCert     string
+	serveTLSKey      string
 )
 
 var serveCmd = &cobra.Command{
@@ -44,9 +46,15 @@ audio_output control message (mode "stream"). Responses also speak through
 this machine's speaker unless --no-voice is set (host muted; stream clients
 still hear).
 
-Auth is mandatory: a bearer token and self-signed TLS certificate are
-generated on first run. Remote turns never get tool access unless
-remote_tools_enabled is set in config.`,
+An embedded phone voice page is served at https://<host>:<port>/ — paste the
+token, tap Start (unlocks audio), and type (or use iOS dictation). For iOS
+Safari, load a real certificate via --tls-cert/--tls-key from
+` + "`tailscale cert <name>.<tailnet>.ts.net`" + ` so the page is a secure
+context.
+
+Auth is mandatory: a bearer token is generated on first run (and self-signed
+TLS when no external cert is provided). Remote turns never get tool access
+unless remote_tools_enabled is set in config.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
@@ -62,6 +70,8 @@ func init() {
 	serveCmd.Flags().IntVar(&servePort, "port", defaultServePort, "Port to listen on")
 	serveCmd.Flags().BoolVar(&serveNoVoice, "no-voice", false, "Do not speak responses through the local speaker")
 	serveCmd.Flags().BoolVar(&serveAllowPublic, "allow-public", false, "Allow binding a non-private interface (dangerous)")
+	serveCmd.Flags().StringVar(&serveTLSCert, "tls-cert", "", "TLS certificate PEM (e.g. from tailscale cert)")
+	serveCmd.Flags().StringVar(&serveTLSKey, "tls-key", "", "TLS private key PEM (e.g. from tailscale cert)")
 	rootCmd.AddCommand(serveCmd)
 }
 
@@ -113,7 +123,13 @@ func runServe(cfg *config.Config) error {
 		}
 	}()
 
-	creds, err := netapi.LoadOrCreateCredentials(filepath.Join(config.ConfigDir(), "serve"))
+	credsDir := filepath.Join(config.ConfigDir(), "serve")
+	var creds *netapi.Credentials
+	if serveTLSCert != "" || serveTLSKey != "" {
+		creds, err = netapi.LoadOrCreateCredentialsWithTLS(credsDir, serveTLSCert, serveTLSKey)
+	} else {
+		creds, err = netapi.LoadOrCreateCredentials(credsDir)
+	}
 	if err != nil {
 		return err
 	}
@@ -211,7 +227,13 @@ func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config
 	fmt.Println()
 	fmt.Printf("  %s\n", titleStyle.Render("Samantha serve"))
 	fmt.Printf("  %s %s\n", keyStyle.Render("Listening:"), "https://"+addr)
-	fmt.Printf("  %s %s\n", keyStyle.Render("Cert SHA-256:"), creds.Fingerprint)
+	fmt.Printf("  %s %s\n", keyStyle.Render("Voice page:"), "https://"+addr+"/")
+	if creds.ExternalTLS {
+		fmt.Printf("  %s %s\n", keyStyle.Render("TLS:"), "external cert ("+creds.Fingerprint[:16]+"…)")
+	} else {
+		fmt.Printf("  %s %s\n", keyStyle.Render("Cert SHA-256:"), creds.Fingerprint)
+		fmt.Println(dimStyle.Render("  Self-signed — for iOS Safari use --tls-cert/--tls-key from tailscale cert"))
+	}
 	if creds.TokenCreated {
 		fmt.Printf("  %s %s\n", keyStyle.Render("Token:"), creds.Token)
 		fmt.Println(dimStyle.Render("  Shown once — stored under " + config.ConfigDir() + "/serve/"))
