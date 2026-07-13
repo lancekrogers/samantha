@@ -8,12 +8,14 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/coder/websocket"
 	"github.com/spf13/cobra"
@@ -22,6 +24,7 @@ import (
 var (
 	connectToken       string
 	connectFingerprint string
+	connectAudioOut    string
 )
 
 var connectCmd = &cobra.Command{
@@ -32,8 +35,12 @@ type lines to send text turns, watch the live event stream come back.
 Commands: /interrupt, /clear, /audio on, /audio off, /quit.
 
 /audio on sends {"type":"audio_output","mode":"stream"} so the server pushes
-base64 PCM audio_chunk envelopes (Phase 3). This REPL only logs them —
-pipe a real client (or ffplay of a decoded dump) for playback.
+base64 PCM audio_chunk envelopes (Phase 3). With --audio-out FILE, raw
+pcm_s16le bytes are appended to FILE (and stream mode is enabled on connect)
+so you can verify the wire format, e.g.:
+
+  samantha connect host:7262 --token … --audio-out /tmp/out.raw
+  ffplay -f s16le -ar 24000 -ac 1 /tmp/out.raw
 
 Pin the server with --fingerprint (printed by serve at startup); without it
 the certificate is accepted blindly and its fingerprint printed so you can
@@ -47,6 +54,7 @@ pin on the next run.`,
 func init() {
 	connectCmd.Flags().StringVar(&connectToken, "token", "", "Bearer token issued by samantha serve (required)")
 	connectCmd.Flags().StringVar(&connectFingerprint, "fingerprint", "", "Pin the server's certificate SHA-256 (hex)")
+	connectCmd.Flags().StringVar(&connectAudioOut, "audio-out", "", "Append raw pcm_s16le audio_chunk payloads to this file")
 	_ = connectCmd.MarkFlagRequired("token")
 	rootCmd.AddCommand(connectCmd)
 }
@@ -86,11 +94,32 @@ func runConnect(addr string) error {
 	}
 	defer ws.Close(websocket.StatusNormalClosure, "")
 
+	var audioFile *os.File
+	if connectAudioOut != "" {
+		audioFile, err = os.OpenFile(connectAudioOut, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return fmt.Errorf("open --audio-out: %w", err)
+		}
+		defer audioFile.Close()
+	}
+
 	fmt.Printf("  %s %s\n", titleStyle.Render("Connected:"), addr)
 	fmt.Println(dimStyle.Render("  Type to talk • /interrupt • /clear • /audio on|off • /quit"))
+	if connectAudioOut != "" {
+		fmt.Println(dimStyle.Render("  Writing raw PCM to " + connectAudioOut))
+	}
 	fmt.Println()
 
-	go printStream(ctx, ws)
+	// --audio-out implies stream mode so the file receives chunks without
+	// requiring an explicit /audio on.
+	if connectAudioOut != "" {
+		optIn, _ := json.Marshal(map[string]string{"type": "audio_output", "mode": "stream"})
+		if err := ws.Write(ctx, websocket.MessageText, optIn); err != nil {
+			return fmt.Errorf("enable audio stream: %w", err)
+		}
+	}
+
+	go printStream(ctx, ws, audioFile)
 
 	// Read stdin off the main select so the first Ctrl+C (ctx cancel) can
 	// close the WebSocket immediately instead of wedging on Scan.
@@ -156,7 +185,9 @@ func runConnect(addr string) error {
 }
 
 // printStream renders incoming envelopes until the connection or ctx dies.
-func printStream(ctx context.Context, ws *websocket.Conn) {
+// When audioFile is non-nil, decoded pcm_s16le payloads are appended to it.
+func printStream(ctx context.Context, ws *websocket.Conn, audioFile *os.File) {
+	var audioMu sync.Mutex
 	for {
 		_, data, err := ws.Read(ctx)
 		if err != nil {
@@ -186,11 +217,22 @@ func printStream(ctx context.Context, ws *websocket.Conn) {
 			fmt.Println(dimStyle.Render("  Conversation cleared."))
 		case "turn_interrupted":
 			fmt.Println(dimStyle.Render("  turn interrupted (" + asString("reason") + ")"))
+		case "audio_output_ack":
+			fmt.Println(dimStyle.Render("  audio stream: " + asString("mode") + " (acked)"))
 		case "audio_chunk":
-			// Debug REPL: count samples rather than trying to play them.
-			data, _ := env["data"].(string)
+			b64, _ := env["data"].(string)
 			rate, _ := env["sample_rate"].(float64)
-			fmt.Printf("  %s %d B @ %.0f Hz\n", dimStyle.Render("audio_chunk"), len(data)*3/4, rate)
+			raw, err := base64.StdEncoding.DecodeString(b64)
+			n := 0
+			if err == nil {
+				n = len(raw)
+				if audioFile != nil {
+					audioMu.Lock()
+					_, _ = audioFile.Write(raw)
+					audioMu.Unlock()
+				}
+			}
+			fmt.Printf("  %s %d B @ %.0f Hz\n", dimStyle.Render("audio_chunk"), n, rate)
 		case "audio_end":
 			fmt.Println(dimStyle.Render("  audio_end (" + asString("reason") + ")"))
 		case "error":

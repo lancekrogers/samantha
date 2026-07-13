@@ -29,19 +29,28 @@ const (
 //  2. any WebSocket clients that opted into audio_output mode "stream".
 //
 // It is the Phase 3 seam: pipeline.Player stays an Engine; no pipeline changes.
+//
+// Local engine ownership: when ownLocal is true, Close() closes the local
+// engine. When false, the caller (typically buildPipeline's cleanup) owns it.
 type AudioFanout struct {
-	local audio.Engine
-	hub   *hub
+	local    audio.Engine
+	ownLocal bool
+	hub      *hub
 
 	// segmentID is a monotonic counter so clients can group chunks that
 	// belong to one PlayStream call.
 	segmentID atomic.Uint64
 }
 
-// NewAudioFanout builds a fanout. local may be nil (host speaker muted).
-// Call AttachHub before the first PlayStream so stream clients receive chunks.
+// NewAudioFanout builds a fanout that does not own local (caller closes it).
+// local may be nil (host speaker muted).
 func NewAudioFanout(local audio.Engine) *AudioFanout {
-	return &AudioFanout{local: local}
+	return &AudioFanout{local: local, ownLocal: false}
+}
+
+// NewOwnedAudioFanout builds a fanout that closes local on Close().
+func NewOwnedAudioFanout(local audio.Engine) *AudioFanout {
+	return &AudioFanout{local: local, ownLocal: true}
 }
 
 // AttachHub wires the server's connection hub. Safe to call once before serve.
@@ -64,21 +73,20 @@ func (a *AudioFanout) PlayStream(ctx context.Context, stream *audio.PCMStream) (
 
 	segID := a.segmentID.Add(1)
 
+	// Optional local speaker: start PlayStream in its own goroutine up front
+	// so its initial-buffer wait cannot block the TTS drain loop.
 	var localStream *audio.PCMStream
-	// localReady delivers the local Playback (or a start error). PlayStream
-	// on the real Player blocks until its initial buffer fills, so it must
-	// run in its own goroutine while we keep writing frames into localStream.
-	// Nil when host speaker is muted — waitLocalDone must not block on it.
-	var localReady chan localStart
+	var localReady <-chan localStart
 	if a.local != nil {
 		localStream = audio.NewPCMStream(ctx)
 		if err := localStream.SetSampleRate(sampleRate); err != nil {
 			return nil, err
 		}
-		localReady = make(chan localStart, 1)
+		ch := make(chan localStart, 1)
+		localReady = ch
 		go func() {
 			pb, err := a.local.PlayStream(ctx, localStream)
-			localReady <- localStart{playback: pb, err: err}
+			ch <- localStart{playback: pb, err: err}
 		}()
 	}
 
@@ -88,7 +96,6 @@ func (a *AudioFanout) PlayStream(ctx context.Context, stream *audio.PCMStream) (
 
 	go a.pump(ctx, stream, localStream, localReady, sampleRate, segID, seg)
 
-	// Wait until first chunk is ready or the pump fails/finishes empty.
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -111,6 +118,8 @@ type localStart struct {
 	err      error
 }
 
+// pump is linear: drain TTS → optional wire encode → optional local Write →
+// close local → wait local Done → finish. Wire fanout is a pure side-effect.
 func (a *AudioFanout) pump(
 	ctx context.Context,
 	src *audio.PCMStream,
@@ -121,13 +130,13 @@ func (a *AudioFanout) pump(
 	seg *fanoutSegment,
 ) {
 	var (
-		first         bool
+		hadAudio      bool
 		localPlayback *audio.Playback
 		localFailed   bool
 	)
 
-	// Non-blocking poll so we notice local start without stalling the drain.
-	takeLocal := func() {
+	// Resolve local start without blocking the drain (poll) or at end (block).
+	pollLocal := func() {
 		if localReady == nil || localPlayback != nil || localFailed {
 			return
 		}
@@ -141,10 +150,8 @@ func (a *AudioFanout) pump(
 		default:
 		}
 	}
-
-	waitLocalDone := func(fallback audio.PlaybackResult) audio.PlaybackResult {
-		takeLocal()
-		// Local PlayStream may still be blocked on its initial buffer — wait.
+	awaitLocalResult := func(fallback audio.PlaybackResult) audio.PlaybackResult {
+		pollLocal()
 		if localPlayback == nil && localReady != nil && !localFailed {
 			select {
 			case start := <-localReady:
@@ -167,7 +174,7 @@ func (a *AudioFanout) pump(
 		}
 	}
 
-	finish := func(result audio.PlaybackResult, hadAudio bool) {
+	finish := func(result audio.PlaybackResult) {
 		if hadAudio {
 			a.emitAudioEnd(segID, result)
 		}
@@ -175,13 +182,13 @@ func (a *AudioFanout) pump(
 	}
 
 	for {
-		takeLocal()
+		pollLocal()
 		select {
 		case <-ctx.Done():
 			if local != nil {
 				local.CloseWithError(ctx.Err())
 			}
-			finish(waitLocalDone(audio.PlaybackResult{Interrupted: true, Err: ctx.Err()}), first)
+			finish(awaitLocalResult(audio.PlaybackResult{Interrupted: true, Err: ctx.Err()}))
 			return
 
 		case frames, ok := <-src.Frames():
@@ -189,26 +196,26 @@ func (a *AudioFanout) pump(
 				if local != nil {
 					local.CloseWithError(src.Err())
 				}
-				fallback := audio.PlaybackResult{Err: src.Err()}
-				finish(waitLocalDone(fallback), first)
+				finish(awaitLocalResult(audio.PlaybackResult{Err: src.Err()}))
 				return
 			}
 			if len(frames) == 0 {
 				continue
 			}
 
+			// Wire side-effect: skip all encode work when no stream clients.
 			a.emitAudioChunks(segID, sampleRate, frames)
+
 			if local != nil && !localFailed {
 				if err := local.Write(frames); err != nil && ctx.Err() == nil {
-					// Local write failed mid-stream: keep remote chunks going.
 					local.CloseWithError(err)
 					local = nil
 					localFailed = true
 				}
 			}
 
-			if !first {
-				first = true
+			if !hadAudio {
+				hadAudio = true
 				seg.markStarted()
 			}
 		}
@@ -216,7 +223,7 @@ func (a *AudioFanout) pump(
 }
 
 func (a *AudioFanout) emitAudioChunks(segID uint64, sampleRate int, frames []float32) {
-	if a.hub == nil {
+	if a.hub == nil || !a.hub.hasStreamClients() {
 		return
 	}
 	for len(frames) > 0 {
@@ -234,7 +241,7 @@ func (a *AudioFanout) emitAudioChunks(segID uint64, sampleRate int, frames []flo
 }
 
 func (a *AudioFanout) emitAudioEnd(segID uint64, result audio.PlaybackResult) {
-	if a.hub == nil {
+	if a.hub == nil || !a.hub.hasStreamClients() {
 		return
 	}
 	reason := "complete"
@@ -249,7 +256,9 @@ func (a *AudioFanout) emitAudioEnd(segID uint64, result audio.PlaybackResult) {
 	}
 }
 
-// Stop interrupts local playback when present.
+// Stop interrupts local playback when present. Remote stream clients stop
+// only when the turn context is canceled (pipeline interrupt) — Stop alone
+// does not tear down in-flight wire chunks.
 func (a *AudioFanout) Stop() {
 	if a.local != nil {
 		a.local.Stop()
@@ -264,9 +273,9 @@ func (a *AudioFanout) IsPlaying() bool {
 	return a.local.IsPlaying()
 }
 
-// Close releases the local engine.
+// Close releases the local engine only when this fanout owns it.
 func (a *AudioFanout) Close() error {
-	if a.local == nil {
+	if !a.ownLocal || a.local == nil {
 		return nil
 	}
 	return a.local.Close()

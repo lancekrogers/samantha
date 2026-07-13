@@ -290,10 +290,14 @@ func TestRateLimiterCapsPerWindow(t *testing.T) {
 
 func TestHubEvictsSlowClients(t *testing.T) {
 	h := newHub()
-	slow := &streamConn{out: make(chan []byte, 1), kick: make(chan struct{})}
+	slow := &streamConn{
+		out:   make(chan []byte, 1),
+		audio: make(chan []byte, audioQueueDepth),
+		kick:  make(chan struct{}),
+	}
 	h.add(slow)
 
-	h.broadcast([]byte("one")) // fills the queue
+	h.broadcast([]byte("one")) // fills the event queue
 	h.broadcast([]byte("two")) // overflows: evict
 
 	select {
@@ -651,11 +655,34 @@ func (d *drainEngine) Stop()           {}
 func (d *drainEngine) IsPlaying() bool { return false }
 func (d *drainEngine) Close() error    { return nil }
 
+func newTestConn(outDepth, audioDepth int) *streamConn {
+	return &streamConn{
+		out:   make(chan []byte, outDepth),
+		audio: make(chan []byte, audioDepth),
+		kick:  make(chan struct{}),
+	}
+}
+
+// bufferedPCM fills a stream and closes it before PlayStream so tests never
+// race on scheduler timing.
+func bufferedPCM(t *testing.T, ctx context.Context, rate int, frames []float32) *audio.PCMStream {
+	t.Helper()
+	stream := audio.NewPCMStream(ctx)
+	if err := stream.SetSampleRate(rate); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Write(frames); err != nil {
+		t.Fatal(err)
+	}
+	stream.Close()
+	return stream
+}
+
 func TestAudioFanoutStreamsWithoutLocalSpeaker(t *testing.T) {
 	h := newHub()
-	conn := &streamConn{out: make(chan []byte, 16), kick: make(chan struct{})}
-	conn.setAudioStream(true)
+	conn := newTestConn(16, 16)
 	h.add(conn)
+	h.setConnAudio(conn, true)
 
 	fanout := NewAudioFanout(nil)
 	fanout.AttachHub(h)
@@ -663,38 +690,18 @@ func TestAudioFanoutStreamsWithoutLocalSpeaker(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	stream := audio.NewPCMStream(ctx)
-	if err := stream.SetSampleRate(24000); err != nil {
-		t.Fatal(err)
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		playback, err := fanout.PlayStream(ctx, stream)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		<-playback.Done()
-		errCh <- nil
-	}()
-
-	// Give PlayStream a moment to enter WaitReady (already satisfied) and pump.
-	time.Sleep(10 * time.Millisecond)
-	if err := stream.Write([]float32{0.5, -0.5, 0.25}); err != nil {
-		t.Fatal(err)
-	}
-	stream.Close()
-
-	if err := <-errCh; err != nil {
+	stream := bufferedPCM(t, ctx, 24000, []float32{0.5, -0.5, 0.25})
+	playback, err := fanout.PlayStream(ctx, stream)
+	if err != nil {
 		t.Fatalf("PlayStream: %v", err)
 	}
+	<-playback.Done()
 
 	var sawChunk, sawEnd bool
 	deadline := time.After(2 * time.Second)
 	for !sawChunk || !sawEnd {
 		select {
-		case msg := <-conn.out:
+		case msg := <-conn.audio:
 			var env map[string]any
 			if err := json.Unmarshal(msg, &env); err != nil {
 				t.Fatal(err)
@@ -725,6 +732,32 @@ func TestAudioFanoutStreamsWithoutLocalSpeaker(t *testing.T) {
 	}
 }
 
+func TestAudioFanoutSkipsEncodeWithoutStreamClients(t *testing.T) {
+	h := newHub()
+	// Connected but not opted into audio — streamers count stays 0.
+	conn := newTestConn(4, 4)
+	h.add(conn)
+
+	fanout := NewAudioFanout(nil)
+	fanout.AttachHub(h)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream := bufferedPCM(t, ctx, 24000, []float32{0.1, 0.2})
+	playback, err := fanout.PlayStream(ctx, stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-playback.Done()
+
+	select {
+	case msg := <-conn.audio:
+		t.Fatalf("unexpected audio message with no stream clients: %s", msg)
+	default:
+	}
+}
+
 func TestAudioFanoutWithLocalEngine(t *testing.T) {
 	local := &drainEngine{}
 	fanout := NewAudioFanout(local)
@@ -732,15 +765,7 @@ func TestAudioFanoutWithLocalEngine(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	stream := audio.NewPCMStream(ctx)
-	_ = stream.SetSampleRate(16000)
-
-	go func() {
-		time.Sleep(5 * time.Millisecond)
-		_ = stream.Write([]float32{0.1, 0.2, 0.3, 0.4})
-		stream.Close()
-	}()
-
+	stream := bufferedPCM(t, ctx, 16000, []float32{0.1, 0.2, 0.3, 0.4})
 	playback, err := fanout.PlayStream(ctx, stream)
 	if err != nil {
 		t.Fatal(err)
@@ -803,63 +828,68 @@ func TestAudioOutputPreferenceGatesChunks(t *testing.T) {
 	wsQuiet := dial()
 	defer wsQuiet.Close(websocket.StatusNormalClosure, "")
 
-	// Only one client opts into audio.
-	optIn, _ := json.Marshal(controlMessage{Type: "audio_output", Mode: "stream"})
-	if err := wsStream.Write(ctx, websocket.MessageText, optIn); err != nil {
-		t.Fatal(err)
-	}
-	// Give the server a beat to apply the preference.
-	time.Sleep(20 * time.Millisecond)
-
-	// Push a synthetic TTS stream through the fanout.
-	pcmStream := audio.NewPCMStream(ctx)
-	_ = pcmStream.SetSampleRate(24000)
-	go func() {
-		time.Sleep(5 * time.Millisecond)
-		_ = pcmStream.Write([]float32{0.9, -0.9})
-		pcmStream.Close()
-	}()
-	if _, err := fanout.PlayStream(ctx, pcmStream); err != nil {
-		t.Fatal(err)
-	}
-
-	// Stream client must see audio_chunk; quiet client must only see (or nothing).
-	readType := func(ws *websocket.Conn, timeout time.Duration) (string, bool) {
+	readEnv := func(ws *websocket.Conn, timeout time.Duration) (map[string]any, bool) {
 		rctx, rcancel := context.WithTimeout(ctx, timeout)
 		defer rcancel()
 		_, data, err := ws.Read(rctx)
 		if err != nil {
-			return "", false
+			return nil, false
 		}
 		var env map[string]any
 		_ = json.Unmarshal(data, &env)
-		typ, _ := env["type"].(string)
-		return typ, true
+		return env, true
 	}
 
-	typ, ok := readType(wsStream, 2*time.Second)
-	if !ok || typ != "audio_chunk" {
-		t.Fatalf("stream client got type %q ok=%v, want audio_chunk", typ, ok)
+	// Only one client opts into audio; wait for the ack (no sleep).
+	optIn, _ := json.Marshal(controlMessage{Type: "audio_output", Mode: "stream"})
+	if err := wsStream.Write(ctx, websocket.MessageText, optIn); err != nil {
+		t.Fatal(err)
 	}
-	// Quiet client should not receive audio within a short window.
-	if typ, ok := readType(wsQuiet, 150*time.Millisecond); ok {
-		t.Fatalf("quiet client unexpectedly received %q", typ)
+	ack, ok := readEnv(wsStream, 2*time.Second)
+	if !ok || ack["type"] != "audio_output_ack" || ack["mode"] != "stream" {
+		t.Fatalf("audio_output_ack = %v ok=%v", ack, ok)
+	}
+
+	// Pre-buffer TTS so PlayStream is deterministic.
+	pcmStream := bufferedPCM(t, ctx, 24000, []float32{0.9, -0.9})
+	if _, err := fanout.PlayStream(ctx, pcmStream); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stream client must see audio_chunk (may also see audio_end after).
+	var sawChunk bool
+	for range 4 {
+		env, ok := readEnv(wsStream, 2*time.Second)
+		if !ok {
+			break
+		}
+		if env["type"] == "audio_chunk" {
+			sawChunk = true
+			break
+		}
+	}
+	if !sawChunk {
+		t.Fatal("stream client never received audio_chunk")
+	}
+	// Quiet client should not receive anything from this TTS fanout.
+	if env, ok := readEnv(wsQuiet, 100*time.Millisecond); ok {
+		t.Fatalf("quiet client unexpectedly received %v", env)
 	}
 }
 
 func TestHubBroadcastAudioSkipsOptOut(t *testing.T) {
 	h := newHub()
-	on := &streamConn{out: make(chan []byte, 2), kick: make(chan struct{})}
-	off := &streamConn{out: make(chan []byte, 2), kick: make(chan struct{})}
-	on.setAudioStream(true)
+	on := newTestConn(2, 2)
+	off := newTestConn(2, 2)
 	h.add(on)
 	h.add(off)
+	h.setConnAudio(on, true)
 
 	h.broadcastAudio([]byte(`{"type":"audio_chunk"}`))
 	h.broadcast([]byte(`{"type":"info"}`))
 
 	select {
-	case <-on.out:
+	case <-on.audio:
 	default:
 		t.Fatal("opt-in client missed audio")
 	}
@@ -871,10 +901,36 @@ func TestHubBroadcastAudioSkipsOptOut(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("opt-out client missed event broadcast")
 	}
-	// Ensure no audio leaked to opt-out.
 	select {
-	case msg := <-off.out:
-		t.Fatalf("opt-out client has extra message: %s", msg)
+	case msg := <-off.audio:
+		t.Fatalf("opt-out client has audio message: %s", msg)
 	default:
+	}
+}
+
+func TestAudioQueueDropDoesNotKick(t *testing.T) {
+	h := newHub()
+	// Audio queue depth 1: second chunk drops without kicking.
+	c := newTestConn(4, 1)
+	h.add(c)
+	h.setConnAudio(c, true)
+
+	h.broadcastAudio([]byte("chunk-1"))
+	h.broadcastAudio([]byte("chunk-2")) // drop
+
+	select {
+	case <-c.kick:
+		t.Fatal("full audio queue must not kick the client")
+	default:
+	}
+	// Event channel still works after audio drop.
+	h.broadcast([]byte("event"))
+	select {
+	case msg := <-c.out:
+		if string(msg) != "event" {
+			t.Fatalf("event = %s", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("event not delivered after audio drop")
 	}
 }

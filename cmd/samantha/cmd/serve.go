@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/netapi"
+	"github.com/lancekrogers/samantha/internal/pipeline"
 	"github.com/lancekrogers/samantha/internal/session"
 	"github.com/lancekrogers/samantha/internal/tts"
 	"github.com/lancekrogers/samantha/internal/ui"
@@ -86,46 +88,11 @@ func runServe(cfg *config.Config) error {
 	serveCfg := *cfg
 	serveCfg.VoiceToolsEnabled = cfg.RemoteToolsEnabled
 
-	// text=true: serve runs no local input loop and the mic never goes hot;
-	// every turn arrives over the wire. silent=true skips buildPipeline's
-	// TTS/player; we install TTS + AudioFanout ourselves for Phase 3.
-	p, pipelineCleanup, err := buildPipeline(ctx, &serveCfg, bus, true, true)
+	p, fanout, cleanup, err := buildServePipeline(ctx, &serveCfg, bus, serveNoVoice)
 	if err != nil {
-		return fmt.Errorf("init pipeline: %w", err)
+		return fmt.Errorf("init serve pipeline: %w", err)
 	}
-
-	// Host speaker is optional; remote stream clients always get a fanout.
-	var localPlayer audio.Engine
-	var playerCleanup func()
-	if !serveNoVoice {
-		player := audio.NewPlayer()
-		localPlayer = player
-		playerCleanup = func() { _ = player.Close() }
-	}
-
-	ttsProvider, ttsCleanup, err := tts.NewProvider(&serveCfg)
-	if err != nil {
-		if playerCleanup != nil {
-			playerCleanup()
-		}
-		pipelineCleanup()
-		return fmt.Errorf("init TTS: %w", err)
-	}
-
-	fanout := netapi.NewAudioFanout(localPlayer)
-	p.TTS = ttsProvider
-	p.Player = fanout
-
-	defer func() {
-		_ = fanout.Close()
-		if ttsCleanup != nil {
-			ttsCleanup()
-		}
-		if playerCleanup != nil {
-			playerCleanup()
-		}
-		pipelineCleanup()
-	}()
+	defer cleanup()
 
 	// Keep pipeline streaming options in lockstep with the serve policy.
 	p.VoiceToolsEnabled = cfg.RemoteToolsEnabled
@@ -192,6 +159,52 @@ func runServe(cfg *config.Config) error {
 	})
 
 	return server.ListenAndServe(ctx)
+}
+
+// buildServePipeline constructs the serve-mode pipeline: text turns only
+// (no mic), always-on TTS for stream clients, and an AudioFanout player.
+// muteHost skips the local speaker but still synthesizes for the wire.
+//
+// Fanout always owns the local player (if any) so cleanup is single-owner —
+// no double Close between serve and buildPipeline.
+func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, muteHost bool) (*pipeline.Pipeline, *netapi.AudioFanout, func(), error) {
+	// Brain only first (text=true, silent=true): no mic, no default TTS/player.
+	p, baseCleanup, err := buildPipeline(ctx, cfg, bus, true, true)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	var cleanups []func()
+	cleanups = append(cleanups, baseCleanup)
+	cleanup := func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
+	}
+	fail := func(err error) (*pipeline.Pipeline, *netapi.AudioFanout, func(), error) {
+		cleanup()
+		return nil, nil, nil, err
+	}
+
+	ttsProvider, ttsCleanup, err := tts.NewProvider(cfg)
+	if err != nil {
+		return fail(fmt.Errorf("init TTS: %w", err))
+	}
+	if ttsCleanup != nil {
+		cleanups = append(cleanups, ttsCleanup)
+	}
+	p.TTS = ttsProvider
+
+	var local audio.Engine
+	if !muteHost {
+		local = audio.NewPlayer()
+	}
+	// Fanout owns local so Close is exactly once via cleanup.
+	fanout := netapi.NewOwnedAudioFanout(local)
+	cleanups = append(cleanups, func() { _ = fanout.Close() })
+	p.Player = fanout
+
+	return p, fanout, cleanup, nil
 }
 
 func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config) {
