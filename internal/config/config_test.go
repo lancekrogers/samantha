@@ -201,6 +201,49 @@ func TestVoiceToolsEnvOverride(t *testing.T) {
 	}
 }
 
+func TestOllamaDefaultsVoiceToolsOnWhenUnset(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	// brain_provider only — no voice_tools_enabled key.
+	if err := os.WriteFile(path, []byte("brain_provider: ollama\nollama_model: llama3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := configFile
+	configFile = path
+	defer func() { configFile = orig }()
+	t.Setenv("VOICE_TOOLS_ENABLED", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !cfg.VoiceToolsEnabled {
+		t.Fatal("ollama without explicit voice_tools_enabled must default tools on")
+	}
+}
+
+func TestOllamaRespectsExplicitVoiceToolsFalse(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("brain_provider: ollama\nvoice_tools_enabled: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := configFile
+	configFile = path
+	defer func() { configFile = orig }()
+	t.Setenv("VOICE_TOOLS_ENABLED", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.VoiceToolsEnabled {
+		t.Fatal("explicit voice_tools_enabled: false must win")
+	}
+}
+
 func TestPromptConfigEnvOverrides(t *testing.T) {
 	orig := configFile
 	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")

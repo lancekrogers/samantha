@@ -278,7 +278,7 @@ func TestThinkFullSpeaksFallbackVerbatim(t *testing.T) {
 		cfg:     &config.Config{MaxHistory: 10},
 	}
 
-	resp, err := o.ThinkFull(context.Background(), "hello")
+	resp, err := o.ThinkFull(context.Background(), "hello", StreamOptions{})
 	if err != nil {
 		t.Fatalf("ThinkFull returned error: %v", err)
 	}
@@ -293,10 +293,10 @@ func TestThinkFullOmitsToolsWhenDisabled(t *testing.T) {
 		client:  ollamaStub(t, &withTools, &withoutTools),
 		model:   "m",
 		workDir: t.TempDir(),
-		cfg:     &config.Config{VoiceToolsEnabled: false, MaxHistory: 10},
+		cfg:     &config.Config{MaxHistory: 10},
 	}
 
-	resp, err := o.ThinkFull(context.Background(), "hello")
+	resp, err := o.ThinkFull(context.Background(), "hello", StreamOptions{ToolsEnabled: false})
 	if err != nil {
 		t.Fatalf("ThinkFull returned error: %v", err)
 	}
@@ -305,5 +305,25 @@ func TestThinkFullOmitsToolsWhenDisabled(t *testing.T) {
 	}
 	if withTools != 0 {
 		t.Errorf("tools-disabled config must not send tools; got %d tool requests", withTools)
+	}
+}
+
+func TestThinkFullSendsToolsWhenEnabled(t *testing.T) {
+	var withTools, withoutTools int
+	o := &OllamaBrain{
+		client:  ollamaStub(t, &withTools, &withoutTools),
+		model:   "m",
+		workDir: t.TempDir(),
+		cfg:     &config.Config{MaxHistory: 10},
+	}
+
+	// Stub rejects tools and retries without — withTools must still be > 0
+	// so we know ToolsEnabled actually attached the schema.
+	_, err := o.ThinkFull(context.Background(), "hello", StreamOptions{ToolsEnabled: true})
+	if err != nil {
+		t.Fatalf("ThinkFull returned error: %v", err)
+	}
+	if withTools == 0 {
+		t.Fatal("ToolsEnabled=true must send a tools request")
 	}
 }

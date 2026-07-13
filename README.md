@@ -195,7 +195,7 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `brain_provider` | `claude` | `BRAIN_PROVIDER` | Brain backend: `claude` or `ollama` |
 | `ollama_model` | empty | `OLLAMA_MODEL` | Ollama model name |
 | `ollama_host` | `http://localhost:11434` | `OLLAMA_HOST` | Ollama server URL |
-| `voice_tools_enabled` | `false` | `VOICE_TOOLS_ENABLED` | Enable voice-triggered tool calls |
+| `voice_tools_enabled` | `false` (auto-`true` for Ollama when unset) | `VOICE_TOOLS_ENABLED` | Enable local tool calls (`list_files` / `read_file` / `write_file` / `run_command` for Ollama). Ollama enables this automatically unless you set the key or env explicitly to `false`. Remote `samantha serve` still uses `remote_tools_enabled` (default off). |
 | `tts_provider` | `kokoro` | `TTS_PROVIDER` | TTS backend |
 | `tts_voice` | `af_heart` | `TTS_VOICE` | Kokoro voice name |
 | `speech_speed` | `0.95` | | Playback speed |

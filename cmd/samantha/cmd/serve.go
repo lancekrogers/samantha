@@ -89,12 +89,11 @@ func runServe(cfg *config.Config) error {
 	bus := events.NewBus()
 	ui.New(bus, cfg.AgentName) // local terminal mirrors the event stream
 
-	// Remote turns are gated by remote_tools_enabled only. Brains' ThinkFull
-	// path reads cfg.VoiceToolsEnabled, and RunTurnTextMode never passes
-	// p.VoiceToolsEnabled — so clone config and align the flag before the
-	// pipeline/brains are built. The local voice_tools_enabled setting must
-	// not leak tool power to the network (and the reverse must not claim
-	// tools are on when they are not).
+	// Remote turns are gated by remote_tools_enabled only. The pipeline is
+	// the sole runtime tools gate (ThinkStream and ThinkFull both take
+	// StreamOptions.ToolsEnabled from p.VoiceToolsEnabled), so clone config
+	// and set the flag before building brains. Local voice_tools_enabled
+	// must not leak tool power to the network.
 	serveCfg := *cfg
 	serveCfg.VoiceToolsEnabled = cfg.RemoteToolsEnabled
 
