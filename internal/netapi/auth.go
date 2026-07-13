@@ -21,9 +21,9 @@ import (
 	"time"
 )
 
-// Credentials are the bearer token and self-signed TLS identity `serve`
-// requires on every connection. Auth is mandatory — there is no "trusted
-// LAN, skip auth" mode.
+// Credentials are the bearer token and TLS identity `serve` requires on
+// every connection. Auth is mandatory — there is no "trusted LAN, skip
+// auth" mode.
 type Credentials struct {
 	Token       string
 	Certificate tls.Certificate
@@ -32,6 +32,11 @@ type Credentials struct {
 	// TokenCreated reports whether this load generated a fresh token; the
 	// caller prints the token exactly once, at creation.
 	TokenCreated bool
+
+	// ExternalTLS is true when the certificate was loaded from caller-
+	// supplied paths (e.g. `tailscale cert` material) instead of the
+	// self-signed TOFU pair under the serve credentials dir.
+	ExternalTLS bool
 }
 
 const (
@@ -40,10 +45,24 @@ const (
 	keyFile   = "key.pem"
 )
 
-// LoadOrCreateCredentials loads the serve token and TLS certificate from
-// dir, generating any that are missing. Secrets are stored 0600 and never
-// land in the YAML config.
+// LoadOrCreateCredentials loads the serve token and a self-signed TLS
+// certificate from dir, generating any that are missing. Secrets are stored
+// 0600 and never land in the YAML config.
 func LoadOrCreateCredentials(dir string) (*Credentials, error) {
+	return loadCredentials(dir, "", "")
+}
+
+// LoadOrCreateCredentialsWithTLS loads the serve token from dir and a
+// caller-supplied TLS certificate/key pair (e.g. from `tailscale cert`).
+// Both certPath and keyPath are required when either is set.
+func LoadOrCreateCredentialsWithTLS(dir, certPath, keyPath string) (*Credentials, error) {
+	if (certPath == "") != (keyPath == "") {
+		return nil, fmt.Errorf("both --tls-cert and --tls-key are required when loading an external certificate")
+	}
+	return loadCredentials(dir, certPath, keyPath)
+}
+
+func loadCredentials(dir, externalCert, externalKey string) (*Credentials, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create serve credentials dir: %w", err)
 	}
@@ -72,12 +91,18 @@ func LoadOrCreateCredentials(dir string) (*Credentials, error) {
 		return nil, fmt.Errorf("token file %s is empty — delete it to regenerate", tokenPath)
 	}
 
-	certPath, keyPath := filepath.Join(dir, certFile), filepath.Join(dir, keyFile)
-	if _, err := os.Stat(certPath); os.IsNotExist(err) {
-		if err := generateSelfSignedCert(certPath, keyPath); err != nil {
-			return nil, err
+	certPath, keyPath := externalCert, externalKey
+	if certPath == "" {
+		certPath, keyPath = filepath.Join(dir, certFile), filepath.Join(dir, keyFile)
+		if _, err := os.Stat(certPath); os.IsNotExist(err) {
+			if err := generateSelfSignedCert(certPath, keyPath); err != nil {
+				return nil, err
+			}
 		}
+	} else {
+		creds.ExternalTLS = true
 	}
+
 	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("load TLS certificate: %w", err)
@@ -89,15 +114,27 @@ func LoadOrCreateCredentials(dir string) (*Credentials, error) {
 	return creds, nil
 }
 
-// VerifyRequest checks the Authorization bearer header in constant time.
+// VerifyRequest checks the Authorization bearer header on every protected
+// route. Browsers cannot set custom headers on WebSocket handshakes, so the
+// stream endpoint alone also accepts ?token=.
 func (c *Credentials) VerifyRequest(r *http.Request) bool {
 	const prefix = "Bearer "
 	header := r.Header.Get("Authorization")
-	if !strings.HasPrefix(header, prefix) {
+	if strings.HasPrefix(header, prefix) {
+		presented := strings.TrimPrefix(header, prefix)
+		if subtle.ConstantTimeCompare([]byte(presented), []byte(c.Token)) == 1 {
+			return true
+		}
+	}
+	if r.URL.Path != "/v1/stream" {
 		return false
 	}
-	presented := strings.TrimPrefix(header, prefix)
-	return subtle.ConstantTimeCompare([]byte(presented), []byte(c.Token)) == 1
+	// Query token is restricted to the browser WebSocket handshake.
+	q := r.URL.Query().Get("token")
+	if q == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(q), []byte(c.Token)) == 1
 }
 
 // generateSelfSignedCert writes a fresh ECDSA P-256 certificate for the

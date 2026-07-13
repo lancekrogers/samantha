@@ -87,6 +87,11 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("GET /v1/sessions", s.handleSessions)
 	mux.HandleFunc("POST /v1/sessions/{id}/resume", s.handleResume)
+	// Embedded phone voice client (public HTML/JS; WS still authenticated).
+	web := webFileServer()
+	mux.Handle("GET /{$}", web)
+	mux.Handle("GET /index.html", web)
+	mux.Handle("GET /app.js", web)
 
 	server := &http.Server{
 		Handler:           s.limiter.middleware(s.authMiddleware(mux)),
@@ -127,9 +132,14 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 }
 
-// authMiddleware enforces the mandatory bearer token on every endpoint.
+// authMiddleware enforces the mandatory bearer token on every endpoint
+// except the embedded voice page assets (see isPublicPath).
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isPublicPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if !s.opts.Credentials.VerifyRequest(r) {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid bearer token"})
 			return

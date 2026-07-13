@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>Samantha</title>
+  <style>
+    :root {
+      color-scheme: dark light;
+      --bg: #0f1115;
+      --fg: #e8eaed;
+      --muted: #9aa0a6;
+      --accent: #7aa2f7;
+      --danger: #f7768e;
+      --panel: #1a1d24;
+      --border: #2a2f3a;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f6f7f9;
+        --fg: #1a1d24;
+        --muted: #5f6368;
+        --panel: #ffffff;
+        --border: #dadce0;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: 1rem 1.1rem 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1.15rem;
+      font-weight: 600;
+    }
+    header p {
+      margin: 0.35rem 0 0;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      padding: 0.9rem 1.1rem 1.2rem;
+      max-width: 42rem;
+      width: 100%;
+      margin: 0 auto;
+    }
+    label {
+      display: block;
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 0.3rem;
+    }
+    input[type="password"],
+    input[type="text"],
+    textarea {
+      width: 100%;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--fg);
+      border-radius: 0.6rem;
+      padding: 0.7rem 0.8rem;
+      font: inherit;
+    }
+    .row {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+    button {
+      border: 0;
+      border-radius: 0.6rem;
+      padding: 0.7rem 1rem;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+      background: var(--accent);
+      color: #0b1020;
+    }
+    button.secondary {
+      background: var(--panel);
+      color: var(--fg);
+      border: 1px solid var(--border);
+    }
+    button.danger {
+      background: var(--danger);
+      color: #1a0b10;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    #log {
+      flex: 1;
+      min-height: 12rem;
+      overflow-y: auto;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 0.75rem;
+      font-size: 0.92rem;
+      line-height: 1.4;
+    }
+    .msg { margin: 0 0 0.55rem; white-space: pre-wrap; word-break: break-word; }
+    .msg.you { color: var(--accent); }
+    .msg.sam { color: var(--fg); }
+    .msg.sys { color: var(--muted); font-size: 0.85rem; }
+    .msg.err { color: var(--danger); }
+    #status {
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    #status.live { color: #9ece6a; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Samantha</h1>
+    <p>Phone voice over Tailscale — text in, streamed TTS out. Tap Start once to unlock audio.</p>
+  </header>
+  <main>
+    <div>
+      <label for="token">Bearer token</label>
+      <input id="token" type="password" autocomplete="off" placeholder="paste serve token" />
+    </div>
+    <div class="row">
+      <button id="start" type="button">Start</button>
+      <button id="interrupt" class="danger" type="button" disabled>Interrupt</button>
+      <button id="clear" class="secondary" type="button" disabled>Clear</button>
+    </div>
+    <div id="status">disconnected</div>
+    <div id="log" aria-live="polite"></div>
+    <div>
+      <label for="input">Message</label>
+      <textarea id="input" rows="3" placeholder="Type or use keyboard dictation…" disabled></textarea>
+    </div>
+    <div class="row">
+      <button id="send" type="button" disabled>Send</button>
+    </div>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
