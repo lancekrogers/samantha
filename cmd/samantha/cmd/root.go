@@ -105,7 +105,7 @@ func modelName(cfg *config.Config) string {
 // progress and the mic goes hot here, not in the launcher (D2). A non-nil
 // resume session seeds both the brain history and the viewport.
 func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBuilder {
-	return func(ctx context.Context, progress func(name string, pct float64)) (*appTUI.ConversationRuntime, error) {
+	return func(ctx context.Context, progress func(name string, pct float64), sessionID string) (*appTUI.ConversationRuntime, error) {
 		// Reload config in case settings changed inside the TUI.
 		cfg, err := config.Load()
 		if err != nil {
@@ -134,6 +134,14 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 		}
 
 		sess := resumeSession
+		if sessionID != "" && (sess == nil || sess.ID != sessionID) {
+			sess, err = session.Load(sessionID)
+			if err != nil {
+				cleanup()
+				return nil, fmt.Errorf("load session: %w", err)
+			}
+		}
+		resumed := sess != nil
 		if sess == nil {
 			sess = session.New(cfg.BrainProvider, modelName(cfg))
 		} else {
@@ -147,9 +155,13 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 		}
 
 		rt := &appTUI.ConversationRuntime{
-			Pipeline: p,
-			Bus:      bus,
-			Voice:    p.STT != nil,
+			Pipeline:     p,
+			Bus:          bus,
+			Voice:        p.STT != nil,
+			Output:       p.TTS != nil && p.Player != nil,
+			SessionID:    sess.ID,
+			InputDevice:  cfg.InputDevice,
+			OutputDevice: cfg.OutputDevice,
 			Cleanup: func() {
 				if err := sess.Save(p.Brain.History()); err != nil {
 					fmt.Fprintf(os.Stderr, "  warning: failed to save session %s: %v\n", sess.ID, err)
@@ -157,8 +169,8 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 				cleanup()
 			},
 		}
-		if resumeSession != nil {
-			rt.Seed = resumeSession.Turns
+		if resumed {
+			rt.Seed = sess.Turns
 		}
 		return rt, nil
 	}
@@ -249,7 +261,7 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 
 	// TTS + Player (skip in no-voice mode).
 	if !silent {
-		player := audio.NewPlayer()
+		player := audio.NewPlayerWithDevice(cfg.OutputDevice)
 		cleanups = append(cleanups, func() { _ = player.Close() })
 		p.Player = player
 
@@ -272,7 +284,7 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 			cleanups = append(cleanups, func() { _ = frontend.Close() })
 		}
 
-		capture := audio.NewCapture()
+		capture := audio.NewCaptureWithDevice(cfg.InputDevice)
 		if frontend != nil {
 			capture.SetFrontend(frontend)
 		}

@@ -19,23 +19,31 @@ const (
 
 // Capture handles microphone input using miniaudio.
 type Capture struct {
-	mu       sync.Mutex
-	subsMu   sync.RWMutex
-	ctx      *malgo.AllocatedContext
-	device   *malgo.Device
-	buf      *RingBuffer
-	frontend Frontend
-	running  bool
-	subs     map[int]chan []float32
-	nextSub  int
-	frameSeq int64
+	mu         sync.Mutex
+	subsMu     sync.RWMutex
+	ctx        *malgo.AllocatedContext
+	device     *malgo.Device
+	buf        *RingBuffer
+	frontend   Frontend
+	running    bool
+	subs       map[int]chan []float32
+	nextSub    int
+	frameSeq   int64
+	deviceName string
 }
 
 // NewCapture creates a new mic capture instance.
 func NewCapture() *Capture {
+	return NewCaptureWithDevice("")
+}
+
+// NewCaptureWithDevice creates a capture routed to deviceName. An empty name
+// follows the operating-system default.
+func NewCaptureWithDevice(deviceName string) *Capture {
 	return &Capture{
-		buf:  NewRingBuffer(SampleRate * 30), // 30 seconds buffer
-		subs: make(map[int]chan []float32),
+		buf:        NewRingBuffer(SampleRate * 30), // 30 seconds buffer
+		subs:       make(map[int]chan []float32),
+		deviceName: deviceName,
 	}
 }
 
@@ -58,6 +66,11 @@ func (c *Capture) Start(ctx context.Context) error {
 	deviceConfig.Capture.Format = malgo.FormatS16
 	deviceConfig.Capture.Channels = Channels
 	deviceConfig.SampleRate = SampleRate
+	if err := selectDevice(mctx.Context, malgo.Capture, c.deviceName, &deviceConfig.Capture); err != nil {
+		_ = mctx.Uninit()
+		mctx.Free()
+		return fmt.Errorf("select capture device: %w", err)
+	}
 
 	onData := func(outputSamples, inputSamples []byte, frameCount uint32) {
 		samples := bytesToFloat32(inputSamples)

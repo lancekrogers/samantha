@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -31,6 +32,33 @@ func TestVoicePreviewDoneGating(t *testing.T) {
 	}
 	if m.message != "Previewed af_bella" {
 		t.Fatalf("matching completion did not set message: got %q", m.message)
+	}
+}
+
+func TestSettingsLoadsAudioDevices(t *testing.T) {
+	m := settingsModel{inputItems: []string{""}, outputItems: []string{""}}
+	m, _ = m.Update(deviceListsMsg{
+		inputs: []string{"Studio Mic"}, outputs: []string{"Desk Speakers"},
+	})
+	if m.devicesLoading {
+		t.Fatal("device loading flag was not cleared")
+	}
+	if got := m.inputItems; len(got) != 2 || got[1] != "Studio Mic" {
+		t.Fatalf("input items = %v", got)
+	}
+	if got := m.outputItems; len(got) != 2 || got[1] != "Desk Speakers" {
+		t.Fatalf("output items = %v", got)
+	}
+}
+
+func TestSettingsCompactsForSmallTerminal(t *testing.T) {
+	m := settingsModel{
+		cfg: &config.Config{}, providerItems: []string{"claude", "ollama", "grok", "other"},
+	}
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 36, Height: 8})
+	view := stripANSI(m.View())
+	if got := len(strings.Split(view, "\n")); got > 8 {
+		t.Fatalf("compact settings rendered %d lines in 8-row terminal:\n%s", got, view)
 	}
 }
 

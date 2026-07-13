@@ -44,19 +44,30 @@ type voiceRetryMsg struct{}
 
 // conversationDeps wires the live pipeline into the conversation model.
 type conversationDeps struct {
-	runner       turnRunner
-	bus          *events.Bus
-	clearHistory func()
-	voice        bool            // STT is configured; voice turns may run
-	ctx          context.Context // pipeline lifetime; parent of every turn ctx
-	wg           *sync.WaitGroup // tracks in-flight turns so shutdown can drain them
+	runner         turnRunner
+	bus            *events.Bus
+	clearHistory   func()
+	voice          bool // STT is configured; voice turns may run
+	output         bool // TTS/player are configured
+	setOutputMuted func(bool)
+	sessionID      string
+	inputDevice    string
+	outputDevice   string
+	ctx            context.Context // pipeline lifetime; parent of every turn ctx
+	wg             *sync.WaitGroup // tracks in-flight turns so shutdown can drain them
 }
 
 // startConversation attaches the model to a live pipeline and kicks off the
 // first turn. The returned Cmd must be handed to the program.
 func (m *conversationModel) startConversation(deps conversationDeps) tea.Cmd {
 	m.deps = deps
+	m.startedAt = time.Now()
+	m.activity = nil
 	m.voiceEnabled = deps.voice
+	m.outputAvailable = deps.output
+	m.sessionID = deps.sessionID
+	m.inputDevice = deps.inputDevice
+	m.outputDevice = deps.outputDevice
 	m.bridge = newEventBridge(0)
 	m.bridge.attach(deps.bus)
 
@@ -75,6 +86,13 @@ func (m *conversationModel) startConversation(deps conversationDeps) tea.Cmd {
 	}
 
 	cmds := []tea.Cmd{m.bridge.wait()}
+	m.appendActivity("session", shortSessionID(deps.sessionID), 0)
+	if deps.voice {
+		m.appendActivity("input", deviceLabel(deps.inputDevice), 0)
+	}
+	if deps.output {
+		m.appendActivity("output", deviceLabel(deps.outputDevice), 0)
+	}
 	if m.voiceOn() {
 		cmds = append(cmds, m.dispatchVoiceTurn())
 	}
@@ -89,6 +107,47 @@ func (m *conversationModel) emit(e events.Event) {
 	if m.deps.bus != nil {
 		m.deps.bus.Emit(e)
 	}
+}
+
+// toggleInputMuted pauses or resumes background microphone turns. If the
+// pipeline is only listening, muting cancels that turn immediately; a response
+// that already owns the pipeline is allowed to finish and listening stays off.
+func (m *conversationModel) toggleInputMuted() tea.Cmd {
+	if !m.deps.voice {
+		m.setStatus("Microphone unavailable", true)
+		return nil
+	}
+	if m.voiceEnabled {
+		m.voiceEnabled = false
+		m.emit(events.Info{Message: "Microphone muted."})
+		if m.turnState == turnVoiceListening && m.canCancelVoice != nil && m.canCancelVoice.Load() {
+			m.turnState = turnVoiceCanceling
+			if m.turnCancel != nil {
+				m.turnCancel()
+			}
+		}
+		return nil
+	}
+	m.voiceEnabled = true
+	m.voiceFailures = 0
+	m.emit(events.Info{Message: "Microphone unmuted."})
+	return m.resumeListening()
+}
+
+func (m *conversationModel) toggleOutputMuted() {
+	if !m.outputAvailable {
+		m.setStatus("Voice output unavailable", true)
+		return
+	}
+	m.outputMuted = !m.outputMuted
+	if m.deps.setOutputMuted != nil {
+		m.deps.setOutputMuted(m.outputMuted)
+	}
+	state := "unmuted"
+	if m.outputMuted {
+		state = "muted"
+	}
+	m.emit(events.Info{Message: "Voice output " + state + "."})
 }
 
 // dispatchVoiceTurn starts one voice turn under a per-turn cancel context
@@ -191,6 +250,14 @@ func (m *conversationModel) handleSubmit() tea.Cmd {
 func (m *conversationModel) submitText(text string) tea.Cmd {
 	cmd := app.NormalizeCommand(text)
 	switch {
+	case cmd == "/mic" || cmd == "/mute" || cmd == "/unmute":
+		return m.toggleInputMuted()
+	case cmd == "/audio" || cmd == "/speaker":
+		m.toggleOutputMuted()
+		return m.resumeListening()
+	case cmd == "/activity" || cmd == "/timeline":
+		m.activityFocused = !m.activityFocused
+		return m.resumeListening()
 	case app.IsExitCommand(cmd):
 		m.quitting = true
 		return tea.Quit

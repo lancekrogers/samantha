@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	ansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
@@ -20,6 +22,8 @@ const (
 	sectionProvider settingsSection = iota
 	sectionModel
 	sectionVoice
+	sectionInput
+	sectionOutput
 )
 
 type settingsModel struct {
@@ -28,11 +32,18 @@ type settingsModel struct {
 
 	section settingsSection
 	cursor  int
+	width   int
+	height  int
+	offset  int
 
 	// Derived lists for current section.
-	providerItems []string
-	modelItems    []string
-	voiceItems    []tts.Voice
+	providerItems  []string
+	modelItems     []string
+	voiceItems     []tts.Voice
+	inputItems     []string
+	outputItems    []string
+	devicesLoading bool
+	deviceChecker  config.VoiceDeviceChecker
 
 	// Preview playback state.
 	previewing       string
@@ -50,8 +61,9 @@ func newSettings(cfg *config.Config, providers []discovery.ProviderInfo) setting
 		cfg:       cfg,
 		providers: providers,
 		newPreviewPlayer: func() audio.Engine {
-			return audio.NewPlayer()
+			return audio.NewPlayerWithDevice(cfg.OutputDevice)
 		},
+		deviceChecker: audio.NewDeviceChecker(),
 		ensureTTSAssets: func(ctx context.Context, cfg *config.Config) error {
 			return config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedTTS: true}, nil)
 		},
@@ -60,7 +72,30 @@ func newSettings(cfg *config.Config, providers []discovery.ProviderInfo) setting
 	m.buildProviderItems()
 	m.buildModelItems()
 	m.buildVoiceItems()
+	m.inputItems = []string{""}
+	m.outputItems = []string{""}
 	return m
+}
+
+type deviceListsMsg struct {
+	inputs  []string
+	outputs []string
+	err     error
+}
+
+func (m *settingsModel) loadDevices() tea.Cmd {
+	m.devicesLoading = true
+	checker := m.deviceChecker
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		inputs, err := checker.CaptureDevices(ctx)
+		if err != nil {
+			return deviceListsMsg{err: err}
+		}
+		outputs, err := checker.PlaybackDevices(ctx)
+		return deviceListsMsg{inputs: inputs, outputs: outputs, err: err}
+	}
 }
 
 func (m *settingsModel) buildProviderItems() {
@@ -112,19 +147,25 @@ func (m settingsModel) activeModel() string {
 
 func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		m.ensureCursorVisible()
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "tab", "right", "l":
-			m.section = (m.section + 1) % 3
+			m.section = (m.section + 1) % 5
 			m.cursor = 0
+			m.offset = 0
 			m.message = ""
 		case "shift+tab", "left", "h":
 			if m.section > 0 {
 				m.section--
 			} else {
-				m.section = sectionVoice
+				m.section = sectionOutput
 			}
 			m.cursor = 0
+			m.offset = 0
 			m.message = ""
 		case "up", "k":
 			if m.cursor > 0 {
@@ -152,6 +193,7 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 			m.cancelPreview()
 			return m, func() tea.Msg { return switchScreenMsg(screenLauncher) }
 		}
+		m.ensureCursorVisible()
 
 	case voicePreviewDoneMsg:
 		// Ignore completions from a preview that's already been superseded.
@@ -162,9 +204,42 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 				m.message = msg.message
 			}
 		}
+
+	case deviceListsMsg:
+		m.devicesLoading = false
+		if msg.err != nil {
+			m.message = fmt.Sprintf("Audio device probe failed: %v", msg.err)
+			break
+		}
+		m.inputItems = append([]string{""}, msg.inputs...)
+		m.outputItems = append([]string{""}, msg.outputs...)
 	}
 
 	return m, nil
+}
+
+func (m *settingsModel) visibleRange(total int) (int, int) {
+	visible := m.visibleRows()
+	start := min(max(m.offset, 0), max(total-visible, 0))
+	return start, min(start+visible, total)
+}
+
+func (m *settingsModel) ensureCursorVisible() {
+	visible := m.visibleRows()
+	if m.cursor < m.offset {
+		m.offset = m.cursor
+	}
+	if m.cursor >= m.offset+visible {
+		m.offset = m.cursor - visible + 1
+	}
+	m.offset = max(m.offset, 0)
+}
+
+func (m settingsModel) visibleRows() int {
+	if m.height > 0 && m.height < 12 {
+		return max(m.height-4, 1)
+	}
+	return max(m.height-10, 3)
 }
 
 // cancelPreview stops any in-flight voice preview. Safe to call when idle.
@@ -202,6 +277,10 @@ func (m *settingsModel) currentListLen() int {
 		return len(m.modelItems)
 	case sectionVoice:
 		return len(m.voiceItems)
+	case sectionInput:
+		return len(m.inputItems)
+	case sectionOutput:
+		return len(m.outputItems)
 	}
 	return 0
 }
@@ -252,7 +331,35 @@ func (m *settingsModel) selectCurrent() {
 			m.cfg.TTSVoice = voice.Name
 			m.message = fmt.Sprintf("Voice set to %s", voice.Name)
 		}
+	case sectionInput:
+		if m.cursor < len(m.inputItems) {
+			name := m.inputItems[m.cursor]
+			if err := config.SetAndSave("input_device", name); err != nil {
+				m.message = fmt.Sprintf("Failed to save input device: %v", err)
+				return
+			}
+			m.cfg.InputDevice = name
+			m.message = "Microphone set to " + deviceLabel(name)
+		}
+	case sectionOutput:
+		if m.cursor < len(m.outputItems) {
+			name := m.outputItems[m.cursor]
+			if err := config.SetAndSave("output_device", name); err != nil {
+				m.message = fmt.Sprintf("Failed to save output device: %v", err)
+				return
+			}
+			m.closePreview()
+			m.cfg.OutputDevice = name
+			m.message = "Speaker set to " + deviceLabel(name)
+		}
 	}
+}
+
+func deviceLabel(name string) string {
+	if name == "" {
+		return "System default"
+	}
+	return name
 }
 
 type voicePreviewDoneMsg struct {
@@ -324,11 +431,21 @@ func (m settingsModel) previewVoice(ctx context.Context, id int64, voice tts.Voi
 
 func (m settingsModel) View() string {
 	var b strings.Builder
+	width := m.renderWidth()
+	compact := m.height > 0 && m.height < 12
 
-	b.WriteString(titleStyle.Render("  Settings"))
-	b.WriteString("\n\n")
+	title := titleStyle.Render("  Settings")
+	if compact {
+		title = headerStyle.Render("  Settings")
+	}
+	b.WriteString(title)
+	if compact {
+		b.WriteString("\n")
+	} else {
+		b.WriteString("\n\n")
+	}
 
-	tabs := []string{"Provider", "Model", "Voice"}
+	tabs := []string{"Provider", "Model", "Voice", "Input", "Output"}
 	var tabLine strings.Builder
 	for i, tab := range tabs {
 		style := dimStyle
@@ -340,15 +457,19 @@ func (m settingsModel) View() string {
 		}
 		tabLine.WriteString(style.Render(tab))
 	}
-	b.WriteString("  " + tabLine.String())
+	b.WriteString(ansi.Truncate("  "+tabLine.String(), width, "…"))
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("  ─────────────────────────────────"))
-	b.WriteString("\n\n")
+	if !compact {
+		b.WriteString(dimStyle.Render(strings.Repeat("─", max(min(width, 35), 1))))
+		b.WriteString("\n\n")
+	}
 
 	// Render active section list.
 	switch m.section {
 	case sectionProvider:
-		for i, item := range m.providerItems {
+		start, end := m.visibleRange(len(m.providerItems))
+		for i := start; i < end; i++ {
+			item := m.providerItems[i]
 			active := ""
 			if i < len(m.providers) && m.providers[i].Name == m.cfg.BrainProvider {
 				active = " ✓"
@@ -357,7 +478,9 @@ func (m settingsModel) View() string {
 		}
 
 	case sectionModel:
-		for i, item := range m.modelItems {
+		start, end := m.visibleRange(len(m.modelItems))
+		for i := start; i < end; i++ {
+			item := m.modelItems[i]
 			active := ""
 			if item == m.activeModel() {
 				active = " ✓"
@@ -371,7 +494,9 @@ func (m settingsModel) View() string {
 			b.WriteString("\n")
 			break
 		}
-		for i, v := range m.voiceItems {
+		start, end := m.visibleRange(len(m.voiceItems))
+		for i := start; i < end; i++ {
+			v := m.voiceItems[i]
 			active := ""
 			if v.Name == m.cfg.TTSVoice {
 				active = " ✓"
@@ -383,22 +508,34 @@ func (m settingsModel) View() string {
 			label := fmt.Sprintf("%-16s %s / %s%s%s", v.Name, v.Gender, v.Locale, active, preview)
 			m.renderItem(&b, i, label)
 		}
+
+	case sectionInput:
+		m.renderDevices(&b, m.inputItems, m.cfg.InputDevice)
+
+	case sectionOutput:
+		m.renderDevices(&b, m.outputItems, m.cfg.OutputDevice)
 	}
 
-	b.WriteString("\n")
-
-	if m.message != "" {
-		b.WriteString("  " + statusStyle.Render(m.message))
-		b.WriteString("\n")
-	}
-
-	b.WriteString("\n")
 	help := "  ←/→ section • ↑/↓ navigate • enter select"
 	if m.section == sectionVoice {
 		help += " • p preview"
 	}
 	help += " • esc back"
-	b.WriteString(dimStyle.Render(help))
+	if compact {
+		footer := dimStyle.Render(help)
+		if m.message != "" {
+			footer = statusStyle.Render("  " + m.message)
+		}
+		b.WriteString(ansi.Truncate(footer, width, "…"))
+	} else {
+		b.WriteString("\n")
+		if m.message != "" {
+			b.WriteString(ansi.Truncate("  "+statusStyle.Render(m.message), width, "…"))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render(ansi.Truncate(help, width, "…")))
+	}
 	b.WriteString("\n")
 
 	return b.String()
@@ -411,5 +548,30 @@ func (m *settingsModel) renderItem(b *strings.Builder, idx int, label string) {
 		cursor = "▸ "
 		style = selectedStyle
 	}
-	b.WriteString("  " + cursor + style.Render(label) + "\n")
+	line := "  " + cursor + style.Render(label)
+	b.WriteString(ansi.Truncate(line, m.renderWidth(), "…") + "\n")
+}
+
+func (m settingsModel) renderWidth() int {
+	if m.width <= 0 {
+		return 80
+	}
+	return m.width
+}
+
+func (m *settingsModel) renderDevices(b *strings.Builder, items []string, active string) {
+	if m.devicesLoading {
+		b.WriteString(dimStyle.Render("  Discovering audio devices..."))
+		b.WriteString("\n")
+		return
+	}
+	start, end := m.visibleRange(len(items))
+	for i := start; i < end; i++ {
+		item := items[i]
+		label := deviceLabel(item)
+		if item == active {
+			label += " ✓"
+		}
+		m.renderItem(b, i, label)
+	}
 }

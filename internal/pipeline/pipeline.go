@@ -50,7 +50,22 @@ type Pipeline struct {
 	// keepCapture preserves the capture buffer into the next turn after a
 	// barge-in, where the buffered audio is the user already mid-utterance.
 	keepCapture bool
+
+	// outputMuted is toggled by interactive clients while a turn may be active.
+	outputMuted atomic.Bool
 }
+
+// SetOutputMuted enables or disables spoken responses without rebuilding the
+// pipeline. Muting immediately stops any audio already in flight.
+func (p *Pipeline) SetOutputMuted(muted bool) {
+	p.outputMuted.Store(muted)
+	if muted && p.Player != nil {
+		p.Player.Stop()
+	}
+}
+
+// OutputMuted reports whether spoken responses are currently disabled.
+func (p *Pipeline) OutputMuted() bool { return p.outputMuted.Load() }
 
 type playbackEventType int
 
@@ -247,7 +262,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 		Elapsed:  time.Since(thinkingStarted),
 	})
 
-	if p.TTS != nil && p.Player != nil && p.TTS.Available() {
+	if !p.OutputMuted() && p.TTS != nil && p.Player != nil && p.TTS.Available() {
 		turn.to(TurnSpeaking)
 		if metrics.firstSegment.IsZero() {
 			metrics.firstSegment = time.Now()
@@ -263,6 +278,14 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 			p.emit(events.Error{Stage: "tts", Message: fmt.Sprintf("TTS: %v", err)})
 			p.emit(events.ResponseReady{Response: response})
 			turn.finish(TurnCompleted)
+			return nil
+		}
+		if p.OutputMuted() {
+			p.emit(events.ResponseReady{Response: response})
+			turn.finish(TurnCompleted)
+			if p.OnTurn != nil {
+				p.OnTurn()
+			}
 			return nil
 		}
 
@@ -497,7 +520,7 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 			}
 			fullResponse.WriteString(sentence)
 
-			if interrupted || p.TTS == nil || p.Player == nil || !p.TTS.Available() {
+			if interrupted || p.OutputMuted() || p.TTS == nil || p.Player == nil || !p.TTS.Available() {
 				continue
 			}
 
@@ -549,7 +572,7 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 // are swallowed so teardown stays quiet. It never blocks on a full queue —
 // backpressure is the loop's job via the pending count.
 func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct{}, sentence string, audioStarted *atomic.Bool, out chan<- playbackEvent) bool {
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || p.OutputMuted() {
 		return false // canceled while queued: drain without synthesizing
 	}
 	p.emit(events.SpeechSegmentReady{Text: sentence})
@@ -561,6 +584,9 @@ func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct
 		if ctx.Err() == nil {
 			p.emit(events.Error{Stage: "tts", Message: fmt.Sprintf("TTS: %v", err)})
 		}
+		return false
+	}
+	if p.OutputMuted() {
 		return false
 	}
 

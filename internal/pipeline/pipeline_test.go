@@ -119,6 +119,24 @@ func TestRunTurnDrainsFullPlaybackQueue(t *testing.T) {
 	}
 }
 
+func TestSetOutputMutedStopsPlayback(t *testing.T) {
+	player := newFakePlayer(time.Second)
+	defer player.Close()
+	p := &Pipeline{Player: player}
+
+	p.SetOutputMuted(true)
+	if !p.OutputMuted() {
+		t.Fatal("pipeline did not retain muted output state")
+	}
+	if player.StopCount() != 1 {
+		t.Fatalf("Stop count = %d, want 1", player.StopCount())
+	}
+	p.SetOutputMuted(false)
+	if p.OutputMuted() {
+		t.Fatal("pipeline did not unmute output")
+	}
+}
+
 func TestRunTurnBargeInInterruptsPlayback(t *testing.T) {
 	bus := events.NewBus()
 	sttProvider := &fakeSTT{text: "hello"}

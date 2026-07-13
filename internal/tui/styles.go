@@ -5,19 +5,19 @@ import "github.com/charmbracelet/lipgloss"
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("205")).
+			Foreground(lipgloss.Color("14")).
 			MarginBottom(1)
 
 	// headerStyle is titleStyle without the margin, for single-line headers.
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("205"))
+			Foreground(lipgloss.Color("14"))
 
 	subtitleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240"))
 
 	selectedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("205")).
+			Foreground(lipgloss.Color("14")).
 			Bold(true)
 
 	normalStyle = lipgloss.NewStyle().
@@ -37,11 +37,11 @@ var (
 			Bold(true)
 
 	samanthaStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("205")).
+			Foreground(lipgloss.Color("14")).
 			Bold(true)
 
 	boxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("205")).
+			BorderForeground(lipgloss.Color("14")).
 			Padding(0, 1)
 )

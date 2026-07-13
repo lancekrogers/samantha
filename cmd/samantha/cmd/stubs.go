@@ -73,7 +73,7 @@ func runSpeakerTest(ctx context.Context, cfg *config.Config) error {
 		defer cleanup()
 	}
 
-	player := audio.NewPlayer()
+	player := audio.NewPlayerWithDevice(cfg.OutputDevice)
 	defer func() { _ = player.Close() }()
 
 	stream, err := ttsProvider.Synthesize(ctx, "Hello! I'm Samantha. Your speaker is working.")

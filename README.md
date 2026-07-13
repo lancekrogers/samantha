@@ -103,6 +103,27 @@ samantha prompts show persona           # Show an assembled prompt document
 samantha render notes.txt --out a.wav   # Batch-render a document to audio
 ```
 
+### TUI controls
+
+The launcher offers the most recent conversation first, a scrollable recent
+session list, and an explicit new-conversation action. During a conversation,
+the transcript follows new messages until you scroll away from the tail. The
+responsive activity feed shows speech recognition, model, synthesis, playback,
+and total turn timings; it becomes a side pane in wide terminals and a focused
+view in narrow splits.
+
+| Key | Action |
+|-----|--------|
+| `Page Up` / `Page Down` | Scroll the transcript or focused activity feed |
+| `Ctrl+T` | Focus/unfocus the activity timeline |
+| `Ctrl+G` | Mute/unmute microphone input |
+| `Ctrl+O` | Mute/unmute spoken responses (also stops current playback) |
+| `Home` / `End` | Jump to the start/end of the focused feed |
+
+Microphone and speaker devices can be selected from the **Input** and
+**Output** sections in TUI Settings. An empty config value follows the current
+operating-system default.
+
 ### Batch narration (audiobooks)
 
 `samantha render` turns documents into audio files and a manifest without the
@@ -199,7 +220,9 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `tts_provider` | `kokoro` | `TTS_PROVIDER` | TTS backend |
 | `tts_voice` | `af_heart` | `TTS_VOICE` | Kokoro voice name |
 | `speech_speed` | `0.95` | | Playback speed |
+| `output_device` | empty | `OUTPUT_DEVICE` | Playback device name; empty follows the system default |
 | `stt_provider` | `sherpa` | `STT_PROVIDER` | STT backend: `sherpa`, `sherpa-streaming`, `sherpa-offline`, or `whispercpp` |
+| `input_device` | empty | `INPUT_DEVICE` | Capture device name; empty follows the system default |
 | `stt_mode` | empty | `STT_MODE` | STT mode for the preferred provider+mode schema: `offline` or `streaming` for `sherpa`, `cli` for `whispercpp` |
 | `sherpa_streaming_model` | `en-2023-06-26` | `SHERPA_STREAMING_MODEL` | sherpa-onnx streaming model |
 | `whisper_model` | `small` | `WHISPER_MODEL` | sherpa-onnx Whisper model size |

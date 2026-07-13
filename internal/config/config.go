@@ -16,12 +16,14 @@ import (
 // Config holds all application configuration.
 type Config struct {
 	// TTS
-	TTSProvider string  `mapstructure:"tts_provider"`
-	TTSVoice    string  `mapstructure:"tts_voice"`
-	SpeechSpeed float64 `mapstructure:"speech_speed"`
+	TTSProvider  string  `mapstructure:"tts_provider"`
+	TTSVoice     string  `mapstructure:"tts_voice"`
+	SpeechSpeed  float64 `mapstructure:"speech_speed"`
+	OutputDevice string  `mapstructure:"output_device"`
 
 	// STT
 	STTProvider          string `mapstructure:"stt_provider"`
+	InputDevice          string `mapstructure:"input_device"`
 	STTMode              string `mapstructure:"stt_mode"`
 	SherpaStreamingModel string `mapstructure:"sherpa_streaming_model"`
 	WhisperModel         string `mapstructure:"whisper_model"`
@@ -91,8 +93,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("tts_provider", "kokoro")
 	v.SetDefault("tts_voice", "af_heart")
 	v.SetDefault("speech_speed", 0.95)
+	v.SetDefault("output_device", "")
 
 	v.SetDefault("stt_provider", "sherpa")
+	v.SetDefault("input_device", "")
 	v.SetDefault("stt_mode", "")
 	v.SetDefault("sherpa_streaming_model", "en-2023-06-26")
 	v.SetDefault("whisper_model", "small")
@@ -145,7 +149,9 @@ func Load() (*Config, error) {
 	bindings := map[string]string{
 		"tts_provider":            "TTS_PROVIDER",
 		"tts_voice":               "TTS_VOICE",
+		"output_device":           "OUTPUT_DEVICE",
 		"stt_provider":            "STT_PROVIDER",
+		"input_device":            "INPUT_DEVICE",
 		"stt_mode":                "STT_MODE",
 		"sherpa_streaming_model":  "SHERPA_STREAMING_MODEL",
 		"whisper_model":           "WHISPER_MODEL",

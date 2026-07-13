@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/lancekrogers/samantha/internal/events"
 )
 
 func sizedConversation(t *testing.T, width, height int) conversationModel {
@@ -106,6 +109,22 @@ func TestConversationScrollAndFollow(t *testing.T) {
 	}
 }
 
+func TestConversationMouseWheelScrollsHistory(t *testing.T) {
+	m := sizedConversation(t, 80, 10)
+	for i := range 50 {
+		m.appendTranscript(fmt.Sprintf("line %d", i))
+	}
+	if !m.viewport.AtBottom() {
+		t.Fatal("viewport did not start at the tail")
+	}
+	m, _ = m.Update(tea.MouseMsg{
+		X: 5, Y: 4, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress,
+	})
+	if m.viewport.AtBottom() {
+		t.Fatal("mouse wheel did not scroll conversation history")
+	}
+}
+
 func TestConversationResizeKeepsContent(t *testing.T) {
 	m := sizedConversation(t, 80, 24)
 	m.appendTranscript(renderUserTurn("survives resize"))
@@ -116,5 +135,38 @@ func TestConversationResizeKeepsContent(t *testing.T) {
 	}
 	if m.viewport.Width != 40 {
 		t.Errorf("viewport width = %d, want 40", m.viewport.Width)
+	}
+}
+
+func TestConversationResponsiveViewFitsTerminal(t *testing.T) {
+	for _, size := range []struct{ width, height int }{{40, 8}, {80, 12}, {120, 24}} {
+		m := sizedConversation(t, size.width, size.height)
+		m.appendActivity("model", "started", 0)
+		view := stripANSI(m.View())
+		if got := len(strings.Split(view, "\n")); got != size.height {
+			t.Errorf("%dx%d view has %d lines, want %d\n%s", size.width, size.height, got, size.height, view)
+		}
+	}
+}
+
+func TestConversationActivityFeedAndFocus(t *testing.T) {
+	m := sizedConversation(t, 120, 24)
+	m.handleEvent(events.ThinkingStarted{})
+	m.handleEvent(events.ThinkingComplete{Elapsed: 1500 * time.Millisecond})
+
+	view := stripANSI(m.View())
+	for _, want := range []string{"activity", "model", "complete", "1.5s"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("activity view missing %q:\n%s", want, view)
+		}
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	if !m.activityFocused {
+		t.Fatal("ctrl+t did not focus activity feed")
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.activityFocused {
+		t.Fatal("esc did not return focus to transcript")
 	}
 }

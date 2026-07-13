@@ -166,6 +166,33 @@ func TestVoiceResumesAfterTextTurn(t *testing.T) {
 	}
 }
 
+func TestRuntimeMuteControls(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	bus := events.NewBus()
+	outputMuted := false
+	m := sizedConversation(t, 80, 24)
+	m.startConversation(conversationDeps{
+		runner: runner, bus: bus, voice: true, output: true,
+		setOutputMuted: func(muted bool) { outputMuted = muted },
+		ctx:            context.Background(),
+	})
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	if m.voiceEnabled || m.voiceOn() {
+		t.Fatal("ctrl+m did not mute microphone input")
+	}
+	m.turnState = turnIdle
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	if !m.voiceEnabled || cmd == nil {
+		t.Fatal("second ctrl+m did not resume microphone input")
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	if !m.outputMuted || !outputMuted {
+		t.Fatal("ctrl+o did not mute pipeline output")
+	}
+}
+
 // Enter while the voice turn is already responding must not cancel it; the
 // draft stays in the input box.
 func TestSubmitWhileRespondingKeepsDraft(t *testing.T) {
