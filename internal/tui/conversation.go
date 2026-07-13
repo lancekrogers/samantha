@@ -140,12 +140,15 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 			m.activeViewport().GotoBottom()
 			return m, nil
 		case "home":
-			if m.activityFocused {
+			// Activity always jumps; Chat only when the composer is empty so
+			// bare Home/End still navigate the transcript without fighting
+			// line-start/end editing while drafting.
+			if m.activityFocused || m.input.Value() == "" {
 				m.activeViewport().GotoTop()
 				return m, nil
 			}
 		case "end":
-			if m.activityFocused {
+			if m.activityFocused || m.input.Value() == "" {
 				m.activeViewport().GotoBottom()
 				return m, nil
 			}
@@ -158,9 +161,13 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
 
+	default:
+		// Non-key messages (notably textarea.Blink ticks) must reach the
+		// composer so the cursor blink chain stays alive.
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
 	}
-
-	return m, nil
 }
 
 func (m *conversationModel) setSize(width, height int) {
@@ -443,9 +450,11 @@ func (m conversationModel) View() string {
 	header = ansi.Truncate(header, max(m.width, 1), "…")
 
 	rule := dimStyle.Render(strings.Repeat("─", max(m.width, 1)))
-	micState := "mic off"
+	// Capture stays armed while voice input is paused; wording must not claim
+	// the OS microphone was released.
+	micState := "voice input off"
 	if m.voiceOn() {
-		micState = "mic on"
+		micState = "voice input on"
 	}
 	outputState := "audio unavailable"
 	if m.outputAvailable {

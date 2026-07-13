@@ -30,9 +30,10 @@ func newEventBridge(capacity int) *eventBridge {
 }
 
 // attach subscribes the bridge only to events the conversation and activity
-// panes render. Raw model chunks and audio frames stay excluded; forwarding
-// those high-volume events could fill the drop-oldest queue and displace
-// durable transcript events under pressure.
+// panes render. Raw model chunks, audio frames, and per-segment voice events
+// stay excluded: a multi-sentence reply can emit several segment events each,
+// and under UI lag those would fill the drop-oldest queue and displace durable
+// transcript events (UserInput / ResponseReady).
 func (b *eventBridge) attach(bus *events.Bus) {
 	forward[events.STTPhase](b, bus)
 	forward[events.UserInput](b, bus)
@@ -41,9 +42,9 @@ func (b *eventBridge) attach(bus *events.Bus) {
 	forward[events.ResponseStreamingStarted](b, bus)
 	forward[events.ThinkingComplete](b, bus)
 	forward[events.TurnMetrics](b, bus)
-	forward[events.SpeechSegmentReady](b, bus)
+	// GeneratingVoice / Speaking* are once-per-playback milestones; segment
+	// ready/generated events are intentionally not bridged (see above).
 	forward[events.GeneratingVoice](b, bus)
-	forward[events.VoiceGenerated](b, bus)
 	forward[events.SpeakingStarted](b, bus)
 	forward[events.SpeakingComplete](b, bus)
 	forward[events.SpeakingInterrupted](b, bus)

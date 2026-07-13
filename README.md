@@ -118,9 +118,10 @@ drafts and compacts to one row in short terminal splits.
 | `Ctrl+J` | Insert a newline in the draft |
 | `Page Up` / `Page Down` | Scroll the transcript or focused activity feed |
 | `Ctrl+T` | Focus/unfocus the activity timeline |
-| `Ctrl+G` | Mute/unmute microphone input |
+| `Ctrl+G` | Pause/resume voice input (capture may stay armed; listening stops) |
 | `Ctrl+O` | Mute/unmute spoken responses (also stops current playback) |
-| `Home` / `End` | Jump to the start/end of the focused feed |
+| `Home` / `End` | Jump to the start/end of the focused feed (on Chat, only when the composer is empty) |
+| `Ctrl+Home` / `Ctrl+End` | Always jump to the start/end of the focused feed |
 
 Microphone and speaker devices can be selected from the **Input** and
 **Output** sections in TUI Settings. An empty config value follows the current

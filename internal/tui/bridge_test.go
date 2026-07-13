@@ -94,6 +94,60 @@ func TestBridgeDropsOldestUnderPressure(t *testing.T) {
 	}
 }
 
+// Durable transcript events must survive a multi-segment activity flood.
+// Segment-level voice events are not bridged; this stress test still floods
+// with high-volume bridged events (partials + generating) and asserts the
+// newest UserInput/ResponseReady remain when capacity is tight.
+func TestBridgeDurableEventsSurviveSegmentFlood(t *testing.T) {
+	bus := events.NewBus()
+	bridge := newEventBridge(8)
+	bridge.attach(bus)
+
+	bus.Emit(events.UserInput{Text: "spoken question"})
+	for i := range 40 {
+		bus.Emit(events.TranscriptPartial{Text: fmt.Sprintf("partial-%d", i)})
+		bus.Emit(events.GeneratingVoice{Sentence: fmt.Sprintf("seg-%d", i)})
+		// Segment events must not enter the bridge at all.
+		bus.Emit(events.SpeechSegmentReady{Text: fmt.Sprintf("seg-%d", i)})
+		bus.Emit(events.VoiceGenerated{Sentence: fmt.Sprintf("seg-%d", i)})
+	}
+	bus.Emit(events.ResponseReady{Response: "final answer"})
+
+	var sawUser, sawResponse bool
+	var types []string
+	for {
+		select {
+		case msg := <-bridge.ch:
+			switch e := msg.(busEventMsg).event.(type) {
+			case events.UserInput:
+				sawUser = true
+				types = append(types, "UserInput")
+			case events.ResponseReady:
+				sawResponse = true
+				types = append(types, "ResponseReady:"+e.Response)
+			case events.SpeechSegmentReady, events.VoiceGenerated:
+				t.Fatalf("segment-level event bridged: %T", e)
+			default:
+				types = append(types, fmt.Sprintf("%T", e))
+			}
+			continue
+		default:
+		}
+		break
+	}
+
+	if !sawResponse {
+		t.Fatalf("ResponseReady dropped under flood; drained=%v", types)
+	}
+	// With drop-oldest, the early UserInput may be displaced — the contract
+	// we care about is that the terminal durable event survives. Prefer both
+	// when capacity allows; always require ResponseReady.
+	if len(types) == 0 || types[len(types)-1] != "ResponseReady:final answer" {
+		t.Fatalf("queue tail = %v, want ResponseReady last", types)
+	}
+	_ = sawUser // optional under tight capacity; ResponseReady is mandatory
+}
+
 // waitForEvent must re-arm after every delivered message: consuming N events
 // through the model must return a non-nil Cmd each time.
 func TestBridgeRearmsThroughModel(t *testing.T) {

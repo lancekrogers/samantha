@@ -283,6 +283,9 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 			return nil
 		}
 		if p.OutputMuted() {
+			// Drop the stream so the synth producer is not left blocked on a
+			// full frames channel after we skip PlayStream.
+			discardPCMStream(stream)
 			p.emit(events.ResponseReady{Response: response})
 			turn.finish(TurnCompleted)
 			if p.OnTurn != nil {
@@ -578,6 +581,19 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 	return strings.TrimSpace(fullResponse.String()), interrupted, nil
 }
 
+// discardPCMStream drains a synthesized stream that will not be played so the
+// producer goroutine is not left blocked on a full frames channel. Drain runs
+// asynchronously: the caller must not wait on synth completion after mute.
+func discardPCMStream(stream *audio.PCMStream) {
+	if stream == nil {
+		return
+	}
+	go func() {
+		for range stream.Frames() {
+		}
+	}()
+}
+
 // synthesizeSegment is the synth scheduler stage, run on the ordered synth
 // worker: it announces the segment, synthesizes it, starts playback, and hands
 // the playback to the watcher goroutine, returning true when a playback was
@@ -601,6 +617,9 @@ func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct
 		return false
 	}
 	if p.OutputMuted() {
+		// Synthesize already started a producer goroutine. Drain so it is not
+		// left blocked on the buffered frames channel until turn cancel.
+		discardPCMStream(stream)
 		return false
 	}
 

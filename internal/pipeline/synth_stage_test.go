@@ -88,6 +88,72 @@ func TestSynthesizeSegmentEnqueuesPlayback(t *testing.T) {
 	}
 }
 
+// A producer that keeps writing after Synthesize returns models the real
+// Kokoro path: mute-after-synth must drain the stream or the producer blocks
+// on the buffered frames channel forever.
+type floodingTTS struct {
+	started chan struct{}
+	done    chan struct{}
+}
+
+func (f *floodingTTS) Synthesize(ctx context.Context, text string) (*audio.PCMStream, error) {
+	stream := audio.NewPCMStream(ctx)
+	if err := stream.SetSampleRate(24000); err != nil {
+		return nil, err
+	}
+	go func() {
+		defer close(f.done)
+		defer stream.Close()
+		close(f.started)
+		// Write more frames than the stream buffer (8) so a non-draining
+		// consumer leaves this goroutine blocked in Write.
+		for i := 0; i < 32; i++ {
+			if err := stream.Write(make([]float32, 256)); err != nil {
+				return
+			}
+		}
+	}()
+	return stream, nil
+}
+func (f *floodingTTS) Available() bool                              { return true }
+func (f *floodingTTS) ListVoices(locale, gender string) []tts.Voice { return nil }
+
+func TestDiscardPCMStreamUnblocksFloodingProducer(t *testing.T) {
+	flood := &floodingTTS{started: make(chan struct{}), done: make(chan struct{})}
+	stream, err := flood.Synthesize(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+	select {
+	case <-flood.started:
+	case <-time.After(time.Second):
+		t.Fatal("producer never started")
+	}
+	// Same helper synthesizeSegment / RunTurnTextMode use on mute short-circuit.
+	discardPCMStream(stream)
+
+	select {
+	case <-flood.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("producer still blocked — stream was not drained after mute")
+	}
+}
+
+func TestSynthesizeSegmentSkipsWhenMutedBeforeSynth(t *testing.T) {
+	p := &Pipeline{TTS: &fakeTTS{}, Player: newFakePlayer(time.Millisecond), Events: events.NewBus()}
+	defer p.Player.(*fakePlayer).Close()
+	p.SetOutputMuted(true)
+
+	var audioStarted atomic.Bool
+	out := make(chan playbackEvent, 1)
+	if p.synthesizeSegment(context.Background(), make(chan struct{}), "skip", &audioStarted, out) {
+		t.Fatal("muted synthesizeSegment enqueued playback")
+	}
+	if len(out) != 0 {
+		t.Fatalf("muted path enqueued %d playback events", len(out))
+	}
+}
+
 func TestSynthesizeSegmentStopsAudioEnqueuedAfterMute(t *testing.T) {
 	player := newBufferingPlayer()
 	p := &Pipeline{TTS: &fakeTTS{}, Player: player, Events: events.NewBus()}

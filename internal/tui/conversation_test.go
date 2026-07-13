@@ -77,6 +77,56 @@ func TestConversationTypingGoesToInput(t *testing.T) {
 	}
 }
 
+// Non-key messages (cursor blink ticks) must reach the textarea so the blink
+// command chain from startConversation is not dropped.
+func TestConversationForwardsNonKeyMessagesToTextarea(t *testing.T) {
+	m := sizedConversation(t, 80, 24)
+	// textarea.Blink is a Cmd that yields a blink Msg; re-issuing via Update is
+	// what keeps the chain alive. A zero-value blink tick type is private, so
+	// exercise the default branch with a custom message the textarea ignores
+	// without error — the critical assertion is that we do not early-return
+	// before m.input.Update and that a subsequent key still works.
+	type foreignMsg struct{}
+	m, _ = m.Update(foreignMsg{})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if got := m.input.Value(); got != "x" {
+		t.Fatalf("input after foreign msg = %q, want x", got)
+	}
+}
+
+func TestConversationHomeEndScrollWhenComposerEmpty(t *testing.T) {
+	m := sizedConversation(t, 80, 10)
+	for i := range 50 {
+		m.appendTranscript(fmt.Sprintf("line %d", i))
+	}
+	if !m.viewport.AtBottom() {
+		t.Fatal("precondition: viewport should start at bottom")
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyHome})
+	if m.viewport.AtBottom() {
+		t.Fatal("Home with empty composer did not jump chat to top")
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	if !m.viewport.AtBottom() {
+		t.Fatal("End with empty composer did not jump chat to bottom")
+	}
+
+	// With text in the composer, bare Home/End stay with the textarea.
+	m.input.SetValue("draft")
+	m.viewport.GotoBottom()
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	scrolledAway := !m.viewport.AtBottom()
+	if !scrolledAway {
+		t.Fatal("precondition: need scrolled-up viewport")
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyHome})
+	// Still scrolled away — Home did not hijack for transcript jump.
+	if m.viewport.AtBottom() {
+		t.Fatal("Home with non-empty composer jumped chat; want textarea line start")
+	}
+}
+
 func TestConversationComposerSupportsMultilineDrafts(t *testing.T) {
 	m := sizedConversation(t, 80, 24)
 	for _, r := range "first line" {

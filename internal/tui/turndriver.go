@@ -110,17 +110,28 @@ func (m *conversationModel) emit(e events.Event) {
 	}
 }
 
-// toggleInputMuted pauses or resumes background microphone turns. If the
-// pipeline is only listening, muting cancels that turn immediately; a response
-// that already owns the pipeline is allowed to finish and listening stays off.
+// toggleInputMuted flips voice-input pause for Ctrl+G. Absolute /mute and
+// /unmute use setInputMuted so repeated commands do not invert state.
 func (m *conversationModel) toggleInputMuted() tea.Cmd {
+	return m.setInputMuted(m.voiceEnabled)
+}
+
+// setInputMuted pauses or resumes background voice turns. muted=true forces
+// listening off; muted=false forces it on. Capture hardware may still be open
+// while paused — only dispatch is gated. If the pipeline is only listening,
+// muting cancels that turn immediately; a response that already owns the
+// pipeline is allowed to finish and listening stays off.
+func (m *conversationModel) setInputMuted(muted bool) tea.Cmd {
 	if !m.deps.voice {
 		m.setStatus("Microphone unavailable", true)
 		return nil
 	}
-	if m.voiceEnabled {
+	if muted {
+		if !m.voiceEnabled {
+			return nil
+		}
 		m.voiceEnabled = false
-		m.emit(events.Info{Message: "Microphone muted."})
+		m.emit(events.Info{Message: "Voice input paused."})
 		if m.turnState == turnVoiceListening && m.canCancelVoice != nil && m.canCancelVoice.Load() {
 			m.turnState = turnVoiceCanceling
 			if m.turnCancel != nil {
@@ -129,9 +140,12 @@ func (m *conversationModel) toggleInputMuted() tea.Cmd {
 		}
 		return nil
 	}
+	if m.voiceEnabled {
+		return nil
+	}
 	m.voiceEnabled = true
 	m.voiceFailures = 0
-	m.emit(events.Info{Message: "Microphone unmuted."})
+	m.emit(events.Info{Message: "Voice input resumed."})
 	return m.resumeListening()
 }
 
@@ -251,7 +265,11 @@ func (m *conversationModel) handleSubmit() tea.Cmd {
 func (m *conversationModel) submitText(text string) tea.Cmd {
 	cmd := app.NormalizeCommand(text)
 	switch {
-	case cmd == "/mic" || cmd == "/mute" || cmd == "/unmute":
+	case cmd == "/mute":
+		return m.setInputMuted(true)
+	case cmd == "/unmute":
+		return m.setInputMuted(false)
+	case cmd == "/mic":
 		return m.toggleInputMuted()
 	case cmd == "/audio" || cmd == "/speaker":
 		m.toggleOutputMuted()

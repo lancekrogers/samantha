@@ -10,6 +10,7 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/tts"
 )
 
 // Terminal-state coverage for the state-machine-backed turn runtime. Every turn
@@ -158,6 +159,71 @@ func TestTerminalTextModeBrainErrorFailsWithSingleMetrics(t *testing.T) {
 	if got := metrics.Outcome(); got != "failed" {
 		t.Fatalf("TurnMetrics.Outcome = %q, want failed", got)
 	}
+}
+
+// Muting after TTS returns but before PlayStream must still finish the text
+// turn once: ResponseReady + OnTurn, no double-emit, and no hang on the
+// discarded PCM producer.
+func TestTextModeMuteAfterSynthEmitsResponseReadyOnce(t *testing.T) {
+	bus := events.NewBus()
+	metrics := countTurnMetrics(bus)
+	var responses atomic.Int32
+	events.Subscribe(bus, func(events.ResponseReady) { responses.Add(1) })
+
+	var onTurns atomic.Int32
+	flood := &floodingTTS{started: make(chan struct{}), done: make(chan struct{})}
+	// Mute before the turn so the post-synth branch runs after Synthesize.
+	// ThinkFull is fast; mute is checked after synth.
+	p := &Pipeline{
+		Brain:  &fakeBrain{chunks: []string{"Muted reply."}},
+		TTS:    flood,
+		Player: newFakePlayer(time.Millisecond),
+		Events: bus,
+		OnTurn: func() { onTurns.Add(1) },
+	}
+	defer p.Player.(*fakePlayer).Close()
+
+	// Arm mute after brain but before play: set muted before RunTurnTextMode
+	// so the post-synth mute check trips (synth still runs when not muted at
+	// the outer gate). Outer gate is !OutputMuted() — mute after that check
+	// requires muting during synth. Use a TTS wrapper that mutes on entry.
+	muting := &muteOnSynthTTS{pipeline: p, inner: flood}
+	p.TTS = muting
+
+	if err := p.RunTurnTextMode(context.Background(), "hi"); err != nil {
+		t.Fatalf("RunTurnTextMode() error = %v", err)
+	}
+	if got := responses.Load(); got != 1 {
+		t.Fatalf("ResponseReady emitted %d times, want 1", got)
+	}
+	if got := onTurns.Load(); got != 1 {
+		t.Fatalf("OnTurn called %d times, want 1", got)
+	}
+	if got := metrics.Load(); got != 1 {
+		t.Fatalf("TurnMetrics emitted %d times, want 1", got)
+	}
+	select {
+	case <-flood.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("PCM producer still blocked after text-mode mute discard")
+	}
+}
+
+// muteOnSynthTTS mutes pipeline output as soon as Synthesize is entered so the
+// post-synth mute short-circuit runs while a live stream is in hand.
+type muteOnSynthTTS struct {
+	pipeline *Pipeline
+	inner    tts.Provider
+}
+
+func (m *muteOnSynthTTS) Synthesize(ctx context.Context, text string) (*audio.PCMStream, error) {
+	stream, err := m.inner.Synthesize(ctx, text)
+	m.pipeline.SetOutputMuted(true)
+	return stream, err
+}
+func (m *muteOnSynthTTS) Available() bool { return m.inner.Available() }
+func (m *muteOnSynthTTS) ListVoices(locale, gender string) []tts.Voice {
+	return m.inner.ListVoices(locale, gender)
 }
 
 func TestTerminalTextModePlaybackErrorCompletesDegraded(t *testing.T) {
