@@ -36,41 +36,48 @@ var (
 	serveNoMDNS       bool
 	serveRevokeTokens bool
 	serveRemoteMic    bool
+	serveTailscale    bool
+	// publicHost is the hostname phones should open (MagicDNS). Empty when
+	// clients should use the bind address as-is.
+	servePublicHost string
 )
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
-	Short: "Serve Samantha to your LAN over HTTPS + WebSocket",
-	Long: `Run Samantha as a network-accessible instance: other devices on your
-LAN (or tailnet) send text turns and stream the live conversation over
-/v1/stream. Turns are text-only in serve mode — the mic stays off.
+	Short: "Serve Samantha to your LAN or Tailscale over HTTPS + WebSocket",
+	Long: `Run Samantha as a network-accessible instance: phones and other devices
+send text or push-to-talk audio and stream the live conversation over
+/v1/stream.
 
-TTS always runs so clients can opt into phone-side audio with the
-audio_output control message (mode "stream"). Responses also speak through
-this machine's speaker unless --no-voice is set (host muted; stream clients
-still hear).
+Quick paths:
 
-An embedded phone voice page is served at https://<host>:<port>/ — paste the
-token (or enter the short pairing code), tap Start (unlocks audio), hold Talk
-for push-to-talk, or type (iOS dictation works too). For iOS Safari, load a
-real certificate via
---tls-cert/--tls-key from ` + "`tailscale cert <name>.<tailnet>.ts.net`" + `
-so the page is a secure context.
+  samantha serve --tailscale
+      One-shot remote voice for Tailscale: bind the 100.x address, obtain a
+      real HTTPS cert via "tailscale cert", mute the host speaker by default,
+      and print the MagicDNS URL + pairing code for your phone.
 
-Remote mic (push-to-talk) is on by default and streams 16 kHz PCM to the
-server's STT; disable with --remote-mic=false. Automatic barge-in over the
-network is not supported — use Interrupt (tap).
+  samantha serve
+      LAN (or auto-detected private bind). Self-signed TLS by default; pass
+      --tls-cert/--tls-key for a real cert (required for iOS Safari mic/audio).
 
-Auth is mandatory: a bearer token is generated on first run (and self-signed
-TLS when no external cert is provided). A short-lived pairing code is printed
-each start so phones can pair without pasting the long token. Use
---revoke-tokens to invalidate all issued tokens and stop any running server.
-mDNS advertises _samantha._tcp on the LAN (disable with --no-mdns). Remote
-turns never get tool access unless remote_tools_enabled is set in config.`,
+Embedded phone page: https://<host>:<port>/ — pair with the short code (or
+paste the bearer token), tap Start, hold Talk. Protocol details:
+docs/serve-protocol.md.
+
+Local full voice (mic + speakers on this machine) is still "samantha" TUI —
+serve is for remote clients, not a replacement for the conversation TUI.
+
+Auth is mandatory. --revoke-tokens invalidates the bearer. mDNS advertises
+_samantha._tcp on the LAN (--no-mdns to disable; --tailscale implies
+--no-mdns because MagicDNS is the discovery). Remote tools stay off unless
+remote_tools_enabled is set.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if serveRevokeTokens {
 			return runRevokeTokens()
+		}
+		if err := applyServeTailscaleDefaults(cmd); err != nil {
+			return err
 		}
 		cfg, err := config.Load()
 		if err != nil {
@@ -90,7 +97,47 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveNoMDNS, "no-mdns", false, "Do not advertise via mDNS/Bonjour")
 	serveCmd.Flags().BoolVar(&serveRevokeTokens, "revoke-tokens", false, "Revoke the serve bearer token, stop a running server, and exit")
 	serveCmd.Flags().BoolVar(&serveRemoteMic, "remote-mic", true, "Enable phone push-to-talk (remote STT over the WebSocket)")
+	serveCmd.Flags().BoolVar(&serveTailscale, "tailscale", false, "One-shot Tailscale mode: 100.x bind, tailscale cert, MagicDNS URL, host speaker muted unless --no-voice=false")
 	rootCmd.AddCommand(serveCmd)
+}
+
+// applyServeTailscaleDefaults configures bind/TLS/voice when --tailscale is set.
+// Explicit flags still win (bind, tls-cert, no-voice when Changed).
+func applyServeTailscaleDefaults(cmd *cobra.Command) error {
+	if !serveTailscale {
+		return nil
+	}
+
+	id, err := discoverTailscale()
+	if err != nil {
+		return err
+	}
+	servePublicHost = id.DNSName
+
+	if !cmd.Flags().Changed("bind") || serveBind == "" {
+		serveBind = id.IPv4
+	}
+	// MagicDNS replaces LAN mDNS for phone clients on the tailnet.
+	if !cmd.Flags().Changed("no-mdns") {
+		serveNoMDNS = true
+	}
+	// Prefer phone-only audio: mute host speaker unless the user opted out.
+	if !cmd.Flags().Changed("no-voice") {
+		serveNoVoice = true
+	}
+
+	if serveTLSCert == "" && serveTLSKey == "" {
+		tlsDir := filepath.Join(config.ConfigDir(), "serve", "tls")
+		cert, key, err := ensureTailscaleCert(tlsDir, id.DNSName)
+		if err != nil {
+			return err
+		}
+		serveTLSCert, serveTLSKey = cert, key
+		fmt.Printf("  %s %s\n", keyStyle.Render("Tailscale cert:"), cert)
+		fmt.Printf("  %s %s\n", keyStyle.Render("MagicDNS:"), id.DNSName)
+		fmt.Printf("  %s %s\n", keyStyle.Render("Bind:"), serveBind)
+	}
+	return nil
 }
 
 func runRevokeTokens() error {
@@ -305,7 +352,19 @@ func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config
 	fmt.Println()
 	fmt.Printf("  %s\n", titleStyle.Render("Samantha serve"))
 	fmt.Printf("  %s %s\n", keyStyle.Render("Listening:"), "https://"+addr)
-	fmt.Printf("  %s %s\n", keyStyle.Render("Voice page:"), "https://"+addr+"/")
+
+	// Prefer MagicDNS (or other public host) for the phone-facing URL.
+	pageHost := servePublicHost
+	if pageHost == "" {
+		if host, _, err := net.SplitHostPort(addr); err == nil {
+			pageHost = host
+		} else {
+			pageHost = addr
+		}
+	}
+	pageURL := publicServeURL(pageHost, servePort)
+	fmt.Printf("  %s %s\n", keyStyle.Render("Open on phone:"), pageURL)
+
 	if creds.ExternalTLS {
 		fp := creds.Fingerprint
 		if len(fp) > 16 {
@@ -314,7 +373,7 @@ func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config
 		fmt.Printf("  %s %s\n", keyStyle.Render("TLS:"), "external cert ("+fp+")")
 	} else {
 		fmt.Printf("  %s %s\n", keyStyle.Render("Cert SHA-256:"), creds.Fingerprint)
-		fmt.Println(dimStyle.Render("  Self-signed — for iOS Safari use --tls-cert/--tls-key from tailscale cert"))
+		fmt.Println(dimStyle.Render("  Self-signed — for iOS Safari use: samantha serve --tailscale"))
 	}
 	if creds.TokenCreated {
 		fmt.Printf("  %s %s\n", keyStyle.Render("Token:"), creds.Token)
@@ -327,7 +386,7 @@ func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config
 			keyStyle.Render("Pairing code:"),
 			creds.Pairing.Code,
 			creds.Pairing.ExpiresAt.Format("15:04:05"))
-		fmt.Println(dimStyle.Render("  Phone: open voice page → enter code → Pair (POST /v1/pair)"))
+		fmt.Println(dimStyle.Render("  Phone: open the URL → enter code → Pair → Start → Hold to Talk"))
 		fmt.Println(dimStyle.Render("  The code is single-use; restart serve to issue another."))
 	}
 	fmt.Println(dimStyle.Render("  Revoke: samantha serve --revoke-tokens"))
@@ -346,7 +405,11 @@ func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config
 	} else {
 		fmt.Println(dimStyle.Render("  Remote mic: off (--remote-mic=false)"))
 	}
-	fmt.Println(dimStyle.Render("  Try: samantha connect " + addr + " --token <token>"))
+	if serveTailscale {
+		fmt.Println(dimStyle.Render("  Mode: --tailscale (MagicDNS URL above; host speaker muted unless --no-voice=false)"))
+	}
+	fmt.Println(dimStyle.Render("  Debug: samantha connect " + addr + " --token <token>"))
+	fmt.Println(dimStyle.Render("  Local full voice on this machine: run `samantha` (TUI), not serve"))
 	fmt.Println()
 }
 
