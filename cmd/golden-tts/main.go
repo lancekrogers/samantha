@@ -15,6 +15,7 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/textclean"
 	"github.com/lancekrogers/samantha/internal/tts"
 )
 
@@ -82,24 +83,28 @@ func main() {
 	if sr > 0 {
 		dur = float64(len(samples)) / float64(sr)
 	}
+	prepared := textclean.PrepareKokoroText(*text)
 	meta := map[string]any{
-		"stack":         "go-sherpa-onnx-kokoro",
-		"voice":         *voice,
-		"speed":         *speed,
-		"text":          *text,
-		"sample_rate":   sr,
-		"num_samples":   len(samples),
-		"duration_s":    dur,
-		"models_dir":    modelsDir,
-		"model_path":    modelPath,
-		"voices_path":   voicesPath,
-		"model_sha256":  fileSHA(modelPath),
-		"voices_sha256": fileSHA(voicesPath),
-		"tokens_path":   filepath.Join(modelsDir, "tokens.txt"),
-		"espeak_dir":    filepath.Join(modelsDir, "espeak-ng-data"),
-		"lexicon_path":  filepath.Join(modelsDir, "lexicon-us-en.txt"),
-		"sherpa_go":     "github.com/k2-fsa/sherpa-onnx-go (see projects/samantha go.mod)",
+		"stack":          "go-sherpa-onnx-kokoro",
+		"voice":          *voice,
+		"speed":          *speed,
+		"text":           *text,
+		"prepared_text":  prepared,
+		"text_rewritten": prepared != *text,
+		"sample_rate":    sr,
+		"num_samples":    len(samples),
+		"duration_s":     dur,
+		"models_dir":     modelsDir,
+		"model_path":     modelPath,
+		"voices_path":    voicesPath,
+		"model_sha256":   fileSHA(modelPath),
+		"voices_sha256":  fileSHA(voicesPath),
+		"tokens_path":    filepath.Join(modelsDir, "tokens.txt"),
+		"espeak_dir":     filepath.Join(modelsDir, "espeak-ng-data"),
+		"lexicon_path":   filepath.Join(modelsDir, "lexicon-us-en.txt"),
+		"sherpa_go":      "github.com/k2-fsa/sherpa-onnx-go (see projects/samantha go.mod)",
 	}
+	fmt.Fprintf(os.Stderr, "prepared_text: %q\n", prepared)
 	mp := *metaPath
 	if mp == "" {
 		mp = (*out)[:len(*out)-len(filepath.Ext(*out))] + ".json"
