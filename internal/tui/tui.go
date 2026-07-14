@@ -3,10 +3,12 @@ package tui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/discovery"
 	"github.com/lancekrogers/samantha/internal/session"
@@ -230,6 +232,19 @@ func run(cfg *config.Config, build RuntimeBuilder, startInConversation bool) err
 	app.wg = &sync.WaitGroup{}
 	app.progress = newEventBridge(16)
 	app.slot = &runtimeSlot{}
+
+	// Native libraries write directly to file descriptor 2, bypassing Bubble
+	// Tea and corrupting the terminal surface. Keep those diagnostics in a log;
+	// debug-audio runs colocate it with the capture bundle.
+	diagnosticsDir := filepath.Join(config.ConfigDir(), "logs")
+	if debugDir := audio.DebugAudioDir(); debugDir != "" {
+		diagnosticsDir = debugDir
+	}
+	restoreDiagnostics, err := redirectNativeDiagnostics(filepath.Join(diagnosticsDir, "native-diagnostics.log"))
+	if err != nil {
+		return fmt.Errorf("redirect native diagnostics: %w", err)
+	}
+	defer func() { _ = restoreDiagnostics() }()
 
 	// Do not enable Bubble Tea mouse reporting here. Claiming the mouse makes
 	// terminals send clicks and drags to Samantha instead of allowing native

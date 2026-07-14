@@ -13,6 +13,7 @@ var unsupportedKokoroMarks = strings.NewReplacer(
 )
 
 var kokoroSyllabicNWords = regexp.MustCompile(`(?i)\b(?:forgotten|written|button|kitten|cotton|certain|bitten|gotten)\b`)
+var kokoroSyllabicNContractions = regexp.MustCompile(`(?i)\b(?:ain|are|could|did|does|had|has|is|must|need|should|was|were|would)n['’]t\b`)
 
 var kokoroSyllabicNPronunciations = map[string]string{
 	"forgotten": "for-got-ten",
@@ -41,7 +42,15 @@ func StripUnsupportedKokoroMarks(s string) string {
 // the user's original spelling.
 func PrepareKokoroText(s string) string {
 	s = StripUnsupportedKokoroMarks(s)
-	return kokoroSyllabicNWords.ReplaceAllStringFunc(s, func(word string) string {
+	s = kokoroSyllabicNWords.ReplaceAllStringFunc(s, func(word string) string {
 		return kokoroSyllabicNPronunciations[strings.ToLower(word)]
+	})
+	return kokoroSyllabicNContractions.ReplaceAllStringFunc(s, func(word string) string {
+		for i := len(word) - 1; i >= 0; i-- {
+			if word[i] == 'n' || word[i] == 'N' {
+				return word[:i] + "-" + word[i:]
+			}
+		}
+		return word
 	})
 }

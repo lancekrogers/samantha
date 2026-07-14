@@ -38,3 +38,12 @@ func TestPrepareKokoroTextAlsoStripsMarksFromInput(t *testing.T) {
 		t.Fatalf("PrepareKokoroText() = %q, want %q", got, want)
 	}
 }
+
+func TestPrepareKokoroTextAvoidsSyllabicNInContractions(t *testing.T) {
+	in := "It wasn't, isn't, and shouldn't be noisy. Won't and can't stay unchanged."
+	want := "It was-n't, is-n't, and should-n't be noisy. Won't and can't stay unchanged."
+
+	if got := PrepareKokoroText(in); got != want {
+		t.Fatalf("PrepareKokoroText() = %q, want %q", got, want)
+	}
+}
