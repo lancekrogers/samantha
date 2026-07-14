@@ -47,7 +47,11 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 	}
 
 	if ManagedTTS(cfg) {
-		diags = append(diags, Diagnostic{Name: "tts-provider", Severity: SeverityOK, Detail: "kokoro"})
+		diags = append(diags, Diagnostic{
+			Name:     "tts-provider",
+			Severity: SeverityOK,
+			Detail:   "kokoro (" + KokoroPack() + ")",
+		})
 	} else {
 		diags = append(diags, Diagnostic{
 			Name:        "tts-provider",

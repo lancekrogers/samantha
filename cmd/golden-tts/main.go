@@ -76,7 +76,7 @@ func main() {
 		fail(err)
 	}
 
-	modelsDir := config.ModelsDir()
+	modelsDir := config.KokoroDir()
 	modelPath := filepath.Join(modelsDir, "model.onnx")
 	voicesPath := filepath.Join(modelsDir, "voices.bin")
 	dur := 0.0
@@ -94,6 +94,7 @@ func main() {
 		"sample_rate":    sr,
 		"num_samples":    len(samples),
 		"duration_s":     dur,
+		"kokoro_pack":    config.KokoroPack(),
 		"models_dir":     modelsDir,
 		"model_path":     modelPath,
 		"voices_path":    voicesPath,
