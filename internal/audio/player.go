@@ -198,26 +198,10 @@ func (p *Player) pumpSegment(ctx context.Context, segment *playbackSegment, stre
 			return
 		case frames, ok := <-stream.Frames():
 			if !ok {
-				if debug != nil {
-					debug.captureSource(inputRate, samples)
-				}
-				if err := stream.Err(); err != nil {
-					segment.finishInput(err)
-					return
-				}
-				if inputRate != outputRate {
-					samples = resampleLinear(samples, inputRate, outputRate)
-				}
-
 				p.mu.Lock()
 				frontend := p.frontend
 				p.mu.Unlock()
-				if frontend != nil {
-					frontend.PushPlaybackReference(samples)
-				}
-
-				segment.append(float32ToPCM16(samples))
-				segment.finishInput(nil)
+				finalizeSegment(segment, frontend, debug, samples, inputRate, outputRate, stream.Err())
 				return
 			}
 			if len(frames) == 0 {
@@ -226,6 +210,25 @@ func (p *Player) pumpSegment(ctx context.Context, segment *playbackSegment, stre
 			samples = append(samples, frames...)
 		}
 	}
+}
+
+// finalizeSegment resamples the fully-buffered utterance once and appends it
+// to segment regardless of streamErr: a stream that fails partway through
+// (e.g. a cancelled turn) may already have produced audio worth playing, and
+// the caller still learns about the failure through the segment's terminal
+// PlaybackResult once that audio finishes.
+func finalizeSegment(segment *playbackSegment, frontend Frontend, debug *playerDebugRecorder, samples []float32, inputRate, outputRate int, streamErr error) {
+	if debug != nil {
+		debug.captureSource(inputRate, samples)
+	}
+	if inputRate != outputRate {
+		samples = resampleLinear(samples, inputRate, outputRate)
+	}
+	if frontend != nil {
+		frontend.PushPlaybackReference(samples)
+	}
+	segment.append(float32ToPCM16(samples))
+	segment.finishInput(streamErr)
 }
 
 func (p *Player) ensureDevice(sampleRate int) (int, error) {

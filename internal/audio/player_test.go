@@ -2,6 +2,7 @@ package audio
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -75,6 +76,60 @@ func TestPlaybackSegmentFinishInputBelowThresholdStillReady(t *testing.T) {
 	defer cancel()
 	if err := s.waitReady(ctx); err != nil {
 		t.Fatalf("waitReady() error = %v, want nil for a short finished segment", err)
+	}
+}
+
+// TestFinalizeSegmentPlaysPartialAudioOnStreamError pins the pumpSegment
+// finalize path: a stream that fails partway through (e.g. a cancelled turn)
+// must still hand off whatever audio it already produced instead of
+// discarding the buffered utterance, with the failure surfacing afterward on
+// the segment's terminal result.
+func TestFinalizeSegmentPlaysPartialAudioOnStreamError(t *testing.T) {
+	s := newPlaybackSegment()
+	s.setReadyFrames(0)
+
+	wantErr := errors.New("stream failed mid-utterance")
+	samples := []float32{0.1, 0.2, 0.3, 0.4}
+	finalizeSegment(s, nil, nil, samples, 24_000, 24_000, wantErr)
+
+	if !segmentReady(s) {
+		t.Fatal("segment not ready after finalizeSegment on a failed stream")
+	}
+	if pending := s.pendingLocked(); pending != len(samples) {
+		t.Fatalf("pending samples = %d, want %d; partial audio must still be queued for playback", pending, len(samples))
+	}
+
+	out := make([]byte, len(samples)*2)
+	written, finished := s.writeTo(out, len(samples))
+	if written != len(samples) || !finished {
+		t.Fatalf("writeTo() = (%d, %v), want (%d, true)", written, finished, len(samples))
+	}
+	s.complete()
+
+	select {
+	case result := <-s.doneCh:
+		if !errors.Is(result.Err, wantErr) {
+			t.Fatalf("PlaybackResult.Err = %v, want %v", result.Err, wantErr)
+		}
+	default:
+		t.Fatal("segment did not deliver a terminal result after playing its partial audio")
+	}
+}
+
+// TestFinalizeSegmentResamplesAndSucceeds pins the happy path: a clean stream
+// resamples to the device's output rate and finishes with no error.
+func TestFinalizeSegmentResamplesAndSucceeds(t *testing.T) {
+	s := newPlaybackSegment()
+	s.setReadyFrames(0)
+
+	samples := []float32{0, 0.25, 0.5, 0.75, 1, 0.75, 0.5, 0.25}
+	finalizeSegment(s, nil, nil, samples, 24_000, 48_000, nil)
+
+	if !segmentReady(s) {
+		t.Fatal("segment not ready after finalizeSegment on a clean stream")
+	}
+	if pending := s.pendingLocked(); pending != 2*len(samples) {
+		t.Fatalf("pending samples = %d, want %d after resampling 24kHz to 48kHz", pending, 2*len(samples))
 	}
 }
 
