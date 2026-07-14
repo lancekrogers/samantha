@@ -83,6 +83,61 @@ func TestObserveStreamForwardsChunksAndMarksFirstChunk(t *testing.T) {
 	}
 }
 
+func TestObserveStreamEmitsResponseDeltaPerChunk(t *testing.T) {
+	bus := events.NewBus()
+	var deltas []string
+	events.Subscribe(bus, func(e events.ResponseDelta) {
+		deltas = append(deltas, e.Text)
+	})
+
+	p := &Pipeline{Events: bus}
+	metrics := newTurnMetrics()
+	stream := scriptedStream(context.Background(), []string{"Hel", "lo ", "world."}, nil)
+
+	chunks, _ := p.observeStream(context.Background(), stream, metrics)
+	_ = collect(t, chunks) // drain so the observer runs to completion
+
+	want := []string{"Hel", "lo ", "world."}
+	if len(deltas) != len(want) {
+		t.Fatalf("ResponseDelta events = %v, want %v", deltas, want)
+	}
+	for i := range want {
+		if deltas[i] != want[i] {
+			t.Fatalf("delta %d = %q, want %q", i, deltas[i], want[i])
+		}
+	}
+}
+
+// TestRunTurnTextModeStreamsDeltas pins that typed input streams token-by-token:
+// each brain chunk becomes a ResponseDelta and ResponseReady carries the full,
+// trimmed reply. No TTS/Player is wired, so the voice branch is skipped.
+func TestRunTurnTextModeStreamsDeltas(t *testing.T) {
+	bus := events.NewBus()
+	var deltas []string
+	events.Subscribe(bus, func(e events.ResponseDelta) { deltas = append(deltas, e.Text) })
+	var final events.ResponseReady
+	events.Subscribe(bus, func(e events.ResponseReady) { final = e })
+
+	p := &Pipeline{Brain: &fakeBrain{chunks: []string{"Hello ", "world."}}, Events: bus}
+
+	if err := p.RunTurnTextMode(context.Background(), "hi"); err != nil {
+		t.Fatalf("RunTurnTextMode() error = %v", err)
+	}
+
+	want := []string{"Hello ", "world."}
+	if len(deltas) != len(want) {
+		t.Fatalf("ResponseDelta events = %v, want %v", deltas, want)
+	}
+	for i := range want {
+		if deltas[i] != want[i] {
+			t.Fatalf("delta %d = %q, want %q", i, deltas[i], want[i])
+		}
+	}
+	if final.Response != "Hello world." {
+		t.Fatalf("ResponseReady.Response = %q, want %q", final.Response, "Hello world.")
+	}
+}
+
 func TestObserveStreamClosesOnStreamCompletion(t *testing.T) {
 	p := &Pipeline{Events: events.NewBus()}
 	metrics := newTurnMetrics()

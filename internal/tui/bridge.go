@@ -45,6 +45,10 @@ func (b *eventBridge) attach(bus *events.Bus) {
 	forward[events.TranscriptPartial](b, bus)
 	forward[events.ThinkingStarted](b, bus)
 	forward[events.ResponseStreamingStarted](b, bus)
+	// ResponseDelta streams assistant text token-by-token. It is non-durable:
+	// under UI back-pressure deltas drop first (fitBridgeQueue), and the final
+	// ResponseReady still renders the complete canonical text.
+	forward[events.ResponseDelta](b, bus)
 	forward[events.ThinkingComplete](b, bus)
 	forward[events.TurnMetrics](b, bus)
 	// GeneratingVoice / Speaking* are once-per-playback milestones; segment

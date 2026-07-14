@@ -155,7 +155,7 @@ func TestTerminalTextModeBrainErrorFailsWithSingleMetrics(t *testing.T) {
 	bus := events.NewBus()
 	metrics := countTurnMetrics(bus)
 
-	p := &Pipeline{Brain: &fakeBrain{fullErr: errors.New("api down")}, Events: bus}
+	p := &Pipeline{Brain: &fakeBrain{streamErr: errors.New("api down")}, Events: bus}
 
 	err := p.RunTurnTextMode(context.Background(), "hi")
 	if err == nil || !strings.Contains(err.Error(), "brain") {

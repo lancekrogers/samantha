@@ -49,6 +49,59 @@ func ollamaStub(t *testing.T, withTools, withoutTools *int) *api.Client {
 	return api.NewClient(base, http.DefaultClient)
 }
 
+// ollamaStreamStub serves the Ollama chat API as NDJSON, one response line per
+// entry, so streaming-delta behavior can be exercised without a real server.
+func ollamaStreamStub(t *testing.T, lines []string) *api.Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, l := range lines {
+			_, _ = io.WriteString(w, l+"\n")
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	base, _ := url.Parse(srv.URL)
+	return api.NewClient(base, http.DefaultClient)
+}
+
+// TestThinkStreamStreamsDeltasWithToolsEnabled pins the fix: with tools enabled
+// but no tool call this turn, each content delta must stream through as its own
+// chunk rather than being buffered and sent as one combined chunk.
+func TestThinkStreamStreamsDeltasWithToolsEnabled(t *testing.T) {
+	lines := []string{
+		`{"model":"m","message":{"role":"assistant","content":"Hel"},"done":false}`,
+		`{"model":"m","message":{"role":"assistant","content":"lo"},"done":false}`,
+		`{"model":"m","message":{"role":"assistant","content":" world."},"done":true,"done_reason":"stop"}`,
+	}
+	o := &OllamaBrain{client: ollamaStreamStub(t, lines), model: "m", cfg: &config.Config{MaxHistory: 10}}
+
+	stream, err := o.ThinkStream(context.Background(), "hi", StreamOptions{ToolsEnabled: true})
+	if err != nil {
+		t.Fatalf("ThinkStream() error = %v", err)
+	}
+
+	var got []string
+	for c := range stream.Chunks {
+		got = append(got, c)
+	}
+	if res := <-stream.Done; res.Err != nil {
+		t.Fatalf("stream done error = %v", res.Err)
+	}
+
+	want := []string{"Hel", "lo", " world."}
+	if len(got) != len(want) {
+		t.Fatalf("streamed chunks = %v, want %v (tools-enabled path must stream, not buffer)", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("chunk %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestChatRetriesWithoutToolsWhenUnsupported(t *testing.T) {
 	var withTools, withoutTools int
 	o := &OllamaBrain{client: ollamaStub(t, &withTools, &withoutTools), model: "m"}

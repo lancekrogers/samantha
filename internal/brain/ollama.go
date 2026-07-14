@@ -109,10 +109,12 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 			err := o.chat(ctx, req, func(resp api.ChatResponse) error {
 				if resp.Message.Content != "" {
 					textBuf.WriteString(resp.Message.Content)
-					if !opts.ToolsEnabled {
-						if err := sendChunk(ctx, out, resp.Message.Content); err != nil {
-							return err
-						}
+					// Stream every content delta as it arrives, tools enabled or
+					// not, so the TUI renders token-by-token. Any preamble a
+					// tool-calling iteration emits streams too; the final answer
+					// continues the same reply after tools run.
+					if err := sendChunk(ctx, out, resp.Message.Content); err != nil {
+						return err
 					}
 				}
 				if len(resp.Message.ToolCalls) > 0 {
@@ -145,15 +147,10 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 				continue // re-request with tool results
 			}
 
-			// No tool calls — stream text to output.
+			// No tool calls — the answer already streamed above; record the
+			// cleaned form in history.
 			response := textBuf.String()
 			if response != "" {
-				if opts.ToolsEnabled {
-					if err := sendChunk(ctx, out, response); err != nil {
-						done <- StreamResult{Err: err}
-						return
-					}
-				}
 				response = cleanForVoice(response)
 				o.history = append(o.history, api.Message{Role: "assistant", Content: response})
 				o.trimHistory()

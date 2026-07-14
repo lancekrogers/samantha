@@ -461,7 +461,6 @@ func (f *fakeSTT) Available() bool { return true }
 type fakeBrain struct {
 	chunks    []string
 	streamErr error
-	fullErr   error // ThinkFull error for text-mode tests
 }
 
 func (f *fakeBrain) ThinkStream(ctx context.Context, input string, opts brain.StreamOptions) (*brain.Stream, error) {
@@ -484,8 +483,8 @@ func (f *fakeBrain) ThinkStream(ctx context.Context, input string, opts brain.St
 }
 
 func (f *fakeBrain) ThinkFull(ctx context.Context, input string, _ brain.StreamOptions) (string, error) {
-	if f.fullErr != nil {
-		return "", f.fullErr
+	if f.streamErr != nil {
+		return "", f.streamErr
 	}
 	if len(f.chunks) == 0 {
 		return "", nil
