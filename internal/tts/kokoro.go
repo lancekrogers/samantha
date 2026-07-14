@@ -3,6 +3,7 @@ package tts
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -64,12 +65,22 @@ type KokoroTTS struct {
 
 // NewKokoroTTS creates a Kokoro TTS provider via sherpa-onnx.
 func NewKokoroTTS(cfg *config.Config) (*KokoroTTS, error) {
-	modelsDir := config.ModelsDir()
+	// Prefer thewh1teagle v1.0 English pack (same weights as Python
+	// samantha-cli) when present; else multi-lang pack at models root.
+	modelsDir := config.KokoroDir()
 
 	lang := config.LanguageCode(cfg.Language) // "en-US" -> "en"
 	lexicon := filepath.Join(modelsDir, "lexicon-us-en.txt")
 	if lang != "en" {
-		lexicon = filepath.Join(modelsDir, fmt.Sprintf("lexicon-%s.txt", lang))
+		// Multi-lang pack only; v1 English pack may lack non-en lexicons.
+		alt := filepath.Join(modelsDir, fmt.Sprintf("lexicon-%s.txt", lang))
+		if _, err := os.Stat(alt); err == nil {
+			lexicon = alt
+		} else if root := config.ModelsDir(); root != modelsDir {
+			if _, err := os.Stat(filepath.Join(root, fmt.Sprintf("lexicon-%s.txt", lang))); err == nil {
+				lexicon = filepath.Join(root, fmt.Sprintf("lexicon-%s.txt", lang))
+			}
+		}
 	}
 
 	kokoroConfig := sherpa.OfflineTtsKokoroModelConfig{

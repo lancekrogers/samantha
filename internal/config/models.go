@@ -129,6 +129,10 @@ func EnsureRuntimeAssets(ctx context.Context, cfg *Config, req AssetRequest, onP
 		if err := sanitizeKokoroLexicons(dir); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not sanitize kokoro lexicons: %v\n", err)
 		}
+		// Best-effort: install thewh1teagle Kokoro v1.0 English weights
+		// (same ONNX as Python samantha-cli) into models_dir/kokoro-v1.0-en.
+		// Needs python3+numpy+onnx; multi-lang pack remains the fallback.
+		TryEnsureKokoroV1EnglishPack(ctx, onProgress)
 	}
 	return nil
 }
