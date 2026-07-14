@@ -236,6 +236,11 @@ func run(cfg *config.Config, build RuntimeBuilder, startInConversation bool) err
 	// Native libraries write directly to file descriptor 2, bypassing Bubble
 	// Tea and corrupting the terminal surface. Keep those diagnostics in a log;
 	// debug-audio runs colocate it with the capture bundle.
+	//
+	// Trade-off: restoreDiagnostics only runs via this goroutine's defers, so
+	// an unrecovered panic on a different goroutine (a pipeline or TTS worker,
+	// for instance) still crashes with fd 2 pointed at the log file — its
+	// stack trace lands in native-diagnostics.log instead of the terminal.
 	diagnosticsDir := filepath.Join(config.ConfigDir(), "logs")
 	if debugDir := audio.DebugAudioDir(); debugDir != "" {
 		diagnosticsDir = debugDir
