@@ -67,6 +67,8 @@ type Player struct {
 	playing    atomic.Bool
 	closed     bool
 	deviceName string
+	debugRoot  string
+	debug      *playerDebugRecorder
 }
 
 // NewPlayer creates a new audio player.
@@ -77,7 +79,7 @@ func NewPlayer() *Player {
 // NewPlayerWithDevice creates a player routed to deviceName. An empty name
 // follows the operating-system default.
 func NewPlayerWithDevice(deviceName string) *Player {
-	return &Player{deviceName: deviceName}
+	return &Player{deviceName: deviceName, debugRoot: debugAudioDir()}
 }
 
 // SetFrontend installs an audio front-end that can observe playback
@@ -158,6 +160,10 @@ func (p *Player) Close() error {
 		p.ctx.Free()
 		p.ctx = nil
 	}
+	if p.debug != nil {
+		p.debug.close()
+		p.debug = nil
+	}
 
 	return nil
 }
@@ -180,6 +186,10 @@ func (p *Player) pumpSegment(ctx context.Context, segment *playbackSegment, stre
 	// device callback. Starting from a partial buffer lets a brief scheduler
 	// delay drain the segment and insert silence in the middle of speech.
 	segment.setReadyFrames(0)
+	p.mu.Lock()
+	debug := p.debug
+	p.mu.Unlock()
+	var samples []float32
 
 	for {
 		select {
@@ -188,25 +198,32 @@ func (p *Player) pumpSegment(ctx context.Context, segment *playbackSegment, stre
 			return
 		case frames, ok := <-stream.Frames():
 			if !ok {
-				segment.finishInput(stream.Err())
+				if debug != nil {
+					debug.captureSource(inputRate, samples)
+				}
+				if err := stream.Err(); err != nil {
+					segment.finishInput(err)
+					return
+				}
+				if inputRate != outputRate {
+					samples = resampleLinear(samples, inputRate, outputRate)
+				}
+
+				p.mu.Lock()
+				frontend := p.frontend
+				p.mu.Unlock()
+				if frontend != nil {
+					frontend.PushPlaybackReference(samples)
+				}
+
+				segment.append(float32ToPCM16(samples))
+				segment.finishInput(nil)
 				return
 			}
 			if len(frames) == 0 {
 				continue
 			}
-
-			if inputRate != outputRate {
-				frames = resampleLinear(frames, inputRate, outputRate)
-			}
-
-			p.mu.Lock()
-			frontend := p.frontend
-			p.mu.Unlock()
-			if frontend != nil {
-				frontend.PushPlaybackReference(frames)
-			}
-
-			segment.append(float32ToPCM16(frames))
+			samples = append(samples, frames...)
 		}
 	}
 }
@@ -231,13 +248,22 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 	deviceConfig := malgo.DefaultDeviceConfig(malgo.Playback)
 	deviceConfig.Playback.Format = malgo.FormatS16
 	deviceConfig.Playback.Channels = playbackChannels
-	deviceConfig.SampleRate = uint32(sampleRate)
 	deviceConfig.Alsa.NoMMap = 1
 	if err := selectDevice(ctx.Context, malgo.Playback, p.deviceName, &deviceConfig.Playback); err != nil {
 		_ = ctx.Uninit()
 		ctx.Free()
 		return 0, fmt.Errorf("select playback device: %w", err)
 	}
+	actualDeviceName, nativeRate, err := playbackDeviceDetails(ctx.Context, p.deviceName)
+	if err != nil {
+		_ = ctx.Uninit()
+		ctx.Free()
+		return 0, err
+	}
+	if nativeRate == 0 {
+		nativeRate = uint32(sampleRate)
+	}
+	deviceConfig.SampleRate = nativeRate
 
 	device, err := malgo.InitDevice(ctx.Context, deviceConfig, malgo.DeviceCallbacks{
 		Data: p.onData,
@@ -254,10 +280,25 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 		ctx.Free()
 		return 0, err
 	}
+	deviceRate := int(device.SampleRate())
+	if deviceRate <= 0 {
+		deviceRate = sampleRate
+	}
+	if p.debugRoot != "" {
+		debug, err := newPlayerDebugRecorder(p.debugRoot, actualDeviceName, sampleRate, deviceRate)
+		if err != nil {
+			_ = device.Stop()
+			device.Uninit()
+			_ = ctx.Uninit()
+			ctx.Free()
+			return 0, fmt.Errorf("start audio debug capture: %w", err)
+		}
+		p.debug = debug
+	}
 
 	p.ctx = ctx
 	p.device = device
-	p.sampleRate = sampleRate
+	p.sampleRate = deviceRate
 	return p.sampleRate, nil
 }
 
@@ -266,6 +307,19 @@ func (p *Player) onData(outputSamples, inputSamples []byte, frameCount uint32) {
 
 	framesRemaining := int(frameCount)
 	offsetBytes := 0
+	writtenFrames := 0
+	active := false
+	defer func() {
+		if !active {
+			return
+		}
+		p.mu.Lock()
+		debug := p.debug
+		p.mu.Unlock()
+		if debug != nil {
+			debug.captureCallback(outputSamples, int(frameCount), writtenFrames)
+		}
+	}()
 
 	for framesRemaining > 0 {
 		segment := p.currentSegment()
@@ -273,6 +327,7 @@ func (p *Player) onData(outputSamples, inputSamples []byte, frameCount uint32) {
 			p.playing.Store(false)
 			return
 		}
+		active = true
 
 		written, finished := segment.writeTo(outputSamples[offsetBytes:], framesRemaining)
 		if written == 0 {
@@ -286,6 +341,7 @@ func (p *Player) onData(outputSamples, inputSamples []byte, frameCount uint32) {
 		}
 
 		p.playing.Store(true)
+		writtenFrames += written
 		offsetBytes += written * 2
 		framesRemaining -= written
 

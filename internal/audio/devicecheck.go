@@ -102,3 +102,43 @@ func selectDevice(ctx malgo.Context, kind malgo.DeviceType, name string, sub *ma
 	}
 	return fmt.Errorf("audio device %q is not available", name)
 }
+
+// playbackDeviceDetails returns the selected device's display name and its
+// preferred native sample rate. Opening CoreAudio at Kokoro's 24 kHz rate
+// delegates conversion to the backend; on some devices that path produces
+// audible crackle. Using the device's native rate lets Samantha perform one
+// deterministic conversion before playback instead.
+func playbackDeviceDetails(ctx malgo.Context, name string) (string, uint32, error) {
+	infos, err := ctx.Devices(malgo.Playback)
+	if err != nil {
+		return "", 0, fmt.Errorf("enumerate playback devices: %w", err)
+	}
+
+	var selected *malgo.DeviceInfo
+	for i := range infos {
+		if (name != "" && infos[i].Name() == name) || (name == "" && infos[i].IsDefault != 0) {
+			selected = &infos[i]
+			break
+		}
+	}
+	if selected == nil && name == "" && len(infos) > 0 {
+		selected = &infos[0]
+	}
+	if selected == nil {
+		if name != "" {
+			return "", 0, fmt.Errorf("audio device %q is not available", name)
+		}
+		return "", 0, nil
+	}
+
+	full, err := ctx.DeviceInfo(malgo.Playback, selected.ID, malgo.Shared)
+	if err != nil {
+		return selected.Name(), 0, fmt.Errorf("query playback device %q: %w", selected.Name(), err)
+	}
+	for _, format := range full.Formats {
+		if format.SampleRate != 0 {
+			return selected.Name(), format.SampleRate, nil
+		}
+	}
+	return selected.Name(), 0, nil
+}

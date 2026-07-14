@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/charmbracelet/fang"
 	"github.com/mattn/go-isatty"
@@ -26,9 +27,10 @@ import (
 )
 
 var (
-	textMode bool
-	noVoice  bool
-	skipTUI  bool
+	textMode      bool
+	noVoice       bool
+	skipTUI       bool
+	debugAudioDir string
 )
 
 var rootCmd = &cobra.Command{
@@ -38,6 +40,16 @@ var rootCmd = &cobra.Command{
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		if _, err := config.Load(); err != nil {
 			return err
+		}
+		debugDir := debugAudioDir
+		if debugDir == "auto" {
+			debugDir = filepath.Join(config.ConfigDir(), "debug", "audio")
+		}
+		if err := audio.SetDebugAudioDir(debugDir); err != nil {
+			return err
+		}
+		if debugDir != "" {
+			fmt.Fprintf(cmd.ErrOrStderr(), "  Audio debug capture enabled under %s\n", debugDir)
 		}
 		// Best-effort: seed default prompt documents so users have editable
 		// starting files. A failure here (e.g. a read-only home) must not
@@ -74,6 +86,8 @@ func init() {
 	rootCmd.Flags().BoolVarP(&textMode, "text", "t", false, "Text-only input mode (no microphone)")
 	rootCmd.Flags().BoolVarP(&noVoice, "no-voice", "n", false, "Disable TTS output")
 	rootCmd.Flags().BoolVar(&skipTUI, "no-tui", false, "Skip TUI launcher, start directly")
+	rootCmd.PersistentFlags().StringVar(&debugAudioDir, "debug-audio", "", "Record TTS source WAVs, exact device-output WAV, and callback timing (optional DIR)")
+	rootCmd.PersistentFlags().Lookup("debug-audio").NoOptDefVal = "auto"
 }
 
 // Execute runs the root command.
