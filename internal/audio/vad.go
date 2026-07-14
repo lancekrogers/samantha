@@ -15,6 +15,10 @@ const (
 	// is far less likely to register as the user interrupting.
 	bargeInVADThreshold  = 0.85
 	vadMinSpeechDuration = 0.25
+	// vadWindowSize is the Silero v5 analysis window in samples (32ms at 16kHz).
+	// The binding forwards a zero value straight to C, so set it explicitly
+	// rather than relying on the model's default.
+	vadWindowSize = 512
 )
 
 // VAD wraps sherpa-onnx Silero voice activity detection.
@@ -51,6 +55,7 @@ func newVAD(cfg *config.Config, threshold, minSpeech float32) (*VAD, error) {
 		MinSpeechDuration:  minSpeech,
 		MinSilenceDuration: float32(cfg.VADSilenceDuration),
 		Threshold:          threshold,
+		WindowSize:         vadWindowSize,
 	}
 
 	vadConfig := sherpa.VadModelConfig{
@@ -90,6 +95,15 @@ func (v *VAD) IsSpeech() bool {
 func (v *VAD) Front() []float32 {
 	seg := v.detector.Front()
 	return seg.Samples
+}
+
+// FrontSegment returns the first detected speech segment's samples together
+// with its start offset, measured in samples from the point the detector last
+// cleared its buffer. Callers use the offset to prepend pre-trigger audio the
+// VAD trimmed from the onset.
+func (v *VAD) FrontSegment() (samples []float32, start int) {
+	seg := v.detector.Front()
+	return seg.Samples, seg.Start
 }
 
 // Pop removes the first speech segment.

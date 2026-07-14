@@ -95,7 +95,9 @@ func (s *SherpaStreamingSTT) Start(ctx context.Context) (Session, error) {
 
 		runStreamingLoop(sessionCtx, streamingLoopDeps{
 			frames: asFrameSource(s.capture),
-			seg:    vadSegmenter{vad: s.vad},
+			// Streaming feeds every frame to the recognizer directly and uses the
+			// VAD only for endpointing, so onset pre-roll does not apply here.
+			seg:    newVADSegmenter(s.vad, 0),
 			rec:    rec,
 			policy: policy,
 		}, session.events)
