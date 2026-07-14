@@ -74,12 +74,42 @@ just run -- --text
 
 ## Usage
 
+### Local voice (TUI) — mic and speakers on this machine
+
 ```bash
-samantha              # Launch the TUI, then start full voice mode
-samantha --no-tui     # Start directly without the launcher
+samantha              # Launcher → full conversation TUI with voice
+samantha --no-tui     # Start conversation directly (no launcher)
 samantha --text       # Text input, voice output
 samantha --no-voice   # Voice input, text output
 ```
+
+### Remote access (phone / another device)
+
+Use **`samantha serve`** when a client should talk to this Mac over the LAN or
+Tailscale. The conversation **TUI stays the local voice product**; `serve` is
+the network daemon for browsers or future native apps.
+
+```bash
+# Easiest remote voice over Tailscale (MagicDNS URL + real HTTPS cert):
+samantha serve --tailscale
+
+# LAN (self-signed TLS; iOS Safari needs a real cert — prefer --tailscale):
+samantha serve
+
+# Ops
+samantha serve --revoke-tokens   # Invalidate the bearer; next serve mints a new one
+samantha connect <host:port> --token <token>   # Debug text client
+```
+
+On the phone: open the printed URL → enter the pairing code → **Start** →
+**Hold to Talk** (or type). Protocol for custom clients:
+[docs/serve-protocol.md](docs/serve-protocol.md).
+
+| Path | Command | Where audio lives |
+|------|---------|-------------------|
+| Full local voice | `samantha` (TUI) | This machine’s mic + speakers |
+| Remote keyboard only | Termius SSH → `samantha` | Still this machine |
+| Remote voice on phone | `samantha serve` + browser/app | Phone mic + speakers via WebSocket |
 
 ### Commands
 
@@ -101,6 +131,8 @@ samantha models clean --unused --yes    # Delete model assets not required now
 samantha prompts list                   # List embedded and user prompt documents
 samantha prompts show persona           # Show an assembled prompt document
 samantha render notes.txt --out a.wav   # Batch-render a document to audio
+samantha serve --tailscale              # Remote voice for Tailscale clients
+samantha serve --revoke-tokens          # Rotate serve bearer token
 ```
 
 ### TUI controls
