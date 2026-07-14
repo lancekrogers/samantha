@@ -83,6 +83,255 @@ func TestVerifyRequest(t *testing.T) {
 	}
 }
 
+func TestPairingCodeExchangeAndSingleUse(t *testing.T) {
+	creds, err := LoadOrCreateCredentials(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if creds.Pairing == nil || len(creds.Pairing.Code) != 6 {
+		t.Fatalf("pairing code = %+v, want 6 digits", creds.Pairing)
+	}
+	token, err := creds.ExchangePairingCode(creds.Pairing.Code)
+	if err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+	if token != creds.Token {
+		t.Fatal("exchange returned wrong token")
+	}
+	if _, err := creds.ExchangePairingCode(creds.Pairing.Code); err == nil {
+		t.Fatal("second exchange with same code must fail")
+	}
+	// Fresh code after refresh works once.
+	refreshed, err := creds.RefreshPairingCode()
+	if err != nil {
+		t.Fatalf("refresh pairing code: %v", err)
+	}
+	code := refreshed.Code
+	if _, err := creds.ExchangePairingCode(code); err != nil {
+		t.Fatalf("refresh exchange: %v", err)
+	}
+	if _, err := creds.ExchangePairingCode("999999"); err == nil {
+		t.Fatal("wrong code must fail")
+	}
+}
+
+func TestPairingCodeExpires(t *testing.T) {
+	creds := &Credentials{
+		Token: "tok",
+		Pairing: &PairingCode{
+			Code:      "123456",
+			ExpiresAt: time.Now().Add(-time.Second),
+		},
+	}
+	if _, err := creds.ExchangePairingCode("123456"); err == nil {
+		t.Fatal("expired pairing code must fail")
+	}
+}
+
+type entropyFailureReader struct{}
+
+func (entropyFailureReader) Read([]byte) (int, error) {
+	return 0, errors.New("entropy unavailable")
+}
+
+func TestPairingCodeEntropyFailureFailsClosed(t *testing.T) {
+	if _, err := pairingCodeFrom(entropyFailureReader{}, time.Now()); err == nil {
+		t.Fatal("pairing code generation succeeded without entropy")
+	}
+}
+
+func TestPairingCodeConcurrentExchangeIsSingleUse(t *testing.T) {
+	creds, err := LoadOrCreateCredentials(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := creds.Pairing.Code
+
+	const attempts = 32
+	start := make(chan struct{})
+	results := make(chan error, attempts)
+	var wg sync.WaitGroup
+	for range attempts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := creds.ExchangePairingCode(code)
+			results <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	var successes int
+	for err := range results {
+		if err == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("successful concurrent exchanges = %d, want exactly 1", successes)
+	}
+}
+
+func TestRevokeTokensForcesNewToken(t *testing.T) {
+	dir := t.TempDir()
+	first, err := LoadOrCreateCredentials(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RevokeTokens(dir); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, "/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer "+first.Token)
+	if first.VerifyRequest(req) {
+		t.Fatal("revoked credentials still authorize requests")
+	}
+	if _, err := first.ExchangePairingCode(first.Pairing.Code); err == nil {
+		t.Fatal("pairing returned a revoked bearer token")
+	}
+	second, err := LoadOrCreateCredentials(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.TokenCreated {
+		t.Fatal("load after revoke must mint a new token")
+	}
+	if second.Token == first.Token {
+		t.Fatal("token unchanged after revoke")
+	}
+}
+
+func TestRevokeTokensStopsRunningServerAndClosesStream(t *testing.T) {
+	dir := t.TempDir()
+	creds, err := LoadOrCreateCredentials(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bus := events.NewBus()
+	dispatcher := NewDispatcher(&scriptedRunner{}, bus, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go dispatcher.Run(ctx)
+
+	server := New(Options{
+		Bind:        "127.0.0.1:0",
+		Credentials: creds,
+		Bus:         bus,
+		Dispatcher:  dispatcher,
+	})
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.ListenAndServe(ctx) }()
+	deadline := time.After(2 * time.Second)
+	for server.Addr() == nil {
+		select {
+		case <-deadline:
+			t.Fatal("server never bound")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	readCtx, stopRead := context.WithTimeout(context.Background(), 3*time.Second)
+	defer stopRead()
+	ws, _, err := websocket.Dial(readCtx, "wss://"+server.Addr().String()+"/v1/stream?token="+creds.Token, &websocket.DialOptions{
+		HTTPClient: insecureClient(),
+	})
+	if err != nil {
+		t.Fatalf("dial stream: %v", err)
+	}
+	defer ws.Close(websocket.StatusNormalClosure, "")
+
+	if err := RevokeTokens(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ws.Read(readCtx); err == nil {
+		t.Fatal("stream remained open after token revocation")
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("server exit after revoke: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("server did not stop after token revocation")
+	}
+}
+
+func TestPairHTTPEndpoint(t *testing.T) {
+	creds, err := LoadOrCreateCredentials(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := creds.Pairing.Code
+	bus := events.NewBus()
+	disp := NewDispatcher(&scriptedRunner{}, bus, nil, nil)
+	go disp.Run(context.Background())
+
+	srv := New(Options{
+		Bind:        "127.0.0.1:0",
+		Credentials: creds,
+		Bus:         bus,
+		Dispatcher:  disp,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.ListenAndServe(ctx) }()
+
+	// Wait for bind.
+	var addr string
+	for i := 0; i < 50; i++ {
+		if a := srv.Addr(); a != nil {
+			addr = a.String()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if addr == "" {
+		t.Fatal("server never bound")
+	}
+
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	body := strings.NewReader(`{"code":"` + code + `"}`)
+	req, _ := http.NewRequest(http.MethodPost, "https://"+addr+"/v1/pair", body)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("pair status = %d body=%s", resp.StatusCode, b)
+	}
+	var out struct {
+		Token       string `json:"token"`
+		Fingerprint string `json:"fingerprint"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Token != creds.Token || out.Fingerprint != creds.Fingerprint {
+		t.Fatalf("pair response = %+v", out)
+	}
+
+	// Second use of the same code must fail (single-use).
+	req2, _ := http.NewRequest(http.MethodPost, "https://"+addr+"/v1/pair", strings.NewReader(`{"code":"`+code+`"}`))
+	req2.Header.Set("Content-Type", "application/json")
+	resp2, err := client.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode == http.StatusOK {
+		t.Fatal("reused pairing code accepted")
+	}
+	cancel()
+	<-errCh
+}
+
 func TestLoadExternalTLSCertificate(t *testing.T) {
 	dir := t.TempDir()
 	// Mint a self-signed pair first, then reload it as "external".
@@ -153,7 +402,7 @@ func TestHubAudioResetDropsCanceledTailUntilNextTurn(t *testing.T) {
 	c := &streamConn{
 		out:   make(chan []byte, 1),
 		audio: make(chan []byte, audioQueueDepth),
-		kick:  make(chan struct{}),
+		kick:  make(chan string, 1),
 	}
 	if !h.add(c) {
 		t.Fatal("failed to add stream connection")
@@ -180,7 +429,7 @@ func TestHubAudioResetDropsCanceledTailUntilNextTurn(t *testing.T) {
 	late := &streamConn{
 		out:   make(chan []byte, 1),
 		audio: make(chan []byte, audioQueueDepth),
-		kick:  make(chan struct{}),
+		kick:  make(chan string, 1),
 	}
 	if !h.add(late) {
 		t.Fatal("failed to add late stream connection")
@@ -403,6 +652,20 @@ func TestValidateBind(t *testing.T) {
 	}
 }
 
+func TestStartDiscoverySkipsUnreachableBindAddresses(t *testing.T) {
+	discovery, err := StartDiscovery("127.0.0.1:7262", "fingerprint", "Samantha")
+	if err != nil {
+		t.Fatalf("loopback discovery: %v", err)
+	}
+	if discovery != nil {
+		discovery.Stop()
+		t.Fatal("loopback listener must not advertise on LAN interfaces")
+	}
+	if _, err := StartDiscovery("0.0.0.0:7262", "fingerprint", "Samantha"); err == nil {
+		t.Fatal("unspecified bind advertised without a concrete endpoint")
+	}
+}
+
 func TestRateLimiterCapsPerWindow(t *testing.T) {
 	l := newRateLimiter(3, time.Minute)
 	now := time.Now()
@@ -429,7 +692,7 @@ func TestHubEvictsSlowClients(t *testing.T) {
 	slow := &streamConn{
 		out:   make(chan []byte, 1),
 		audio: make(chan []byte, audioQueueDepth),
-		kick:  make(chan struct{}),
+		kick:  make(chan string, 1),
 	}
 	h.add(slow)
 
@@ -812,7 +1075,7 @@ func newTestConn(outDepth, audioDepth int) *streamConn {
 	return &streamConn{
 		out:   make(chan []byte, outDepth),
 		audio: make(chan []byte, audioDepth),
-		kick:  make(chan struct{}),
+		kick:  make(chan string, 1),
 	}
 }
 

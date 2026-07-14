@@ -34,7 +34,7 @@ const maxStreamClients = 8
 type streamConn struct {
 	out   chan []byte // event / control envelopes
 	audio chan []byte // TTS audio_chunk / audio_end / audio_reset only
-	kick  chan struct{}
+	kick  chan string
 	once  sync.Once
 
 	// audioStream is a per-connection preference set by the audio_output
@@ -46,8 +46,8 @@ type streamConn struct {
 	audioBlocked atomic.Bool
 }
 
-func (c *streamConn) evict() {
-	c.once.Do(func() { close(c.kick) })
+func (c *streamConn) evict(reason string) {
+	c.once.Do(func() { c.kick <- reason })
 }
 
 func (c *streamConn) wantsAudio() bool {
@@ -162,6 +162,20 @@ func (h *hub) remove(c *streamConn) {
 	}
 }
 
+// evictAll terminates every live stream at a security boundary such as token
+// revocation. Handlers remove themselves from the hub as their sockets close.
+func (h *hub) evictAll(reason string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.conns {
+		c.evict(reason)
+	}
+	if h.micClaimant != nil && h.ingress != nil {
+		h.ingress.Finalize()
+		h.micClaimant = nil
+	}
+}
+
 // setConnAudio updates a connection's stream preference and the hub streamer
 // count. Safe to call from the control reader while the hub is live.
 func (h *hub) setConnAudio(c *streamConn, on bool) {
@@ -198,7 +212,7 @@ func (h *hub) broadcast(msg []byte) {
 		select {
 		case c.out <- msg:
 		default:
-			c.evict()
+			c.evict("client too slow")
 			// If this client was streaming, drop the streamer count now —
 			// remove() will also run later, so clear the flag first.
 			if c.audioStream.Swap(false) {
@@ -289,7 +303,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	conn := &streamConn{
 		out:   make(chan []byte, connQueueDepth),
 		audio: make(chan []byte, audioQueueDepth),
-		kick:  make(chan struct{}),
+		kick:  make(chan string, 1),
 	}
 	if !s.hub.add(conn) {
 		ws.Close(websocket.StatusTryAgainLater, "too many clients")
@@ -310,8 +324,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-conn.kick:
-				ws.Close(websocket.StatusPolicyViolation, "client too slow")
+			case reason := <-conn.kick:
+				ws.Close(websocket.StatusPolicyViolation, reason)
 				return
 			case msg := <-conn.out:
 				if err := ws.Write(ctx, websocket.MessageText, msg); err != nil {
@@ -336,6 +350,10 @@ func (s *Server) readControls(ctx context.Context, ws *websocket.Conn, conn *str
 	for {
 		_, data, err := ws.Read(ctx)
 		if err != nil {
+			return
+		}
+		if !s.opts.Credentials.tokenActive() {
+			conn.evict("credentials revoked")
 			return
 		}
 
@@ -443,7 +461,7 @@ func (s *Server) sendAudioOutputAck(conn *streamConn, mode string) {
 	select {
 	case conn.out <- msg:
 	default:
-		conn.evict()
+		conn.evict("client too slow")
 	}
 }
 
@@ -457,7 +475,7 @@ func (s *Server) sendError(conn *streamConn, text string) {
 	select {
 	case conn.out <- msg:
 	default:
-		conn.evict()
+		conn.evict("client too slow")
 	}
 }
 

@@ -94,6 +94,8 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("GET /v1/sessions", s.handleSessions)
 	mux.HandleFunc("POST /v1/sessions/{id}/resume", s.handleResume)
+	// Phase 2: public pairing exchange (short code → long-lived token).
+	mux.HandleFunc("POST /v1/pair", s.handlePair)
 	// Embedded phone voice client (public HTML/JS; WS still authenticated).
 	web := webFileServer()
 	mux.Handle("GET /{$}", web)
@@ -124,9 +126,18 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.ServeTLS(ln, "", "") }()
+	monitorCtx, stopMonitor := context.WithCancel(ctx)
+	defer stopMonitor()
+	revoked := s.watchToken(monitorCtx)
 
 	select {
 	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+		return nil
+	case <-revoked:
+		s.hub.evictAll("credentials revoked")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
@@ -137,6 +148,32 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		}
 		return err
 	}
+}
+
+// watchToken closes its result when another process revokes or rotates the
+// credentials file. A nil result disables the select case for credentials
+// assembled directly in tests without a backing directory.
+func (s *Server) watchToken(ctx context.Context) <-chan struct{} {
+	if s.opts.Credentials == nil || s.opts.Credentials.Dir == "" {
+		return nil
+	}
+	revoked := make(chan struct{})
+	go func() {
+		defer close(revoked)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if !s.opts.Credentials.tokenActive() {
+					return
+				}
+			}
+		}
+	}()
+	return revoked
 }
 
 // authMiddleware enforces the mandatory bearer token on every endpoint
