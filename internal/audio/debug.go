@@ -128,18 +128,21 @@ type debugCallbackMetadata struct {
 	SilenceFrames   int    `json:"silence_frames"`
 }
 
-func newPlayerDebugRecorder(root, deviceName string, requestedRate, deviceRate int) (*playerDebugRecorder, error) {
+func newPlayerDebugRecorder(root, deviceName string, requestedRate, deviceRate, deviceChannels int) (*playerDebugRecorder, error) {
 	stamp := time.Now().Format("20060102T150405.000000000")
 	dir := filepath.Join(root, fmt.Sprintf("%s-pid%d", stamp, os.Getpid()))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create player debug directory: %w", err)
+	}
+	if deviceChannels <= 0 {
+		deviceChannels = playbackChannels
 	}
 	metadata := debugAudioMetadata{
 		CreatedAt:           time.Now(),
 		DeviceName:          deviceName,
 		RequestedSampleRate: requestedRate,
 		DeviceSampleRate:    deviceRate,
-		Channels:            playbackChannels,
+		Channels:            deviceChannels,
 		Format:              "pcm_s16le",
 		PID:                 os.Getpid(),
 	}
@@ -158,7 +161,7 @@ func newPlayerDebugRecorder(root, deviceName string, requestedRate, deviceRate i
 	}
 	r.pool.New = func() any { return make([]byte, 0, 4096) }
 	r.wg.Add(1)
-	go r.run(deviceRate)
+	go r.run(deviceRate, deviceChannels)
 	return r, nil
 }
 
@@ -229,9 +232,12 @@ func (r *playerDebugRecorder) close() {
 	})
 }
 
-func (r *playerDebugRecorder) run(deviceRate int) {
+func (r *playerDebugRecorder) run(deviceRate, deviceChannels int) {
 	defer r.wg.Done()
-	wav, wavErr := newPCM16WAVWriter(filepath.Join(r.dir, "device-output.wav"), deviceRate, playbackChannels)
+	if deviceChannels <= 0 {
+		deviceChannels = playbackChannels
+	}
+	wav, wavErr := newPCM16WAVWriter(filepath.Join(r.dir, "device-output.wav"), deviceRate, deviceChannels)
 	callbacks, callbackErr := os.OpenFile(filepath.Join(r.dir, "callbacks.jsonl"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if callbackErr == nil {
 		defer callbacks.Close()

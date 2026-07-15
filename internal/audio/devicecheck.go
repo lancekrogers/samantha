@@ -103,15 +103,17 @@ func selectDevice(ctx malgo.Context, kind malgo.DeviceType, name string, sub *ma
 	return fmt.Errorf("audio device %q is not available", name)
 }
 
-// playbackDeviceDetails returns the selected device's display name and its
-// preferred native sample rate. Opening CoreAudio at Kokoro's 24 kHz rate
-// delegates conversion to the backend; on some devices that path produces
-// audible crackle. Using the device's native rate lets Samantha perform one
-// deterministic conversion before playback instead.
-func playbackDeviceDetails(ctx malgo.Context, name string) (string, uint32, error) {
+// playbackDeviceDetails returns the selected device's display name, a preferred
+// native sample rate, and the channel count advertised by its first shared-mode
+// format. Opening CoreAudio at Kokoro's 24 kHz mono rate delegates rate and
+// layout conversion to the backend; on devices such as Studio Display Speakers
+// (native 8 ch @ 44.1/48 kHz) that path has produced audible crackle. Samantha
+// opens at the device rate with a stereo (or native multi-channel) layout and
+// expands mono TTS into that layout before the callback returns.
+func playbackDeviceDetails(ctx malgo.Context, name string) (string, uint32, uint32, error) {
 	infos, err := ctx.Devices(malgo.Playback)
 	if err != nil {
-		return "", 0, fmt.Errorf("enumerate playback devices: %w", err)
+		return "", 0, 0, fmt.Errorf("enumerate playback devices: %w", err)
 	}
 
 	var selected *malgo.DeviceInfo
@@ -126,19 +128,77 @@ func playbackDeviceDetails(ctx malgo.Context, name string) (string, uint32, erro
 	}
 	if selected == nil {
 		if name != "" {
-			return "", 0, fmt.Errorf("audio device %q is not available", name)
+			return "", 0, 0, fmt.Errorf("audio device %q is not available", name)
 		}
-		return "", 0, nil
+		return "", 0, 0, nil
 	}
 
 	full, err := ctx.DeviceInfo(malgo.Playback, selected.ID, malgo.Shared)
 	if err != nil {
-		return selected.Name(), 0, fmt.Errorf("query playback device %q: %w", selected.Name(), err)
+		return selected.Name(), 0, 0, fmt.Errorf("query playback device %q: %w", selected.Name(), err)
 	}
-	for _, format := range full.Formats {
-		if format.SampleRate != 0 {
-			return selected.Name(), format.SampleRate, nil
+	rate, channels := pickPlaybackFormat(full.Formats)
+	return selected.Name(), rate, channels, nil
+}
+
+// pickPlaybackFormat chooses a sample rate and channel count from the device's
+// shared-mode formats. Prefer 44.1/48 kHz (speech-friendly, matches common
+// device clocks) and a stereo layout when advertised; fall back to the first
+// non-zero rate and the smallest advertised channel count ≥ 1.
+func pickPlaybackFormat(formats []malgo.DataFormat) (rate uint32, channels uint32) {
+	bestScore := -1
+	for _, format := range formats {
+		if format.SampleRate == 0 || format.Channels == 0 {
+			continue
+		}
+		score := 0
+		switch format.SampleRate {
+		case 44100, 48000:
+			score += 100
+		case 88200, 96000:
+			score += 40
+		default:
+			score += 10
+		}
+		switch format.Channels {
+		case 2:
+			score += 50 // stereo is ideal for mono TTS upmix
+		case 1:
+			score += 30
+		default:
+			// Multi-channel (e.g. Studio Display 8ch): usable but heavier.
+			score += 10
+		}
+		// Prefer fewer channels when scores tie so we do not open 8ch when 2ch
+		// is available at the same rate.
+		score -= int(format.Channels)
+		if score > bestScore {
+			bestScore = score
+			rate = format.SampleRate
+			channels = format.Channels
 		}
 	}
-	return selected.Name(), 0, nil
+	return rate, channels
+}
+
+// choosePlaybackChannels picks the client layout Samantha opens on the device.
+// Voice is mono; we open stereo when the device allows a 2ch client format so
+// L/R carry the same signal. When the device only advertises multi-channel
+// layouts (Studio Display Speakers lists 8ch), open at that count and map mono
+// onto the front L/R pair with silence on the remaining channels — leaving
+// CoreAudio to invent a mono→8ch conversion has been a crackle source.
+func choosePlaybackChannels(nativeChannels uint32) uint32 {
+	switch {
+	case nativeChannels == 0:
+		return 2
+	case nativeChannels == 1:
+		return 1
+	case nativeChannels == 2:
+		return 2
+	default:
+		// Device is multi-channel. Prefer a stereo client format: CoreAudio
+		// accepted Channels=2 on Studio Display Speakers in hardware probes
+		// even though shared formats listed only 8ch.
+		return 2
+	}
 }
