@@ -72,6 +72,16 @@ type ResponseStreamingStarted struct {
 
 func (e ResponseStreamingStarted) eventType() string { return "response_streaming_started" }
 
+// ResponseDelta carries one incremental piece of assistant text as it streams
+// from the brain, for token-by-token display in the TUI. Deltas are advisory
+// and droppable under UI back-pressure; ResponseReady always follows with the
+// complete, canonical text.
+type ResponseDelta struct {
+	Text string
+}
+
+func (e ResponseDelta) eventType() string { return "response_delta" }
+
 // SpeechSegmentReady signals a sentence is ready for voice synthesis.
 type SpeechSegmentReady struct {
 	Text string

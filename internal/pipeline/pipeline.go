@@ -259,7 +259,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	p.emit(events.ThinkingStarted{})
 	thinkingStarted := time.Now()
 
-	response, err := p.Brain.ThinkFull(ctx, input, brain.StreamOptions{
+	stream, err := p.Brain.ThinkStream(ctx, input, brain.StreamOptions{
 		ToolsEnabled: p.VoiceToolsEnabled,
 	})
 	if err != nil {
@@ -267,10 +267,16 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 		return fmt.Errorf("brain: %w", err)
 	}
 
-	now := time.Now()
-	metrics.firstModelChunk = now
-	metrics.modelComplete = now
-	p.emit(events.ResponseStreamingStarted{Elapsed: time.Since(thinkingStarted)})
+	// Stream the reply so the TUI can render it token-by-token, then fall back
+	// to the existing whole-response synthesis path below. ResponseStreamingStarted
+	// and per-chunk ResponseDelta events are emitted inside observeStream.
+	response, err := p.collectTextStream(ctx, stream, metrics)
+	if err != nil {
+		turn.finish(TurnFailed)
+		return fmt.Errorf("brain: %w", err)
+	}
+
+	metrics.modelComplete = time.Now()
 	p.emit(events.ThinkingComplete{
 		Response: response,
 		Elapsed:  time.Since(thinkingStarted),
@@ -760,6 +766,9 @@ func (p *Pipeline) observeStream(ctx context.Context, stream *brain.Stream, metr
 					metrics.firstModelChunk = time.Now()
 					p.emit(events.ResponseStreamingStarted{Elapsed: metrics.elapsed(metrics.firstModelChunk)})
 				}
+				// Surface the raw chunk for incremental TUI display before it is
+				// batched into sentences for TTS downstream.
+				p.emit(events.ResponseDelta{Text: chunk})
 				select {
 				case <-ctx.Done():
 					return
@@ -770,6 +779,31 @@ func (p *Pipeline) observeStream(ctx context.Context, stream *brain.Stream, metr
 	}()
 
 	return out, done
+}
+
+// collectTextStream drains a brain stream to completion for the text-input
+// path, letting observeStream emit ResponseStreamingStarted and per-chunk
+// ResponseDelta events along the way, and returns the full accumulated text.
+// It waits on stream.Done for the terminal error so a failed stream surfaces
+// even after partial chunks were displayed.
+func (p *Pipeline) collectTextStream(ctx context.Context, stream *brain.Stream, metrics *turnMetrics) (string, error) {
+	out, done := p.observeStream(ctx, stream, metrics)
+
+	var b strings.Builder
+	for chunk := range out {
+		b.WriteString(chunk)
+	}
+	<-done
+
+	select {
+	case res := <-stream.Done:
+		if res.Err != nil {
+			return "", res.Err
+		}
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	return strings.TrimSpace(b.String()), nil
 }
 
 func (p *Pipeline) resetEchoState() {

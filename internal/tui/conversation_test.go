@@ -42,6 +42,56 @@ func TestConversationAppendAndView(t *testing.T) {
 	}
 }
 
+func TestConversationStreamsResponseDeltasThenFinalizes(t *testing.T) {
+	m := sizedConversation(t, 80, 24)
+	m.ready = true
+
+	m.handleEvent(events.ThinkingStarted{})
+	m.handleEvent(events.ResponseDelta{Text: "Hel"})
+	m.handleEvent(events.ResponseDelta{Text: "lo"})
+
+	// Mid-stream the partial reply must already be visible and live-buffered.
+	if m.streamingAgent != "Hello" {
+		t.Fatalf("streamingAgent = %q, want %q", m.streamingAgent, "Hello")
+	}
+	if !strings.Contains(m.View(), "Hello") {
+		t.Fatalf("streamed text not visible mid-stream:\n%s", m.View())
+	}
+
+	m.handleEvent(events.ResponseReady{Response: "Hello, world."})
+
+	// After finalize the live buffer is cleared and the canonical reply is in
+	// the transcript exactly once.
+	if m.streamingAgent != "" {
+		t.Fatalf("streamingAgent = %q after ResponseReady, want empty", m.streamingAgent)
+	}
+	view := m.View()
+	if !strings.Contains(view, "Hello, world.") {
+		t.Fatalf("finalized reply missing from view:\n%s", view)
+	}
+	if strings.Count(view, "● Samantha") != 1 {
+		t.Fatalf("agent turn rendered %d times, want 1:\n%s", strings.Count(view, "● Samantha"), view)
+	}
+}
+
+func TestConversationClearsStaleStreamOnNewTurn(t *testing.T) {
+	m := sizedConversation(t, 80, 24)
+	m.ready = true
+
+	// A turn streams a delta but never finalizes (e.g. interrupted).
+	m.handleEvent(events.ThinkingStarted{})
+	m.handleEvent(events.ResponseDelta{Text: "orphaned partial"})
+
+	// The next turn begins; the stale buffer must be discarded.
+	m.handleEvent(events.ThinkingStarted{})
+	if m.streamingAgent != "" {
+		t.Fatalf("streamingAgent = %q at new turn, want empty", m.streamingAgent)
+	}
+	if strings.Contains(m.View(), "orphaned partial") {
+		t.Fatalf("stale streamed text leaked into next turn:\n%s", m.View())
+	}
+}
+
 func TestConversationClearTranscript(t *testing.T) {
 	m := sizedConversation(t, 80, 24)
 	m.appendTranscript(renderUserTurn("wipe me"))

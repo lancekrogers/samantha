@@ -38,6 +38,10 @@ type conversationModel struct {
 	activity   []activityEntry
 	status     string
 	statusErr  bool
+	// streamingAgent accumulates ResponseDelta text for the in-progress agent
+	// turn, rendered live beneath the transcript until ResponseReady finalizes
+	// it into transcript. Empty when no turn is streaming.
+	streamingAgent string
 
 	bridge      *eventBridge
 	lastMetrics events.TurnMetrics
@@ -240,8 +244,29 @@ func (m *conversationModel) refreshContent() {
 		return
 	}
 	content := strings.Join(m.transcript, "\n")
+	// Render the in-progress agent turn live beneath the finalized transcript
+	// so the reply streams in token-by-token before ResponseReady lands.
+	if m.streamingAgent != "" {
+		live := renderAgentTurn(m.agentName, m.streamingAgent)
+		if content != "" {
+			content += "\n" + live
+		} else {
+			content = live
+		}
+	}
 	// lipgloss wraps to width so long turns don't overflow the viewport.
 	m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width).Render(content))
+}
+
+// appendStreamingDelta grows the in-progress agent turn and re-renders,
+// following the tail unless the user has scrolled up to review history.
+func (m *conversationModel) appendStreamingDelta(text string) {
+	follow := !m.ready || m.viewport.AtBottom()
+	m.streamingAgent += text
+	m.refreshContent()
+	if follow {
+		m.viewport.GotoBottom()
+	}
 }
 
 func (m *conversationModel) appendActivity(stage, detail string, elapsed time.Duration) {
@@ -331,11 +356,21 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		m.appendTranscript(renderUserTurn(e.Text))
 
 	case events.ThinkingStarted:
+		// Start a fresh streaming buffer; a prior turn's leftover (e.g. after an
+		// interrupt that skipped ResponseReady) must not bleed into this reply.
+		// Re-render so any stale live partial leaves the viewport immediately.
+		if m.streamingAgent != "" {
+			m.streamingAgent = ""
+			m.refreshContent()
+		}
 		m.appendActivity("model", "started", 0)
 		m.setStatus("● "+m.agentName+" thinking...", false)
 
 	case events.ResponseStreamingStarted:
 		m.appendActivity("model", "first response", e.Elapsed)
+
+	case events.ResponseDelta:
+		m.appendStreamingDelta(e.Text)
 
 	case events.ThinkingComplete:
 		m.appendActivity("model", "complete", e.Elapsed)
@@ -371,7 +406,14 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		// Text-only / no-TTS turns never emit SpeakingComplete; clear the
 		// thinking status here so it does not stick after a successful reply.
 		m.setStatus("", false)
-		m.appendTranscript(renderAgentTurn(m.agentName, e.Response), "")
+		// Finalize the streamed turn: clear the live buffer first so it is not
+		// rendered twice, then append the canonical response to the transcript.
+		m.streamingAgent = ""
+		if e.Response != "" {
+			m.appendTranscript(renderAgentTurn(m.agentName, e.Response), "")
+		} else {
+			m.refreshContent()
+		}
 
 	case events.ConversationCleared:
 		m.clearTranscript()
