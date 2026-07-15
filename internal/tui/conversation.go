@@ -66,6 +66,13 @@ type conversationModel struct {
 	outputDevice    string
 	voiceFailures   int
 	quitting        bool
+
+	commandQuery     string
+	commandSelection int
+	vimEnabled       bool
+	vimMode          vimInputMode
+	vimPending       string
+	vimUndo          []composerSnapshot
 }
 
 func newConversation(agentName string) conversationModel {
@@ -74,7 +81,7 @@ func newConversation(agentName string) conversationModel {
 	}
 
 	input := textarea.New()
-	input.Placeholder = "Type a message…"
+	input.Placeholder = "Type a message or / for commands…"
 	input.CharLimit = 1000
 	input.ShowLineNumbers = false
 	input.KeyMap.InsertNewline.SetKeys("ctrl+j")
@@ -120,8 +127,6 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 		// Page keys scroll history. Editing keys stay with the always-focused
 		// composer so multiline drafting never needs a mode switch.
 		switch msg.String() {
-		case "enter":
-			return m, m.handleSubmit()
 		case "ctrl+g":
 			return m, m.toggleInputMuted()
 		case "ctrl+o":
@@ -161,9 +166,23 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 				return m.updateScroll(msg)
 			}
 		}
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		return m, cmd
+
+		if handled, cmd := m.handleCommandPaletteKey(msg); handled {
+			return m, cmd
+		}
+		if msg.String() == "enter" {
+			return m, m.handleSubmit()
+		}
+		if m.vimEnabled {
+			if m.vimMode == vimNormal {
+				return m, m.handleVimNormalKey(msg)
+			}
+			if msg.String() == "esc" {
+				m.enterVimNormal()
+				return m, nil
+			}
+		}
+		return m, m.updateComposer(msg)
 
 	default:
 		// Non-key messages (notably textarea.Blink ticks) must reach the
@@ -177,25 +196,32 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 func (m *conversationModel) setSize(width, height int) {
 	m.width = width
 	m.height = height
+	m.reflow()
+}
 
+func (m *conversationModel) reflow() {
+	if m.width <= 0 || m.height <= 0 {
+		return
+	}
 	inputHeight := conversationInputHeight
-	if height < 12 {
+	if m.height < 12 {
 		inputHeight = 1
 	}
 	// Header + rule + label + input border + footer consume six rows in
-	// addition to the textarea's own height.
-	vpHeight := max(height-inputHeight-6, 1)
+	// addition to the textarea's own height. Command matches consume only the
+	// rows currently available above the composer.
+	vpHeight := max(m.height-inputHeight-6-m.commandPaletteRows(), 1)
 	if !m.ready {
-		m.viewport = viewport.New(max(width, 1), vpHeight)
-		m.activityViewport = viewport.New(max(width, 1), vpHeight)
+		m.viewport = viewport.New(max(m.width, 1), vpHeight)
+		m.activityViewport = viewport.New(max(m.width, 1), vpHeight)
 		m.ready = true
 	} else {
-		m.viewport.Width = max(width, 1)
+		m.viewport.Width = max(m.width, 1)
 		m.viewport.Height = vpHeight
-		m.activityViewport.Width = max(width, 1)
+		m.activityViewport.Width = max(m.width, 1)
 		m.activityViewport.Height = vpHeight
 	}
-	m.input.SetWidth(max(width-4, 1))
+	m.input.SetWidth(max(m.width-4, 1))
 	m.input.SetHeight(inputHeight)
 	m.refreshContent()
 	m.refreshActivity()
@@ -510,9 +536,17 @@ func (m conversationModel) View() string {
 	if activeViewport.TotalLineCount() > activeViewport.VisibleLineCount() {
 		footerLeft += fmt.Sprintf("  •  %d%%", int(activeViewport.ScrollPercent()*100))
 	}
-	footerHelp := "enter send  ^J newline  ^G mic  ^O audio  ^T switch  PgUp/PgDn scroll"
+	footerHelp := m.vimFooterHelp()
 	footerText := footerLeft
 	switch {
+	case m.vimEnabled:
+		// Modal controls are the primary interaction contract. Keep them visible
+		// at medium widths, then include device state when the terminal has room.
+		compactHelp := "  " + m.vimCompactFooterHelp()
+		footerText = compactHelp
+		if m.width >= lipgloss.Width(compactHelp)+lipgloss.Width(footerLeft)+4 {
+			footerText += strings.Repeat(" ", m.width-lipgloss.Width(compactHelp)-lipgloss.Width(footerLeft)) + footerLeft
+		}
 	case m.width >= lipgloss.Width(footerLeft)+lipgloss.Width(footerHelp)+4:
 		footerText += strings.Repeat(" ", m.width-lipgloss.Width(footerLeft)-lipgloss.Width(footerHelp)) + footerHelp
 	case m.width >= 60:
@@ -534,11 +568,17 @@ func (m conversationModel) View() string {
 	case turnVoiceResponding, turnVoiceCanceling, turnTextRunning:
 		inputLabel = "⏳ Samantha is responding — keep drafting:"
 	}
+	inputLabel = m.vimInputLabel(inputLabel)
 	inputBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("14")).
 		Padding(0, 1).
 		Render(m.input.View())
+
+	palette := m.renderCommandPalette()
+	if palette != "" {
+		content += "\n" + palette
+	}
 
 	return header + "\n" + rule + "\n" +
 		content + "\n" +

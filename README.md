@@ -142,7 +142,9 @@ session list, and an explicit new-conversation action. During a conversation,
 the transcript follows new messages until you scroll away from the tail. Chat
 and the activity timeline are separate full-width views, so the transcript does
 not lose space in wide terminals. The composer supports wrapped, multiline
-drafts and compacts to one row in short terminal splits.
+drafts and compacts to one row in short terminal splits. Type `/` to open the
+command palette, use the arrow keys to select a match, and press `Tab` to
+complete it. `/help` lists every available command.
 
 | Key | Action |
 |-----|--------|
@@ -154,6 +156,12 @@ drafts and compacts to one row in short terminal splits.
 | `Ctrl+O` | Mute/unmute spoken responses (also stops current playback) |
 | `Home` / `End` | Jump to the start/end of the focused feed (on Chat, only when the composer is empty) |
 | `Ctrl+Home` / `Ctrl+End` | Always jump to the start/end of the focused feed |
+
+`/vim` enables modal composer editing (`/vim off` disables it). The input label
+and footer change with the active mode. In NORMAL mode, use `i`/`a`/`I`/`A` to
+enter INSERT, `h`/`j`/`k`/`l` and `w`/`b` to move, `x`/`D`/`dd` to delete,
+`o`/`O` to open lines, `u` to undo, and `Enter` to send. `Esc` returns from
+INSERT to NORMAL.
 
 Microphone and speaker devices can be selected from the **Input** and
 **Output** sections in TUI Settings. An empty config value follows the current
