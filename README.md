@@ -4,6 +4,8 @@ Samantha is a low-latency voice assistant for AI coding.
 
 It captures speech, transcribes it locally, streams the prompt through an AI coding backend, chunks the response into sentences, and speaks those sentences as soon as they are ready.
 
+![Samantha conversation TUI](docs/images/tui-samantha.gif)
+
 ## Features
 
 - Local speech-to-text with sherpa-onnx Whisper by default.
