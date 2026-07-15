@@ -104,13 +104,18 @@ func selectDevice(ctx malgo.Context, kind malgo.DeviceType, name string, sub *ma
 }
 
 // playbackDeviceDetails returns the selected device's display name, a preferred
-// native sample rate, and the channel count advertised by its first shared-mode
-// format. Opening CoreAudio at Kokoro's 24 kHz mono rate delegates rate and
-// layout conversion to the backend; on devices such as Studio Display Speakers
-// (native 8 ch @ 44.1/48 kHz) that path has produced audible crackle. Samantha
-// opens at the device rate with a stereo (or native multi-channel) layout and
-// expands mono TTS into that layout before the callback returns.
-func playbackDeviceDetails(ctx malgo.Context, name string) (string, uint32, uint32, error) {
+// native sample rate, and the channel count advertised by its shared-mode
+// formats. sourceRate is the TTS stream rate (Kokoro is 24 kHz): when the
+// device offers an integer multiple of that rate (e.g. 48 kHz), we prefer it
+// over 44.1 kHz so Samantha can upsample with an exact ratio instead of an
+// irrational 24→44.1 conversion that linear/cubic interpolation renders as
+// harsh/crackly HF on multi-channel displays.
+//
+// Opening CoreAudio at Kokoro's 24 kHz mono rate delegates rate and layout
+// conversion to the backend; on Studio Display Speakers (8 ch @ 44.1/48 kHz)
+// that path produced audible crackle. Samantha opens at a preferred device
+// rate with a stereo client layout and expands mono TTS before the callback.
+func playbackDeviceDetails(ctx malgo.Context, name string, sourceRate int) (string, uint32, uint32, error) {
 	infos, err := ctx.Devices(malgo.Playback)
 	if err != nil {
 		return "", 0, 0, fmt.Errorf("enumerate playback devices: %w", err)
@@ -137,25 +142,38 @@ func playbackDeviceDetails(ctx malgo.Context, name string) (string, uint32, uint
 	if err != nil {
 		return selected.Name(), 0, 0, fmt.Errorf("query playback device %q: %w", selected.Name(), err)
 	}
-	rate, channels := pickPlaybackFormat(full.Formats)
+	rate, channels := pickPlaybackFormat(full.Formats, sourceRate)
 	return selected.Name(), rate, channels, nil
 }
 
 // pickPlaybackFormat chooses a sample rate and channel count from the device's
-// shared-mode formats. Prefer 44.1/48 kHz (speech-friendly, matches common
-// device clocks) and a stereo layout when advertised; fall back to the first
-// non-zero rate and the smallest advertised channel count ≥ 1.
-func pickPlaybackFormat(formats []malgo.DataFormat) (rate uint32, channels uint32) {
+// shared-mode formats. sourceRate is the TTS PCM rate (0 if unknown).
+//
+// Priority:
+//  1. Exact match to sourceRate (no resample)
+//  2. Integer multiple of sourceRate (exact upsample, e.g. 24 kHz → 48 kHz)
+//  3. Common device clocks 48 kHz then 44.1 kHz
+//  4. Stereo client layout when advertised; fewer channels when scores tie
+func pickPlaybackFormat(formats []malgo.DataFormat, sourceRate int) (rate uint32, channels uint32) {
 	bestScore := -1
 	for _, format := range formats {
 		if format.SampleRate == 0 || format.Channels == 0 {
 			continue
 		}
 		score := 0
-		switch format.SampleRate {
-		case 44100, 48000:
-			score += 100
-		case 88200, 96000:
+		fr := int(format.SampleRate)
+		switch {
+		case sourceRate > 0 && fr == sourceRate:
+			score += 300 // play TTS natively when the device allows it
+		case sourceRate > 0 && fr%sourceRate == 0:
+			// Exact integer upsample (24→48, 24→96). Strongly preferred over
+			// 44.1 kHz which forces a non-rational ratio and poor interpolation.
+			score += 250 - (fr/sourceRate)*5 // prefer smaller factors (2x > 4x)
+		case fr == 48000:
+			score += 120
+		case fr == 44100:
+			score += 80 // valid, but worse for 24 kHz TTS than 48 kHz
+		case fr == 96000 || fr == 88200:
 			score += 40
 		default:
 			score += 10

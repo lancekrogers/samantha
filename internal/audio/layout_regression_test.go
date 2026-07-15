@@ -35,9 +35,10 @@ func studioDisplayFormats() []malgo.DataFormat {
 // TestStudioDisplayClientLayoutIsStereo pins: multi-channel native ads →
 // choosePlaybackChannels returns a stereo client format, never mono.
 func TestStudioDisplayClientLayoutIsStereo(t *testing.T) {
-	rate, nativeCh := pickPlaybackFormat(studioDisplayFormats())
-	if rate != 44100 && rate != 48000 {
-		t.Fatalf("pickPlaybackFormat rate = %d, want 44100 or 48000", rate)
+	// Kokoro is 24 kHz: must prefer 48 kHz (exact 2x) over 44.1 kHz.
+	rate, nativeCh := pickPlaybackFormat(studioDisplayFormats(), 24_000)
+	if rate != 48000 {
+		t.Fatalf("pickPlaybackFormat(24k source) rate = %d, want 48000 (exact 2x upsample)", rate)
 	}
 	if nativeCh != 8 {
 		t.Fatalf("pickPlaybackFormat channels = %d, want 8 (advertised)", nativeCh)
@@ -50,6 +51,20 @@ func TestStudioDisplayClientLayoutIsStereo(t *testing.T) {
 	// device that simply failed format enumeration.
 	if got := choosePlaybackChannels(0); got != 2 {
 		t.Fatalf("choosePlaybackChannels(0) = %d, want 2", got)
+	}
+}
+
+// TestPickPlaybackFormatPrefersIntegerUpsampleForKokoro pins the rate choice
+// that avoids 24→44.1 linear/cubic conversion when 48 kHz is available.
+func TestPickPlaybackFormatPrefersIntegerUpsampleForKokoro(t *testing.T) {
+	rate, _ := pickPlaybackFormat(studioDisplayFormats(), 24_000)
+	if rate != 48000 {
+		t.Fatalf("rate = %d, want 48000 for 24 kHz TTS", rate)
+	}
+	// Without a source-rate hint, 48 kHz still beats 44.1 (common clocks).
+	rate, _ = pickPlaybackFormat(studioDisplayFormats(), 0)
+	if rate != 48000 && rate != 44100 {
+		t.Fatalf("rate = %d, want 48000 or 44100 without source hint", rate)
 	}
 }
 

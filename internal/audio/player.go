@@ -226,7 +226,7 @@ func finalizeSegment(segment *playbackSegment, frontend Frontend, debug *playerD
 		debug.captureSource(inputRate, samples)
 	}
 	if inputRate != outputRate {
-		samples = resampleLinear(samples, inputRate, outputRate)
+		samples = resample(samples, inputRate, outputRate)
 	}
 	if frontend != nil {
 		frontend.PushPlaybackReference(samples)
@@ -260,7 +260,7 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 		ctx.Free()
 		return 0, fmt.Errorf("select playback device: %w", err)
 	}
-	actualDeviceName, nativeRate, nativeChannels, err := playbackDeviceDetails(ctx.Context, p.deviceName)
+	actualDeviceName, nativeRate, nativeChannels, err := playbackDeviceDetails(ctx.Context, p.deviceName, sampleRate)
 	if err != nil {
 		_ = ctx.Uninit()
 		ctx.Free()
@@ -280,9 +280,18 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 		Data: p.onData,
 	})
 	if err != nil {
-		// Stereo client format is preferred but not always accepted. Retry mono
-		// before failing so machines without a 2ch shared mode still play.
-		if channels != 1 {
+		// Stereo is preferred. If the device rejects it, try the advertised
+		// native multi-channel layout (still expanded from mono in onData).
+		// Never silently fall back to mono on multi-channel hardware — that
+		// path is the Studio Display crackle regression.
+		if channels != 1 && nativeChannels > 2 {
+			deviceConfig.Playback.Channels = nativeChannels
+			device, err = malgo.InitDevice(ctx.Context, deviceConfig, malgo.DeviceCallbacks{
+				Data: p.onData,
+			})
+		}
+		if err != nil && channels != 1 && nativeChannels <= 1 {
+			// Truly mono-only device: last resort.
 			deviceConfig.Playback.Channels = 1
 			device, err = malgo.InitDevice(ctx.Context, deviceConfig, malgo.DeviceCallbacks{
 				Data: p.onData,
@@ -660,6 +669,86 @@ func float32ToPCM16(samples []float32) []int16 {
 	return pcm
 }
 
+// resample converts mono PCM between sample rates for playback. Prefer calling
+// this on a complete utterance (see finalizeSegment). Integer-ratio upsamples
+// (e.g. 24 kHz → 48 kHz) use an exact polyphase path; other ratios use
+// Catmull-Rom cubic interpolation, which is far less harsh on Kokoro's HF
+// content than linear interpolation at 24→44.1.
+func resample(samples []float32, from, to int) []float32 {
+	if len(samples) == 0 || from <= 0 || to <= 0 || from == to {
+		return samples
+	}
+	if to%from == 0 {
+		return upsampleInteger(samples, to/from)
+	}
+	return resampleCubic(samples, from, to)
+}
+
+// upsampleInteger produces exactly len(samples)*factor frames for exact integer
+// upsampling (factor=2 → 24 kHz to 48 kHz). Between input samples it uses
+// Catmull-Rom; after the final input sample it holds that value for the
+// remaining sub-frames so duration stays n/from seconds.
+func upsampleInteger(samples []float32, factor int) []float32 {
+	if factor <= 1 || len(samples) == 0 {
+		return samples
+	}
+	out := make([]float32, len(samples)*factor)
+	for i := 0; i < len(samples); i++ {
+		out[i*factor] = samples[i]
+		for f := 1; f < factor; f++ {
+			if i < len(samples)-1 {
+				t := float64(f) / float64(factor)
+				out[i*factor+f] = sampleCubic(samples, float64(i)+t)
+			} else {
+				out[i*factor+f] = samples[i]
+			}
+		}
+	}
+	return out
+}
+
+func resampleCubic(samples []float32, from, to int) []float32 {
+	outLen := int(math.Round(float64(len(samples)) * float64(to) / float64(from)))
+	if outLen < 1 {
+		outLen = 1
+	}
+	out := make([]float32, outLen)
+	step := float64(from) / float64(to)
+	for i := range outLen {
+		out[i] = sampleCubic(samples, float64(i)*step)
+	}
+	return out
+}
+
+// sampleCubic evaluates a Catmull-Rom spline at a fractional sample index.
+func sampleCubic(samples []float32, pos float64) float32 {
+	n := len(samples)
+	if n == 0 {
+		return 0
+	}
+	if pos <= 0 {
+		return samples[0]
+	}
+	if pos >= float64(n-1) {
+		return samples[n-1]
+	}
+	i := int(pos)
+	t := float32(pos - float64(i))
+	y0 := samples[max(i-1, 0)]
+	y1 := samples[i]
+	y2 := samples[min(i+1, n-1)]
+	y3 := samples[min(i+2, n-1)]
+	// Catmull-Rom: 0.5 * (2*y1 + (-y0+y2)*t + (2*y0-5*y1+4*y2-y3)*t^2 + (-y0+3*y1-3*y2+y3)*t^3)
+	t2 := t * t
+	t3 := t2 * t
+	return 0.5 * ((2 * y1) +
+		(-y0+y2)*t +
+		(2*y0-5*y1+4*y2-y3)*t2 +
+		(-y0+3*y1-3*y2+y3)*t3)
+}
+
+// resampleLinear remains for tests and call sites that explicitly want the
+// historical linear kernel (e.g. characterizing boundary discontinuities).
 func resampleLinear(samples []float32, from, to int) []float32 {
 	if len(samples) == 0 || from <= 0 || to <= 0 || from == to {
 		return samples

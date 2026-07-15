@@ -50,25 +50,38 @@ func TestChoosePlaybackChannelsPrefersStereo(t *testing.T) {
 	}
 }
 
-func TestPickPlaybackFormatPrefersStereo44100(t *testing.T) {
-	// Studio Display style: only 8ch formats advertised.
+func TestPickPlaybackFormatPrefersStereoAndIntegerRate(t *testing.T) {
+	// Studio Display style: only 8ch formats advertised; 24 kHz TTS → 48 kHz.
 	rate, ch := pickPlaybackFormat([]malgo.DataFormat{
 		{Channels: 8, SampleRate: 44100},
 		{Channels: 8, SampleRate: 48000},
-	})
-	if rate != 44100 && rate != 48000 {
-		t.Fatalf("rate = %d, want 44100 or 48000", rate)
+	}, 24_000)
+	if rate != 48000 {
+		t.Fatalf("rate = %d, want 48000 for 24 kHz source", rate)
 	}
 	if ch != 8 {
 		t.Fatalf("channels = %d, want 8 from advertised formats", ch)
 	}
-	// When stereo is advertised it must win over 8ch at the same rate.
+	// When stereo is advertised at the preferred rate it must win over 8ch.
 	rate, ch = pickPlaybackFormat([]malgo.DataFormat{
-		{Channels: 8, SampleRate: 44100},
-		{Channels: 2, SampleRate: 44100},
-	})
-	if rate != 44100 || ch != 2 {
-		t.Fatalf("pickPlaybackFormat = %d/%d, want 44100/2", rate, ch)
+		{Channels: 8, SampleRate: 48000},
+		{Channels: 2, SampleRate: 48000},
+	}, 24_000)
+	if rate != 48000 || ch != 2 {
+		t.Fatalf("pickPlaybackFormat = %d/%d, want 48000/2", rate, ch)
+	}
+}
+
+func TestResample24kTo48kIsExactDoubleLength(t *testing.T) {
+	src := synthSpeechLike(24_000, 2400)
+	out := resample(src, 24_000, 48_000)
+	want := len(src) * 2
+	if len(out) != want {
+		t.Fatalf("len(out) = %d, want %d (exact 2x)", len(out), want)
+	}
+	m := AnalyzeFloat32(out, CrackleThresholds{})
+	if m.HasCrackle(CrackleThresholds{}) {
+		t.Fatalf("24→48 resample reported crackle: %+v", m)
 	}
 }
 
@@ -160,20 +173,16 @@ func TestAnalyzeFloat32IgnoresLeadingAndTrailingSilence(t *testing.T) {
 // TestWholeUtteranceResampleIsClean pins invariant #4 from the audio
 // corruption runbook: batch-generated PCM is resampled once across the full
 // utterance. A continuous speech-like signal must remain free of software
-// crackle after 24 kHz → 44.1 kHz conversion.
+// crackle after both the preferred 24→48 path and the legacy 24→44.1 path.
 func TestWholeUtteranceResampleIsClean(t *testing.T) {
-	const (
-		inRate  = 24_000
-		outRate = 44_100
-		seconds = 1
-	)
-	src := synthSpeechLike(inRate, inRate*seconds)
-	out := resampleLinear(src, inRate, outRate)
-	pcm := float32ToPCM16(out)
-
-	m := AnalyzeInt16(pcm, CrackleThresholds{})
-	if m.HasCrackle(CrackleThresholds{}) {
-		t.Fatalf("whole-utterance resample reported crackle: %+v", m)
+	src := synthSpeechLike(24_000, 24_000)
+	for _, outRate := range []int{48_000, 44_100} {
+		out := resample(src, 24_000, outRate)
+		pcm := float32ToPCM16(out)
+		m := AnalyzeInt16(pcm, CrackleThresholds{})
+		if m.HasCrackle(CrackleThresholds{}) {
+			t.Fatalf("whole-utterance resample to %d Hz reported crackle: %+v", outRate, m)
+		}
 	}
 }
 
@@ -228,7 +237,7 @@ func TestChunkBoundaryGlitchIsDetected(t *testing.T) {
 func TestFinalizeSegmentThenCallbackHasNoCrackle(t *testing.T) {
 	const (
 		inRate     = 24_000
-		outRate    = 44_100
+		outRate    = 48_000 // preferred Studio Display path for Kokoro
 		chunk      = 2_048
 		chunks     = 12
 		frameCount = 256 // typical miniaudio callback size
@@ -387,7 +396,7 @@ func TestPumpSegmentFullBufferPreventsCallbackCrackle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
-	const outputRate = 44_100
+	const outputRate = 48_000
 	var samples []float32
 	for {
 		select {
