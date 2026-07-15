@@ -62,7 +62,7 @@ func (w *WhisperCPPSTT) Start(ctx context.Context) (Session, error) {
 	finite := sourceKind(w.capture) != audio.SourceLive
 	deps := offlineLoopDeps{
 		frames: asFrameSource(w.capture),
-		seg:    vadSegmenter{vad: w.vad},
+		seg:    newVADSegmenter(w.vad, preRollSamplesFromMS(w.cfg.VADPreRollMS)),
 		policy: endpoint.FromConfig(w.cfg, finite),
 		transcribe: func(samples []float32) (string, error) {
 			return w.transcribe(sessionCtx, samples)

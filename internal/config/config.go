@@ -37,6 +37,11 @@ type Config struct {
 	VADSilenceDuration   float64 `mapstructure:"vad_silence_duration"`
 	VADThreshold         float64 `mapstructure:"vad_threshold"`
 	VADMinSpeechDuration float64 `mapstructure:"vad_min_speech_duration"`
+	// VADPreRollMS is how much audio captured just before the VAD confirms
+	// speech is prepended to the recognized segment. The Silero VAD only marks
+	// a segment once ~MinSpeechDuration of speech has accrued, so onset audio
+	// (the first word) is otherwise clipped before STT ever sees it.
+	VADPreRollMS int `mapstructure:"vad_pre_roll_ms"`
 
 	// VoiceFrontend runs local AEC/NS/AGC on the mic before STT. Disable to feed
 	// raw audio to the recognizer (often more accurate for whisper).
@@ -109,6 +114,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("vad_silence_duration", 0.8)
 	v.SetDefault("vad_threshold", 0.6)
 	v.SetDefault("vad_min_speech_duration", 0.25)
+	v.SetDefault("vad_pre_roll_ms", 300)
 	// Off by default: the frontend's noise suppressor over-suppresses normal-volume
 	// speech (gates it below the VAD threshold — see voice_frontend_test.go), which
 	// left voice mode stuck on "listening" until the user spoke loudly. Re-enabling

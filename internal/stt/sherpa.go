@@ -93,7 +93,7 @@ func (s *SherpaOfflineSTT) Start(ctx context.Context) (Session, error) {
 	finite := sourceKind(s.capture) != audio.SourceLive
 	deps := offlineLoopDeps{
 		frames:     asFrameSource(s.capture),
-		seg:        vadSegmenter{vad: s.vad},
+		seg:        newVADSegmenter(s.vad, preRollSamplesFromMS(s.cfg.VADPreRollMS)),
 		policy:     endpoint.FromConfig(s.cfg, finite),
 		transcribe: s.transcribe,
 	}
@@ -118,26 +118,6 @@ func (s *SherpaOfflineSTT) transcribe(samples []float32) (string, error) {
 	s.recognizer.Decode(stream)
 	return normalizeTranscript(strings.TrimSpace(stream.GetResult().Text)), nil
 }
-
-// vadSegmenter adapts the cgo Silero *audio.VAD to the segmenter seam so the
-// offline loop can run against either the real VAD or a deterministic fake.
-type vadSegmenter struct{ vad *audio.VAD }
-
-func (s vadSegmenter) AcceptWaveform(samples []float32) { s.vad.AcceptWaveform(samples) }
-func (s vadSegmenter) IsSpeech() bool                   { return s.vad.IsSpeech() }
-func (s vadSegmenter) HasSegments() bool                { return s.vad.IsSpeechDetected() }
-
-func (s vadSegmenter) NextSegment() ([]float32, bool) {
-	if s.vad.IsEmpty() {
-		return nil, false
-	}
-	seg := s.vad.Front()
-	s.vad.Pop()
-	return seg, true
-}
-
-func (s vadSegmenter) Reset() { s.vad.Clear() }
-func (s vadSegmenter) Flush() { s.vad.Flush() }
 
 // Available returns true if the STT provider is ready.
 func (s *SherpaOfflineSTT) Available() bool {
