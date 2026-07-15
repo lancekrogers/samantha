@@ -85,9 +85,11 @@ samantha --no-voice   # Voice input, text output
 
 ### Remote access (phone / another device)
 
-Use **`samantha serve`** when a client should talk to this Mac over the LAN or
-Tailscale. The conversation **TUI stays the local voice product**; `serve` is
-the network daemon for browsers or future native apps.
+For an iPad or iPhone on the same tailnet, open the Samantha TUI and choose
+**Use on iPad (Tailscale)**. The TUI starts the remote server, shows the
+MagicDNS URL and pairing code, and stops the server when you leave that screen.
+
+The equivalent CLI path remains available for headless use:
 
 ```bash
 # Easiest remote voice over Tailscale (MagicDNS URL + real HTTPS cert):
@@ -109,7 +111,7 @@ On the phone: open the printed URL → enter the pairing code → **Start** →
 |------|---------|-------------------|
 | Full local voice | `samantha` (TUI) | This machine’s mic + speakers |
 | Remote keyboard only | Termius SSH → `samantha` | Still this machine |
-| Remote voice on phone | `samantha serve` + browser/app | Phone mic + speakers via WebSocket |
+| Remote voice on phone | TUI → **Use on iPad (Tailscale)**, or `samantha serve` | Phone mic + speakers via WebSocket |
 
 ### Commands
 
@@ -138,7 +140,9 @@ samantha serve --revoke-tokens          # Rotate serve bearer token
 ### TUI controls
 
 The launcher offers the most recent conversation first, a scrollable recent
-session list, and an explicit new-conversation action. During a conversation,
+session list, an explicit new-conversation action, and a managed Tailscale/iPad
+server screen. The remote screen exposes the URL and single-use pairing code,
+supports copy/restart controls, and owns server shutdown. During a conversation,
 the transcript follows new messages until you scroll away from the tail. Chat
 and the activity timeline are separate full-width views, so the transcript does
 not lose space in wide terminals. The composer supports wrapped, multiline

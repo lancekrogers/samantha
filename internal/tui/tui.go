@@ -22,6 +22,7 @@ const (
 	screenConversation
 	screenSessions
 	screenAudiobook
+	screenTailscale
 )
 
 // App is the top-level bubbletea model.
@@ -29,12 +30,15 @@ type App struct {
 	screen    screen
 	cfg       *config.Config
 	providers []discovery.ProviderInfo
+	width     int
+	height    int
 
 	launcher     launcherModel
 	settings     settingsModel
 	conversation conversationModel
 	sessions     sessionsModel
 	audiobook    audiobookModel
+	tailscale    tailscaleModel
 
 	// Conversation runtime wiring, set by Run before the program starts.
 	builder  RuntimeBuilder
@@ -95,11 +99,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			a.settings.closePreview()
+			a.tailscale.stop()
 			a.quitting = true
 			return a, tea.Quit
 		}
 
 	case tea.WindowSizeMsg:
+		a.width, a.height = msg.Width, msg.Height
 		// The conversation screen needs dimensions even while another screen
 		// is active, or entering it later renders at zero size.
 		if a.screen != screenConversation {
@@ -110,6 +116,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.screen == screenSettings {
 			a.settings.closePreview()
 		}
+		if a.screen == screenTailscale && screen(msg) != screenTailscale {
+			a.tailscale.stop()
+		}
 		a.screen = screen(msg)
 		switch a.screen {
 		case screenSettings:
@@ -119,6 +128,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.settings.loadDevices()
 		case screenAudiobook:
 			a.audiobook = newAudiobook(a.cfg)
+		case screenTailscale:
+			a.tailscale = newTailscale(a.runCtx, nil)
+			a.tailscale.width, a.tailscale.height = a.width, a.height
+			return a, a.tailscale.start()
 		}
 		return a, nil
 
@@ -168,6 +181,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 
 	case quitMsg:
+		a.tailscale.stop()
 		a.quitting = true
 		return a, tea.Quit
 	}
@@ -185,6 +199,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.sessions, cmd = a.sessions.Update(msg)
 	case screenAudiobook:
 		a.audiobook, cmd = a.audiobook.Update(msg)
+	case screenTailscale:
+		a.tailscale, cmd = a.tailscale.Update(msg)
 	}
 
 	return a, cmd
@@ -202,6 +218,8 @@ func (a App) View() string {
 		return a.sessions.View()
 	case screenAudiobook:
 		return a.audiobook.View()
+	case screenTailscale:
+		return a.tailscale.View()
 	default:
 		return ""
 	}
@@ -256,6 +274,12 @@ func run(cfg *config.Config, build RuntimeBuilder, startInConversation bool) err
 	// text selection, copy, and link activation.
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	m, runErr := p.Run()
+	final, _ := m.(App)
+	if final.tailscale.server != nil {
+		final.tailscale.stopAndWait(tailscaleStopTimeout)
+	} else {
+		app.tailscale.stopAndWait(tailscaleStopTimeout)
+	}
 
 	// Stop the in-flight turn, drain it, then tear the pipeline down — the
 	// same order app.Run's defer chain guarantees on the non-TTY path.
@@ -265,7 +289,6 @@ func run(cfg *config.Config, build RuntimeBuilder, startInConversation bool) err
 	// Prefer the slot: it still holds a runtime if build finished after quit
 	// and the ready message never reached Update. final.runtime is only set
 	// when Update applied runtimeReadyMsg.
-	final, _ := m.(App)
 	if final.slot != nil {
 		final.slot.cleanup()
 	} else if app.slot != nil {
