@@ -238,7 +238,10 @@ func (m *conversationModel) handleSubmit() tea.Cmd {
 
 	switch m.turnState {
 	case turnIdle:
+		previous := m.input.Value()
 		m.input.Reset()
+		m.vimUndo = nil
+		m.syncComposer(previous)
 		return m.submitText(text)
 	case turnVoiceListening:
 		// Prefer the synchronous cancel gate over turnState: UserInput can
@@ -248,7 +251,10 @@ func (m *conversationModel) handleSubmit() tea.Cmd {
 			return nil
 		}
 		m.pendingText = text
+		previous := m.input.Value()
 		m.input.Reset()
+		m.vimUndo = nil
+		m.syncComposer(previous)
 		m.turnState = turnVoiceCanceling
 		if m.turnCancel != nil {
 			m.turnCancel()
@@ -263,20 +269,16 @@ func (m *conversationModel) handleSubmit() tea.Cmd {
 // submitText applies the command policy to typed input — commands never reach
 // the brain, matching app.Run's text loop — then dispatches a text turn.
 func (m *conversationModel) submitText(text string) tea.Cmd {
+	if command, args, found, slash := parseSlashCommand(text); slash {
+		if !found {
+			m.commandError("Unknown command " + commandToken(text) + ". Type /help to list commands.")
+			return m.resumeListening()
+		}
+		return m.executeSlashCommand(command, args)
+	}
+
 	cmd := app.NormalizeCommand(text)
 	switch {
-	case cmd == "/mute":
-		return m.setInputMuted(true)
-	case cmd == "/unmute":
-		return m.setInputMuted(false)
-	case cmd == "/mic":
-		return m.toggleInputMuted()
-	case cmd == "/audio" || cmd == "/speaker":
-		m.toggleOutputMuted()
-		return m.resumeListening()
-	case cmd == "/activity" || cmd == "/timeline":
-		m.activityFocused = !m.activityFocused
-		return m.resumeListening()
 	case app.IsExitCommand(cmd):
 		m.quitting = true
 		return tea.Quit
@@ -288,13 +290,6 @@ func (m *conversationModel) submitText(text string) tea.Cmd {
 		m.emit(events.ConversationCleared{})
 		return m.resumeListening()
 
-	case app.IsResumeVoiceCommand(cmd):
-		if m.deps.voice && !m.voiceEnabled {
-			m.voiceEnabled = true
-			m.voiceFailures = 0
-			m.emit(events.Info{Message: "Switching back to voice mode."})
-		}
-		return m.resumeListening()
 	}
 
 	return m.dispatchTextTurn(text)
