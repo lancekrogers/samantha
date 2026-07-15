@@ -7,7 +7,7 @@ future Swift iPad/iPhone apps). Host implementation: `internal/netapi`.
 
 | Surface | Role |
 |---------|------|
-| `samantha` (TUI) | **Local** full voice agent — mic + speakers on this machine |
+| `samantha` (TUI) | **Local** full voice agent, plus a launcher entry that manages the Tailscale remote daemon |
 | `samantha serve` | **Remote** daemon — no host mic loop; clients drive turns |
 | Termius → TUI | Remote *control* only; audio still on the Mac |
 | Browser / native app | Remote *voice* client over HTTPS + WebSocket |
@@ -22,6 +22,12 @@ https://<host>:<port>/v1/...    # API (authenticated unless noted)
 Default port: `7262`.
 
 ### Tailscale one-shot
+
+Interactive: launch `samantha`, then choose **Use on iPad (Tailscale)**. The
+TUI displays the MagicDNS URL and pairing code and stops the child server when
+the user leaves the screen.
+
+Headless/CLI:
 
 ```bash
 samantha serve --tailscale

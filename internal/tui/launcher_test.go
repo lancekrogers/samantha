@@ -57,6 +57,29 @@ func TestLauncherDefaultsToContinueWhenSessionExists(t *testing.T) {
 	}
 }
 
+func TestLauncherOffersTailscaleAndOpensItsScreen(t *testing.T) {
+	m := newLauncher(&config.Config{}, nil)
+	for i, item := range m.items {
+		if item.action != actionTailscale {
+			continue
+		}
+		if !strings.Contains(item.label, "iPad") || !strings.Contains(item.label, "Tailscale") {
+			t.Fatalf("Tailscale launcher label = %q", item.label)
+		}
+		m.cursor = i
+		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if cmd == nil {
+			t.Fatal("Tailscale launcher action returned no command")
+		}
+		msg, ok := cmd().(switchScreenMsg)
+		if !ok || screen(msg) != screenTailscale {
+			t.Fatalf("Tailscale launcher message = %#v", msg)
+		}
+		return
+	}
+	t.Fatal("launcher has no Tailscale action")
+}
+
 func TestLauncherCompactsForSmallTerminal(t *testing.T) {
 	saved := []session.Session{{
 		ID: "session-123", Summary: strings.Repeat("long summary ", 10), UpdatedAt: time.Now(),
