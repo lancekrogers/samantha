@@ -44,3 +44,18 @@ voiceflow:
     if ! go test -race -tags integration ./tests/voiceflow/...; then
         echo "::warning::voiceflow suite failed (advisory until PR #27 merges)"
     fi
+
+# Software crackle + playback layout regression suite (no hardware).
+# Pins Studio Display mono-client crackle class: stereo upmix, expand, and
+# underrun/impulse metrics. Also covered by CI: go test -race ./...
+[no-cd]
+audio-crackle:
+    go test -race ./internal/audio/ -count=1 -run 'Crackle|Expand|Choose|Pick|StudioDisplay|CallbackExpand|MultiChannelExpand|Whole|Chunk|FinalizeSegmentThen|Early|Pump|Analyze|Layout|DebugMetadataRecords'
+
+# Opt-in hardware playback on the real default device (Studio Display, etc.).
+# Requires speakers; plays a short tone. Use after any internal/audio change.
+[no-cd]
+audio-hardware:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SAMANTHA_HARDWARE_AUDIO=1 go test -race ./internal/audio/ -count=1 -run 'Hardware' -v -timeout 60s

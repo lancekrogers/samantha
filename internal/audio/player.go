@@ -269,6 +269,9 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 	if nativeRate == 0 {
 		nativeRate = uint32(sampleRate)
 	}
+	// Never hard-code mono here: multi-channel devices (Studio Display Speakers
+	// advertise 8ch) crackled when CoreAudio invented a mono upmix. Layout is
+	// pinned by TestStudioDisplayClientLayoutIsStereo and expand tests.
 	channels := choosePlaybackChannels(nativeChannels)
 	deviceConfig.Playback.Channels = channels
 	deviceConfig.SampleRate = nativeRate
