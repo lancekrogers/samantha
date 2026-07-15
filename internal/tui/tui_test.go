@@ -49,6 +49,38 @@ func TestSwitchToSettingsCancelsPreview(t *testing.T) {
 	}
 }
 
+func TestSettingsReturnsToConversationAndRestoresVoice(t *testing.T) {
+	app := App{cfg: &config.Config{}, screen: screenConversation}
+	app.conversation = newConversation("Samantha")
+	app.conversation.deps.voice = true
+	app.conversation.voiceEnabled = true
+	app.conversation.input.SetValue("draft to preserve")
+
+	model, _ := app.Update(switchScreenMsg(screenSettings))
+	app = model.(App)
+	if app.screen != screenSettings {
+		t.Fatalf("screen = %d, want settings", app.screen)
+	}
+	if app.settingsReturnScreen != screenConversation {
+		t.Fatalf("settings return screen = %d, want conversation", app.settingsReturnScreen)
+	}
+	if app.conversation.voiceEnabled {
+		t.Fatal("voice input remained enabled while settings was open")
+	}
+
+	model, _ = app.Update(settingsDoneMsg{})
+	app = model.(App)
+	if app.screen != screenConversation {
+		t.Fatalf("screen after settings = %d, want conversation", app.screen)
+	}
+	if !app.conversation.voiceEnabled {
+		t.Fatal("voice input was not restored after settings")
+	}
+	if got := app.conversation.input.Value(); got != "draft to preserve" {
+		t.Fatalf("composer draft = %q, want preserved draft", got)
+	}
+}
+
 func TestSwitchToTailscaleStartsManagedServerScreen(t *testing.T) {
 	app := App{cfg: &config.Config{}, runCtx: context.Background()}
 	model, cmd := app.Update(switchScreenMsg(screenTailscale))

@@ -150,7 +150,8 @@ and the activity timeline are separate full-width views, so the transcript does
 not lose space in wide terminals. The composer supports wrapped, multiline
 drafts and compacts to one row in short terminal splits. Type `/` to open the
 command palette, use the arrow keys to select a match, and press `Tab` to
-complete it. `/help` lists every available command.
+complete it. `/help` lists every available command. `/settings` opens the TUI
+settings screen and returns to the conversation when you press `Esc` or `q`.
 
 | Key | Action |
 |-----|--------|

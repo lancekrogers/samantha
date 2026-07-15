@@ -54,6 +54,11 @@ type App struct {
 	runtime  *ConversationRuntime
 	fatalErr error
 
+	// Settings can be opened from the launcher or from a live conversation.
+	// Keep the origin so Esc/q returns to the screen the user came from.
+	settingsReturnScreen screen
+	settingsResumeVoice  bool
+
 	// startInConversation skips the launcher (resume/continue).
 	startInConversation bool
 
@@ -87,6 +92,9 @@ func (a App) Init() tea.Cmd {
 // switchScreen is a message to change screens.
 type switchScreenMsg screen
 
+// settingsDoneMsg returns from settings to the screen that opened it.
+type settingsDoneMsg struct{}
+
 // startPipelineMsg enters the conversation screen and builds the pipeline
 // there (D2) — the TUI no longer exits to hand off.
 type startPipelineMsg struct{ sessionID string }
@@ -97,6 +105,10 @@ type quitMsg struct{}
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if msg.String() == "ctrl+c" && a.screen == screenConversation && a.conversation.selectionActive {
+			a.conversation.copySelection()
+			return a, nil
+		}
 		if msg.String() == "ctrl+c" {
 			a.settings.closePreview()
 			a.tailscale.stop()
@@ -113,25 +125,48 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case switchScreenMsg:
+		target := screen(msg)
+		var pauseVoice tea.Cmd
+		if target == screenSettings {
+			a.settingsReturnScreen = a.screen
+			a.settingsResumeVoice = a.screen == screenConversation && a.conversation.voiceEnabled
+			if a.settingsReturnScreen == screenConversation {
+				pauseVoice = a.conversation.setInputMuted(true)
+			}
+		}
 		if a.screen == screenSettings {
 			a.settings.closePreview()
 		}
-		if a.screen == screenTailscale && screen(msg) != screenTailscale {
+		if a.screen == screenTailscale && target != screenTailscale {
 			a.tailscale.stop()
 		}
-		a.screen = screen(msg)
+		a.screen = target
 		switch a.screen {
 		case screenSettings:
 			// Replacing the model must not orphan an in-flight preview or player.
 			a.settings.closePreview()
 			a.settings = newSettings(a.cfg, a.providers)
-			return a, a.settings.loadDevices()
+			return a, tea.Batch(a.settings.loadDevices(), pauseVoice)
 		case screenAudiobook:
 			a.audiobook = newAudiobook(a.cfg)
 		case screenTailscale:
 			a.tailscale = newTailscale(a.runCtx, nil)
 			a.tailscale.width, a.tailscale.height = a.width, a.height
 			return a, a.tailscale.start()
+		}
+		return a, nil
+
+	case settingsDoneMsg:
+		a.settings.closePreview()
+		target := a.settingsReturnScreen
+		if target == screenSettings {
+			target = screenLauncher
+		}
+		a.screen = target
+		resumeVoice := target == screenConversation && a.settingsResumeVoice
+		a.settingsResumeVoice = false
+		if resumeVoice {
+			return a, a.conversation.setInputMuted(false)
 		}
 		return a, nil
 

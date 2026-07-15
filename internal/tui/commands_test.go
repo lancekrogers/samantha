@@ -16,6 +16,7 @@ func TestSlashCommandRegistryMatchesCanonicalNamesAndAliases(t *testing.T) {
 		{input: "/?", want: commandHelp},
 		{input: "/speaker", want: commandAudio},
 		{input: "/timeline", want: commandActivity},
+		{input: "/settings", want: commandSettings},
 		{input: "/q", want: commandQuit},
 		{input: "/vim on", want: commandVim},
 	}
@@ -24,6 +25,23 @@ func TestSlashCommandRegistryMatchesCanonicalNamesAndAliases(t *testing.T) {
 		if !slash || !found || command.id != tt.want {
 			t.Errorf("parseSlashCommand(%q) = id %d, found %v, slash %v; want id %d", tt.input, command.id, found, slash, tt.want)
 		}
+	}
+}
+
+func TestSettingsCommandRequestsSettingsScreen(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	m, _ := startedConversation(t, runner, false)
+	m, cmd := typeAndEnter(m, "/settings")
+
+	if cmd == nil {
+		t.Fatal("/settings did not request a screen change")
+	}
+	msg, ok := cmd().(switchScreenMsg)
+	if !ok || screen(msg) != screenSettings {
+		t.Fatalf("/settings message = %#v, want screenSettings", msg)
+	}
+	if len(runner.texts()) != 0 {
+		t.Fatal("/settings reached the brain")
 	}
 }
 

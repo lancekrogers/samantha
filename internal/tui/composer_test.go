@@ -128,3 +128,71 @@ func TestVimCanBeDisabledFromSlashCommand(t *testing.T) {
 		t.Fatalf("plain input did not resume after /vim off: %q", got)
 	}
 }
+
+func TestVimNormalSlashEntersInsertMode(t *testing.T) {
+	m := sizedConversation(t, 80, 24)
+	m.vimEnabled = true
+	m.vimMode = vimNormal
+
+	m, _ = m.Update(keyRune('/'))
+	if m.vimMode != vimInsert {
+		t.Fatalf("slash left Vim in mode %d, want INSERT", m.vimMode)
+	}
+	if got := m.input.Value(); got != "/" {
+		t.Fatalf("slash input = %q, want /", got)
+	}
+}
+
+func TestVimInsertSupportsExplicitNewline(t *testing.T) {
+	m := sizedConversation(t, 80, 24)
+	m.vimEnabled = true
+	m.vimMode = vimNormal
+	m.input.SetValue("first")
+	m.moveCursorToOffset(len([]rune("first")))
+
+	m, _ = m.Update(keyRune('i'))
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	for _, r := range "second" {
+		m, _ = m.Update(keyRune(r))
+	}
+
+	if got := m.input.Value(); got != "first\nsecond" {
+		t.Fatalf("multiline draft = %q, want first\\nsecond", got)
+	}
+}
+
+func TestVimVisualDeleteAndPasteUsesInternalRegister(t *testing.T) {
+	m := sizedConversation(t, 80, 24)
+	m.vimEnabled = true
+	m.vimMode = vimNormal
+	m.input.SetValue("alpha beta")
+	m.moveCursorToOffset(0)
+
+	m, _ = m.Update(keyRune('w'))
+	m, _ = m.Update(keyRune('v'))
+	m, _ = m.Update(keyRune('$'))
+	m, _ = m.Update(keyRune('d'))
+	if got := m.input.Value(); got != "alpha " {
+		t.Fatalf("visual delete = %q, want alpha space", got)
+	}
+
+	m, _ = m.Update(keyRune('p'))
+	if got := m.input.Value(); got != "alpha beta" {
+		t.Fatalf("register paste = %q, want alpha beta", got)
+	}
+}
+
+func TestPlainComposerSelectAllAndPasteReplacesSelection(t *testing.T) {
+	m := sizedConversation(t, 80, 24)
+	m.input.SetValue("old text")
+	m.moveCursorToOffset(0)
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	if !m.selectionActive {
+		t.Fatal("Ctrl+A did not create a selection")
+	}
+	m, _ = m.Update(clipboardPasteMsg{text: "new text"})
+	if got := m.input.Value(); got != "new text" {
+		t.Fatalf("pasted draft = %q, want new text", got)
+	}
+}

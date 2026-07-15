@@ -67,12 +67,17 @@ type conversationModel struct {
 	voiceFailures   int
 	quitting        bool
 
-	commandQuery     string
-	commandSelection int
-	vimEnabled       bool
-	vimMode          vimInputMode
-	vimPending       string
-	vimUndo          []composerSnapshot
+	commandQuery      string
+	commandSelection  int
+	vimEnabled        bool
+	vimMode           vimInputMode
+	vimPending        string
+	vimUndo           []composerSnapshot
+	vimRegister       string
+	vimRegisterLine   bool
+	selectionActive   bool
+	selectionAnchor   int
+	selectionLinewise bool
 }
 
 func newConversation(agentName string) conversationModel {
@@ -84,7 +89,7 @@ func newConversation(agentName string) conversationModel {
 	input.Placeholder = "Type a message or / for commands…"
 	input.CharLimit = 1000
 	input.ShowLineNumbers = false
-	input.KeyMap.InsertNewline.SetKeys("ctrl+j")
+	input.KeyMap.InsertNewline.SetKeys("ctrl+j", "ctrl+enter", "alt+enter", "shift+enter")
 	input.KeyMap.InsertNewline.SetHelp("ctrl+j", "new line")
 	input.SetHeight(conversationInputHeight)
 	input.Focus()
@@ -123,10 +128,28 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 	case voiceRetryMsg:
 		return m, m.handleVoiceRetry()
 
+	case clipboardPasteMsg:
+		if msg.err != nil {
+			m.commandError("paste failed: " + msg.err.Error())
+			return m, nil
+		}
+		m.insertClipboardText(msg.text)
+		return m, nil
+
 	case tea.KeyMsg:
 		// Page keys scroll history. Editing keys stay with the always-focused
 		// composer so multiline drafting never needs a mode switch.
 		switch msg.String() {
+		case "ctrl+v", "ctrl+shift+v", "shift+insert":
+			return m, readClipboard()
+		case "ctrl+a":
+			m.selectAll()
+			return m, nil
+		case "ctrl+x":
+			if m.selectionActive {
+				m.cutSelection()
+				return m, nil
+			}
 		case "ctrl+g":
 			return m, m.toggleInputMuted()
 		case "ctrl+o":
@@ -136,6 +159,14 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 			m.activityFocused = !m.activityFocused
 			return m, nil
 		case "esc":
+			if m.vimMode == vimVisual {
+				m.enterVimNormal()
+				return m, nil
+			}
+			if m.selectionActive {
+				m.clearSelection()
+				return m, nil
+			}
 			if m.activityFocused {
 				m.activityFocused = false
 				return m, nil
@@ -174,12 +205,16 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 			return m, m.handleSubmit()
 		}
 		if m.vimEnabled {
-			if m.vimMode == vimNormal {
+			switch m.vimMode {
+			case vimNormal:
 				return m, m.handleVimNormalKey(msg)
-			}
-			if msg.String() == "esc" {
-				m.enterVimNormal()
-				return m, nil
+			case vimVisual:
+				return m, m.handleVimVisualKey(msg)
+			case vimInsert:
+				if msg.String() == "esc" {
+					m.enterVimNormal()
+					return m, nil
+				}
 			}
 		}
 		return m, m.updateComposer(msg)
