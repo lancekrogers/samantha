@@ -149,11 +149,11 @@ func playbackDeviceDetails(ctx malgo.Context, name string, sourceRate int) (stri
 // pickPlaybackFormat chooses a sample rate and channel count from the device's
 // shared-mode formats. sourceRate is the TTS PCM rate (0 if unknown).
 //
-// Priority:
-//  1. Exact match to sourceRate (no resample)
-//  2. Integer multiple of sourceRate (exact upsample, e.g. 24 kHz → 48 kHz)
-//  3. Common device clocks 48 kHz then 44.1 kHz
-//  4. Stereo client layout when advertised; fewer channels when scores tie
+// Used as a *hint* for openPlaybackDevice's fallback order. Actual open order
+// prefers the TTS rate first (see playbackRateCandidates). Among advertised
+// formats, prefer 44.1 kHz over 48 kHz: the 24→48 cubic path was worse on the
+// affected Studio Display, and 44.1 is the first clock Apple lists for that
+// device.
 func pickPlaybackFormat(formats []malgo.DataFormat, sourceRate int) (rate uint32, channels uint32) {
 	bestScore := -1
 	for _, format := range formats {
@@ -164,15 +164,13 @@ func pickPlaybackFormat(formats []malgo.DataFormat, sourceRate int) (rate uint32
 		fr := int(format.SampleRate)
 		switch {
 		case sourceRate > 0 && fr == sourceRate:
-			score += 300 // play TTS natively when the device allows it
-		case sourceRate > 0 && fr%sourceRate == 0:
-			// Exact integer upsample (24→48, 24→96). Strongly preferred over
-			// 44.1 kHz which forces a non-rational ratio and poor interpolation.
-			score += 250 - (fr/sourceRate)*5 // prefer smaller factors (2x > 4x)
-		case fr == 48000:
-			score += 120
+			score += 300
 		case fr == 44100:
-			score += 80 // valid, but worse for 24 kHz TTS than 48 kHz
+			score += 120
+		case fr == 48000:
+			score += 90
+		case sourceRate > 0 && fr%sourceRate == 0:
+			score += 70
 		case fr == 96000 || fr == 88200:
 			score += 40
 		default:
@@ -180,15 +178,12 @@ func pickPlaybackFormat(formats []malgo.DataFormat, sourceRate int) (rate uint32
 		}
 		switch format.Channels {
 		case 2:
-			score += 50 // stereo is ideal for mono TTS upmix
+			score += 50
 		case 1:
 			score += 30
 		default:
-			// Multi-channel (e.g. Studio Display 8ch): usable but heavier.
 			score += 10
 		}
-		// Prefer fewer channels when scores tie so we do not open 8ch when 2ch
-		// is available at the same rate.
 		score -= int(format.Channels)
 		if score > bestScore {
 			bestScore = score

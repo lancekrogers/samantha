@@ -35,11 +35,7 @@ func studioDisplayFormats() []malgo.DataFormat {
 // TestStudioDisplayClientLayoutIsStereo pins: multi-channel native ads →
 // choosePlaybackChannels returns a stereo client format, never mono.
 func TestStudioDisplayClientLayoutIsStereo(t *testing.T) {
-	// Kokoro is 24 kHz: must prefer 48 kHz (exact 2x) over 44.1 kHz.
-	rate, nativeCh := pickPlaybackFormat(studioDisplayFormats(), 24_000)
-	if rate != 48000 {
-		t.Fatalf("pickPlaybackFormat(24k source) rate = %d, want 48000 (exact 2x upsample)", rate)
-	}
+	_, nativeCh := pickPlaybackFormat(studioDisplayFormats(), 24_000)
 	if nativeCh != 8 {
 		t.Fatalf("pickPlaybackFormat channels = %d, want 8 (advertised)", nativeCh)
 	}
@@ -47,24 +43,37 @@ func TestStudioDisplayClientLayoutIsStereo(t *testing.T) {
 	if client != 2 {
 		t.Fatalf("choosePlaybackChannels(%d) = %d, want 2 — mono client on multi-channel hardware is the crackle regression", nativeCh, client)
 	}
-	// Unknown/zero native still opens stereo so we never default to mono on a
-	// device that simply failed format enumeration.
 	if got := choosePlaybackChannels(0); got != 2 {
 		t.Fatalf("choosePlaybackChannels(0) = %d, want 2", got)
 	}
 }
 
-// TestPickPlaybackFormatPrefersIntegerUpsampleForKokoro pins the rate choice
-// that avoids 24→44.1 linear/cubic conversion when 48 kHz is available.
-func TestPickPlaybackFormatPrefersIntegerUpsampleForKokoro(t *testing.T) {
-	rate, _ := pickPlaybackFormat(studioDisplayFormats(), 24_000)
-	if rate != 48000 {
-		t.Fatalf("rate = %d, want 48000 for 24 kHz TTS", rate)
+// TestPlaybackRateCandidatesPreferTTSThen44100 pins open order after the
+// 48 kHz path made crackle worse on Studio Display: try TTS rate first (no
+// in-process resample), then 44.1, and only then 48 kHz.
+func TestPlaybackRateCandidatesPreferTTSThen44100(t *testing.T) {
+	got := playbackRateCandidates(24_000, 48_000)
+	if len(got) < 3 {
+		t.Fatalf("candidates = %v, want at least [24000, 44100, 48000]", got)
 	}
-	// Without a source-rate hint, 48 kHz still beats 44.1 (common clocks).
-	rate, _ = pickPlaybackFormat(studioDisplayFormats(), 0)
-	if rate != 48000 && rate != 44100 {
-		t.Fatalf("rate = %d, want 48000 or 44100 without source hint", rate)
+	if got[0] != 24_000 {
+		t.Fatalf("first candidate = %d, want 24000 (TTS rate, no Samantha resample)", got[0])
+	}
+	if got[1] != 44_100 {
+		t.Fatalf("second candidate = %d, want 44100", got[1])
+	}
+	// 48 kHz must not come before 44.1.
+	idx44, idx48 := -1, -1
+	for i, r := range got {
+		if r == 44100 {
+			idx44 = i
+		}
+		if r == 48000 {
+			idx48 = i
+		}
+	}
+	if idx44 < 0 || idx48 < 0 || idx48 < idx44 {
+		t.Fatalf("candidates = %v, want 44100 before 48000", got)
 	}
 }
 

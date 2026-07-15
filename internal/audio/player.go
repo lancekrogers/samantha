@@ -255,53 +255,29 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 	deviceConfig := malgo.DefaultDeviceConfig(malgo.Playback)
 	deviceConfig.Playback.Format = malgo.FormatS16
 	deviceConfig.Alsa.NoMMap = 1
+	// Larger periods reduce callback pressure on multi-channel displays.
+	deviceConfig.PeriodSizeInFrames = 512
+	deviceConfig.Periods = 3
 	if err := selectDevice(ctx.Context, malgo.Playback, p.deviceName, &deviceConfig.Playback); err != nil {
 		_ = ctx.Uninit()
 		ctx.Free()
 		return 0, fmt.Errorf("select playback device: %w", err)
 	}
-	actualDeviceName, nativeRate, nativeChannels, err := playbackDeviceDetails(ctx.Context, p.deviceName, sampleRate)
+	actualDeviceName, preferredRate, nativeChannels, err := playbackDeviceDetails(ctx.Context, p.deviceName, sampleRate)
 	if err != nil {
 		_ = ctx.Uninit()
 		ctx.Free()
 		return 0, err
 	}
-	if nativeRate == 0 {
-		nativeRate = uint32(sampleRate)
-	}
 	// Never hard-code mono here: multi-channel devices (Studio Display Speakers
-	// advertise 8ch) crackled when CoreAudio invented a mono upmix. Layout is
-	// pinned by TestStudioDisplayClientLayoutIsStereo and expand tests.
+	// advertise 8ch) crackled when CoreAudio invented a mono upmix.
 	channels := choosePlaybackChannels(nativeChannels)
-	deviceConfig.Playback.Channels = channels
-	deviceConfig.SampleRate = nativeRate
 
-	device, err := malgo.InitDevice(ctx.Context, deviceConfig, malgo.DeviceCallbacks{
-		Data: p.onData,
-	})
+	device, openedRate, openedChannels, err := openPlaybackDevice(ctx.Context, deviceConfig, channels, nativeChannels, sampleRate, preferredRate, p.onData)
 	if err != nil {
-		// Stereo is preferred. If the device rejects it, try the advertised
-		// native multi-channel layout (still expanded from mono in onData).
-		// Never silently fall back to mono on multi-channel hardware — that
-		// path is the Studio Display crackle regression.
-		if channels != 1 && nativeChannels > 2 {
-			deviceConfig.Playback.Channels = nativeChannels
-			device, err = malgo.InitDevice(ctx.Context, deviceConfig, malgo.DeviceCallbacks{
-				Data: p.onData,
-			})
-		}
-		if err != nil && channels != 1 && nativeChannels <= 1 {
-			// Truly mono-only device: last resort.
-			deviceConfig.Playback.Channels = 1
-			device, err = malgo.InitDevice(ctx.Context, deviceConfig, malgo.DeviceCallbacks{
-				Data: p.onData,
-			})
-		}
-		if err != nil {
-			_ = ctx.Uninit()
-			ctx.Free()
-			return 0, err
-		}
+		_ = ctx.Uninit()
+		ctx.Free()
+		return 0, err
 	}
 
 	if err := device.Start(); err != nil {
@@ -312,11 +288,11 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 	}
 	deviceRate := int(device.SampleRate())
 	if deviceRate <= 0 {
-		deviceRate = sampleRate
+		deviceRate = openedRate
 	}
 	deviceChannels := int(device.PlaybackChannels())
 	if deviceChannels <= 0 {
-		deviceChannels = int(channels)
+		deviceChannels = openedChannels
 	}
 	if p.debugRoot != "" {
 		debug, err := newPlayerDebugRecorder(p.debugRoot, actualDeviceName, sampleRate, deviceRate, deviceChannels)
@@ -335,6 +311,82 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 	p.sampleRate = deviceRate
 	p.channels = deviceChannels
 	return p.sampleRate, nil
+}
+
+// openPlaybackDevice tries client layouts/rates in an order tuned for Studio
+// Display Speakers and similar multi-channel CoreAudio devices:
+//
+//  1. stereo @ TTS rate (no Samantha resample; CoreAudio converts rate)
+//  2. stereo @ 44.1 kHz (device clock; linear resample from 24 kHz)
+//  3. stereo @ preferred/native rate from enumeration
+//  4. stereo @ 48 kHz last (exact 2× path was harsher on the affected machine)
+//  5. advertised multi-channel layout at the rate that worked for stereo
+//
+// Mono is only used when the device is truly mono. Silent mono fallback on
+// multi-channel hardware is the 2026-07 crackle regression.
+func openPlaybackDevice(
+	ctx malgo.Context,
+	base malgo.DeviceConfig,
+	channels, nativeChannels uint32,
+	sourceRate int,
+	preferredRate uint32,
+	onData func([]byte, []byte, uint32),
+) (*malgo.Device, int, int, error) {
+	rateCandidates := playbackRateCandidates(sourceRate, preferredRate)
+	channelCandidates := []uint32{channels}
+	if nativeChannels > 2 && nativeChannels != channels {
+		channelCandidates = append(channelCandidates, nativeChannels)
+	}
+	if channels != 1 && nativeChannels <= 1 {
+		channelCandidates = append(channelCandidates, 1)
+	}
+
+	var lastErr error
+	for _, ch := range channelCandidates {
+		for _, rate := range rateCandidates {
+			cfg := base
+			cfg.Playback.Channels = ch
+			cfg.SampleRate = rate
+			dev, err := malgo.InitDevice(ctx, cfg, malgo.DeviceCallbacks{Data: onData})
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			return dev, int(rate), int(ch), nil
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no playback rate/channel combination succeeded")
+	}
+	return nil, 0, 0, lastErr
+}
+
+// playbackRateCandidates orders sample rates to try when opening the device.
+// Prefer the TTS rate (no in-process resample), then 44.1 kHz (common Apple
+// clock). 48 kHz is last: exact 2× upsampling still sounded worse on the
+// affected Studio Display than 44.1 with linear conversion.
+func playbackRateCandidates(sourceRate int, preferredRate uint32) []uint32 {
+	seen := map[uint32]bool{}
+	var out []uint32
+	add := func(r uint32) {
+		if r == 0 || seen[r] {
+			return
+		}
+		seen[r] = true
+		out = append(out, r)
+	}
+	if sourceRate > 0 {
+		add(uint32(sourceRate))
+	}
+	add(44100)
+	if preferredRate != 0 && preferredRate != 48000 {
+		add(preferredRate)
+	}
+	add(48000)
+	if preferredRate == 48000 {
+		add(preferredRate)
+	}
+	return out
 }
 
 func (p *Player) onData(outputSamples, inputSamples []byte, frameCount uint32) {
@@ -670,85 +722,16 @@ func float32ToPCM16(samples []float32) []int16 {
 }
 
 // resample converts mono PCM between sample rates for playback. Prefer calling
-// this on a complete utterance (see finalizeSegment). Integer-ratio upsamples
-// (e.g. 24 kHz → 48 kHz) use an exact polyphase path; other ratios use
-// Catmull-Rom cubic interpolation, which is far less harsh on Kokoro's HF
-// content than linear interpolation at 24→44.1.
+// this on a complete utterance (see finalizeSegment).
+//
+// Linear interpolation only: Catmull-Rom cubic was tried for 24→48 and sounded
+// worse on Studio Display Speakers because overshoot hard-clips in
+// float32ToPCM16 and produces crackle on peaks. Linear never overshoots the
+// local sample pair.
 func resample(samples []float32, from, to int) []float32 {
-	if len(samples) == 0 || from <= 0 || to <= 0 || from == to {
-		return samples
-	}
-	if to%from == 0 {
-		return upsampleInteger(samples, to/from)
-	}
-	return resampleCubic(samples, from, to)
+	return resampleLinear(samples, from, to)
 }
 
-// upsampleInteger produces exactly len(samples)*factor frames for exact integer
-// upsampling (factor=2 → 24 kHz to 48 kHz). Between input samples it uses
-// Catmull-Rom; after the final input sample it holds that value for the
-// remaining sub-frames so duration stays n/from seconds.
-func upsampleInteger(samples []float32, factor int) []float32 {
-	if factor <= 1 || len(samples) == 0 {
-		return samples
-	}
-	out := make([]float32, len(samples)*factor)
-	for i := 0; i < len(samples); i++ {
-		out[i*factor] = samples[i]
-		for f := 1; f < factor; f++ {
-			if i < len(samples)-1 {
-				t := float64(f) / float64(factor)
-				out[i*factor+f] = sampleCubic(samples, float64(i)+t)
-			} else {
-				out[i*factor+f] = samples[i]
-			}
-		}
-	}
-	return out
-}
-
-func resampleCubic(samples []float32, from, to int) []float32 {
-	outLen := int(math.Round(float64(len(samples)) * float64(to) / float64(from)))
-	if outLen < 1 {
-		outLen = 1
-	}
-	out := make([]float32, outLen)
-	step := float64(from) / float64(to)
-	for i := range outLen {
-		out[i] = sampleCubic(samples, float64(i)*step)
-	}
-	return out
-}
-
-// sampleCubic evaluates a Catmull-Rom spline at a fractional sample index.
-func sampleCubic(samples []float32, pos float64) float32 {
-	n := len(samples)
-	if n == 0 {
-		return 0
-	}
-	if pos <= 0 {
-		return samples[0]
-	}
-	if pos >= float64(n-1) {
-		return samples[n-1]
-	}
-	i := int(pos)
-	t := float32(pos - float64(i))
-	y0 := samples[max(i-1, 0)]
-	y1 := samples[i]
-	y2 := samples[min(i+1, n-1)]
-	y3 := samples[min(i+2, n-1)]
-	// Catmull-Rom: 0.5 * (2*y1 + (-y0+y2)*t + (2*y0-5*y1+4*y2-y3)*t^2 + (-y0+3*y1-3*y2+y3)*t^3)
-	t2 := t * t
-	t3 := t2 * t
-	return 0.5 * ((2 * y1) +
-		(-y0+y2)*t +
-		(2*y0-5*y1+4*y2-y3)*t2 +
-		(-y0+3*y1-3*y2+y3)*t3)
-}
-
-// resampleLinear remains for tests and call sites that explicitly want the
-// historical linear kernel (e.g. characterizing boundary discontinuities).
 func resampleLinear(samples []float32, from, to int) []float32 {
 	if len(samples) == 0 || from <= 0 || to <= 0 || from == to {
 		return samples

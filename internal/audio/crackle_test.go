@@ -50,38 +50,45 @@ func TestChoosePlaybackChannelsPrefersStereo(t *testing.T) {
 	}
 }
 
-func TestPickPlaybackFormatPrefersStereoAndIntegerRate(t *testing.T) {
-	// Studio Display style: only 8ch formats advertised; 24 kHz TTS → 48 kHz.
+func TestPickPlaybackFormatPrefersStereo44100(t *testing.T) {
+	// Among advertised rates, 44.1 beats 48 after the 48 kHz path regressed.
 	rate, ch := pickPlaybackFormat([]malgo.DataFormat{
 		{Channels: 8, SampleRate: 44100},
 		{Channels: 8, SampleRate: 48000},
 	}, 24_000)
-	if rate != 48000 {
-		t.Fatalf("rate = %d, want 48000 for 24 kHz source", rate)
+	if rate != 44100 {
+		t.Fatalf("rate = %d, want 44100", rate)
 	}
 	if ch != 8 {
 		t.Fatalf("channels = %d, want 8 from advertised formats", ch)
 	}
-	// When stereo is advertised at the preferred rate it must win over 8ch.
 	rate, ch = pickPlaybackFormat([]malgo.DataFormat{
-		{Channels: 8, SampleRate: 48000},
-		{Channels: 2, SampleRate: 48000},
+		{Channels: 8, SampleRate: 44100},
+		{Channels: 2, SampleRate: 44100},
 	}, 24_000)
-	if rate != 48000 || ch != 2 {
-		t.Fatalf("pickPlaybackFormat = %d/%d, want 48000/2", rate, ch)
+	if rate != 44100 || ch != 2 {
+		t.Fatalf("pickPlaybackFormat = %d/%d, want 44100/2", rate, ch)
 	}
 }
 
-func TestResample24kTo48kIsExactDoubleLength(t *testing.T) {
-	src := synthSpeechLike(24_000, 2400)
+func TestResampleLinearDoesNotOvershoot(t *testing.T) {
+	// Cubic overshoot clipped to int16 and crackled; linear must stay within
+	// the local sample pair extrema.
+	src := []float32{-0.5, 0.9, -0.4, 0.8}
 	out := resample(src, 24_000, 48_000)
-	want := len(src) * 2
-	if len(out) != want {
-		t.Fatalf("len(out) = %d, want %d (exact 2x)", len(out), want)
+	lo, hi := src[0], src[0]
+	for _, s := range src {
+		if s < lo {
+			lo = s
+		}
+		if s > hi {
+			hi = s
+		}
 	}
-	m := AnalyzeFloat32(out, CrackleThresholds{})
-	if m.HasCrackle(CrackleThresholds{}) {
-		t.Fatalf("24→48 resample reported crackle: %+v", m)
+	for i, s := range out {
+		if s < lo-1e-5 || s > hi+1e-5 {
+			t.Fatalf("out[%d]=%v outside source range [%v, %v] (overshoot)", i, s, lo, hi)
+		}
 	}
 }
 
