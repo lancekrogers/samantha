@@ -309,10 +309,17 @@ just test unit                 # Unit tests
 just test pkg config           # Test a specific internal package
 just test integration          # Container integration tests
 just test integration-verbose  # Integration tests with full output
+just test audio-crackle        # Playback layout + crackle software regressions (CI-safe)
+just test audio-hardware       # Opt-in: real speakers, Studio Display etc.
 go test ./...                  # Plain Go test fallback
 ```
 
 Integration tests expect `bin/linux/samantha` to exist. The build dashboard creates it for the integration workflow.
+
+Playback crackle (Studio Display mono-client class) is guarded by `internal/audio`
+layout + crackle tests in normal `go test -race ./...`. After any change under
+`internal/audio`, also run `just test audio-hardware` on an affected machine and
+confirm `--debug-audio` metadata reports `channels: 2` (not mono).
 
 #### Voice smoke tests (opt-in, require local models)
 

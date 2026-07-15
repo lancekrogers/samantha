@@ -87,17 +87,31 @@ func ReadWAVFloat32(path string) ([]float32, int, error) {
 	if sampleRate == 0 || len(data) == 0 {
 		return nil, 0, fmt.Errorf("missing wav fmt/data chunks")
 	}
-	if channels != 1 {
-		return nil, 0, fmt.Errorf("unsupported wav channels %d", channels)
+	if channels == 0 {
+		return nil, 0, fmt.Errorf("invalid wav channel count 0")
 	}
 	if bitsPerSample != 16 {
 		return nil, 0, fmt.Errorf("unsupported wav bit depth %d", bitsPerSample)
 	}
 
-	samples := make([]float32, len(data)/2)
-	for i := range samples {
-		s := int16(binary.LittleEndian.Uint16(data[i*2:]))
-		samples[i] = float32(s) / float32(math.MaxInt16)
+	frameBytes := int(channels) * 2
+	if frameBytes == 0 || len(data)%frameBytes != 0 {
+		return nil, 0, fmt.Errorf("wav data length %d is not a whole number of %d-channel frames", len(data), channels)
+	}
+	frames := len(data) / frameBytes
+	samples := make([]float32, frames)
+	// Downmix multi-channel captures to mono by averaging so crackle analysis
+	// and fixture loaders can share one reader. Stereo device-output.wav from
+	// the player is the common multi-channel case.
+	scale := 1.0 / float32(math.MaxInt16) / float32(channels)
+	for i := 0; i < frames; i++ {
+		var sum float32
+		base := i * frameBytes
+		for ch := 0; ch < int(channels); ch++ {
+			s := int16(binary.LittleEndian.Uint16(data[base+ch*2:]))
+			sum += float32(s)
+		}
+		samples[i] = sum * scale
 	}
 	return samples, sampleRate, nil
 }

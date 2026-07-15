@@ -61,6 +61,7 @@ type Player struct {
 	ctx        *malgo.AllocatedContext
 	device     *malgo.Device
 	sampleRate int
+	channels   int // device client channel count (mono TTS is expanded into this)
 	frontend   Frontend
 	current    *playbackSegment
 	queue      []*playbackSegment
@@ -69,6 +70,9 @@ type Player struct {
 	deviceName string
 	debugRoot  string
 	debug      *playerDebugRecorder
+	// monoScratch holds one callback period of mono S16 while onData expands
+	// into the multi-channel device buffer. Sized lazily under the callback.
+	monoScratch []byte
 }
 
 // NewPlayer creates a new audio player.
@@ -222,7 +226,7 @@ func finalizeSegment(segment *playbackSegment, frontend Frontend, debug *playerD
 		debug.captureSource(inputRate, samples)
 	}
 	if inputRate != outputRate {
-		samples = resampleLinear(samples, inputRate, outputRate)
+		samples = resample(samples, inputRate, outputRate)
 	}
 	if frontend != nil {
 		frontend.PushPlaybackReference(samples)
@@ -250,27 +254,26 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 
 	deviceConfig := malgo.DefaultDeviceConfig(malgo.Playback)
 	deviceConfig.Playback.Format = malgo.FormatS16
-	deviceConfig.Playback.Channels = playbackChannels
 	deviceConfig.Alsa.NoMMap = 1
+	// Larger periods reduce callback pressure on multi-channel displays.
+	deviceConfig.PeriodSizeInFrames = 512
+	deviceConfig.Periods = 3
 	if err := selectDevice(ctx.Context, malgo.Playback, p.deviceName, &deviceConfig.Playback); err != nil {
 		_ = ctx.Uninit()
 		ctx.Free()
 		return 0, fmt.Errorf("select playback device: %w", err)
 	}
-	actualDeviceName, nativeRate, err := playbackDeviceDetails(ctx.Context, p.deviceName)
+	actualDeviceName, preferredRate, nativeChannels, err := playbackDeviceDetails(ctx.Context, p.deviceName, sampleRate)
 	if err != nil {
 		_ = ctx.Uninit()
 		ctx.Free()
 		return 0, err
 	}
-	if nativeRate == 0 {
-		nativeRate = uint32(sampleRate)
-	}
-	deviceConfig.SampleRate = nativeRate
+	// Never hard-code mono here: multi-channel devices (Studio Display Speakers
+	// advertise 8ch) crackled when CoreAudio invented a mono upmix.
+	channels := choosePlaybackChannels(nativeChannels)
 
-	device, err := malgo.InitDevice(ctx.Context, deviceConfig, malgo.DeviceCallbacks{
-		Data: p.onData,
-	})
+	device, openedRate, openedChannels, err := openPlaybackDevice(ctx.Context, deviceConfig, channels, nativeChannels, sampleRate, preferredRate, p.onData)
 	if err != nil {
 		_ = ctx.Uninit()
 		ctx.Free()
@@ -285,10 +288,14 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 	}
 	deviceRate := int(device.SampleRate())
 	if deviceRate <= 0 {
-		deviceRate = sampleRate
+		deviceRate = openedRate
+	}
+	deviceChannels := int(device.PlaybackChannels())
+	if deviceChannels <= 0 {
+		deviceChannels = openedChannels
 	}
 	if p.debugRoot != "" {
-		debug, err := newPlayerDebugRecorder(p.debugRoot, actualDeviceName, sampleRate, deviceRate)
+		debug, err := newPlayerDebugRecorder(p.debugRoot, actualDeviceName, sampleRate, deviceRate, deviceChannels)
 		if err != nil {
 			_ = device.Stop()
 			device.Uninit()
@@ -302,23 +309,116 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 	p.ctx = ctx
 	p.device = device
 	p.sampleRate = deviceRate
+	p.channels = deviceChannels
 	return p.sampleRate, nil
+}
+
+// openPlaybackDevice tries client layouts/rates in an order tuned for Studio
+// Display Speakers and similar multi-channel CoreAudio devices:
+//
+//  1. stereo @ TTS rate (no Samantha resample; CoreAudio converts rate)
+//  2. stereo @ 44.1 kHz (device clock; linear resample from 24 kHz)
+//  3. stereo @ preferred/native rate from enumeration
+//  4. stereo @ 48 kHz last (exact 2× path was harsher on the affected machine)
+//  5. advertised multi-channel layout at the rate that worked for stereo
+//
+// Mono is only used when the device is truly mono. Silent mono fallback on
+// multi-channel hardware is the 2026-07 crackle regression.
+func openPlaybackDevice(
+	ctx malgo.Context,
+	base malgo.DeviceConfig,
+	channels, nativeChannels uint32,
+	sourceRate int,
+	preferredRate uint32,
+	onData func([]byte, []byte, uint32),
+) (*malgo.Device, int, int, error) {
+	rateCandidates := playbackRateCandidates(sourceRate, preferredRate)
+	channelCandidates := []uint32{channels}
+	if nativeChannels > 2 && nativeChannels != channels {
+		channelCandidates = append(channelCandidates, nativeChannels)
+	}
+	if channels != 1 && nativeChannels <= 1 {
+		channelCandidates = append(channelCandidates, 1)
+	}
+
+	var lastErr error
+	for _, ch := range channelCandidates {
+		for _, rate := range rateCandidates {
+			cfg := base
+			cfg.Playback.Channels = ch
+			cfg.SampleRate = rate
+			dev, err := malgo.InitDevice(ctx, cfg, malgo.DeviceCallbacks{Data: onData})
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			return dev, int(rate), int(ch), nil
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no playback rate/channel combination succeeded")
+	}
+	return nil, 0, 0, lastErr
+}
+
+// playbackRateCandidates orders sample rates to try when opening the device.
+// Prefer the TTS rate (no in-process resample), then 44.1 kHz (common Apple
+// clock). 48 kHz is last: exact 2× upsampling still sounded worse on the
+// affected Studio Display than 44.1 with linear conversion.
+func playbackRateCandidates(sourceRate int, preferredRate uint32) []uint32 {
+	seen := map[uint32]bool{}
+	var out []uint32
+	add := func(r uint32) {
+		if r == 0 || seen[r] {
+			return
+		}
+		seen[r] = true
+		out = append(out, r)
+	}
+	if sourceRate > 0 {
+		add(uint32(sourceRate))
+	}
+	add(44100)
+	if preferredRate != 0 && preferredRate != 48000 {
+		add(preferredRate)
+	}
+	add(48000)
+	if preferredRate == 48000 {
+		add(preferredRate)
+	}
+	return out
 }
 
 func (p *Player) onData(outputSamples, inputSamples []byte, frameCount uint32) {
 	clearBytes(outputSamples)
 
+	p.mu.Lock()
+	channels := p.channels
+	if channels <= 0 {
+		channels = playbackChannels
+	}
+	monoNeed := int(frameCount) * 2
+	if cap(p.monoScratch) < monoNeed {
+		p.monoScratch = make([]byte, monoNeed)
+	} else {
+		p.monoScratch = p.monoScratch[:monoNeed]
+	}
+	monoBuf := p.monoScratch
+	debug := p.debug
+	p.mu.Unlock()
+	clearBytes(monoBuf)
+
 	framesRemaining := int(frameCount)
-	offsetBytes := 0
+	monoOffset := 0
 	writtenFrames := 0
 	active := false
 	defer func() {
 		if !active {
 			return
 		}
-		p.mu.Lock()
-		debug := p.debug
-		p.mu.Unlock()
+		// Expand mono → device layout, then capture the exact multi-channel
+		// buffer handed to miniaudio.
+		expandMonoS16LE(monoBuf[:writtenFrames*2], writtenFrames, channels, outputSamples)
 		if debug != nil {
 			debug.captureCallback(outputSamples, int(frameCount), writtenFrames)
 		}
@@ -332,7 +432,7 @@ func (p *Player) onData(outputSamples, inputSamples []byte, frameCount uint32) {
 		}
 		active = true
 
-		written, finished := segment.writeTo(outputSamples[offsetBytes:], framesRemaining)
+		written, finished := segment.writeTo(monoBuf[monoOffset:], framesRemaining)
 		if written == 0 {
 			if finished {
 				p.finishSegment(segment)
@@ -345,12 +445,40 @@ func (p *Player) onData(outputSamples, inputSamples []byte, frameCount uint32) {
 
 		p.playing.Store(true)
 		writtenFrames += written
-		offsetBytes += written * 2
+		monoOffset += written * 2
 		framesRemaining -= written
 
 		if finished {
 			p.finishSegment(segment)
 		}
+	}
+}
+
+// expandMonoS16LE writes mono S16LE frames into an interleaved multi-channel
+// S16LE buffer. Channel 0 (and channel 1 when present) carry the mono signal;
+// additional channels are left silent so multi-channel devices do not play
+// garbage on rear/height buses.
+func expandMonoS16LE(mono []byte, frames, channels int, out []byte) {
+	if frames <= 0 || channels <= 0 {
+		return
+	}
+	if channels == 1 {
+		copy(out, mono[:frames*2])
+		return
+	}
+	for i := 0; i < frames; i++ {
+		s0 := mono[i*2]
+		s1 := mono[i*2+1]
+		base := i * channels * 2
+		// Front L
+		out[base] = s0
+		out[base+1] = s1
+		if channels > 1 {
+			// Front R (duplicate mono)
+			out[base+2] = s0
+			out[base+3] = s1
+		}
+		// Remaining channels stay 0 from clearBytes.
 	}
 }
 
@@ -591,6 +719,17 @@ func float32ToPCM16(samples []float32) []int16 {
 		pcm[i] = int16(sample * float32(math.MaxInt16))
 	}
 	return pcm
+}
+
+// resample converts mono PCM between sample rates for playback. Prefer calling
+// this on a complete utterance (see finalizeSegment).
+//
+// Linear interpolation only: Catmull-Rom cubic was tried for 24→48 and sounded
+// worse on Studio Display Speakers because overshoot hard-clips in
+// float32ToPCM16 and produces crackle on peaks. Linear never overshoots the
+// local sample pair.
+func resample(samples []float32, from, to int) []float32 {
+	return resampleLinear(samples, from, to)
 }
 
 func resampleLinear(samples []float32, from, to int) []float32 {

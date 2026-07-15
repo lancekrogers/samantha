@@ -12,7 +12,7 @@ import (
 
 func TestPlayerDebugRecorderCapturesSourceDeviceAndTiming(t *testing.T) {
 	root := t.TempDir()
-	recorder, err := newPlayerDebugRecorder(root, "Test Speakers", 24_000, 44_100)
+	recorder, err := newPlayerDebugRecorder(root, "Test Speakers", 24_000, 44_100, 1)
 	if err != nil {
 		t.Fatalf("newPlayerDebugRecorder() error = %v", err)
 	}
