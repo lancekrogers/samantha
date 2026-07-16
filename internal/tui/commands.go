@@ -20,6 +20,7 @@ const (
 	commandMic
 	commandAudio
 	commandActivity
+	commandSettings
 	commandVoice
 	commandVim
 	commandQuit
@@ -43,6 +44,7 @@ var slashCommands = []slashCommand{
 	{id: commandMic, name: "/mic", usage: "/mic", description: "Toggle voice input"},
 	{id: commandAudio, name: "/audio", usage: "/audio", description: "Toggle voice output", aliases: []string{"/speaker"}},
 	{id: commandActivity, name: "/activity", usage: "/activity", description: "Switch between chat and activity", aliases: []string{"/timeline"}},
+	{id: commandSettings, name: "/settings", usage: "/settings", description: "Open TUI settings"},
 	{id: commandVoice, name: "/voice", usage: "/voice", description: "Return to voice mode after fallback", aliases: []string{"/v"}},
 	{id: commandVim, name: "/vim", usage: "/vim [on|off|insert]", description: "Toggle modal Vim editing"},
 	{id: commandQuit, name: "/quit", usage: "/quit", description: "Exit Samantha", aliases: []string{"/q", "/exit"}},
@@ -130,6 +132,8 @@ func (m *conversationModel) executeSlashCommand(command slashCommand, args []str
 	case commandActivity:
 		m.activityFocused = !m.activityFocused
 		return m.resumeListening()
+	case commandSettings:
+		return func() tea.Msg { return switchScreenMsg(screenSettings) }
 	case commandVoice:
 		if m.deps.voice && !m.voiceEnabled {
 			m.voiceEnabled = true

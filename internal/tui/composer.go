@@ -9,25 +9,88 @@ import (
 	ansi "github.com/charmbracelet/x/ansi"
 )
 
-type vimInputMode int
-
-const (
-	vimInsert vimInputMode = iota
-	vimNormal
-)
-
-type composerSnapshot struct {
-	value string
-	row   int
-	col   int
-}
-
+// updateComposer is the Bubble Tea adapter around editorBuffer. Textarea is
+// still responsible for text-entry ergonomics and cursor blinking, while all
+// modal editing operations go through the UI-independent buffer.
 func (m *conversationModel) updateComposer(msg tea.KeyMsg) tea.Cmd {
+	if m.editor.selectionActive() && m.vim.mode != vimVisual && isReplacingKey(msg) {
+		previous := m.input.Value()
+		_, _ = m.editor.deleteSelection()
+		m.applyEditor(previous)
+		if msg.String() == "backspace" || msg.String() == "delete" {
+			return nil
+		}
+	}
 	previous := m.input.Value()
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	m.syncEditorFromTextarea()
 	m.syncComposer(previous)
 	return cmd
+}
+
+func (m *conversationModel) syncEditorFromTextarea() {
+	m.editor.sync(m.input.Value(), m.textareaCursorOffset())
+}
+
+func (m conversationModel) textareaCursorOffset() int {
+	lines := strings.Split(m.input.Value(), "\n")
+	row := min(max(m.input.Line(), 0), len(lines)-1)
+	offset := 0
+	for i := 0; i < row; i++ {
+		offset += runeLen(lines[i]) + 1
+	}
+	return min(offset+min(max(m.cursorColumn(), 0), runeLen(lines[row])), runeLen(m.input.Value()))
+}
+
+func (m *conversationModel) applyEditor(previous string) {
+	m.input.SetValue(m.editor.text())
+	m.moveTextareaCursorToOffset(m.editor.cursorOffset())
+	m.syncComposer(previous)
+}
+
+func (m *conversationModel) moveCursorToOffset(offset int) {
+	if m.editor.text() != m.input.Value() {
+		m.syncEditorFromTextarea()
+	}
+	m.editor.setCursor(offset)
+	m.moveTextareaCursorToOffset(m.editor.cursorOffset())
+}
+
+func (m *conversationModel) moveTextareaCursorToOffset(offset int) {
+	runes := []rune(m.input.Value())
+	offset = clampOffset(offset, len(runes))
+	row, col := 0, 0
+	for _, r := range runes[:offset] {
+		if r == '\n' {
+			row++
+			col = 0
+			continue
+		}
+		col++
+	}
+	m.moveCursorTo(row, col)
+}
+
+func (m conversationModel) cursorOffset() int {
+	return m.editor.cursorOffset()
+}
+
+func (m conversationModel) composerLength() int {
+	return m.editor.length()
+}
+
+func (m conversationModel) lineBounds(offset int) (int, int) {
+	return m.editor.lineBounds(offset)
+}
+
+func (m conversationModel) lineStartOffset(offset int) int {
+	return m.editor.lineStart(offset)
+}
+
+func (m conversationModel) currentLineLength() int {
+	_, end := m.editor.lineBounds(m.editor.cursorOffset())
+	return end - m.editor.lineStart(m.editor.cursorOffset())
 }
 
 func (m *conversationModel) syncComposer(previous string) {
@@ -56,6 +119,7 @@ func (m *conversationModel) handleCommandPaletteKey(msg tea.KeyMsg) (bool, tea.C
 		selected := matches[min(m.commandSelection, len(matches)-1)]
 		previous := m.input.Value()
 		m.input.SetValue(selected.name + " ")
+		m.syncEditorFromTextarea()
 		m.commandSelection = 0
 		m.syncComposer(previous)
 		return true, nil
@@ -78,8 +142,6 @@ func (m conversationModel) commandPaletteRows() int {
 	if m.height < 12 {
 		inputHeight = 1
 	}
-	// Keep at least three transcript rows. Above that floor, show every match
-	// that actually fits instead of imposing an arbitrary item cap.
 	available := m.height - inputHeight - 6 - 3
 	return min(len(matches), max(available, 0))
 }
@@ -122,233 +184,180 @@ func (m *conversationModel) configureVim(args []string) {
 	}
 	switch action {
 	case "toggle":
-		m.vimEnabled = !m.vimEnabled
+		m.vim.enabled = !m.vim.enabled
 	case "on", "normal":
-		m.vimEnabled = true
+		m.vim.enabled = true
 	case "insert":
-		m.vimEnabled = true
-		m.vimMode = vimInsert
+		m.vim.enabled = true
+		m.vim.mode = vimInsert
 	case "off":
-		m.vimEnabled = false
+		m.vim.enabled = false
 	default:
 		m.commandError("usage: /vim [on|off|insert]")
 		return
 	}
-	if m.vimEnabled {
+	if m.vim.enabled {
 		if action != "insert" {
-			m.vimMode = vimNormal
+			m.vim.mode = vimNormal
 		}
-		m.vimPending = ""
+		m.vim.clearPending()
 		m.commandNotice("Vim input enabled. Press i to insert; Esc returns to NORMAL.")
 	} else {
-		m.vimMode = vimInsert
-		m.vimPending = ""
+		m.vim.mode = vimInsert
+		m.vim.clearPending()
+		m.editor.clearSelection()
 		m.commandNotice("Vim input disabled.")
 	}
 }
 
-func (m *conversationModel) enterVimInsert() {
-	m.pushVimUndo()
-	m.vimMode = vimInsert
-	m.vimPending = ""
-	_ = m.input.Focus()
+func (m *conversationModel) insertClipboardText(text string) {
+	if text == "" {
+		return
+	}
+	previous := m.input.Value()
+	m.editor.insertAt(m.editor.cursorOffset(), text, m.editor.selectionActive())
+	m.applyEditor(previous)
 }
 
-func (m *conversationModel) enterVimNormal() {
-	m.vimMode = vimNormal
-	m.vimPending = ""
-	if m.cursorColumn() > 0 {
-		m.updateComposer(tea.KeyMsg{Type: tea.KeyLeft})
+func (m *conversationModel) pasteRegister(after bool) tea.Cmd {
+	register := m.editor.registerValue()
+	if register.text == "" {
+		text, err := m.clipboard().ReadAll()
+		if err != nil {
+			m.commandError("paste failed: " + err.Error())
+			return nil
+		}
+		register = editorRegister{text: text, linewise: strings.Contains(text, "\n")}
+		m.editor.setRegister(register.text, register.linewise)
 	}
-}
-
-func (m *conversationModel) handleVimNormalKey(msg tea.KeyMsg) tea.Cmd {
-	key := msg.String()
-	if m.vimPending == "d" && key != "d" {
-		m.vimPending = ""
-	}
-
-	switch key {
-	case "i":
-		m.enterVimInsert()
-	case "a":
-		m.enterVimInsert()
-		if m.cursorColumn() < m.currentLineLength() {
-			return m.updateComposer(tea.KeyMsg{Type: tea.KeyRight})
-		}
-	case "I":
-		m.input.CursorStart()
-		m.enterVimInsert()
-	case "A":
-		m.input.CursorEnd()
-		m.enterVimInsert()
-	case "h", "left":
-		if m.cursorColumn() > 0 {
-			return m.updateComposer(tea.KeyMsg{Type: tea.KeyLeft})
-		}
-	case "l", "right":
-		if m.cursorColumn() < m.currentLineLength()-1 {
-			return m.updateComposer(tea.KeyMsg{Type: tea.KeyRight})
-		}
-	case "j", "down":
-		m.input.CursorDown()
-	case "k", "up":
-		m.input.CursorUp()
-	case "0", "home":
-		m.input.CursorStart()
-	case "$", "end":
-		m.input.CursorEnd()
-		if m.currentLineLength() > 0 {
-			return m.updateComposer(tea.KeyMsg{Type: tea.KeyLeft})
-		}
-	case "w":
-		return m.updateComposer(tea.KeyMsg{Type: tea.KeyRight, Alt: true})
-	case "b":
-		return m.updateComposer(tea.KeyMsg{Type: tea.KeyLeft, Alt: true})
-	case "x", "delete":
-		m.pushVimUndo()
-		return m.updateComposer(tea.KeyMsg{Type: tea.KeyDelete})
-	case "D":
-		m.pushVimUndo()
-		return m.updateComposer(tea.KeyMsg{Type: tea.KeyCtrlK})
-	case "C":
-		m.pushVimUndo()
-		m.vimMode = vimInsert
-		return m.updateComposer(tea.KeyMsg{Type: tea.KeyCtrlK})
-	case "d":
-		if m.vimPending == "d" {
-			m.vimPending = ""
-			m.pushVimUndo()
-			m.deleteVimLine()
+	offset := m.editor.cursorOffset()
+	text := register.text
+	if register.linewise {
+		_, lineEnd := m.editor.lineBounds(offset)
+		if after {
+			offset = lineEnd
+			if offset < m.composerLength() {
+				offset++
+			}
 		} else {
-			m.vimPending = "d"
+			offset = m.editor.lineStart(offset)
 		}
-	case "o":
-		m.pushVimUndo()
-		m.openVimLine(true)
-		m.vimMode = vimInsert
-	case "O":
-		m.pushVimUndo()
-		m.openVimLine(false)
-		m.vimMode = vimInsert
-	case "u":
-		m.undoVimEdit()
-	case "esc":
-		m.vimPending = ""
+		if !strings.HasSuffix(text, "\n") && offset < m.composerLength() {
+			text += "\n"
+		}
+	} else if after && offset < m.composerLength() {
+		offset++
 	}
+	previous := m.input.Value()
+	m.editor.insertAt(offset, text, false)
+	m.applyEditor(previous)
 	return nil
 }
 
-func (m conversationModel) cursorColumn() int {
+func (m *conversationModel) selectAll() {
+	m.editor.selectAll()
+	m.moveCursorToOffset(m.editor.cursorOffset())
+}
+
+func (m *conversationModel) copySelection() {
+	text := m.editor.selectedText()
+	if text == "" {
+		return
+	}
+	m.editor.setRegister(text, m.editor.selectionLinewise())
+	if err := m.clipboard().WriteAll(text); err != nil {
+		m.commandError("copy failed: " + err.Error())
+		return
+	}
+	m.commandNotice(fmt.Sprintf("Copied %d characters", runeLen(text)))
+}
+
+func (m *conversationModel) cutSelection() {
+	text := m.editor.selectedText()
+	if text == "" {
+		return
+	}
+	m.editor.setRegister(text, m.editor.selectionLinewise())
+	err := m.clipboard().WriteAll(text)
+	m.deleteSelection(false)
+	if err != nil {
+		m.commandError("cut: " + err.Error())
+		return
+	}
+	m.commandNotice(fmt.Sprintf("Cut %d characters", runeLen(text)))
+}
+
+func (m conversationModel) vimFooterHelp() string {
+	if !m.vim.enabled {
+		return "enter send  ^J newline  ^G mic  ^O audio  ^T switch  PgUp/PgDn scroll"
+	}
+	if m.vim.mode == vimInsert {
+		return "INSERT  esc normal  enter send  ^J newline  tab complete"
+	}
+	if m.vim.mode == vimVisual {
+		return "VISUAL  hjkl move  y yank  d delete  c change  o swap  esc normal"
+	}
+	pending := ""
+	if label := m.vim.pendingLabel(); label != "" {
+		pending = "  pending " + label
+	}
+	return "NORMAL" + pending + "  i/a insert  0/$/w/b move  v/V select  y/p copy/paste  x/dd delete  u undo  / commands"
+}
+
+func (m conversationModel) vimCompactFooterHelp() string {
+	if m.vim.mode == vimInsert {
+		return "INSERT  esc normal  enter send  tab complete"
+	}
+	if m.vim.mode == vimVisual {
+		return "VISUAL  hjkl move  y yank  d delete  c change  esc normal"
+	}
+	pending := ""
+	if label := m.vim.pendingLabel(); label != "" {
+		pending = " " + label
+	}
+	return "NORMAL" + pending + "  i/a insert  hjkl move  v select  y/p copy/paste  x/dd delete"
+}
+
+func (m conversationModel) vimInputLabel(label string) string {
+	if !m.vim.enabled {
+		return label
+	}
+	mode := "INSERT"
+	color := lipgloss.Color("10")
+	if m.vim.mode == vimNormal {
+		mode = "NORMAL"
+		color = lipgloss.Color("14")
+	} else if m.vim.mode == vimVisual {
+		mode = "VISUAL"
+		color = lipgloss.Color("13")
+	}
+	badge := lipgloss.NewStyle().Bold(true).Foreground(color).Render(mode)
+	return badge + "  " + label
+}
+
+func isReplacingKey(msg tea.KeyMsg) bool {
+	if msg.Type == tea.KeyRunes {
+		return len(msg.Runes) > 0
+	}
+	switch msg.String() {
+	case "backspace", "delete", "ctrl+j", "ctrl+enter", "alt+enter", "shift+enter":
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *conversationModel) cursorColumn() int {
 	info := m.input.LineInfo()
 	return info.StartColumn + info.ColumnOffset
 }
 
-func (m conversationModel) currentLineLength() int {
-	lines := strings.Split(m.input.Value(), "\n")
-	row := min(m.input.Line(), len(lines)-1)
-	return len([]rune(lines[row]))
-}
-
-func (m *conversationModel) pushVimUndo() {
-	m.vimUndo = append(m.vimUndo, composerSnapshot{
-		value: m.input.Value(), row: m.input.Line(), col: m.cursorColumn(),
-	})
-	if len(m.vimUndo) > 100 {
-		m.vimUndo = append([]composerSnapshot(nil), m.vimUndo[len(m.vimUndo)-100:]...)
-	}
-}
-
-func (m *conversationModel) undoVimEdit() {
-	if len(m.vimUndo) == 0 {
-		return
-	}
-	snapshot := m.vimUndo[len(m.vimUndo)-1]
-	m.vimUndo = m.vimUndo[:len(m.vimUndo)-1]
-	previous := m.input.Value()
-	m.input.SetValue(snapshot.value)
-	m.moveCursorTo(snapshot.row, snapshot.col)
-	m.syncComposer(previous)
-}
-
-func (m *conversationModel) deleteVimLine() {
-	previous := m.input.Value()
-	lines := strings.Split(previous, "\n")
-	row := min(m.input.Line(), len(lines)-1)
-	if len(lines) == 1 {
-		m.input.Reset()
-		m.syncComposer(previous)
-		return
-	}
-	lines = append(lines[:row], lines[row+1:]...)
-	m.input.SetValue(strings.Join(lines, "\n"))
-	m.moveCursorTo(min(row, len(lines)-1), 0)
-	m.syncComposer(previous)
-}
-
-func (m *conversationModel) openVimLine(below bool) {
-	previous := m.input.Value()
-	lines := strings.Split(previous, "\n")
-	row := min(m.input.Line(), len(lines)-1)
-	insertAt := row
-	if below {
-		insertAt++
-	}
-	lines = append(lines, "")
-	copy(lines[insertAt+1:], lines[insertAt:])
-	lines[insertAt] = ""
-	m.input.SetValue(strings.Join(lines, "\n"))
-	m.moveCursorTo(insertAt, 0)
-	m.syncComposer(previous)
-}
-
 func (m *conversationModel) moveCursorTo(row, col int) {
-	// Textarea keeps row/column private, but its public input-begin motion and
-	// logical-line accessor let us position deterministically across wraps.
 	m.input, _ = m.input.Update(tea.KeyMsg{Type: tea.KeyCtrlHome})
-	limit := m.input.LineCount() + len([]rune(m.input.Value())) + 1
+	limit := m.input.LineCount() + runeLen(m.input.Value()) + 1
 	for m.input.Line() < row && limit > 0 {
 		m.input.CursorDown()
 		limit--
 	}
 	m.input.SetCursor(col)
-}
-
-func (m conversationModel) vimFooterHelp() string {
-	if !m.vimEnabled {
-		return "enter send  ^J newline  ^G mic  ^O audio  ^T switch  PgUp/PgDn scroll"
-	}
-	if m.vimMode == vimInsert {
-		return "INSERT  esc normal  enter send  ^J newline  tab complete"
-	}
-	pending := ""
-	if m.vimPending != "" {
-		pending = "  pending " + m.vimPending
-	}
-	return "NORMAL" + pending + "  i/a insert  hjkl move  w/b word  x/dd delete  u undo  enter send"
-}
-
-func (m conversationModel) vimCompactFooterHelp() string {
-	if m.vimMode == vimInsert {
-		return "INSERT  esc normal  enter send  tab complete"
-	}
-	pending := ""
-	if m.vimPending != "" {
-		pending = " " + m.vimPending
-	}
-	return "NORMAL" + pending + "  i/a insert  hjkl move  x/dd delete  u undo"
-}
-
-func (m conversationModel) vimInputLabel(label string) string {
-	if !m.vimEnabled {
-		return label
-	}
-	mode := "INSERT"
-	color := lipgloss.Color("10")
-	if m.vimMode == vimNormal {
-		mode = "NORMAL"
-		color = lipgloss.Color("14")
-	}
-	badge := lipgloss.NewStyle().Bold(true).Foreground(color).Render(mode)
-	return badge + "  " + label
 }

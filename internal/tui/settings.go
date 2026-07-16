@@ -191,7 +191,7 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 			}
 		case "esc", "q":
 			m.cancelPreview()
-			return m, func() tea.Msg { return switchScreenMsg(screenLauncher) }
+			return m, func() tea.Msg { return settingsDoneMsg{} }
 		}
 		m.ensureCursorVisible()
 

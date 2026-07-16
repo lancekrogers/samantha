@@ -51,6 +51,7 @@ type conversationDeps struct {
 	voice          bool // STT is configured; voice turns may run
 	output         bool // TTS/player are configured
 	setOutputMuted func(bool)
+	clipboard      clipboardBackend
 	sessionID      string
 	inputDevice    string
 	outputDevice   string
@@ -240,7 +241,8 @@ func (m *conversationModel) handleSubmit() tea.Cmd {
 	case turnIdle:
 		previous := m.input.Value()
 		m.input.Reset()
-		m.vimUndo = nil
+		m.editor.sync("", 0)
+		m.editor.resetUndo()
 		m.syncComposer(previous)
 		return m.submitText(text)
 	case turnVoiceListening:
@@ -253,7 +255,8 @@ func (m *conversationModel) handleSubmit() tea.Cmd {
 		m.pendingText = text
 		previous := m.input.Value()
 		m.input.Reset()
-		m.vimUndo = nil
+		m.editor.sync("", 0)
+		m.editor.resetUndo()
 		m.syncComposer(previous)
 		m.turnState = turnVoiceCanceling
 		if m.turnCancel != nil {
