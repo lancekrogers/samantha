@@ -16,8 +16,8 @@ func TestVimCommandEnablesDynamicNormalAndInsertModes(t *testing.T) {
 	m, _ := startedConversation(t, runner, false)
 	m, _ = typeAndEnter(m, "/vim on")
 
-	if !m.vimEnabled || m.vimMode != vimNormal {
-		t.Fatalf("/vim on produced enabled=%v mode=%d, want NORMAL", m.vimEnabled, m.vimMode)
+	if !m.vim.enabled || m.vim.mode != vimNormal {
+		t.Fatalf("/vim on produced enabled=%v mode=%d, want NORMAL", m.vim.enabled, m.vim.mode)
 	}
 	if view := stripANSI(m.View()); !strings.Contains(view, "NORMAL") || !strings.Contains(view, "i/a insert") {
 		t.Fatalf("normal-mode UI is not dynamic:\n%s", view)
@@ -40,15 +40,15 @@ func TestVimCommandEnablesDynamicNormalAndInsertModes(t *testing.T) {
 	}
 
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if m.vimMode != vimNormal {
+	if m.vim.mode != vimNormal {
 		t.Fatal("Esc did not return to NORMAL")
 	}
 }
 
 func TestVimNormalMotionsDeleteLineAndUndo(t *testing.T) {
 	m := sizedConversation(t, 80, 24)
-	m.vimEnabled = true
-	m.vimMode = vimNormal
+	m.vim.enabled = true
+	m.vim.mode = vimNormal
 	m.input.SetValue("alpha beta\nsecond line")
 	m.moveCursorTo(0, 0)
 
@@ -62,7 +62,7 @@ func TestVimNormalMotionsDeleteLineAndUndo(t *testing.T) {
 	}
 
 	m, _ = m.Update(keyRune('d'))
-	if m.vimPending != "d" {
+	if m.vim.pending.kind != vimPendingOperator || m.vim.pending.operator != 'd' {
 		t.Fatal("first d did not enter pending operator state")
 	}
 	m, _ = m.Update(keyRune('d'))
@@ -77,8 +77,8 @@ func TestVimNormalMotionsDeleteLineAndUndo(t *testing.T) {
 
 func TestVimInsertSessionUndoesAsOneEdit(t *testing.T) {
 	m := sizedConversation(t, 80, 24)
-	m.vimEnabled = true
-	m.vimMode = vimNormal
+	m.vim.enabled = true
+	m.vim.mode = vimNormal
 	m.input.SetValue("base")
 	m.input.CursorEnd()
 
@@ -99,8 +99,8 @@ func TestVimInsertSessionUndoesAsOneEdit(t *testing.T) {
 func TestVimNormalEnterSubmitsDraft(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	m, _ := startedConversation(t, runner, false)
-	m.vimEnabled = true
-	m.vimMode = vimNormal
+	m.vim.enabled = true
+	m.vim.mode = vimNormal
 	m.input.SetValue("send from normal")
 
 	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -116,11 +116,11 @@ func TestVimNormalEnterSubmitsDraft(t *testing.T) {
 func TestVimCanBeDisabledFromSlashCommand(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	m, _ := startedConversation(t, runner, false)
-	m.vimEnabled = true
-	m.vimMode = vimInsert
+	m.vim.enabled = true
+	m.vim.mode = vimInsert
 	m, _ = typeAndEnter(m, "/vim off")
 
-	if m.vimEnabled {
+	if m.vim.enabled {
 		t.Fatal("/vim off left Vim enabled")
 	}
 	m, _ = m.Update(keyRune('x'))
@@ -131,12 +131,12 @@ func TestVimCanBeDisabledFromSlashCommand(t *testing.T) {
 
 func TestVimNormalSlashEntersInsertMode(t *testing.T) {
 	m := sizedConversation(t, 80, 24)
-	m.vimEnabled = true
-	m.vimMode = vimNormal
+	m.vim.enabled = true
+	m.vim.mode = vimNormal
 
 	m, _ = m.Update(keyRune('/'))
-	if m.vimMode != vimInsert {
-		t.Fatalf("slash left Vim in mode %d, want INSERT", m.vimMode)
+	if m.vim.mode != vimInsert {
+		t.Fatalf("slash left Vim in mode %d, want INSERT", m.vim.mode)
 	}
 	if got := m.input.Value(); got != "/" {
 		t.Fatalf("slash input = %q, want /", got)
@@ -145,8 +145,8 @@ func TestVimNormalSlashEntersInsertMode(t *testing.T) {
 
 func TestVimInsertSupportsExplicitNewline(t *testing.T) {
 	m := sizedConversation(t, 80, 24)
-	m.vimEnabled = true
-	m.vimMode = vimNormal
+	m.vim.enabled = true
+	m.vim.mode = vimNormal
 	m.input.SetValue("first")
 	m.moveCursorToOffset(len([]rune("first")))
 
@@ -163,8 +163,8 @@ func TestVimInsertSupportsExplicitNewline(t *testing.T) {
 
 func TestVimVisualDeleteAndPasteUsesInternalRegister(t *testing.T) {
 	m := sizedConversation(t, 80, 24)
-	m.vimEnabled = true
-	m.vimMode = vimNormal
+	m.vim.enabled = true
+	m.vim.mode = vimNormal
 	m.input.SetValue("alpha beta")
 	m.moveCursorToOffset(0)
 
@@ -188,7 +188,7 @@ func TestPlainComposerSelectAllAndPasteReplacesSelection(t *testing.T) {
 	m.moveCursorToOffset(0)
 
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
-	if !m.selectionActive {
+	if !m.editor.selectionActive() {
 		t.Fatal("Ctrl+A did not create a selection")
 	}
 	m, _ = m.Update(clipboardPasteMsg{text: "new text"})

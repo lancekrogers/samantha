@@ -67,17 +67,10 @@ type conversationModel struct {
 	voiceFailures   int
 	quitting        bool
 
-	commandQuery      string
-	commandSelection  int
-	vimEnabled        bool
-	vimMode           vimInputMode
-	vimPending        string
-	vimUndo           []composerSnapshot
-	vimRegister       string
-	vimRegisterLine   bool
-	selectionActive   bool
-	selectionAnchor   int
-	selectionLinewise bool
+	commandQuery     string
+	commandSelection int
+	editor           editorBuffer
+	vim              vimState
 }
 
 func newConversation(agentName string) conversationModel {
@@ -137,16 +130,17 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		m.syncEditorFromTextarea()
 		// Page keys scroll history. Editing keys stay with the always-focused
 		// composer so multiline drafting never needs a mode switch.
 		switch msg.String() {
 		case "ctrl+v", "ctrl+shift+v", "shift+insert":
-			return m, readClipboard()
+			return m, readClipboard(m.clipboard())
 		case "ctrl+a":
 			m.selectAll()
 			return m, nil
 		case "ctrl+x":
-			if m.selectionActive {
+			if m.editor.selectionActive() {
 				m.cutSelection()
 				return m, nil
 			}
@@ -159,12 +153,12 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 			m.activityFocused = !m.activityFocused
 			return m, nil
 		case "esc":
-			if m.vimMode == vimVisual {
+			if m.vim.mode == vimVisual {
 				m.enterVimNormal()
 				return m, nil
 			}
-			if m.selectionActive {
-				m.clearSelection()
+			if m.editor.selectionActive() {
+				m.editor.clearSelection()
 				return m, nil
 			}
 			if m.activityFocused {
@@ -204,8 +198,8 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 		if msg.String() == "enter" {
 			return m, m.handleSubmit()
 		}
-		if m.vimEnabled {
-			switch m.vimMode {
+		if m.vim.enabled {
+			switch m.vim.mode {
 			case vimNormal:
 				return m, m.handleVimNormalKey(msg)
 			case vimVisual:
@@ -574,7 +568,7 @@ func (m conversationModel) View() string {
 	footerHelp := m.vimFooterHelp()
 	footerText := footerLeft
 	switch {
-	case m.vimEnabled:
+	case m.vim.enabled:
 		// Modal controls are the primary interaction contract. Keep them visible
 		// at medium widths, then include device state when the terminal has room.
 		compactHelp := "  " + m.vimCompactFooterHelp()

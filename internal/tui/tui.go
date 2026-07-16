@@ -105,7 +105,7 @@ type quitMsg struct{}
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" && a.screen == screenConversation && a.conversation.selectionActive {
+		if msg.String() == "ctrl+c" && a.screen == screenConversation && a.conversation.editor.selectionActive() {
 			a.conversation.copySelection()
 			return a, nil
 		}
