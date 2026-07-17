@@ -315,11 +315,25 @@ func expandHome(path, home string) string {
 	if home == "" {
 		return path
 	}
+	sep := string(filepath.Separator)
+	// Bare "~" means "inside home" for completion (list/complete children).
 	if path == "~" {
-		return home
+		return home + sep
 	}
-	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~"+string(filepath.Separator)) {
-		return filepath.Join(home, path[2:])
+	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~"+sep) {
+		rest := path[2:]
+		// filepath.Join cleans and drops trailing separators. Preserve a trailing
+		// separator so splitPathForCompletion treats "~/dir/" as "list inside
+		// dir" rather than "complete the name dir" (which re-matches only dir).
+		trailing := strings.HasSuffix(path, "/") || strings.HasSuffix(path, sep)
+		if rest == "" {
+			return home + sep
+		}
+		expanded := filepath.Join(home, rest)
+		if trailing && !strings.HasSuffix(expanded, sep) {
+			expanded += sep
+		}
+		return expanded
 	}
 	return path
 }
