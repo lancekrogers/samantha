@@ -11,13 +11,20 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/api"
+
+	"github.com/lancekrogers/samantha/internal/skills"
 )
 
 // maxToolIterations prevents infinite tool call loops.
 const maxToolIterations = 10
 
+// skillBodyMaxBytes caps read_skill output (same budget as read_file).
+const skillBodyMaxBytes = 32 * 1024
+
 // voiceAssistantTools returns the tool definitions for the Ollama agent.
-func voiceAssistantTools() api.Tools {
+// When catalog is non-empty, read_skill is included so the model can load a
+// skill body on demand (progressive disclosure).
+func voiceAssistantTools(catalog []skills.Skill) api.Tools {
 	props := func(fields map[string]api.ToolProperty) *api.ToolPropertiesMap {
 		m := api.NewToolPropertiesMap()
 		for k, v := range fields {
@@ -26,7 +33,7 @@ func voiceAssistantTools() api.Tools {
 		return m
 	}
 
-	return api.Tools{
+	tools := api.Tools{
 		{
 			Type: "function",
 			Function: api.ToolFunction{
@@ -100,10 +107,32 @@ func voiceAssistantTools() api.Tools {
 			},
 		},
 	}
+
+	if len(catalog) > 0 {
+		tools = append(tools, api.Tool{
+			Type: "function",
+			Function: api.ToolFunction{
+				Name:        "read_skill",
+				Description: "Load the full instructions for a named Agent Skill. Call this when a skill from the Available skills list is relevant, then follow its body. Bundled scripts live under the skill directory returned with the body.",
+				Parameters: api.ToolFunctionParameters{
+					Type:     "object",
+					Required: []string{"name"},
+					Properties: props(map[string]api.ToolProperty{
+						"name": {
+							Type:        api.PropertyType{"string"},
+							Description: "Skill name as advertised in the Available skills list.",
+						},
+					}),
+				},
+			},
+		})
+	}
+	return tools
 }
 
 // executeTool runs a tool call and returns the result as a string.
-func executeTool(ctx context.Context, workDir string, call api.ToolCall) string {
+// catalog is used by read_skill; other tools ignore it.
+func executeTool(ctx context.Context, workDir string, call api.ToolCall, catalog []skills.Skill) string {
 	args := call.Function.Arguments.ToMap()
 
 	switch call.Function.Name {
@@ -115,9 +144,31 @@ func executeTool(ctx context.Context, workDir string, call api.ToolCall) string 
 		return toolWriteFile(workDir, args)
 	case "run_command":
 		return toolRunCommand(ctx, workDir, args)
+	case "read_skill":
+		return toolReadSkill(catalog, args)
 	default:
 		return fmt.Sprintf("unknown tool: %s", call.Function.Name)
 	}
+}
+
+// toolReadSkill returns the capped skill body and skill directory for scripts.
+func toolReadSkill(catalog []skills.Skill, args map[string]any) string {
+	name, _ := args["name"].(string)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "error: name is required"
+	}
+	for _, s := range catalog {
+		if s.Name != name {
+			continue
+		}
+		body := s.Body
+		if len(body) > skillBodyMaxBytes {
+			body = body[:skillBodyMaxBytes] + "\n... (truncated)"
+		}
+		return fmt.Sprintf("Skill %q (directory: %s)\n\n%s", s.Name, s.Dir, body)
+	}
+	return fmt.Sprintf("error: unknown skill %q", name)
 }
 
 func resolvePath(workDir, path string) string {

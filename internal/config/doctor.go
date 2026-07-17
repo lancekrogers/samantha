@@ -89,6 +89,23 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 				Remediation: "set voice_tools_enabled=true in config, or VOICE_TOOLS_ENABLED=true",
 			})
 		}
+		if cfg.SkillsEnabled {
+			dir := cfg.SkillsDir
+			if dir == "" {
+				dir = SkillsDir()
+			}
+			diags = append(diags, Diagnostic{
+				Name:     "skills",
+				Severity: SeverityOK,
+				Detail:   fmt.Sprintf("skills_enabled=true (dir %s)", dir),
+			})
+		} else {
+			diags = append(diags, Diagnostic{
+				Name:     "skills",
+				Severity: SeverityOK,
+				Detail:   "skills_enabled=false (Agent Skills not advertised to Ollama)",
+			})
+		}
 	}
 
 	// whisper.cpp shells out to an external CLI; check it only when selected.
