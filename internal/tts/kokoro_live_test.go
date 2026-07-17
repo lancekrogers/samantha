@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -18,11 +19,15 @@ import (
 	"github.com/lancekrogers/samantha/internal/textclean"
 )
 
-// Live Kokoro regression: real model, real WAV metrics.
+// Live Kokoro regression: real model, real WAV metrics, real skip logs.
 //
+//	just test kokoro-contractions
 //	go test -tags=integration ./internal/tts/ -run LiveKokoro -count=1 -timeout 5m -v
 //
 // Skips when the Kokoro pack is not installed (CI without model cache).
+//
+// The U+0329 "Skip unknown phonemes" lines only appear for the intentional
+// stock-token control synths. Production / aliased tokens must log zero skips.
 
 func TestLiveKokoroContractionsProduceFullAudio(t *testing.T) {
 	cfg := requireKokoroLive(t)
@@ -49,10 +54,33 @@ func TestLiveKokoroContractionsProduceFullAudio(t *testing.T) {
 	}
 
 	stockTokens := filepath.Join(modelsDir, "tokens.txt")
-	// "wasn't" alone: stock tokens drop syllabic-n; aliased tokens keep it.
-	stockWasnt := synthPCM(t, modelsDir, stockTokens, "wasn't", 10, 0.95)
-	aliasWasnt := synthPCM(t, modelsDir, tokensPath, "wasn't", 10, 0.95)
-	wasNot := synthPCM(t, modelsDir, tokensPath, "was not", 10, 0.95)
+
+	// --- Control: stock tokens clip "wasn't" and log U+0329 skips (captured).
+	var stockWasnt []float32
+	stockLog, err := withCapturedStderr(func() {
+		stockWasnt = synthPCM(t, modelsDir, stockTokens, "wasn't", 10, 0.95)
+	})
+	if err != nil && runtime.GOOS != "windows" {
+		t.Fatalf("capture stock stderr: %v", err)
+	}
+	stockSkips := strings.Count(stockLog, `\U+0329`) + strings.Count(stockLog, "U+0329")
+	if runtime.GOOS != "windows" && stockSkips < 1 {
+		t.Fatalf("stock tokens must log ≥1 U+0329 skip for wasn't (got %d); log=%q", stockSkips, stockLog)
+	}
+
+	// --- Fix path: aliased tokens keep the phone; zero U+0329 skips.
+	var aliasWasnt, wasNot []float32
+	aliasLog, err := withCapturedStderr(func() {
+		aliasWasnt = synthPCM(t, modelsDir, tokensPath, "wasn't", 10, 0.95)
+		wasNot = synthPCM(t, modelsDir, tokensPath, "was not", 10, 0.95)
+	})
+	if err != nil && runtime.GOOS != "windows" {
+		t.Fatalf("capture alias stderr: %v", err)
+	}
+	aliasSkips := strings.Count(aliasLog, `\U+0329`) + strings.Count(aliasLog, "U+0329")
+	if runtime.GOOS != "windows" && aliasSkips != 0 {
+		t.Fatalf("aliased tokens still skip U+0329 (%d times); log=%q", aliasSkips, aliasLog)
+	}
 
 	writeWAV(t, filepath.Join(outDir, "wasnt-stock.wav"), 24000, stockWasnt)
 	writeWAV(t, filepath.Join(outDir, "wasnt-alias.wav"), 24000, aliasWasnt)
@@ -62,8 +90,7 @@ func TestLiveKokoroContractionsProduceFullAudio(t *testing.T) {
 		t.Fatalf("aliased wasn't (%d samples) must be longer than stock clipped wasn't (%d samples); syllabic-n alias not working",
 			len(aliasWasnt), len(stockWasnt))
 	}
-	// Aliased contraction should be in the same ballpark as the expanded form
-	// (human contraction, not a clipped stump and not a different sentence).
+	// Aliased contraction should be in the same ballpark as the expanded form.
 	ratio := float64(len(aliasWasnt)) / float64(len(wasNot))
 	if ratio < 0.90 || ratio > 1.15 {
 		t.Fatalf("wasn't/was-not sample ratio = %.3f (alias=%d wasNot=%d); want ~1.0 ±15%%",
@@ -79,14 +106,24 @@ func TestLiveKokoroContractionsProduceFullAudio(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	t.Cleanup(cancel)
-	samples, sr := synthesizeRequest(t, ctx, k, phrase)
+
+	var samples []float32
+	var sr int
+	prodLog, err := withCapturedStderr(func() {
+		samples, sr = synthesizeRequest(t, ctx, k, phrase)
+	})
+	if err != nil && runtime.GOOS != "windows" {
+		t.Fatalf("capture production stderr: %v", err)
+	}
+	prodSkips := strings.Count(prodLog, `\U+0329`) + strings.Count(prodLog, "U+0329")
+	if runtime.GOOS != "windows" && prodSkips != 0 {
+		t.Fatalf("NewKokoroTTS still skips U+0329 (%d times) on contraction phrase; log=%q", prodSkips, prodLog)
+	}
 	writeWAV(t, filepath.Join(outDir, "phrase-contractions.wav"), sr, samples)
 
 	if sr != 24000 {
 		t.Fatalf("sample rate = %d, want 24000", sr)
 	}
-	// ~3.8s measured with alias. Require substantial speech energy and duration.
-	// (Do not use crackle MidSilence on natural speech — pauses are normal.)
 	dur := float64(len(samples)) / float64(sr)
 	if dur < 3.0 {
 		t.Fatalf("phrase duration = %.2fs, want ≥ 3.0s (got %d samples); contractions may be clipped", dur, len(samples))
@@ -96,21 +133,23 @@ func TestLiveKokoroContractionsProduceFullAudio(t *testing.T) {
 		t.Fatalf("phrase RMS = %g, want audible speech", rms)
 	}
 
-	// Same phrase through stock tokens (clipped) must be shorter than production path.
-	stockPhrase := synthPCM(t, modelsDir, stockTokens, phrase, 10, 0.95)
+	// Same phrase through stock tokens (clipped) must be shorter than production.
+	var stockPhrase []float32
+	_, _ = withCapturedStderr(func() {
+		stockPhrase = synthPCM(t, modelsDir, stockTokens, phrase, 10, 0.95)
+	})
 	writeWAV(t, filepath.Join(outDir, "phrase-stock-tokens.wav"), 24000, stockPhrase)
 	if len(samples) <= len(stockPhrase) {
 		t.Fatalf("production phrase (%d samples) must exceed stock-token phrase (%d); alias not applied in NewKokoroTTS",
 			len(samples), len(stockPhrase))
 	}
 
-	t.Logf("ok: stock wasn't=%d alias wasn't=%d was-not=%d phrase=%.2fs (stock phrase samples=%d) rms=%.4f tokens=%s wavs=%s",
-		len(stockWasnt), len(aliasWasnt), len(wasNot), dur, len(stockPhrase), rms, tokensPath, outDir)
+	t.Logf("ok: stock wasn't=%d (skips=%d) alias wasn't=%d (skips=%d) was-not=%d phrase=%.2fs prod_skips=%d stock_phrase=%d rms=%.4f tokens=%s wavs=%s",
+		len(stockWasnt), stockSkips, len(aliasWasnt), aliasSkips, len(wasNot), dur, prodSkips, len(stockPhrase), rms, tokensPath, outDir)
 }
 
 func TestLiveKokoroHealthyContractionsUnchanged(t *testing.T) {
-	// Guards against reintroducing broad n't rewrites. Only needs models for
-	// synth smoke; orthography check is free.
+	// Guards against reintroducing broad n't rewrites.
 	_ = requireKokoroLive(t)
 
 	keep := []string{
@@ -132,11 +171,19 @@ func TestLiveKokoroHealthyContractionsUnchanged(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	t.Cleanup(cancel)
 
-	// Smoke: each form produces non-trivial audio under the production path.
-	for _, word := range []string{"isn't", "don't", "won't", "can't", "wasn't"} {
-		samples, sr := synthesizeRequest(t, ctx, k, word)
-		if len(samples) < sr/4 { // < 250 ms is almost certainly broken
-			t.Errorf("%q produced only %d samples (%.0f ms)", word, len(samples), 1000*float64(len(samples))/float64(sr))
+	// Smoke: each form produces non-trivial audio under the production path
+	// with zero U+0329 skips (captured on non-windows).
+	log, capErr := withCapturedStderr(func() {
+		for _, word := range []string{"isn't", "don't", "won't", "can't", "wasn't"} {
+			samples, sr := synthesizeRequest(t, ctx, k, word)
+			if len(samples) < sr/4 { // < 250 ms is almost certainly broken
+				t.Errorf("%q produced only %d samples (%.0f ms)", word, len(samples), 1000*float64(len(samples))/float64(sr))
+			}
+		}
+	})
+	if capErr == nil && runtime.GOOS != "windows" {
+		if n := strings.Count(log, `\U+0329`) + strings.Count(log, "U+0329"); n != 0 {
+			t.Fatalf("healthy contraction smoke still skips U+0329 (%d): %s", n, log)
 		}
 	}
 }
@@ -192,7 +239,6 @@ func synthPCM(t *testing.T, modelsDir, tokensPath, text string, sid int, speed f
 	if audioRes == nil || len(audioRes.Samples) == 0 {
 		t.Fatalf("Generate(%q) returned empty audio", text)
 	}
-	// Copy — sherpa may reuse buffers.
 	out := make([]float32, len(audioRes.Samples))
 	copy(out, audioRes.Samples)
 	return out
