@@ -114,16 +114,62 @@ func runTailscaleCert(domain, certPath, keyPath string) error {
 	cmd.Stderr = &stderr
 	cmd.Stdout = &stderr
 	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
+		msg := cleanTailscaleCLIOutput(stderr.String())
 		if msg == "" {
 			msg = err.Error()
 		}
-		return fmt.Errorf("tailscale cert %s: %s\n  (HTTPS for iOS Safari needs a real cert; enable HTTPS certs in the Tailscale admin console if needed)", domain, msg)
+		return fmt.Errorf("tailscale cert %s: %s", domain, msg)
 	}
 	// Restrict key perms even if the CLI left them wider.
 	_ = os.Chmod(certPath, 0o600)
 	_ = os.Chmod(keyPath, 0o600)
 	return nil
+}
+
+// cleanTailscaleCLIOutput drops noisy version-skew warnings so the real failure
+// (e.g. "account does not support getting TLS certs") is readable in the TUI.
+func cleanTailscaleCLIOutput(raw string) string {
+	var keep []string
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		if strings.HasPrefix(lower, "warning: client version") {
+			continue
+		}
+		keep = append(keep, line)
+	}
+	return strings.TrimSpace(strings.Join(keep, " "))
+}
+
+// summarizeTailscaleCertError returns a short, actionable reason for the banner
+// and TUI when falling back to self-signed TLS.
+func summarizeTailscaleCertError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+	switch {
+	case strings.Contains(lower, "does not support getting tls certs"),
+		strings.Contains(lower, "does not support getting tls certificates"):
+		return "tailnet cannot mint HTTPS certs (enable HTTPS Certificates in admin console, or stay on self-signed)"
+	case strings.Contains(lower, "https certificates"),
+		strings.Contains(lower, "cert is not allowed"):
+		return "HTTPS Certificates not enabled for this tailnet"
+	case strings.Contains(lower, "executable file not found"),
+		strings.Contains(lower, "not found in $path"):
+		return "tailscale CLI not found on PATH"
+	default:
+		// Keep it one line for TUI width.
+		msg = strings.ReplaceAll(msg, "\n", " ")
+		if len(msg) > 160 {
+			msg = msg[:157] + "…"
+		}
+		return msg
+	}
 }
 
 // publicServeURL builds the URL phones should open (MagicDNS host preferred).

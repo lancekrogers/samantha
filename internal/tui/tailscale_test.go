@@ -18,7 +18,7 @@ import (
 func TestTailscaleModelParsesConnectionDetailsAndHidesToken(t *testing.T) {
 	m := newTailscale(context.Background(), nil)
 	m.width, m.height = 100, 24
-	m.consumeLine("\x1b[36mOpen on phone:\x1b[0m https://mac.tailnet.ts.net:7262/")
+	m.consumeLine("\x1b[36mOpen on client:\x1b[0m https://mac.tailnet.ts.net:7262/")
 	m.consumeLine("Pairing code: 042917  (expires 12:34:56)")
 	m.consumeLine("Token: this-must-not-be-rendered")
 
@@ -29,7 +29,7 @@ func TestTailscaleModelParsesConnectionDetailsAndHidesToken(t *testing.T) {
 		t.Fatalf("pairing = %q", m.pairing)
 	}
 	view := stripANSI(m.View())
-	for _, want := range []string{"Ready on your tailnet", m.url, m.pairing, "Pair → Start → hold Talk"} {
+	for _, want := range []string{"Ready on your tailnet", m.url, m.pairing, "Pair → Start → hold Talk", "Remote over Tailscale"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("Tailscale view missing %q:\n%s", want, view)
 		}
@@ -78,6 +78,23 @@ func TestTailscaleModelExplainsExistingServerConflict(t *testing.T) {
 	m.consumeLine("listen tcp 100.72.165.77:7262: bind: address already in use")
 	if m.status != "Port 7262 is already in use" || !strings.Contains(m.detail, "existing `samantha serve`") {
 		t.Fatalf("conflict status/detail = %q / %q", m.status, m.detail)
+	}
+}
+
+func TestTailscaleModelSoftCertFallback(t *testing.T) {
+	m := newTailscale(context.Background(), nil)
+	m.consumeLine("Tailscale cert: unavailable — using self-signed TLS")
+	m.consumeLine("Reason: tailnet cannot mint HTTPS certs (enable HTTPS Certificates in admin console, or stay on self-signed)")
+	if m.status != "Starting with self-signed TLS" {
+		t.Fatalf("status = %q", m.status)
+	}
+	if !strings.Contains(m.detail, "cannot mint HTTPS certs") {
+		t.Fatalf("detail = %q", m.detail)
+	}
+	// Still becomes ready when the URL appears.
+	m.consumeLine("Open on client: https://mac-studio.tail37114b.ts.net:7262/")
+	if m.status != "Ready on your tailnet" || m.url == "" {
+		t.Fatalf("after URL status/url = %q / %q", m.status, m.url)
 	}
 }
 
@@ -197,7 +214,7 @@ func TestTailscaleHelperProcess(t *testing.T) {
 		fmt.Println("server stopped")
 		os.Exit(0)
 	}
-	fmt.Println("Open on phone: https://mac.tailnet.ts.net:7262/")
+	fmt.Println("Open on client: https://mac.tailnet.ts.net:7262/")
 	fmt.Println("Pairing code: 654321  (expires 12:34:56)")
 	// The subprocess must terminate without running the parent test suite.
 	os.Exit(0)

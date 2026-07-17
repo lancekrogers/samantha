@@ -3,11 +3,13 @@ package netapi
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -351,6 +353,47 @@ func TestLoadExternalTLSCertificate(t *testing.T) {
 	}
 	if second.Fingerprint != first.Fingerprint {
 		t.Fatalf("fingerprint mismatch: %s vs %s", second.Fingerprint, first.Fingerprint)
+	}
+}
+
+func TestLoadCredentialsWithIdentitySANs(t *testing.T) {
+	dir := t.TempDir()
+	id := CertIdentity{
+		DNSNames: []string{"mac-studio.tail37114b.ts.net"},
+		IPs:      []net.IP{net.ParseIP("100.72.165.77")},
+	}
+	creds, err := LoadOrCreateCredentialsWithIdentity(dir, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if creds.ExternalTLS {
+		t.Fatal("self-signed should not be ExternalTLS")
+	}
+	leaf, err := x509.ParseCertificate(creds.Certificate.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundDNS, foundIP := false, false
+	for _, name := range leaf.DNSNames {
+		if name == "mac-studio.tail37114b.ts.net" {
+			foundDNS = true
+		}
+	}
+	for _, ip := range leaf.IPAddresses {
+		if ip.Equal(net.ParseIP("100.72.165.77")) {
+			foundIP = true
+		}
+	}
+	if !foundDNS || !foundIP {
+		t.Fatalf("SANs missing MagicDNS/IP: dns=%v ips=%v", leaf.DNSNames, leaf.IPAddresses)
+	}
+	// Existing cert must not rotate when identity is requested again.
+	again, err := LoadOrCreateCredentialsWithIdentity(dir, CertIdentity{DNSNames: []string{"other.example"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Fingerprint != creds.Fingerprint {
+		t.Fatal("identity reload rewrote existing cert fingerprint")
 	}
 }
 
