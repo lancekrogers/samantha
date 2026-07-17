@@ -361,10 +361,15 @@ func (m *tailscaleModel) consumeLine(line string) {
 	if clean == "" {
 		return
 	}
-	if value, ok := tailscaleField(clean, "Open on phone:"); ok {
-		m.url = value
-		m.status = "Ready on your tailnet"
-		m.detail = "Open the URL on your iPad, pair, then tap Start"
+	// Prefer the client-facing URL labels serve prints (legacy "Open on phone"
+	// kept for older binaries / log replay).
+	for _, label := range []string{"Open on client:", "Open on phone:"} {
+		if value, ok := tailscaleField(clean, label); ok {
+			m.url = value
+			m.status = "Ready on your tailnet"
+			m.detail = "Open the URL on any tailnet device, pair, then Start"
+			break
+		}
 	}
 	if value, ok := tailscaleField(clean, "Pairing code:"); ok {
 		m.pairing = strings.Fields(value)[0]
@@ -375,6 +380,17 @@ func (m *tailscaleModel) consumeLine(line string) {
 	if strings.Contains(strings.ToLower(clean), "address already in use") {
 		m.status = "Port 7262 is already in use"
 		m.detail = "Stop the existing `samantha serve` process, then press r"
+	}
+	// Soft cert fallback: serve keeps running on self-signed TLS.
+	if strings.Contains(clean, "unavailable — using self-signed TLS") ||
+		strings.Contains(clean, "unavailable - using self-signed TLS") {
+		if m.status != "Ready on your tailnet" {
+			m.status = "Starting with self-signed TLS"
+		}
+		m.detail = "Tailscale HTTPS cert unavailable; remote clients still work over the tailnet"
+	}
+	if value, ok := tailscaleField(clean, "Reason:"); ok && m.url == "" {
+		m.detail = value
 	}
 
 	// Never mirror the long-lived bearer token into the TUI. The short-lived,
@@ -430,9 +446,9 @@ func (m tailscaleModel) View() string {
 	}
 
 	var b strings.Builder
-	title := titleStyle.Render("  iPad over Tailscale")
+	title := titleStyle.Render("  Remote over Tailscale")
 	if compact {
-		title = headerStyle.Render("  iPad over Tailscale")
+		title = headerStyle.Render("  Remote over Tailscale")
 	}
 	b.WriteString(line(title))
 	b.WriteString("\n")
@@ -445,7 +461,7 @@ func (m tailscaleModel) View() string {
 
 	if m.url != "" {
 		b.WriteString("\n")
-		b.WriteString(line("  Open on iPad: " + selectedStyle.Render(m.url)))
+		b.WriteString(line("  Open on client: " + selectedStyle.Render(m.url)))
 		b.WriteString("\n")
 	}
 	if m.pairing != "" {
@@ -453,7 +469,7 @@ func (m tailscaleModel) View() string {
 		b.WriteString("\n")
 	}
 	if m.url != "" && !compact {
-		b.WriteString(line("  " + dimStyle.Render("On iPad: Pair → Start → hold Talk")))
+		b.WriteString(line("  " + dimStyle.Render("Any tailnet device: Pair → Start → hold Talk")))
 		b.WriteString("\n")
 	}
 

@@ -61,7 +61,7 @@ func newLauncher(cfg *config.Config, providers []discovery.ProviderInfo, saved .
 		m.items = append(m.items, launcherItem{label: "Browse sessions", action: actionSessions})
 	}
 	m.items = append(m.items,
-		launcherItem{label: "Use on iPad (Tailscale)", action: actionTailscale},
+		launcherItem{label: "Remote over Tailscale", action: actionTailscale},
 		launcherItem{label: "Create audiobook", action: actionAudiobook},
 		launcherItem{label: "Settings", action: actionSettings},
 		launcherItem{label: "Quit", action: actionQuit},

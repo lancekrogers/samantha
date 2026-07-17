@@ -65,11 +65,26 @@ const (
 	keyFile   = "key.pem"
 )
 
+// CertIdentity supplies optional DNS names and IPs embedded as SANs when a
+// new self-signed certificate is minted. Existing cert files are never
+// rewritten (fingerprint stays stable for TOFU clients).
+type CertIdentity struct {
+	DNSNames []string
+	IPs      []net.IP
+}
+
 // LoadOrCreateCredentials loads the serve token and a self-signed TLS
 // certificate from dir, generating any that are missing. Secrets are stored
 // 0600 and never land in the YAML config.
 func LoadOrCreateCredentials(dir string) (*Credentials, error) {
-	return loadCredentials(dir, "", "")
+	return loadCredentials(dir, "", "", CertIdentity{})
+}
+
+// LoadOrCreateCredentialsWithIdentity is like LoadOrCreateCredentials but
+// stamps MagicDNS / bind IPs into a newly generated self-signed cert so
+// browsers opening the public URL see a matching name.
+func LoadOrCreateCredentialsWithIdentity(dir string, id CertIdentity) (*Credentials, error) {
+	return loadCredentials(dir, "", "", id)
 }
 
 // LoadOrCreateCredentialsWithTLS loads the serve token from dir and a
@@ -79,10 +94,10 @@ func LoadOrCreateCredentialsWithTLS(dir, certPath, keyPath string) (*Credentials
 	if (certPath == "") != (keyPath == "") {
 		return nil, fmt.Errorf("both --tls-cert and --tls-key are required when loading an external certificate")
 	}
-	return loadCredentials(dir, certPath, keyPath)
+	return loadCredentials(dir, certPath, keyPath, CertIdentity{})
 }
 
-func loadCredentials(dir, externalCert, externalKey string) (*Credentials, error) {
+func loadCredentials(dir, externalCert, externalKey string, id CertIdentity) (*Credentials, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create serve credentials dir: %w", err)
 	}
@@ -115,7 +130,7 @@ func loadCredentials(dir, externalCert, externalKey string) (*Credentials, error
 	if certPath == "" {
 		certPath, keyPath = filepath.Join(dir, certFile), filepath.Join(dir, keyFile)
 		if _, err := os.Stat(certPath); os.IsNotExist(err) {
-			if err := generateSelfSignedCert(certPath, keyPath); err != nil {
+			if err := generateSelfSignedCert(certPath, keyPath, id); err != nil {
 				return nil, err
 			}
 		}
@@ -272,7 +287,7 @@ func (c *Credentials) VerifyRequest(r *http.Request) bool {
 // generateSelfSignedCert writes a fresh ECDSA P-256 certificate for the
 // trust-on-first-use model: clients pin the fingerprint at pairing time, so
 // SANs are a convenience, not the trust anchor.
-func generateSelfSignedCert(certPath, keyPath string) error {
+func generateSelfSignedCert(certPath, keyPath string, id CertIdentity) error {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return fmt.Errorf("generate TLS key: %w", err)
@@ -284,6 +299,25 @@ func generateSelfSignedCert(certPath, keyPath string) error {
 	}
 
 	hostname, _ := os.Hostname()
+	dnsNames := []string{"localhost"}
+	if hostname != "" {
+		dnsNames = append(dnsNames, hostname)
+	}
+	for _, name := range id.DNSNames {
+		name = strings.TrimSpace(strings.TrimSuffix(name, "."))
+		if name == "" || containsString(dnsNames, name) {
+			continue
+		}
+		dnsNames = append(dnsNames, name)
+	}
+	ips := []net.IP{net.ParseIP("127.0.0.1")}
+	for _, ip := range id.IPs {
+		if ip == nil {
+			continue
+		}
+		ips = append(ips, ip)
+	}
+
 	tmpl := x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: "samantha-serve"},
@@ -292,11 +326,8 @@ func generateSelfSignedCert(certPath, keyPath string) error {
 		// ECDSA: digital signature only (KeyEncipherment is an RSA concept).
 		KeyUsage:    x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:    []string{"localhost"},
-		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
-	}
-	if hostname != "" {
-		tmpl.DNSNames = append(tmpl.DNSNames, hostname)
+		DNSNames:    dnsNames,
+		IPAddresses: ips,
 	}
 
 	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
@@ -327,4 +358,13 @@ func generateSelfSignedCert(certPath, keyPath string) error {
 	}
 
 	return nil
+}
+
+func containsString(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }

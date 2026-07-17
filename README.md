@@ -87,17 +87,18 @@ samantha --no-voice   # Voice input, text output
 
 ### Remote access (phone / another device)
 
-For an iPad or iPhone on the same tailnet, open the Samantha TUI and choose
-**Use on iPad (Tailscale)**. The TUI starts the remote server, shows the
-MagicDNS URL and pairing code, and stops the server when you leave that screen.
+Any device on the same Tailscale tailnet can use remote voice. Open the Samantha
+TUI and choose **Remote over Tailscale**. The TUI starts the remote server,
+shows the MagicDNS URL and pairing code, and stops the server when you leave
+that screen.
 
 The equivalent CLI path remains available for headless use:
 
 ```bash
-# Easiest remote voice over Tailscale (MagicDNS URL + real HTTPS cert):
+# Easiest remote access over Tailscale (MagicDNS URL; real cert when available):
 samantha serve --tailscale
 
-# LAN (self-signed TLS; iOS Safari needs a real cert — prefer --tailscale):
+# LAN (self-signed TLS; iOS Safari mic needs a real cert):
 samantha serve
 
 # Ops
@@ -105,15 +106,21 @@ samantha serve --revoke-tokens   # Invalidate the bearer; next serve mints a new
 samantha connect <host:port> --token <token>   # Debug text client
 ```
 
-On the phone: open the printed URL → enter the pairing code → **Start** →
+If `tailscale cert` is unavailable (common when HTTPS Certificates are off for
+the tailnet), serve falls back to self-signed TLS. Remote clients still work:
+accept the browser warning, or use `samantha connect`. Enable **HTTPS
+Certificates** in the Tailscale admin console for trusted certs (needed for
+iOS Safari mic without installing a custom CA).
+
+On the client: open the printed URL → enter the pairing code → **Start** →
 **Hold to Talk** (or type). Protocol for custom clients:
 [docs/serve-protocol.md](docs/serve-protocol.md).
 
 | Path | Command | Where audio lives |
 |------|---------|-------------------|
 | Full local voice | `samantha` (TUI) | This machine’s mic + speakers |
-| Remote keyboard only | Termius SSH → `samantha` | Still this machine |
-| Remote voice on phone | TUI → **Use on iPad (Tailscale)**, or `samantha serve` | Phone mic + speakers via WebSocket |
+| Remote keyboard only | Termius/SSH → `samantha` | Still this machine |
+| Remote voice (tailnet) | TUI → **Remote over Tailscale**, or `samantha serve --tailscale` | Client mic + speakers via WebSocket |
 
 ### Commands
 
@@ -142,8 +149,8 @@ samantha serve --revoke-tokens          # Rotate serve bearer token
 ### TUI controls
 
 The launcher offers the most recent conversation first, a scrollable recent
-session list, an explicit new-conversation action, and a managed Tailscale/iPad
-server screen. The remote screen exposes the URL and single-use pairing code,
+session list, an explicit new-conversation action, and a managed Tailscale
+remote server screen. The remote screen exposes the URL and single-use pairing code,
 supports copy/restart controls, and owns server shutdown. During a conversation,
 the transcript follows new messages until you scroll away from the tail. Chat
 and the activity timeline are separate full-width views, so the transcript does

@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,5 +78,25 @@ func TestPublicServeURL(t *testing.T) {
 	}
 	if got := publicServeURL("100.1.2.3", defaultServePort); !strings.Contains(got, "100.1.2.3") {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestCleanTailscaleCLIOutputDropsVersionWarning(t *testing.T) {
+	raw := "Warning: client version \"1.98.5\" != tailscaled server version \"1.98.8\"\n" +
+		"500 Internal Server Error: your Tailscale account does not support getting TLS certs\n"
+	got := cleanTailscaleCLIOutput(raw)
+	if strings.Contains(got, "Warning:") {
+		t.Fatalf("version warning still present: %q", got)
+	}
+	if !strings.Contains(got, "does not support getting TLS certs") {
+		t.Fatalf("missing real error: %q", got)
+	}
+}
+
+func TestSummarizeTailscaleCertError(t *testing.T) {
+	err := fmt.Errorf("tailscale cert mac.ts.net: 500 Internal Server Error: your Tailscale account does not support getting TLS certs")
+	got := summarizeTailscaleCertError(err)
+	if !strings.Contains(got, "cannot mint HTTPS certs") {
+		t.Fatalf("summary = %q", got)
 	}
 }

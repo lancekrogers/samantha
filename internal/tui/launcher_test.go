@@ -63,7 +63,7 @@ func TestLauncherOffersTailscaleAndOpensItsScreen(t *testing.T) {
 		if item.action != actionTailscale {
 			continue
 		}
-		if !strings.Contains(item.label, "iPad") || !strings.Contains(item.label, "Tailscale") {
+		if !strings.Contains(item.label, "Remote") || !strings.Contains(item.label, "Tailscale") {
 			t.Fatalf("Tailscale launcher label = %q", item.label)
 		}
 		m.cursor = i
