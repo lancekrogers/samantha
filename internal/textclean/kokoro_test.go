@@ -52,46 +52,30 @@ func TestPrepareKokoroTextAlsoStripsMarksFromInput(t *testing.T) {
 	}
 }
 
-func TestPrepareKokoroTextExpandsNTContractions(t *testing.T) {
-	// Hyphenating (was-n't) avoided U+0329 skips but sounded broken in
-	// audiobooks. Expansion keeps natural narration without skips.
-	in := "It wasn't, isn't, and shouldn't be noisy. Won't and can't expand too. Don't wait."
-	want := "It was not, is not, and should not be noisy. Will not and cannot expand too. Do not wait."
-
-	if got := PrepareKokoroText(in); got != want {
-		t.Fatalf("PrepareKokoroText() = %q, want %q", got, want)
+func TestPrepareKokoroTextKeepsHumanContractions(t *testing.T) {
+	// Measured on thewh1teagle v1.0: only "wasn't" emits U+0329. Other *n't
+	// forms should stay contracted so narration sounds human — not expanded
+	// to "is not" / "will not" and not hyphenated to "is-n't".
+	in := "It isn't, shouldn't, wouldn't, don't, can't, and won't change. Weren't we ready?"
+	if got := PrepareKokoroText(in); got != in {
+		t.Fatalf("PrepareKokoroText() rewrote healthy contractions:\n got %q\nwant %q", got, in)
 	}
 }
 
-func TestPrepareKokoroTextExpandsCurlyApostropheContractions(t *testing.T) {
-	in := "She wasn\u2019t ready and he wouldn\u2019t go."
-	want := "She was not ready and he would not go."
-	if got := PrepareKokoroText(in); got != want {
-		t.Fatalf("PrepareKokoroText() = %q, want %q", got, want)
-	}
-}
-
-func TestPrepareKokoroTextContractionCase(t *testing.T) {
+func TestPrepareKokoroTextNormalizesWasntOnly(t *testing.T) {
+	// wasn't → wasnt avoids the sole *n't U+0329 skip without sounding like
+	// "was not" or the broken "was-n't" hyphenation.
 	cases := map[string]string{
-		"Wasn't": "Was not",
-		"WASN'T": "WAS NOT",
-		"wasn't": "was not",
-		"Don't":  "Do not",
-		"CAN'T":  "CANNOT",
+		"It wasn't ready.":          "It wasnt ready.",
+		"Wasn't it?":                "Wasnt it?",
+		"WASN'T":                    "WASNT",
+		"She wasn\u2019t there.":    "She wasnt there.",
+		"They aren't and wasn't.":   "They aren't and wasnt.",
 	}
 	for in, want := range cases {
 		if got := PrepareKokoroText(in); got != want {
 			t.Errorf("PrepareKokoroText(%q) = %q, want %q", in, got, want)
 		}
-	}
-}
-
-func TestPrepareKokoroTextUnknownNTFallsBackToHyphen(t *testing.T) {
-	// Not in the expansion table — keep the legacy U+0329 dodge.
-	in := "They daren't try."
-	want := "They dare-n't try."
-	if got := PrepareKokoroText(in); got != want {
-		t.Fatalf("PrepareKokoroText() = %q, want %q", got, want)
 	}
 }
 
