@@ -189,6 +189,109 @@ func TestCompleteFilesystemPathTilde(t *testing.T) {
 	}
 }
 
+func TestExpandHomePreservesTrailingSlash(t *testing.T) {
+	home := "/Users/example"
+	sep := string(filepath.Separator)
+
+	cases := []struct {
+		in, want string
+	}{
+		{"~", home + sep},
+		{"~/", home + sep},
+		{"~/Downloads", home + sep + "Downloads"},
+		{"~/Downloads/", home + sep + "Downloads" + sep},
+		{"~/Downloads/book.epub", home + sep + "Downloads" + sep + "book.epub"},
+		{"/abs/path/", "/abs/path/"}, // non-tilde unchanged
+		{"plain", "plain"},
+	}
+	for _, tc := range cases {
+		got := expandHome(tc.in, home)
+		if got != tc.want {
+			t.Errorf("expandHome(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestCompleteFilesystemPathTildeTrailingSlashListsInside(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home dir")
+	}
+	// Unique dir name so listing ~/.<name>/ is unambiguous.
+	dirName := ".samantha-path-complete-list-test"
+	targetDir := filepath.Join(home, dirName)
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Skipf("cannot create under home: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(targetDir) })
+	book := filepath.Join(targetDir, "inside-book.epub")
+	if err := os.WriteFile(book, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Trailing slash must list *inside* the directory (the original PR bug:
+	// filepath.Join dropped the slash, so Tab re-completed the dir name).
+	partial := "~/" + dirName + "/"
+	got, matches := completeFilesystemPath(partial, false)
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 match inside dir, got %v (completed=%q)", matches, got)
+	}
+	if !strings.HasSuffix(got, "inside-book.epub") {
+		t.Fatalf("completed = %q, want …/inside-book.epub", got)
+	}
+	if !strings.HasPrefix(got, "~/") && !strings.HasPrefix(got, "~"+string(filepath.Separator)) {
+		t.Fatalf("expected tilde form, got %q", got)
+	}
+
+	// Bare ~/prefix for the directory should complete to the dir with trailing /.
+	dirPartial := "~/" + dirName[:len(dirName)-2] // drop last 2 chars of unique name
+	gotDir, dirMatches := completeFilesystemPath(dirPartial, true)
+	if len(dirMatches) != 1 {
+		// Name may still be unique enough; if not, skip soft.
+		if len(dirMatches) == 0 {
+			t.Fatalf("dirsOnly partial %q: no matches", dirPartial)
+		}
+	} else {
+		wantSuffix := dirName + string(filepath.Separator)
+		if !strings.HasSuffix(gotDir, wantSuffix) && !strings.HasSuffix(gotDir, dirName+"/") {
+			t.Fatalf("dir completion = %q, want suffix %q", gotDir, wantSuffix)
+		}
+	}
+}
+
+func TestCompleteFilesystemPathTildeRootListsHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home dir")
+	}
+	dirName := ".samantha-path-complete-home-root"
+	targetDir := filepath.Join(home, dirName)
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Skipf("cannot create under home: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(targetDir) })
+
+	// "~/" must list home contents, not re-match the home directory name under /Users.
+	got, matches := completeFilesystemPath("~/"+dirName[:10], true)
+	// partial prefix of dirName should uniquely complete under home.
+	_ = got
+	found := false
+	for _, m := range matches {
+		if strings.Contains(m, dirName) {
+			found = true
+			break
+		}
+	}
+	// Stronger: complete the full unique name with trailing slash intent.
+	gotFull, matchesFull := completeFilesystemPath("~/"+dirName, true)
+	if len(matchesFull) != 1 {
+		t.Fatalf("~/unique-dir matches = %v (foundPrefix=%v got=%q)", matchesFull, found, got)
+	}
+	if !strings.HasSuffix(gotFull, string(filepath.Separator)) && !strings.HasSuffix(gotFull, "/") {
+		t.Fatalf("directory completion should end with separator: %q", gotFull)
+	}
+}
+
 func TestAudiobookInputTabCompletesPath(t *testing.T) {
 	dir := t.TempDir()
 	book := filepath.Join(dir, "novel.epub")
