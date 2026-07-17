@@ -288,6 +288,90 @@ func TestModelsDirDefault(t *testing.T) {
 	}
 }
 
+func TestSkillsConfigDefaults(t *testing.T) {
+	orig := configFile
+	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")
+	defer func() { configFile = orig }()
+
+	setDefaults(v)
+	t.Setenv("SKILLS_ENABLED", "")
+	t.Setenv("SKILLS_DIR", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.SkillsEnabled {
+		t.Error("SkillsEnabled default = true, want false")
+	}
+	if cfg.SkillsDir != "" {
+		t.Errorf("SkillsDir field = %q, want empty default", cfg.SkillsDir)
+	}
+	wantDir := filepath.Join(configDir, "skills")
+	if got := SkillsDir(); got != wantDir {
+		t.Errorf("SkillsDir() = %q, want %q", got, wantDir)
+	}
+}
+
+func TestSkillsConfigEnvOverrides(t *testing.T) {
+	orig := configFile
+	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")
+	defer func() { configFile = orig }()
+
+	setDefaults(v)
+	t.Setenv("SKILLS_ENABLED", "true")
+	t.Setenv("SKILLS_DIR", "/tmp/samantha-skills")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !cfg.SkillsEnabled {
+		t.Error("SkillsEnabled = false, want true from env")
+	}
+	if cfg.SkillsDir != "/tmp/samantha-skills" {
+		t.Errorf("SkillsDir = %q, want /tmp/samantha-skills from env", cfg.SkillsDir)
+	}
+	if got := SkillsDir(); got != "/tmp/samantha-skills" {
+		t.Errorf("SkillsDir() = %q, want /tmp/samantha-skills", got)
+	}
+}
+
+func TestSkillsEnabledRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	origFile, origDir := configFile, configDir
+	configDir = dir
+	configFile = filepath.Join(dir, "config.yaml")
+	defer func() {
+		configFile = origFile
+		configDir = origDir
+	}()
+
+	setDefaults(v)
+	Set("skills_enabled", true)
+	Set("skills_dir", filepath.Join(dir, "my-skills"))
+	if err := Save(); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	// Reset and reload from disk.
+	setDefaults(v)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() after Save: %v", err)
+	}
+	if !cfg.SkillsEnabled {
+		t.Error("SkillsEnabled did not round-trip true")
+	}
+	want := filepath.Join(dir, "my-skills")
+	if cfg.SkillsDir != want {
+		t.Errorf("SkillsDir = %q, want %q after round-trip", cfg.SkillsDir, want)
+	}
+	if got := SkillsDir(); got != want {
+		t.Errorf("SkillsDir() = %q, want %q after round-trip", got, want)
+	}
+}
+
 func TestModelsDirEnvOverride(t *testing.T) {
 	orig := configFile
 	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")

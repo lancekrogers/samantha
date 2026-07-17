@@ -73,6 +73,11 @@ type Config struct {
 	Persona    string `mapstructure:"persona"`
 	PromptsDir string `mapstructure:"prompts_dir"`
 
+	// Skills (Agent Skills / SKILL.md). Opt-in; Ollama loads the catalog when
+	// SkillsEnabled is true. See internal/skills.
+	SkillsEnabled bool   `mapstructure:"skills_enabled"`
+	SkillsDir     string `mapstructure:"skills_dir"`
+
 	// General
 	Language        string `mapstructure:"language"`
 	MaxHistory      int    `mapstructure:"max_history"`
@@ -133,6 +138,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent_name", "Samantha")
 	v.SetDefault("persona", "samantha")
 	v.SetDefault("prompts_dir", "")
+	v.SetDefault("skills_enabled", false)
+	v.SetDefault("skills_dir", "")
 	v.SetDefault("models_dir", filepath.Join(homeDir(), ".cache", "samantha", "models"))
 
 	v.SetDefault("language", "en-US")
@@ -172,6 +179,8 @@ func Load() (*Config, error) {
 		"voice_tools_enabled":     "VOICE_TOOLS_ENABLED",
 		"persona":                 "PERSONA",
 		"prompts_dir":             "PROMPTS_DIR",
+		"skills_enabled":          "SKILLS_ENABLED",
+		"skills_dir":              "SKILLS_DIR",
 		"barge_in_enabled":        "BARGE_IN_ENABLED",
 		"vad_threshold":           "VAD_THRESHOLD",
 		"vad_min_speech_duration": "VAD_MIN_SPEECH_DURATION",
@@ -358,6 +367,17 @@ func PromptsDir() string {
 		return d
 	}
 	return filepath.Join(configDir, "prompts")
+}
+
+// SkillsDir returns the Agent Skills directory: the configured skills_dir when
+// set, otherwise <config_dir>/skills.
+func SkillsDir() string {
+	mu.RLock()
+	defer mu.RUnlock()
+	if d := v.GetString("skills_dir"); d != "" {
+		return d
+	}
+	return filepath.Join(configDir, "skills")
 }
 
 func homeDir() string {
