@@ -116,6 +116,65 @@ func TestCatalogSkipsDuplicateNames(t *testing.T) {
 	}
 }
 
+func TestCatalogMultiDirPrecedence(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	system := filepath.Join(root, "system")
+	writeSkill(t, filepath.Join(project, "shared"), "shared", "project wins", "project")
+	writeSkill(t, filepath.Join(system, "shared"), "shared", "system loses", "system")
+	writeSkill(t, filepath.Join(system, "only-system"), "only-system", "system only", "sys")
+
+	got, err := Loader{Dirs: []string{project, system}}.Catalog(context.Background())
+	if err != nil {
+		t.Fatalf("Catalog() error = %v", err)
+	}
+	byName := map[string]Skill{}
+	for _, s := range got {
+		byName[s.Name] = s
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d skills %v, want 2", len(got), names(got))
+	}
+	if byName["shared"].Description != "project wins" {
+		t.Errorf("shared description = %q, want project wins", byName["shared"].Description)
+	}
+	if _, ok := byName["only-system"]; !ok {
+		t.Error("missing only-system skill from second root")
+	}
+}
+
+func TestDefaultSearchPaths(t *testing.T) {
+	// Not parallel: overrides package userHomeDir.
+	home := t.TempDir()
+	restore := SetUserHomeDirForTest(func() (string, error) { return home, nil })
+	t.Cleanup(restore)
+
+	work := "/tmp/samantha-launch-dir"
+	configured := "/custom/samantha/skills"
+	got := DefaultSearchPaths(work, configured)
+	want := []string{
+		filepath.Join(work, ".claude", "skills"),
+		filepath.Join(home, ".claude", "skills"),
+		filepath.Clean(configured),
+	}
+	if len(got) != len(want) {
+		t.Fatalf("DefaultSearchPaths = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("paths[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	// Empty workDir still includes user + configured.
+	got = DefaultSearchPaths("", configured)
+	if len(got) != 2 || got[0] != filepath.Join(home, ".claude", "skills") || got[1] != filepath.Clean(configured) {
+		t.Fatalf("empty workDir paths = %v", got)
+	}
+}
+
 func writeSkill(t *testing.T, dir, name, desc, body string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {

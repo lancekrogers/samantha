@@ -2,6 +2,8 @@ package brain
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -81,13 +83,16 @@ func TestBuildMessagesOmitsSkillsWhenEmpty(t *testing.T) {
 }
 
 func TestLoadSkillsCatalogGated(t *testing.T) {
-	t.Parallel()
+	// Isolate from the developer's real ~/.claude/skills.
+	fakeHome := t.TempDir()
+	prev := skills.SetUserHomeDirForTest(func() (string, error) { return fakeHome, nil })
+	t.Cleanup(prev)
 
 	// Disabled: never load, even if a dir is set.
 	got, err := loadSkillsCatalog(context.Background(), &config.Config{
 		SkillsEnabled: false,
 		SkillsDir:     "testdata-does-not-matter",
-	})
+	}, "/tmp/project")
 	if err != nil {
 		t.Fatalf("disabled: %v", err)
 	}
@@ -95,11 +100,12 @@ func TestLoadSkillsCatalogGated(t *testing.T) {
 		t.Fatalf("disabled: got %d skills, want 0", len(got))
 	}
 
-	// Enabled with missing dir: empty catalog, not an error.
+	// Enabled with empty project and only a missing configured dir: empty catalog.
+	missingRoot := t.TempDir()
 	got, err = loadSkillsCatalog(context.Background(), &config.Config{
 		SkillsEnabled: true,
-		SkillsDir:     t.TempDir() + "/missing-skills",
-	})
+		SkillsDir:     missingRoot + "/missing-skills",
+	}, missingRoot+"/no-project")
 	if err != nil {
 		t.Fatalf("missing dir: %v", err)
 	}
@@ -107,17 +113,58 @@ func TestLoadSkillsCatalogGated(t *testing.T) {
 		t.Fatalf("missing dir: got %d skills, want 0", len(got))
 	}
 
-	// Enabled with fixture dir from the skills package.
+	// Enabled with fixture as configured Samantha skills_dir.
 	fixture := "../skills/testdata/skills"
 	got, err = loadSkillsCatalog(context.Background(), &config.Config{
 		SkillsEnabled: true,
 		SkillsDir:     fixture,
-	})
+	}, t.TempDir()) // empty project .claude/skills
 	if err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
 	if len(got) != 1 || got[0].Name != "hello" {
 		t.Fatalf("fixture: got %#v, want hello skill", got)
+	}
+}
+
+func TestLoadSkillsCatalogProjectOverridesSystem(t *testing.T) {
+	fakeHome := t.TempDir()
+	prev := skills.SetUserHomeDirForTest(func() (string, error) { return fakeHome, nil })
+	t.Cleanup(prev)
+
+	root := t.TempDir()
+	projectSkill := filepath.Join(root, ".claude", "skills", "shared")
+	if err := os.MkdirAll(projectSkill, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: shared\ndescription: from project\n---\nproject body\n"
+	if err := os.WriteFile(filepath.Join(projectSkill, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Configured system dir also has "shared" — project must win.
+	systemRoot := filepath.Join(root, "system-skills")
+	systemSkill := filepath.Join(systemRoot, "shared")
+	if err := os.MkdirAll(systemSkill, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sysContent := "---\nname: shared\ndescription: from system\n---\nsystem body\n"
+	if err := os.WriteFile(filepath.Join(systemSkill, "SKILL.md"), []byte(sysContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadSkillsCatalog(context.Background(), &config.Config{
+		SkillsEnabled: true,
+		SkillsDir:     systemRoot,
+	}, root)
+	if err != nil {
+		t.Fatalf("Catalog: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d skills, want 1", len(got))
+	}
+	if got[0].Description != "from project" {
+		t.Fatalf("description = %q, want project to win over system", got[0].Description)
 	}
 }
 

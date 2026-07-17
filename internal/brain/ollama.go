@@ -68,7 +68,7 @@ func NewOllama(cfg *config.Config) (*OllamaBrain, error) {
 		return nil, err
 	}
 
-	catalog, err := loadSkillsCatalog(context.Background(), cfg)
+	catalog, err := loadSkillsCatalog(context.Background(), cfg, workDir)
 	if err != nil {
 		return nil, err
 	}
@@ -84,16 +84,20 @@ func NewOllama(cfg *config.Config) (*OllamaBrain, error) {
 }
 
 // loadSkillsCatalog returns the Agent Skills catalog when skills_enabled is
-// true; otherwise an empty catalog. Missing dirs yield empty catalogs, not errors.
-func loadSkillsCatalog(ctx context.Context, cfg *config.Config) ([]skills.Skill, error) {
+// true; otherwise an empty catalog. Discovery scans project (launch cwd)
+// .claude/skills, user ~/.claude/skills, and the configured Samantha
+// skills_dir — same project-then-system pattern as other agent harnesses.
+// Missing dirs yield empty contributions, not errors.
+func loadSkillsCatalog(ctx context.Context, cfg *config.Config, workDir string) ([]skills.Skill, error) {
 	if cfg == nil || !cfg.SkillsEnabled {
 		return nil, nil
 	}
-	dir := cfg.SkillsDir
-	if dir == "" {
-		dir = config.SkillsDir()
+	configured := cfg.SkillsDir
+	if configured == "" {
+		configured = config.SkillsDir()
 	}
-	catalog, err := skills.Loader{Dir: dir}.Catalog(ctx)
+	dirs := skills.DefaultSearchPaths(workDir, configured)
+	catalog, err := skills.Loader{Dirs: dirs}.Catalog(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("loading skills: %w", err)
 	}

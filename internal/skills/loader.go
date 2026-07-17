@@ -16,9 +16,11 @@ import (
 // skillFile is the required filename inside each skill directory.
 const skillFile = "SKILL.md"
 
-// Loader discovers SKILL.md folders under Dir.
+// Loader discovers SKILL.md folders under one or more roots.
+// Prefer Dirs for multi-root harness discovery; Dir is a single-root shortcut.
 type Loader struct {
-	Dir string
+	Dir  string
+	Dirs []string
 }
 
 // frontmatter is the YAML block at the top of SKILL.md.
@@ -28,25 +30,64 @@ type frontmatter struct {
 	AllowedTools any    `yaml:"allowed-tools"`
 }
 
-// Catalog walks Dir for */SKILL.md, parses each skill, and returns the
-// catalog. Missing or empty Dir yields an empty catalog (not an error).
-// Malformed or duplicate skills are skipped so a single bad skill cannot
-// brick discovery.
+// Catalog walks each search root for */SKILL.md, parses each skill, and
+// returns the merged catalog. Missing or empty roots yield no skills (not an
+// error). Malformed skills are skipped. When the same name appears in more
+// than one root, the first root in Dirs/Dir order wins (project over system).
 func (l Loader) Catalog(ctx context.Context) ([]Skill, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if l.Dir == "" {
-		return nil, nil
-	}
-	if _, err := os.Stat(l.Dir); os.IsNotExist(err) {
-		return nil, nil
-	} else if err != nil {
-		return nil, fmt.Errorf("checking skills dir: %w", err)
-	}
 
 	byName := map[string]Skill{}
-	err := filepath.WalkDir(l.Dir, func(path string, d fs.DirEntry, walkErr error) error {
+	for _, dir := range l.searchDirs() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if err := catalogDir(ctx, dir, byName); err != nil {
+			return nil, err
+		}
+	}
+
+	list := make([]Skill, 0, len(byName))
+	for _, s := range byName {
+		list = append(list, s)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].Name < list[j].Name
+	})
+	return list, nil
+}
+
+func (l Loader) searchDirs() []string {
+	if len(l.Dirs) > 0 {
+		out := make([]string, 0, len(l.Dirs))
+		for _, d := range l.Dirs {
+			if d != "" {
+				out = append(out, d)
+			}
+		}
+		return out
+	}
+	if l.Dir != "" {
+		return []string{l.Dir}
+	}
+	return nil
+}
+
+// catalogDir walks a single skills root into byName. First-wins: existing
+// names are not overwritten.
+func catalogDir(ctx context.Context, dir string, byName map[string]Skill) error {
+	if dir == "" {
+		return nil
+	}
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("checking skills dir %s: %w", dir, err)
+	}
+
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -66,24 +107,15 @@ func (l Loader) Catalog(ctx context.Context) ([]Skill, error) {
 			return nil
 		}
 		if _, exists := byName[skill.Name]; exists {
-			// First win for duplicate names.
 			return nil
 		}
 		byName[skill.Name] = skill
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("cataloging skills: %w", err)
+		return fmt.Errorf("cataloging skills in %s: %w", dir, err)
 	}
-
-	list := make([]Skill, 0, len(byName))
-	for _, s := range byName {
-		list = append(list, s)
-	}
-	sort.Slice(list, func(i, j int) bool {
-		return list[i].Name < list[j].Name
-	})
-	return list, nil
+	return nil
 }
 
 func loadSkill(path string) (Skill, error) {
