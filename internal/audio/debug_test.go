@@ -61,7 +61,7 @@ func TestRecordDebugSynthesisIncludesOriginalAndPreparedText(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = SetDebugAudioDir("") })
 
-	RecordDebugSynthesis("kokoro", "It wasn't.", "It was-n't.")
+	RecordDebugSynthesis("kokoro", "It wasn't.", "It was not.")
 	encoded, err := os.ReadFile(filepath.Join(root, "syntheses.jsonl"))
 	if err != nil {
 		t.Fatalf("read syntheses: %v", err)
@@ -70,7 +70,7 @@ func TestRecordDebugSynthesisIncludesOriginalAndPreparedText(t *testing.T) {
 	if err := json.Unmarshal(encoded, &event); err != nil {
 		t.Fatalf("decode synthesis metadata: %v", err)
 	}
-	if event.Provider != "kokoro" || event.Original != "It wasn't." || event.Prepared != "It was-n't." {
+	if event.Provider != "kokoro" || event.Original != "It wasn't." || event.Prepared != "It was not." {
 		t.Fatalf("synthesis event = %+v", event)
 	}
 	if time.Since(event.CreatedAt) > time.Minute {
