@@ -2,8 +2,11 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -37,6 +40,10 @@ type audiobookModel struct {
 	command  string
 	message  string
 	errText  string
+
+	// Path tab-completion cycle state (only used while editing path fields).
+	pathMatches []string
+	pathCycle   int
 }
 
 func newAudiobook(cfg *config.Config) audiobookModel {
@@ -85,19 +92,269 @@ func (m audiobookModel) handleEdit(key string) (audiobookModel, tea.Cmd) {
 		m.applyEdit()
 		m.editing = false
 		m.editBuf = ""
+		m.clearPathCompletion()
 	case "esc":
 		m.editing = false
 		m.editBuf = ""
-	case "backspace":
+		m.clearPathCompletion()
+	case "backspace", "ctrl+h":
 		if len(m.editBuf) > 0 {
-			m.editBuf = m.editBuf[:len(m.editBuf)-1]
+			// Delete one Unicode character, not one byte.
+			_, size := utf8.DecodeLastRuneInString(m.editBuf)
+			m.editBuf = m.editBuf[:len(m.editBuf)-size]
+		}
+		m.clearPathCompletion()
+	case "tab":
+		if m.cursor == abFieldInput || m.cursor == abFieldOutDir {
+			m.applyPathCompletion()
 		}
 	default:
-		if len(key) == 1 {
+		if isEditableInsert(key) {
 			m.editBuf += key
+			m.clearPathCompletion()
 		}
 	}
 	return m, nil
+}
+
+func (m *audiobookModel) clearPathCompletion() {
+	m.pathMatches = nil
+	m.pathCycle = 0
+	// Keep validation/message text from generate; only clear completion hints.
+	if strings.HasPrefix(m.message, "matches:") || strings.HasPrefix(m.message, "no path matches") {
+		m.message = ""
+	}
+}
+
+func (m *audiobookModel) applyPathCompletion() {
+	dirsOnly := m.cursor == abFieldOutDir
+	m.errText = ""
+
+	// When multiple matches are already cached and the buffer is still within
+	// that set (common prefix or a full match), cycle without re-querying.
+	// Re-querying from a full match would collapse to a single entry.
+	if len(m.pathMatches) > 1 && pathStillInMatchSet(m.editBuf, m.pathMatches) {
+		if m.pathCycle < 0 || m.pathCycle >= len(m.pathMatches) {
+			m.pathCycle = 0
+		}
+		m.editBuf = m.pathMatches[m.pathCycle]
+		m.pathCycle = (m.pathCycle + 1) % len(m.pathMatches)
+		m.setPathMatchMessage(m.pathMatches)
+		return
+	}
+
+	completed, matches := completeFilesystemPath(m.editBuf, dirsOnly)
+	m.editBuf = completed
+	m.pathMatches = matches
+	m.pathCycle = 0
+	m.setPathMatchMessage(matches)
+}
+
+func (m *audiobookModel) setPathMatchMessage(matches []string) {
+	switch len(matches) {
+	case 0:
+		m.message = "no path matches"
+	case 1:
+		m.message = ""
+	default:
+		names := make([]string, 0, len(matches))
+		for _, match := range matches {
+			names = append(names, filepath.Base(strings.TrimSuffix(match, string(filepath.Separator))))
+		}
+		if len(names) > 6 {
+			names = append(names[:6], "…")
+		}
+		m.message = "matches: " + strings.Join(names, "  ")
+	}
+}
+
+func pathStillInMatchSet(buf string, matches []string) bool {
+	if buf == longestCommonPathPrefix(matches) {
+		return true
+	}
+	for _, match := range matches {
+		if buf == match {
+			return true
+		}
+	}
+	return false
+}
+
+// isEditableInsert reports whether key should be appended to a free-text field.
+// Bubble Tea special keys use names like "tab", "ctrl+c"; printable input is
+// the character (or pasted runes) itself.
+func isEditableInsert(key string) bool {
+	if key == "" {
+		return false
+	}
+	switch key {
+	case "enter", "esc", "backspace", "delete", "tab", "up", "down", "left", "right",
+		"home", "end", "pgup", "pgdown", "space":
+		// "space" is sometimes emitted as a named key; real space is " ".
+		return false
+	}
+	if strings.HasPrefix(key, "ctrl+") || strings.HasPrefix(key, "alt+") || strings.HasPrefix(key, "shift+") {
+		return false
+	}
+	// Reject other named multi-letter control tokens (e.g. "f1").
+	if len(key) > 1 && !strings.Contains(key, "/") && !strings.Contains(key, " ") && !strings.ContainsAny(key, `~\.-_`) {
+		// Allow paths/pastes with punctuation; block pure alpha named keys.
+		if isNamedKey(key) {
+			return false
+		}
+	}
+	return true
+}
+
+func isNamedKey(key string) bool {
+	switch key {
+	case "enter", "esc", "escape", "backspace", "delete", "tab", "up", "down", "left", "right",
+		"home", "end", "pgup", "pgdown", "space", "insert":
+		return true
+	}
+	if len(key) >= 2 && key[0] == 'f' {
+		// f1..f12
+		allDigits := true
+		for i := 1; i < len(key); i++ {
+			if key[i] < '0' || key[i] > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return true
+		}
+	}
+	return false
+}
+
+// completeFilesystemPath tab-completes a filesystem path once against the OS.
+//
+// dirsOnly skips non-directory entries (used for output directory).
+// On multiple matches it returns the longest common prefix (so the first Tab
+// extends the typed path). Cycling through full matches is handled by the
+// audiobook model, which caches the match set.
+func completeFilesystemPath(input string, dirsOnly bool) (string, []string) {
+	matches := pathCompletionMatches(input, dirsOnly)
+	if len(matches) == 0 {
+		return input, nil
+	}
+	if len(matches) == 1 {
+		return matches[0], matches
+	}
+	lcp := longestCommonPathPrefix(matches)
+	// Prefer extending the buffer when the common prefix is longer.
+	if len(lcp) >= len(input) {
+		return lcp, matches
+	}
+	return input, matches
+}
+
+func pathCompletionMatches(input string, dirsOnly bool) []string {
+	home, _ := os.UserHomeDir()
+	keepTilde := strings.HasPrefix(input, "~")
+	expanded := expandHome(input, home)
+
+	dir, prefix := splitPathForCompletion(expanded)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var matches []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if prefix == "" && strings.HasPrefix(name, ".") {
+			continue
+		}
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		isDir := entry.IsDir()
+		if !isDir {
+			// Follow symlinks to directories so "out" → "outdir/" works.
+			if info, err := entry.Info(); err == nil && info.Mode()&os.ModeSymlink != 0 {
+				if fi, err := os.Stat(filepath.Join(dir, name)); err == nil && fi.IsDir() {
+					isDir = true
+				}
+			}
+		}
+		if dirsOnly && !isDir {
+			continue
+		}
+		full := filepath.Join(dir, name)
+		if isDir {
+			full += string(filepath.Separator)
+		}
+		if keepTilde {
+			full = collapseHome(full, home)
+		}
+		matches = append(matches, full)
+	}
+	return matches
+}
+
+func splitPathForCompletion(path string) (dir, prefix string) {
+	if path == "" {
+		return ".", ""
+	}
+	// Trailing separator means "complete inside this directory".
+	if strings.HasSuffix(path, string(filepath.Separator)) || strings.HasSuffix(path, "/") {
+		return path, ""
+	}
+	dir = filepath.Dir(path)
+	prefix = filepath.Base(path)
+	if dir == "." && !strings.Contains(path, string(filepath.Separator)) && !strings.Contains(path, "/") {
+		// Relative bare name in cwd.
+		return ".", prefix
+	}
+	return dir, prefix
+}
+
+func expandHome(path, home string) string {
+	if home == "" {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~"+string(filepath.Separator)) {
+		return filepath.Join(home, path[2:])
+	}
+	return path
+}
+
+func collapseHome(path, home string) string {
+	if home == "" {
+		return path
+	}
+	sep := string(filepath.Separator)
+	if path == home || path == home+sep {
+		return "~" + strings.TrimPrefix(path, home)
+	}
+	prefix := home + sep
+	if strings.HasPrefix(path, prefix) {
+		return "~" + sep + path[len(prefix):]
+	}
+	return path
+}
+
+func longestCommonPathPrefix(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	prefix := paths[0]
+	for _, p := range paths[1:] {
+		for !strings.HasPrefix(p, prefix) {
+			if prefix == "" {
+				return ""
+			}
+			// Drop one byte carefully for UTF-8.
+			_, size := utf8.DecodeLastRuneInString(prefix)
+			prefix = prefix[:len(prefix)-size]
+		}
+	}
+	return prefix
 }
 
 func (m *audiobookModel) applyEdit() {
@@ -123,6 +380,7 @@ func (m audiobookModel) activate() (audiobookModel, tea.Cmd) {
 	case abFieldInput, abFieldOutDir, abFieldVoice, abFieldSpeed, abFieldAudioFormat:
 		m.editing = true
 		m.editBuf = m.fieldValue(m.cursor)
+		m.clearPathCompletion()
 	case abFieldResume:
 		m.resume = !m.resume
 		m.command = ""
@@ -264,7 +522,11 @@ func (m audiobookModel) View() string {
 
 	b.WriteString("\n")
 	if m.editing {
-		b.WriteString(dimStyle.Render("  type to edit • enter save • esc cancel"))
+		if m.cursor == abFieldInput || m.cursor == abFieldOutDir {
+			b.WriteString(dimStyle.Render("  type path • tab complete • enter save • esc cancel"))
+		} else {
+			b.WriteString(dimStyle.Render("  type to edit • enter save • esc cancel"))
+		}
 	} else {
 		b.WriteString(dimStyle.Render("  ↑/↓ navigate • enter edit/toggle/generate • b back • q quit"))
 	}
