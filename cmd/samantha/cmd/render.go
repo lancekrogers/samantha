@@ -19,8 +19,11 @@ type renderRunner func(cmd *cobra.Command, opts render.Options) error
 
 // newRenderCmd builds the `samantha render` command. It parses and validates
 // flags (cgo-free) and delegates execution to run.
-func newRenderCmd(run renderRunner) *cobra.Command {
-	var opts render.Options
+func newRenderCmd(run renderRunner, loadConfig configLoader) *cobra.Command {
+	var (
+		opts        render.Options
+		fromLibrary string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "render [input]",
@@ -30,11 +33,15 @@ func newRenderCmd(run renderRunner) *cobra.Command {
 Batch narration is noninteractive and scriptable: it reads text, Markdown, HTML,
 URL articles, EPUB, or digital PDF and writes WAV files plus a manifest.
 
+Use --from-library QUERY to resolve the input from the Calibre library
+(requires calibre_enabled=true). Mutually exclusive with a positional input.
+
 Examples:
   samantha render article.md --out out/article.wav
   samantha render article.md --out-dir out/article
   cat notes.txt | samantha render --stdin --out notes.wav
   samantha render book.epub --out-dir out/book --json
+  samantha render --from-library "Crypto 101" --out-dir out/crypto
 
 Markdown, HTML, URL, and PDF accept either --out (one WAV) or --out-dir (one
 WAV per section/heading/page plus a manifest). EPUB requires --out-dir. Plain
@@ -57,6 +64,9 @@ Scripting:
 			if len(args) == 1 {
 				opts.Input = args[0]
 			}
+			if err := resolveFromLibraryFlag(cmd, loadConfig, &opts, fromLibrary, len(args) > 0); err != nil {
+				return err
+			}
 			if err := opts.Validate(); err != nil {
 				return err
 			}
@@ -70,6 +80,7 @@ Scripting:
 	f.StringVar(&opts.Out, "out", "", "Write a single audio file to PATH")
 	f.StringVar(&opts.OutDir, "out-dir", "", "Write chapter/section files and a manifest to DIR (markdown/html/url/epub/pdf)")
 	f.StringVar(&opts.Title, "title", "", "Override the document title")
+	f.StringVar(&fromLibrary, "from-library", "", "Resolve input from Calibre library search query (mutually exclusive with positional input)")
 	addRenderPassthroughFlags(cmd, &opts)
 
 	return cmd

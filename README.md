@@ -142,6 +142,7 @@ samantha models clean --unused --yes    # Delete model assets not required now
 samantha prompts list                   # List embedded and user prompt documents
 samantha prompts show persona           # Show an assembled prompt document
 samantha render notes.txt --out a.wav   # Batch-render a document to audio
+samantha library search "cryptography" # Search Calibre library (opt-in)
 samantha serve --tailscale              # Remote voice for Tailscale clients
 samantha serve --revoke-tokens          # Rotate serve bearer token
 ```
@@ -226,7 +227,14 @@ markdown, HTML, URL (including sectioned `--out-dir`), and text sources.
 ```bash
 samantha audiobook create book.epub --out-dir out/book
 samantha audiobook create book.epub --out-dir out/book --audio-format m4b --resume --json
+# From Calibre library (requires calibre_enabled=true and Calibre installed):
+samantha config calibre_enabled true
+samantha library search "cryptography"
+samantha audiobook create --from-library "Crypto 101" --out-dir out/crypto
 ```
+
+In the TUI **Create audiobook** screen, enable Calibre and use **Pick from library**
+to search and fill the input path (EPUB/PDF only for v1).
 
 ### Narrate pipeline (prompt-controlled)
 
@@ -274,6 +282,11 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `ollama_model` | empty | `OLLAMA_MODEL` | Ollama model name |
 | `ollama_host` | `http://localhost:11434` | `OLLAMA_HOST` | Ollama server URL |
 | `voice_tools_enabled` | `false` (auto-`true` for Ollama when unset) | `VOICE_TOOLS_ENABLED` | Enable local tool calls (`list_files` / `read_file` / `write_file` / `run_command` for Ollama). Ollama enables this automatically unless you set the key or env explicitly to `false`. Remote `samantha serve` still uses `remote_tools_enabled` (default off). |
+| `calibre_enabled` | `false` | `CALIBRE_ENABLED` | Opt in to Calibre library search, TUI picker, and `--from-library` |
+| `calibre_library_path` | empty | `CALIBRE_LIBRARY_PATH` | Calibre library path (empty uses Calibre's default library) |
+| `calibredb_binary` | empty | `CALIBREDB_BINARY` | `calibredb` path; empty uses PATH then macOS app bundle / `/opt/calibre` |
+| `calibre_convert_binary` | empty | `CALIBRE_CONVERT_BINARY` | `ebook-convert` path (reserved; v1 does not convert MOBI/AZW3) |
+| `calibre_prefer_format` | `epub` | `CALIBRE_PREFER_FORMAT` | Preferred book format when resolving (`epub` then `pdf`) |
 | `tts_provider` | `kokoro` | `TTS_PROVIDER` | TTS backend |
 | `tts_voice` | `af_heart` | `TTS_VOICE` | Kokoro voice name |
 | `speech_speed` | `0.95` | | Playback speed |

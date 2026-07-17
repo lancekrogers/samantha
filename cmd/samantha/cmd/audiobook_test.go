@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"reflect"
 	"testing"
 
 	"github.com/spf13/cobra"
 
+	"github.com/lancekrogers/samantha/internal/calibre"
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/render"
 )
@@ -179,5 +181,78 @@ func TestAudiobookPreviewJSONEmitsStableFields(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("preview JSON = %#v, want %#v", got, want)
+	}
+}
+
+func TestAudiobookFromLibraryDisabled(t *testing.T) {
+	load := func() (*config.Config, error) {
+		return &config.Config{CalibreEnabled: false}, nil
+	}
+	_, err := runAudiobook(t, forbidRender(t), load,
+		"create", "--from-library", "Crypto 101", "--out-dir", "out/x")
+	if err == nil || !contains(err.Error(), "disabled") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestAudiobookFromLibraryMutualExclusive(t *testing.T) {
+	load := func() (*config.Config, error) {
+		return &config.Config{CalibreEnabled: true}, nil
+	}
+	_, err := runAudiobook(t, forbidRender(t), load,
+		"create", "book.epub", "--from-library", "Crypto", "--out-dir", "out/x")
+	if err == nil || !contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestResolveFromLibraryPathSubstitution(t *testing.T) {
+	load := func() (*config.Config, error) {
+		return &config.Config{
+			CalibreEnabled:      true,
+			CalibrePreferFormat: "epub",
+		}, nil
+	}
+	// Without a real/fake calibredb this will fail at Resolve — assert clear error.
+	_, err := runAudiobook(t, forbidRender(t), load,
+		"create", "--from-library", "zzzz-no-such-book-xyz", "--out-dir", "out/x")
+	if err == nil {
+		t.Fatal("expected resolve error")
+	}
+}
+
+func TestResolveLibraryBookSubstitutesPath(t *testing.T) {
+	client := calibre.Client{
+		Prefer: "epub",
+		LookPath: func(string) (string, error) { return "calibredb", nil },
+		Run: func(context.Context, string, ...string) ([]byte, error) {
+			return []byte(`[{
+				"id": 7,
+				"title": "Crypto 101",
+				"authors": "Krol",
+				"formats": ["/lib/Crypto 101.epub", "/lib/Crypto 101.mobi"],
+				"tags": []
+			}]`), nil
+		},
+	}
+	path, format, err := resolveLibraryBook(context.Background(), client, "Crypto 101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != "/lib/Crypto 101.epub" || format != render.Format("epub") {
+		t.Fatalf("path=%q format=%q", path, format)
+	}
+}
+
+func TestResolveLibraryBookMOBIOnly(t *testing.T) {
+	client := calibre.Client{
+		LookPath: func(string) (string, error) { return "calibredb", nil },
+		Run: func(context.Context, string, ...string) ([]byte, error) {
+			return []byte(`[{"id":1,"title":"M","authors":"A","formats":["/m.mobi"],"tags":[]}]`), nil
+		},
+	}
+	_, _, err := resolveLibraryBook(context.Background(), client, "M")
+	if err == nil || !contains(err.Error(), "supported format") {
+		t.Fatalf("err = %v", err)
 	}
 }
