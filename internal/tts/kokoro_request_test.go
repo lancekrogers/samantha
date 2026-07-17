@@ -177,7 +177,9 @@ func TestSynthesizeRequestPreparesTextAtKokoroBoundary(t *testing.T) {
 	}
 	drainStream(t, result.Stream)
 
-	if want := "I had writ-ten the but-ton label."; got != want {
+	// Syllabic-n is handled via tokens alias, not text hyphenation — natural
+	// wording must reach Generate unchanged.
+	if want := "I had written the button label."; got != want {
 		t.Fatalf("generate text = %q, want %q", got, want)
 	}
 }
