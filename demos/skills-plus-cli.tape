@@ -1,9 +1,8 @@
 # VHS tape: skills + CLI tools demo for PR #98
-# Run: vhs demos/skills-plus-cli.tape
-# (User said "vsh"; this repo uses Charm VHS for terminal recordings.)
+# Run from repo root: vhs demos/skills-plus-cli.tape
+# No machine-specific paths (portable for public repo).
 
 Output demos/skills-plus-cli.gif
-Output demos/skills-plus-cli.mp4
 
 Set Shell zsh
 Set FontSize 14
@@ -13,7 +12,8 @@ Set Theme "Catppuccin Mocha"
 Set TypingSpeed 1ms
 Set PlaybackSpeed 0.8
 
-Type "cd /Users/lancerogers/Dev/AI/My_Tools/projects/worktrees/samantha/ollama-skills-SO0001"
+# Assume cwd is already the repo root (CI / local: cd first yourself).
+Type "pwd | sed 's|.*/|…/|'"
 Enter
 Sleep 300ms
 

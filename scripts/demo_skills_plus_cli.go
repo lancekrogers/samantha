@@ -60,7 +60,8 @@ func main() {
 		fail("read: %v", err)
 	}
 	fmt.Println("3) CLI write after skill load (write_file analogue)")
-	fmt.Printf("   wrote %s\n", out)
+	// Do not print the absolute temp path (machine-local; not useful in demos).
+	fmt.Printf("   wrote %s in a temp dir\n", filepath.Base(out))
 	fmt.Printf("   content: %q\n", strings.TrimSpace(string(raw)))
 	fmt.Println()
 
