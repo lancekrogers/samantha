@@ -3,6 +3,7 @@ package calibre
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -76,12 +77,21 @@ func TestSearchParsesJSON(t *testing.T) {
 
 func TestBestFormatPathPrefersEPUB(t *testing.T) {
 	c := Client{Prefer: "epub"}
+	dir := t.TempDir()
+	epub := filepath.Join(dir, "book.epub")
+	pdf := filepath.Join(dir, "book.pdf")
+	if err := os.WriteFile(epub, []byte("epub"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pdf, []byte("pdf"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	b := Book{
 		ID:    1,
 		Title: "T",
 		Formats: []string{
-			"/x/book.pdf",
-			"/x/book.epub",
+			pdf,
+			epub,
 			"/x/book.mobi",
 		},
 	}
@@ -96,13 +106,43 @@ func TestBestFormatPathPrefersEPUB(t *testing.T) {
 
 func TestBestFormatPathPDFFallback(t *testing.T) {
 	c := Client{}
-	b := Book{ID: 1, Title: "T", Formats: []string{"/x/book.mobi", "/x/book.pdf"}}
+	pdf := filepath.Join(t.TempDir(), "book.pdf")
+	if err := os.WriteFile(pdf, []byte("pdf"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b := Book{ID: 1, Title: "T", Formats: []string{"/x/book.mobi", pdf}}
 	path, format, err := c.BestFormatPath(b)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if format != "pdf" || filepath.Ext(path) != ".pdf" {
 		t.Fatalf("got %s %s", path, format)
+	}
+}
+
+func TestBestFormatPathFallsBackWhenPreferredFileIsStale(t *testing.T) {
+	dir := t.TempDir()
+	pdf := filepath.Join(dir, "book.pdf")
+	if err := os.WriteFile(pdf, []byte("pdf"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := Client{Prefer: "epub"}
+	b := Book{ID: 1, Title: "T", Formats: []string{filepath.Join(dir, "missing.epub"), pdf}}
+	path, format, err := c.BestFormatPath(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != pdf || format != "pdf" {
+		t.Fatalf("got %s %s, want %s pdf", path, format, pdf)
+	}
+}
+
+func TestBestFormatPathReportsMissingSupportedFile(t *testing.T) {
+	c := Client{}
+	b := Book{ID: 1, Title: "T", Formats: []string{"/missing/book.epub"}}
+	_, _, err := c.BestFormatPath(b)
+	if !errors.Is(err, ErrFormatMissing) {
+		t.Fatalf("err = %v", err)
 	}
 }
 

@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/calibre"
 	"github.com/lancekrogers/samantha/internal/config"
 )
@@ -23,6 +22,11 @@ var (
 // backend cannot hang doctor.
 const voiceDeviceProbeTimeout = 3 * time.Second
 
+// newVoiceDeviceChecker is set by doctor_voice.go (!integration) to the real
+// audio.DeviceChecker. The integration Linux binary leaves this nil so it can
+// build with CGO_ENABLED=0 (no sherpa).
+var newVoiceDeviceChecker func() config.VoiceDeviceChecker
+
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Diagnose local setup: config, model assets, and external binaries (read-only)",
@@ -33,10 +37,11 @@ var doctorCmd = &cobra.Command{
 		}
 		var checker config.VoiceDeviceChecker
 		if doctorVoiceDevices {
-			checker = audio.NewDeviceChecker()
+			if newVoiceDeviceChecker == nil {
+				return fmt.Errorf("doctor --voice-devices is not available in this build")
+			}
+			checker = newVoiceDeviceChecker()
 		}
-		// Bundle-aware path resolution finds calibredb in the macOS app bundle
-		// when it is not on PATH; other binaries still use exec.LookPath.
 		return runDoctor(cmd, cfg, config.ModelsDir(), doctorLookPath, checker, doctorJSON)
 	},
 }

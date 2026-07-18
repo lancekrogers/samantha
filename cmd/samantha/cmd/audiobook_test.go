@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -222,24 +225,22 @@ func TestResolveFromLibraryPathSubstitution(t *testing.T) {
 }
 
 func TestResolveLibraryBookSubstitutesPath(t *testing.T) {
+	epubPath := filepath.Join(t.TempDir(), "Crypto 101.epub")
+	if err := os.WriteFile(epubPath, []byte("epub"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	client := calibre.Client{
-		Prefer: "epub",
+		Prefer:   "epub",
 		LookPath: func(string) (string, error) { return "calibredb", nil },
 		Run: func(context.Context, string, ...string) ([]byte, error) {
-			return []byte(`[{
-				"id": 7,
-				"title": "Crypto 101",
-				"authors": "Krol",
-				"formats": ["/lib/Crypto 101.epub", "/lib/Crypto 101.mobi"],
-				"tags": []
-			}]`), nil
+			return []byte(fmt.Sprintf(`[{"id":7,"title":"Crypto 101","authors":"Krol","formats":[%q,"/lib/Crypto 101.mobi"],"tags":[]}]`, epubPath)), nil
 		},
 	}
 	path, format, err := resolveLibraryBook(context.Background(), client, "Crypto 101")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if path != "/lib/Crypto 101.epub" || format != render.Format("epub") {
+	if path != epubPath || format != render.Format("epub") {
 		t.Fatalf("path=%q format=%q", path, format)
 	}
 }

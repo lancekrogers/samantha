@@ -26,6 +26,9 @@ var (
 	ErrCalibreNotFound = errors.New("calibre: calibredb not found")
 	// ErrNoSupportedFormat means the book has no EPUB or PDF format (v1).
 	ErrNoSupportedFormat = errors.New("calibre: no supported format (need epub or pdf)")
+	// ErrFormatMissing means Calibre listed a supported format whose file is
+	// no longer present on disk.
+	ErrFormatMissing = errors.New("calibre: supported format file missing")
 	// ErrAmbiguous means Resolve found multiple candidates and needs a tighter query.
 	ErrAmbiguous = errors.New("calibre: ambiguous query")
 	// ErrNotFound means no books matched the query.
@@ -273,10 +276,17 @@ func (c Client) BestFormatPath(b Book) (path, format string, err error) {
 			byExt[ext] = p
 		}
 	}
+	listedSupported := false
 	for _, want := range order {
 		if p, ok := byExt[want]; ok {
-			return p, want, nil
+			listedSupported = true
+			if st, statErr := os.Stat(p); statErr == nil && !st.IsDir() {
+				return p, want, nil
+			}
 		}
+	}
+	if listedSupported {
+		return "", "", fmt.Errorf("%w: book %d %q lists an EPUB/PDF path that is unavailable", ErrFormatMissing, b.ID, b.Title)
 	}
 	return "", "", fmt.Errorf("%w: book %d %q has %v (v1 supports epub/pdf only)", ErrNoSupportedFormat, b.ID, b.Title, formatList(b.Formats))
 }
@@ -364,8 +374,7 @@ func (c Client) FullTextSearch(ctx context.Context, phrase string, limit int) ([
 	return hits, nil
 }
 
-// AmbiguousCandidates extracts candidate titles from an ErrAmbiguous error message
-// is not needed when callers use errors.Is + Search themselves; helper for CLI.
+// summarizeTitles formats up to n candidate titles for an ambiguity error.
 func summarizeTitles(books []Book, n int) string {
 	if n <= 0 || n > len(books) {
 		n = len(books)

@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -30,8 +32,12 @@ func TestPickBookFoldsResults(t *testing.T) {
 
 func TestPickBookSelectEmitsPath(t *testing.T) {
 	m := newPickBook(&config.Config{CalibreEnabled: true, CalibrePreferFormat: "epub"})
+	path := filepath.Join(t.TempDir(), "book.epub")
+	if err := os.WriteFile(path, []byte("epub"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	m.books = []calibre.Book{
-		{ID: 1, Title: "T", Formats: []string{"/lib/book.epub", "/lib/book.mobi"}},
+		{ID: 1, Title: "T", Formats: []string{path, "/lib/book.mobi"}},
 	}
 	m.focus = pickFocusList
 	m.cursor = 0
@@ -41,7 +47,7 @@ func TestPickBookSelectEmitsPath(t *testing.T) {
 	}
 	msg := cmd()
 	picked, ok := msg.(bookPickedMsg)
-	if !ok || picked.path != "/lib/book.epub" {
+	if !ok || picked.path != path {
 		t.Fatalf("msg = %#v err=%q", msg, m.errText)
 	}
 }
