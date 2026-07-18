@@ -255,7 +255,7 @@ func TestFullTextSearch(t *testing.T) {
 			return []byte(`[{"book_id":5,"title":"AI","snippet":"... goroutine ..."}]`), nil
 		},
 	}
-	hits, err := c.FullTextSearch(context.Background(), "goroutine", 5)
+	hits, err := c.fullTextSearch(context.Background(), "goroutine", 5)
 	if err != nil {
 		t.Fatal(err)
 	}

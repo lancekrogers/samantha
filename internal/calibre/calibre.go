@@ -49,8 +49,8 @@ type Book struct {
 	Comments string   `json:"comments,omitempty"`
 }
 
-// FTSHit is one full-text search hit from calibredb fts_search.
-type FTSHit struct {
+// ftsHit is kept private until a CLI/TUI surface needs full-text search.
+type ftsHit struct {
 	BookID  int    `json:"book_id"`
 	Title   string `json:"title"`
 	Snippet string `json:"snippet"`
@@ -331,9 +331,10 @@ func (c Client) Metadata(ctx context.Context, id int) (Book, error) {
 	return books[0], nil
 }
 
-// FullTextSearch runs calibredb fts_search. When FTS is disabled or unavailable,
-// returns an empty slice and a wrapped error so callers can fall back to Search.
-func (c Client) FullTextSearch(ctx context.Context, phrase string, limit int) ([]FTSHit, error) {
+// fullTextSearch runs calibredb fts_search for a future library search
+// surface. When FTS is disabled or unavailable, it returns a wrapped error so
+// that surface can fall back to Search.
+func (c Client) fullTextSearch(ctx context.Context, phrase string, limit int) ([]ftsHit, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -501,7 +502,7 @@ func splitAndTrim(s, sep string) []string {
 	return out
 }
 
-func parseFTSJSON(data []byte) ([]FTSHit, error) {
+func parseFTSJSON(data []byte) ([]ftsHit, error) {
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 {
 		return nil, nil
@@ -519,9 +520,9 @@ func parseFTSJSON(data []byte) ([]FTSHit, error) {
 		}
 		generic = wrap.Results
 	}
-	hits := make([]FTSHit, 0, len(generic))
+	hits := make([]ftsHit, 0, len(generic))
 	for _, m := range generic {
-		h := FTSHit{
+		h := ftsHit{
 			Title:   stringField(m, "title", "book_title"),
 			Snippet: stringField(m, "snippet", "text", "match"),
 		}
