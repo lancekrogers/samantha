@@ -4,17 +4,21 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
 
 // skillFile is the required filename inside each skill directory.
 const skillFile = "SKILL.md"
+
+// MaxDescriptionRunes caps skill descriptions stored in the catalog and
+// advertised in the system prompt (progressive disclosure should stay short).
+const MaxDescriptionRunes = 400
 
 // Loader discovers SKILL.md folders under one or more roots.
 // Prefer Dirs for multi-root harness discovery; Dir is a single-root shortcut.
@@ -24,16 +28,19 @@ type Loader struct {
 }
 
 // frontmatter is the YAML block at the top of SKILL.md.
+// allowed-tools is intentionally not parsed: the agent loop has no "active
+// skill" scope yet, so advertising an allow-list would be a false contract.
+// Unknown YAML keys (including allowed-tools) are ignored by the decoder.
 type frontmatter struct {
-	Name         string `yaml:"name"`
-	Description  string `yaml:"description"`
-	AllowedTools any    `yaml:"allowed-tools"`
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
 }
 
-// Catalog walks each search root for */SKILL.md, parses each skill, and
-// returns the merged catalog. Missing or empty roots yield no skills (not an
-// error). Malformed skills are skipped. When the same name appears in more
-// than one root, the first root in Dirs/Dir order wins (project over system).
+// Catalog scans each search root for immediate child skill folders
+// (<root>/<name>/SKILL.md), parses each skill, and returns the merged catalog.
+// Missing or empty roots yield no skills (not an error). Malformed skills are
+// skipped. When the same name appears in more than one root, the first root in
+// Dirs/Dir order wins (project over system). Nested trees are not walked.
 func (l Loader) Catalog(ctx context.Context) ([]Skill, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -75,8 +82,8 @@ func (l Loader) searchDirs() []string {
 	return nil
 }
 
-// catalogDir walks a single skills root into byName. First-wins: existing
-// names are not overwritten.
+// catalogDir loads skills from immediate children of dir only:
+// <dir>/<skill-name>/SKILL.md. First-wins: existing names are not overwritten.
 func catalogDir(ctx context.Context, dir string, byName map[string]Skill) error {
 	if dir == "" {
 		return nil
@@ -87,33 +94,32 @@ func catalogDir(ctx context.Context, dir string, byName map[string]Skill) error 
 		return fmt.Errorf("checking skills dir %s: %w", dir, err)
 	}
 
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("listing skills in %s: %w", dir, err)
+	}
+
+	for _, e := range entries {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if d.IsDir() {
-			return nil
+		if !e.IsDir() {
+			continue
 		}
-		if !strings.EqualFold(d.Name(), skillFile) {
-			return nil
+		// Skip hidden dirs (e.g. .git) under a skills root.
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
 		}
-
+		path := filepath.Join(dir, e.Name(), skillFile)
 		skill, err := loadSkill(path)
 		if err != nil {
-			// Fail-safe: skip malformed skills rather than failing the catalog.
-			return nil
+			// Fail-safe: skip missing/malformed skills rather than failing the catalog.
+			continue
 		}
 		if _, exists := byName[skill.Name]; exists {
-			return nil
+			continue
 		}
 		byName[skill.Name] = skill
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("cataloging skills in %s: %w", dir, err)
 	}
 	return nil
 }
@@ -143,14 +149,28 @@ func loadSkill(path string) (Skill, error) {
 	if desc == "" {
 		return Skill{}, fmt.Errorf("%s: missing frontmatter description", path)
 	}
+	desc = TruncateRunes(desc, MaxDescriptionRunes)
 
 	return Skill{
-		Name:         name,
-		Description:  desc,
-		Body:         body,
-		Dir:          filepath.Dir(path),
-		AllowedTools: parseAllowedTools(meta.AllowedTools),
+		Name:        name,
+		Description: desc,
+		Body:        body,
+		Dir:         filepath.Dir(path),
 	}, nil
+}
+
+// TruncateRunes shortens s to at most max runes, appending "…" when truncated.
+// max <= 0 leaves s unchanged. A single-rune budget becomes "…".
+func TruncateRunes(s string, max int) string {
+	if max <= 0 || utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	if max == 1 {
+		return "…"
+	}
+	// Reserve one rune for the ellipsis.
+	runes := []rune(s)
+	return string(runes[:max-1]) + "…"
 }
 
 // splitFrontmatter extracts the YAML between leading --- fences and the
@@ -177,39 +197,4 @@ func splitFrontmatter(data []byte) (yamlBlock []byte, body string, err error) {
 	after := rest[end+len("\n---"):]
 	after = strings.TrimPrefix(after, "\n")
 	return yamlBlock, after, nil
-}
-
-func parseAllowedTools(v any) []string {
-	if v == nil {
-		return nil
-	}
-	switch t := v.(type) {
-	case string:
-		parts := strings.FieldsFunc(t, func(r rune) bool {
-			return r == ',' || r == ' ' || r == '\t' || r == '\n'
-		})
-		out := make([]string, 0, len(parts))
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				out = append(out, p)
-			}
-		}
-		return out
-	case []any:
-		out := make([]string, 0, len(t))
-		for _, item := range t {
-			s, ok := item.(string)
-			if !ok {
-				continue
-			}
-			s = strings.TrimSpace(s)
-			if s != "" {
-				out = append(out, s)
-			}
-		}
-		return out
-	default:
-		return nil
-	}
 }

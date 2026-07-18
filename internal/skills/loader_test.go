@@ -61,9 +61,6 @@ func TestCatalogFixtureDir(t *testing.T) {
 	if valid.Dir == "" {
 		t.Error("hello.Dir empty")
 	}
-	if len(valid.AllowedTools) != 2 || valid.AllowedTools[0] != "run_command" {
-		t.Errorf("hello.AllowedTools = %v, want [run_command read_file]", valid.AllowedTools)
-	}
 
 	// Missing/malformed frontmatter must be skipped, not hard-fail.
 	if _, ok := byName[""]; ok {
@@ -109,10 +106,69 @@ func TestCatalogSkipsDuplicateNames(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d skills, want 1 (first duplicate wins)", len(got))
 	}
-	// WalkDir order is not guaranteed across platforms for first-win; either
-	// description is acceptable as long as only one entry is kept.
+	// ReadDir order is not guaranteed across platforms for first-win within
+	// one root; either description is acceptable as long as only one entry.
 	if got[0].Name != "dup" {
 		t.Errorf("name = %q, want dup", got[0].Name)
+	}
+}
+
+func TestCatalogOnlyImmediateChildren(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	// Valid one-level skill.
+	writeSkill(t, filepath.Join(root, "top"), "top", "top-level", "body top")
+	// Nested under an intermediate dir — must NOT be discovered.
+	nested := filepath.Join(root, "nested", "deep")
+	writeSkill(t, nested, "deep", "should not load", "body deep")
+	// SKILL.md sitting directly in the root (not in a child dir) is ignored.
+	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte("---\nname: rootfile\ndescription: no\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Loader{Dir: root}.Catalog(context.Background())
+	if err != nil {
+		t.Fatalf("Catalog() error = %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "top" {
+		t.Fatalf("got %v, want only top-level skill", names(got))
+	}
+}
+
+func TestCatalogTruncatesLongDescription(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	// description longer than MaxDescriptionRunes
+	long := strings.Repeat("x", MaxDescriptionRunes+50)
+	writeSkill(t, filepath.Join(root, "long"), "long", long, "body")
+
+	got, err := Loader{Dir: root}.Catalog(context.Background())
+	if err != nil {
+		t.Fatalf("Catalog() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d skills, want 1", len(got))
+	}
+	if n := len([]rune(got[0].Description)); n != MaxDescriptionRunes {
+		t.Fatalf("description runes = %d, want %d", n, MaxDescriptionRunes)
+	}
+	if !strings.HasSuffix(got[0].Description, "…") {
+		t.Fatalf("truncated description should end with ellipsis: %q", got[0].Description)
+	}
+}
+
+func TestTruncateRunes(t *testing.T) {
+	t.Parallel()
+	if TruncateRunes("hi", 10) != "hi" {
+		t.Fatal("short string should be unchanged")
+	}
+	if got := TruncateRunes("abcdef", 4); got != "abc…" {
+		t.Fatalf("got %q, want abc…", got)
+	}
+	if TruncateRunes("x", 0) != "x" {
+		t.Fatal("max<=0 should leave string unchanged")
 	}
 }
 

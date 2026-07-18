@@ -49,6 +49,26 @@ func TestSkillContextAdvertise(t *testing.T) {
 	}
 }
 
+func TestSkillContextTruncatesLongDescription(t *testing.T) {
+	t.Parallel()
+
+	long := strings.Repeat("z", skills.MaxDescriptionRunes+80)
+	got := SkillContext([]skills.Skill{{Name: "big", Description: long}})
+	// Description in the menu line should be capped.
+	line := strings.TrimPrefix(strings.TrimSpace(got), "## Available skills (call read_skill(\"<name>\") to load full instructions)")
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "- big: ") {
+		t.Fatalf("unexpected line: %q", line)
+	}
+	desc := strings.TrimPrefix(line, "- big: ")
+	if n := len([]rune(desc)); n != skills.MaxDescriptionRunes {
+		t.Fatalf("desc runes = %d, want %d (%q)", n, skills.MaxDescriptionRunes, desc)
+	}
+	if !strings.HasSuffix(desc, "…") {
+		t.Fatalf("want ellipsis suffix, got %q", desc)
+	}
+}
+
 func TestBuildMessagesIncludesSkillsWhenLoaded(t *testing.T) {
 	t.Parallel()
 
