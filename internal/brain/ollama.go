@@ -116,12 +116,15 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 		defer close(out)
 		defer close(done)
 
-		var tools api.Tools
-		if opts.ToolsEnabled {
-			tools = voiceAssistantTools(o.skills)
-		}
+		// Per-turn tool session: tracks active skill + allowed-tools filtering.
+		sess := &toolSession{catalog: o.skills}
 
 		for i := 0; i < maxToolIterations; i++ {
+			var tools api.Tools
+			if opts.ToolsEnabled {
+				tools = sess.tools()
+			}
+
 			messages := o.buildMessages()
 			stream := true
 			req := &api.ChatRequest{
@@ -165,9 +168,9 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 					ToolCalls: toolCalls,
 				})
 
-				// Execute each tool and add results.
+				// Execute each tool and add results (enforces allowed-tools).
 				for _, tc := range toolCalls {
-					result := executeTool(ctx, o.workDir, tc, o.skills)
+					result := sess.execute(ctx, o.workDir, tc)
 					o.history = append(o.history, api.Message{
 						Role:    "tool",
 						Content: result,
@@ -211,12 +214,14 @@ func sendChunk(ctx context.Context, out chan<- string, chunk string) error {
 func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOptions) (string, error) {
 	o.history = append(o.history, api.Message{Role: "user", Content: input})
 
-	var tools api.Tools
-	if opts.ToolsEnabled {
-		tools = voiceAssistantTools(o.skills)
-	}
+	sess := &toolSession{catalog: o.skills}
 
 	for i := 0; i < maxToolIterations; i++ {
+		var tools api.Tools
+		if opts.ToolsEnabled {
+			tools = sess.tools()
+		}
+
 		messages := o.buildMessages()
 		stream := false
 		req := &api.ChatRequest{
@@ -235,7 +240,7 @@ func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOp
 			return "", fmt.Errorf("ollama error: %w", err)
 		}
 
-		// Tool calls — execute and loop.
+		// Tool calls — execute and loop (enforces allowed-tools after read_skill).
 		if len(response.ToolCalls) > 0 {
 			o.history = append(o.history, api.Message{
 				Role:      "assistant",
@@ -244,7 +249,7 @@ func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOp
 			})
 
 			for _, tc := range response.ToolCalls {
-				result := executeTool(ctx, o.workDir, tc, o.skills)
+				result := sess.execute(ctx, o.workDir, tc)
 				o.history = append(o.history, api.Message{
 					Role:    "tool",
 					Content: result,

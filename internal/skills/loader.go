@@ -28,12 +28,12 @@ type Loader struct {
 }
 
 // frontmatter is the YAML block at the top of SKILL.md.
-// allowed-tools is intentionally not parsed: the agent loop has no "active
-// skill" scope yet, so advertising an allow-list would be a false contract.
-// Unknown YAML keys (including allowed-tools) are ignored by the decoder.
+// allowed-tools is experimental in the Agent Skills spec: space-separated
+// string of pre-approved tools (YAML lists are also accepted for convenience).
 type frontmatter struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
+	Name         string `yaml:"name"`
+	Description  string `yaml:"description"`
+	AllowedTools any    `yaml:"allowed-tools"`
 }
 
 // Catalog scans each search root for immediate child skill folders
@@ -152,11 +152,99 @@ func loadSkill(path string) (Skill, error) {
 	desc = TruncateRunes(desc, MaxDescriptionRunes)
 
 	return Skill{
-		Name:        name,
-		Description: desc,
-		Body:        body,
-		Dir:         filepath.Dir(path),
+		Name:         name,
+		Description:  desc,
+		Body:         body,
+		Dir:          filepath.Dir(path),
+		AllowedTools: parseAllowedTools(meta.AllowedTools),
 	}, nil
+}
+
+// parseAllowedTools normalizes allowed-tools frontmatter into tool name tokens.
+// Spec form is a space-separated string; a YAML string list is also accepted.
+func parseAllowedTools(v any) []string {
+	if v == nil {
+		return nil
+	}
+	var parts []string
+	switch t := v.(type) {
+	case string:
+		parts = strings.Fields(t)
+	case []any:
+		for _, item := range t {
+			s, ok := item.(string)
+			if !ok {
+				continue
+			}
+			parts = append(parts, strings.Fields(s)...)
+		}
+	case []string:
+		for _, s := range t {
+			parts = append(parts, strings.Fields(s)...)
+		}
+	default:
+		return nil
+	}
+	out := make([]string, 0, len(parts))
+	seen := map[string]struct{}{}
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
+// ToolAllowed reports whether toolName may run given an allowed-tools list.
+// Empty/nil allow means unrestricted. Matching is case-insensitive against the
+// raw token and common aliases (Read→read_file, Bash/Bash(...)→run_command).
+func ToolAllowed(toolName string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return false
+	}
+	want := normalizeToolName(toolName)
+	for _, a := range allowed {
+		if normalizeToolName(a) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeToolName maps skill allowed-tools tokens onto Samantha tool ids.
+func normalizeToolName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	// Bash(git:*) / Shell(...) → base name before '('.
+	if i := strings.IndexByte(name, '('); i > 0 {
+		name = name[:i]
+	}
+	switch strings.ToLower(name) {
+	case "read", "read_file", "readfile":
+		return "read_file"
+	case "write", "write_file", "writefile", "edit":
+		return "write_file"
+	case "bash", "shell", "run_command", "runcommand", "command":
+		return "run_command"
+	case "list", "ls", "list_files", "listfiles", "glob", "listdir":
+		return "list_files"
+	case "read_skill", "readskill", "skill":
+		return "read_skill"
+	default:
+		return strings.ToLower(name)
+	}
 }
 
 // TruncateRunes shortens s to at most max runes, appending "…" when truncated.

@@ -61,6 +61,13 @@ func TestCatalogFixtureDir(t *testing.T) {
 	if valid.Dir == "" {
 		t.Error("hello.Dir empty")
 	}
+	// Fixture declares allowed-tools: Read list_files
+	if len(valid.AllowedTools) != 2 {
+		t.Fatalf("hello.AllowedTools = %v, want 2 tokens", valid.AllowedTools)
+	}
+	if valid.AllowedTools[0] != "Read" || valid.AllowedTools[1] != "list_files" {
+		t.Errorf("hello.AllowedTools = %v, want [Read list_files]", valid.AllowedTools)
+	}
 
 	// Missing/malformed frontmatter must be skipped, not hard-fail.
 	if _, ok := byName[""]; ok {
@@ -169,6 +176,36 @@ func TestTruncateRunes(t *testing.T) {
 	}
 	if TruncateRunes("x", 0) != "x" {
 		t.Fatal("max<=0 should leave string unchanged")
+	}
+}
+
+func TestToolAllowed(t *testing.T) {
+	t.Parallel()
+	if !ToolAllowed("run_command", nil) {
+		t.Fatal("empty allow-list should allow everything")
+	}
+	if !ToolAllowed("read_file", []string{"Read", "list_files"}) {
+		t.Fatal("Read alias should match read_file")
+	}
+	if !ToolAllowed("run_command", []string{"Bash(git:*)"}) {
+		t.Fatal("Bash(...) should match run_command")
+	}
+	if ToolAllowed("write_file", []string{"Read"}) {
+		t.Fatal("write_file must not be allowed when only Read is listed")
+	}
+}
+
+func TestParseAllowedToolsSpaceSeparated(t *testing.T) {
+	t.Parallel()
+	got := parseAllowedTools("Read Bash(git:*) list_files")
+	want := []string{"Read", "Bash(git:*)", "list_files"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
 	}
 }
 
