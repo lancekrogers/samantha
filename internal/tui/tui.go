@@ -22,6 +22,7 @@ const (
 	screenConversation
 	screenSessions
 	screenAudiobook
+	screenPickBook
 	screenTailscale
 )
 
@@ -38,6 +39,7 @@ type App struct {
 	conversation conversationModel
 	sessions     sessionsModel
 	audiobook    audiobookModel
+	pickBook     pickBookModel
 	tailscale    tailscaleModel
 
 	// Conversation runtime wiring, set by Run before the program starts.
@@ -79,6 +81,7 @@ func NewApp(cfg *config.Config) App {
 		conversation: newConversation(cfg.AgentName),
 		sessions:     newSessions(savedSessions),
 		audiobook:    newAudiobook(cfg),
+		pickBook:     newPickBook(cfg),
 	}
 }
 
@@ -140,6 +143,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.screen == screenTailscale && target != screenTailscale {
 			a.tailscale.stop()
 		}
+		prev := a.screen
 		a.screen = target
 		switch a.screen {
 		case screenSettings:
@@ -148,12 +152,26 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.settings = newSettings(a.cfg, a.providers)
 			return a, tea.Batch(a.settings.loadDevices(), pauseVoice)
 		case screenAudiobook:
-			a.audiobook = newAudiobook(a.cfg)
+			// Preserve form state when returning from the library picker.
+			if prev != screenPickBook {
+				a.audiobook = newAudiobook(a.cfg)
+			}
+		case screenPickBook:
+			a.pickBook = newPickBook(a.cfg)
+			a.pickBook.width, a.pickBook.height = a.width, a.height
 		case screenTailscale:
 			a.tailscale = newTailscale(a.runCtx, nil)
 			a.tailscale.width, a.tailscale.height = a.width, a.height
 			return a, a.tailscale.start()
 		}
+		return a, nil
+
+	case bookPickedMsg:
+		a.audiobook.input = msg.path
+		a.audiobook.errText = ""
+		a.audiobook.message = "Filled input from Calibre library"
+		a.audiobook.command = ""
+		a.screen = screenAudiobook
 		return a, nil
 
 	case settingsDoneMsg:
@@ -234,6 +252,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.sessions, cmd = a.sessions.Update(msg)
 	case screenAudiobook:
 		a.audiobook, cmd = a.audiobook.Update(msg)
+	case screenPickBook:
+		a.pickBook, cmd = a.pickBook.Update(msg)
 	case screenTailscale:
 		a.tailscale, cmd = a.tailscale.Update(msg)
 	}
@@ -253,6 +273,8 @@ func (a App) View() string {
 		return a.sessions.View()
 	case screenAudiobook:
 		return a.audiobook.View()
+	case screenPickBook:
+		return a.pickBook.View()
 	case screenTailscale:
 		return a.tailscale.View()
 	default:

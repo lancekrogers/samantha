@@ -63,6 +63,14 @@ type Config struct {
 	// the local flag.
 	RemoteToolsEnabled bool `mapstructure:"remote_tools_enabled"`
 
+	// Calibre (optional library catalog/resolver for audiobook input).
+	// Off by default so non-users are unaffected.
+	CalibreEnabled        bool   `mapstructure:"calibre_enabled"`
+	CalibreLibraryPath    string `mapstructure:"calibre_library_path"`
+	CalibredbBinary       string `mapstructure:"calibredb_binary"`
+	CalibreConvertBinary  string `mapstructure:"calibre_convert_binary"`
+	CalibrePreferFormat   string `mapstructure:"calibre_prefer_format"`
+
 	// Paths
 	ModelsDir string `mapstructure:"models_dir"`
 
@@ -130,6 +138,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("voice_tools_enabled", false)
 	v.SetDefault("remote_tools_enabled", false)
 
+	// Calibre is opt-in. Empty binaries are resolved by bundle-aware LookPath.
+	v.SetDefault("calibre_enabled", false)
+	v.SetDefault("calibre_library_path", "")
+	v.SetDefault("calibredb_binary", "")
+	v.SetDefault("calibre_convert_binary", "")
+	v.SetDefault("calibre_prefer_format", "epub")
+
 	v.SetDefault("agent_name", "Samantha")
 	v.SetDefault("persona", "samantha")
 	v.SetDefault("prompts_dir", "")
@@ -176,6 +191,11 @@ func Load() (*Config, error) {
 		"vad_threshold":           "VAD_THRESHOLD",
 		"vad_min_speech_duration": "VAD_MIN_SPEECH_DURATION",
 		"voice_frontend_enabled":  "VOICE_FRONTEND_ENABLED",
+		"calibre_enabled":         "CALIBRE_ENABLED",
+		"calibre_library_path":    "CALIBRE_LIBRARY_PATH",
+		"calibredb_binary":        "CALIBREDB_BINARY",
+		"calibre_convert_binary":  "CALIBRE_CONVERT_BINARY",
+		"calibre_prefer_format":   "CALIBRE_PREFER_FORMAT",
 	}
 	for key, env := range bindings {
 		_ = v.BindEnv(key, env)

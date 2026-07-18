@@ -125,6 +125,26 @@ func TestDiagnoseDoesNotCheckBinaryForSherpa(t *testing.T) {
 	}
 }
 
+func TestDiagnoseCalibreOptional(t *testing.T) {
+	cfg := &Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro"}
+
+	missing := diagByName(Diagnose(cfg, t.TempDir(), failLookPath))["calibre-binary"]
+	if missing.Severity != SeverityWarn {
+		t.Fatalf("missing calibre should be warn, got %+v", missing)
+	}
+	if missing.Remediation == "" {
+		t.Fatal("expected remediation")
+	}
+
+	present := diagByName(Diagnose(cfg, t.TempDir(), okLookPath))["calibre-binary"]
+	if present.Severity != SeverityOK {
+		t.Fatalf("present calibre should be OK, got %+v", present)
+	}
+	if HasErrors([]Diagnostic{missing, present}) {
+		t.Fatal("calibre diagnostics must never be errors")
+	}
+}
+
 // TestDiagnoseNeverRequiresMicrophone proves batch/TTS-only readiness: a valid
 // setup with assets present is healthy, and doctor never emits a microphone or
 // audio-device check (so batch-only setups are not failed for lacking a mic).

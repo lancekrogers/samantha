@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strconv"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/lancekrogers/samantha/internal/calibre"
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/render"
 )
@@ -24,22 +26,28 @@ func newAudiobookCmd(run renderRunner, loadConfig configLoader) *cobra.Command {
 		Use:   "audiobook",
 		Short: "Create audiobooks from books",
 	}
-	cmd.AddCommand(newAudiobookCreateCmd(run))
+	cmd.AddCommand(newAudiobookCreateCmd(run, loadConfig))
 	cmd.AddCommand(newAudiobookPreviewCmd(loadConfig))
 	return cmd
 }
 
 // newAudiobookCreateCmd builds `samantha audiobook create`. It shares render's
 // runner and pass-through flags so the two commands cannot drift apart.
-func newAudiobookCreateCmd(run renderRunner) *cobra.Command {
-	var opts render.Options
+func newAudiobookCreateCmd(run renderRunner, loadConfig configLoader) *cobra.Command {
+	var (
+		opts        render.Options
+		fromLibrary string
+	)
 
 	cmd := &cobra.Command{
-		Use:   "create INPUT --out-dir DIR",
+		Use:   "create [INPUT] --out-dir DIR",
 		Short: "Create an audiobook from an EPUB or PDF (one file per chapter/page, resumable)",
 		Long: `Create an audiobook from an EPUB or digital PDF: one WAV per chapter (EPUB
 spine) or page (PDF) plus a manifest under --out-dir, using the same batch
 render runtime as 'samantha render'.
+
+Use --from-library QUERY to resolve INPUT from the Calibre library (requires
+calibre_enabled=true). Mutually exclusive with a positional input path.
 
 Use 'samantha render' for markdown, html, url, and text sources. For
 prompt-controlled PDF cleanup, prefer 'samantha narrate plan|prepare|render'.
@@ -48,13 +56,17 @@ Examples:
   samantha audiobook create book.epub --out-dir out/book
   samantha audiobook create book.pdf --out-dir out/book
   samantha audiobook create book.epub --out-dir out/book --audio-format m4b
-  samantha audiobook create book.epub --out-dir out/book --resume --json`,
+  samantha audiobook create book.epub --out-dir out/book --resume --json
+  samantha audiobook create --from-library "Crypto 101" --out-dir out/crypto`,
 		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 1 {
 				opts.Input = args[0]
+			}
+			if err := resolveFromLibraryFlag(cmd, loadConfig, &opts, fromLibrary, len(args) > 0); err != nil {
+				return err
 			}
 			if err := validateAudiobookInput("create", opts); err != nil {
 				return err
@@ -71,9 +83,55 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&opts.OutDir, "out-dir", "", "Write chapter files and a manifest to DIR (required)")
+	cmd.Flags().StringVar(&fromLibrary, "from-library", "", "Resolve INPUT from Calibre library search query (mutually exclusive with positional INPUT)")
 	addRenderPassthroughFlags(cmd, &opts)
 
 	return cmd
+}
+
+// resolveFromLibraryFlag substitutes opts.Input from a Calibre query when
+// fromLibrary is set. positionalSet is true when the user also passed INPUT.
+func resolveFromLibraryFlag(cmd *cobra.Command, loadConfig configLoader, opts *render.Options, fromLibrary string, positionalSet bool) error {
+	fromLibrary = strings.TrimSpace(fromLibrary)
+	if fromLibrary == "" {
+		return nil
+	}
+	if positionalSet || strings.TrimSpace(opts.Input) != "" {
+		return fmt.Errorf("--from-library is mutually exclusive with a positional input path")
+	}
+	if loadConfig == nil {
+		return fmt.Errorf("--from-library: config loader unavailable")
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	if !cfg.CalibreEnabled {
+		return fmt.Errorf("--from-library: calibre is disabled; enable with: samantha config calibre_enabled true")
+	}
+	client := calibreClientFromConfig(cfg)
+	path, format, err := resolveLibraryBook(cmd.Context(), client, fromLibrary)
+	if err != nil {
+		return fmt.Errorf("--from-library: %w", err)
+	}
+	opts.Input = path
+	if opts.Format == "" || opts.Format == render.FormatAuto {
+		opts.Format = format
+	}
+	return nil
+}
+
+// resolveLibraryBook resolves a Calibre query to an absolute EPUB/PDF path.
+func resolveLibraryBook(ctx context.Context, client calibre.Client, query string) (path string, format render.Format, err error) {
+	book, err := client.Resolve(ctx, query)
+	if err != nil {
+		return "", "", err
+	}
+	p, fmtName, err := client.BestFormatPath(book)
+	if err != nil {
+		return "", "", err
+	}
+	return p, render.Format(fmtName), nil
 }
 
 // newAudiobookPreviewCmd builds `samantha audiobook preview`. Preview is

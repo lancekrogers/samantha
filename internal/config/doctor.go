@@ -144,6 +144,30 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 		diags = append(diags, Diagnostic{Name: "pdftotext-binary", Severity: SeverityOK, Detail: "pdftotext"})
 	}
 
+	// Calibre is optional; always report availability as OK/Warn, never Error.
+	// Production callers should pass a bundle-aware lookPath so the macOS app
+	// bundle is found without PATH; tests inject fakes.
+	calibreBin := strings.TrimSpace(cfg.CalibredbBinary)
+	if calibreBin == "" {
+		calibreBin = "calibredb"
+	}
+	if p, err := lookPath(calibreBin); err != nil {
+		diags = append(diags, Diagnostic{
+			Name:        "calibre-binary",
+			Severity:    SeverityWarn,
+			Detail:      "calibredb not found (optional; needed for library search / --from-library)",
+			Remediation: "install Calibre (e.g. brew install --cask calibre), add its MacOS folder to PATH, or set calibredb_binary",
+		})
+	} else {
+		detail := p
+		if cfg.CalibreEnabled {
+			detail = p + " (calibre_enabled=true)"
+		} else {
+			detail = p + " (calibre_enabled=false; set calibre_enabled=true to use)"
+		}
+		diags = append(diags, Diagnostic{Name: "calibre-binary", Severity: SeverityOK, Detail: detail})
+	}
+
 	return diags
 }
 

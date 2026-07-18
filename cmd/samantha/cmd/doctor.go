@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/lancekrogers/samantha/internal/calibre"
 	"github.com/lancekrogers/samantha/internal/config"
 )
 
@@ -41,8 +42,19 @@ var doctorCmd = &cobra.Command{
 			}
 			checker = newVoiceDeviceChecker()
 		}
-		return runDoctor(cmd, cfg, config.ModelsDir(), exec.LookPath, checker, doctorJSON)
+		return runDoctor(cmd, cfg, config.ModelsDir(), doctorLookPath, checker, doctorJSON)
 	},
+}
+
+// doctorLookPath resolves external tools for doctor. calibredb/ebook-convert use
+// Calibre's bundle-aware lookup; everything else uses PATH.
+func doctorLookPath(name string) (string, error) {
+	switch name {
+	case "calibredb", "ebook-convert", "ebook-meta":
+		return calibre.BundleLookPath(name)
+	default:
+		return exec.LookPath(name)
+	}
 }
 
 var severityMark = map[config.Severity]string{
