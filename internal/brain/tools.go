@@ -21,6 +21,64 @@ const maxToolIterations = 10
 // skillBodyMaxBytes caps read_skill output (same budget as read_file).
 const skillBodyMaxBytes = 32 * 1024
 
+// toolSession tracks catalog + active skill for progressive disclosure during
+// a single Think* turn.
+//
+// Product model: skills (playbooks) stack on top of CLI tools (capability).
+// allowed-tools from SKILL.md is author *hint* only — it is surfaced when a
+// skill loads, but does not strip or deny list_files/read_file/write_file/
+// run_command. Real safety stays at voice_tools_enabled / remote_tools_enabled.
+type toolSession struct {
+	catalog []skills.Skill
+	// active is set after a successful read_skill (for hints / future policy).
+	active *skills.Skill
+}
+
+// tools returns the full tool definitions for the next model request.
+// CLI tools stay available for the whole turn, including after skill load.
+func (s *toolSession) tools() api.Tools {
+	return voiceAssistantTools(s.catalog)
+}
+
+// execute runs a tool call. Successful read_skill activates the skill and
+// may append an allowed-tools hint; CLI tools remain fully available.
+func (s *toolSession) execute(ctx context.Context, workDir string, call api.ToolCall) string {
+	if call.Function.Name == "read_skill" {
+		return s.executeReadSkill(call)
+	}
+	return executeTool(ctx, workDir, call, s.catalog)
+}
+
+func (s *toolSession) executeReadSkill(call api.ToolCall) string {
+	args := call.Function.Arguments.ToMap()
+	name, _ := args["name"].(string)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "error: name is required"
+	}
+	for i := range s.catalog {
+		sk := &s.catalog[i]
+		if sk.Name != name {
+			continue
+		}
+		s.active = sk
+		body := sk.Body
+		if len(body) > skillBodyMaxBytes {
+			body = body[:skillBodyMaxBytes] + "\n... (truncated)"
+		}
+		msg := fmt.Sprintf("Skill %q (directory: %s)\n\n%s", sk.Name, sk.Dir, body)
+		if len(sk.AllowedTools) > 0 {
+			// Hint only — CLI tools are not restricted by this list.
+			msg += fmt.Sprintf(
+				"\n\n[skill hint: allowed-tools suggests %s — CLI tools remain available; this is not a hard sandbox]",
+				strings.Join(sk.AllowedTools, " "),
+			)
+		}
+		return msg
+	}
+	return fmt.Sprintf("error: unknown skill %q", name)
+}
+
 // voiceAssistantTools returns the tool definitions for the Ollama agent.
 // When catalog is non-empty, read_skill is included so the model can load a
 // skill body on demand (progressive disclosure).
@@ -113,7 +171,7 @@ func voiceAssistantTools(catalog []skills.Skill) api.Tools {
 			Type: "function",
 			Function: api.ToolFunction{
 				Name:        "read_skill",
-				Description: "Load the full instructions for a named Agent Skill. Call this when a skill from the Available skills list is relevant, then follow its body. Bundled scripts live under the skill directory returned with the body.",
+				Description: "Load the full instructions for a named Agent Skill. Call this when a skill from the Available skills list is relevant, then follow its body. Bundled scripts live under the skill directory returned with the body. CLI tools (list_files, read_file, write_file, run_command) stay available after loading. Optional allowed-tools in the skill is a hint only, not a sandbox.",
 				Parameters: api.ToolFunctionParameters{
 					Type:     "object",
 					Required: []string{"name"},
@@ -132,6 +190,7 @@ func voiceAssistantTools(catalog []skills.Skill) api.Tools {
 
 // executeTool runs a tool call and returns the result as a string.
 // catalog is used by read_skill; other tools ignore it.
+// Prefer toolSession.execute so skill activation (and hints) are tracked.
 func executeTool(ctx context.Context, workDir string, call api.ToolCall, catalog []skills.Skill) string {
 	args := call.Function.Arguments.ToMap()
 
@@ -145,6 +204,7 @@ func executeTool(ctx context.Context, workDir string, call api.ToolCall, catalog
 	case "run_command":
 		return toolRunCommand(ctx, workDir, args)
 	case "read_skill":
+		// Without a session, activation is not tracked (tests / legacy).
 		return toolReadSkill(catalog, args)
 	default:
 		return fmt.Sprintf("unknown tool: %s", call.Function.Name)
@@ -152,6 +212,7 @@ func executeTool(ctx context.Context, workDir string, call api.ToolCall, catalog
 }
 
 // toolReadSkill returns the capped skill body and skill directory for scripts.
+// Does not track activation; use toolSession.execute for allow-list lifecycle.
 func toolReadSkill(catalog []skills.Skill, args map[string]any) string {
 	name, _ := args["name"].(string)
 	name = strings.TrimSpace(name)

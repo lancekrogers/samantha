@@ -251,6 +251,100 @@ func TestReadSkillTool(t *testing.T) {
 	}
 }
 
+func TestToolSessionHintsAllowedToolsKeepsCLI(t *testing.T) {
+	t.Parallel()
+
+	catalog := []skills.Skill{
+		{
+			Name:         "restricted",
+			Description:  "suggests read",
+			Body:         "prefer read_file for this workflow",
+			Dir:          "/skills/restricted",
+			AllowedTools: []string{"Read"},
+		},
+	}
+	sess := &toolSession{catalog: catalog}
+
+	// Before activation: all base tools + read_skill.
+	before := sess.tools()
+	if !hasTool(before, "write_file") || !hasTool(before, "read_skill") {
+		t.Fatalf("pre-activation tools incomplete: %#v", toolNames(before))
+	}
+
+	// Activate via read_skill — body + soft hint.
+	got := sess.execute(context.Background(), "/work", skillCall("restricted"))
+	if !strings.Contains(got, "prefer read_file") {
+		t.Fatalf("activation body missing: %q", got)
+	}
+	if !strings.Contains(got, "skill hint: allowed-tools") {
+		t.Fatalf("activation should soft-hint allow-list: %q", got)
+	}
+	if strings.Contains(got, "other tools are denied") {
+		t.Fatalf("must not claim tools are denied: %q", got)
+	}
+	if sess.active == nil || sess.active.Name != "restricted" {
+		t.Fatal("expected active skill after read_skill")
+	}
+
+	// After activation: FULL CLI still offered (skills + tools, not tools-from-skills).
+	after := sess.tools()
+	for _, name := range []string{"list_files", "read_file", "write_file", "run_command", "read_skill"} {
+		if !hasTool(after, name) {
+			t.Fatalf("after skill load, missing CLI/tool %s: %#v", name, toolNames(after))
+		}
+	}
+
+	// write_file still executes (workdir write), not blocked by allow-list.
+	dir := t.TempDir()
+	write := sess.execute(context.Background(), dir, api.ToolCall{
+		Function: api.ToolCallFunction{
+			Name:      "write_file",
+			Arguments: mustArgs(map[string]any{"path": "out.txt", "content": "ok"}),
+		},
+	})
+	if strings.Contains(write, "not allowed") {
+		t.Fatalf("write_file must not be sandbox-denied: %q", write)
+	}
+	if !strings.Contains(write, "wrote") {
+		t.Fatalf("write_file should succeed: %q", write)
+	}
+}
+
+func TestToolSessionUnrestrictedWhenNoAllowedTools(t *testing.T) {
+	t.Parallel()
+
+	catalog := []skills.Skill{{
+		Name: "open", Description: "all tools", Body: "go", Dir: "/s",
+	}}
+	sess := &toolSession{catalog: catalog}
+	_ = sess.execute(context.Background(), "/work", skillCall("open"))
+	if sess.active == nil {
+		t.Fatal("expected activation")
+	}
+	tools := sess.tools()
+	for _, name := range []string{"list_files", "read_file", "write_file", "run_command", "read_skill"} {
+		if !hasTool(tools, name) {
+			t.Fatalf("unrestricted skill missing %s", name)
+		}
+	}
+}
+
+func toolNames(tools api.Tools) []string {
+	out := make([]string, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, t.Function.Name)
+	}
+	return out
+}
+
+func mustArgs(m map[string]any) api.ToolCallFunctionArguments {
+	args := api.NewToolCallFunctionArguments()
+	for k, v := range m {
+		args.Set(k, v)
+	}
+	return args
+}
+
 func skillCall(name string) api.ToolCall {
 	args := api.NewToolCallFunctionArguments()
 	args.Set("name", name)

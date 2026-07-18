@@ -331,9 +331,18 @@ Ollama does **not** scan `.claude/skills`; the Claude Code provider owns that
 path, and dual-scanning would duplicate skills when both trees are projected.
 Duplicate skill names resolve with **project first**. Ollama advertises each
 skill's name and description in the system prompt and offers a `read_skill` tool
-to load full instructions on demand (progressive disclosure). Claude and Grok
-pick up skills via their own CLIs. Remote `samantha serve` still gates all
-tools (including `read_skill`) behind `remote_tools_enabled`.
+to load full instructions on demand (progressive disclosure).
+
+Optional frontmatter `allowed-tools` (Agent Skills experimental field) is
+parsed and shown as a **hint** when a skill is loaded. It does **not** strip
+or deny CLI tools — skills (playbooks) stack on top of the full tool set
+(`list_files`, `read_file`, `write_file`, `run_command`). Tokens use common
+aliases (`Read` → `read_file`, `Bash` / `Bash(…)` → `run_command`) for
+display/matching helpers. Safety stays at `voice_tools_enabled` /
+`remote_tools_enabled`, not skill frontmatter.
+
+Claude and Grok pick up skills via their own CLIs. Remote `samantha serve` still
+gates all tools (including `read_skill`) behind `remote_tools_enabled`.
 
 ```text
 # project (cwd where samantha was started)
