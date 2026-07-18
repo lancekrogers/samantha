@@ -21,41 +21,29 @@ const maxToolIterations = 10
 // skillBodyMaxBytes caps read_skill output (same budget as read_file).
 const skillBodyMaxBytes = 32 * 1024
 
-// toolSession tracks catalog + active skill for progressive disclosure and
-// allowed-tools enforcement during a single Think* turn.
+// toolSession tracks catalog + active skill for progressive disclosure during
+// a single Think* turn.
+//
+// Product model: skills (playbooks) stack on top of CLI tools (capability).
+// allowed-tools from SKILL.md is author *hint* only — it is surfaced when a
+// skill loads, but does not strip or deny list_files/read_file/write_file/
+// run_command. Real safety stays at voice_tools_enabled / remote_tools_enabled.
 type toolSession struct {
 	catalog []skills.Skill
-	// active is set after a successful read_skill. When active.AllowedTools is
-	// non-empty, only those tools (plus read_skill) may be offered or run.
+	// active is set after a successful read_skill (for hints / future policy).
 	active *skills.Skill
 }
 
-// tools returns the tool definitions for the next model request.
+// tools returns the full tool definitions for the next model request.
+// CLI tools stay available for the whole turn, including after skill load.
 func (s *toolSession) tools() api.Tools {
-	all := voiceAssistantTools(s.catalog)
-	if s.active == nil || len(s.active.AllowedTools) == 0 {
-		return all
-	}
-	return filterToolsByAllowList(all, s.active.AllowedTools)
+	return voiceAssistantTools(s.catalog)
 }
 
-// execute runs a tool call, enforcing the active skill allow-list.
-// Successful read_skill activates (or switches) the skill for subsequent calls.
+// execute runs a tool call. Successful read_skill activates the skill and
+// may append an allowed-tools hint; CLI tools remain fully available.
 func (s *toolSession) execute(ctx context.Context, workDir string, call api.ToolCall) string {
-	name := call.Function.Name
-
-	// Enforce allow-list for non-read_skill tools while a restricted skill is active.
-	// read_skill stays available so the model can switch skills mid-turn.
-	if name != "read_skill" && s.active != nil && len(s.active.AllowedTools) > 0 {
-		if !skills.ToolAllowed(name, s.active.AllowedTools) {
-			return fmt.Sprintf(
-				"error: tool %q is not allowed by active skill %q (allowed-tools: %s)",
-				name, s.active.Name, strings.Join(s.active.AllowedTools, " "),
-			)
-		}
-	}
-
-	if name == "read_skill" {
+	if call.Function.Name == "read_skill" {
 		return s.executeReadSkill(call)
 	}
 	return executeTool(ctx, workDir, call, s.catalog)
@@ -80,30 +68,15 @@ func (s *toolSession) executeReadSkill(call api.ToolCall) string {
 		}
 		msg := fmt.Sprintf("Skill %q (directory: %s)\n\n%s", sk.Name, sk.Dir, body)
 		if len(sk.AllowedTools) > 0 {
+			// Hint only — CLI tools are not restricted by this list.
 			msg += fmt.Sprintf(
-				"\n\n[allowed-tools active for this skill: %s — other tools are denied until another skill is loaded]",
+				"\n\n[skill hint: allowed-tools suggests %s — CLI tools remain available; this is not a hard sandbox]",
 				strings.Join(sk.AllowedTools, " "),
 			)
 		}
 		return msg
 	}
 	return fmt.Sprintf("error: unknown skill %q", name)
-}
-
-// filterToolsByAllowList keeps tools whose names are in allowed (plus always
-// read_skill when present in all, so progressive disclosure can switch skills).
-func filterToolsByAllowList(all api.Tools, allowed []string) api.Tools {
-	if len(allowed) == 0 {
-		return all
-	}
-	out := make(api.Tools, 0, len(all))
-	for _, t := range all {
-		name := t.Function.Name
-		if name == "read_skill" || skills.ToolAllowed(name, allowed) {
-			out = append(out, t)
-		}
-	}
-	return out
 }
 
 // voiceAssistantTools returns the tool definitions for the Ollama agent.
@@ -198,7 +171,7 @@ func voiceAssistantTools(catalog []skills.Skill) api.Tools {
 			Type: "function",
 			Function: api.ToolFunction{
 				Name:        "read_skill",
-				Description: "Load the full instructions for a named Agent Skill. Call this when a skill from the Available skills list is relevant, then follow its body. Bundled scripts live under the skill directory returned with the body. If the skill declares allowed-tools, only those tools remain available after loading.",
+				Description: "Load the full instructions for a named Agent Skill. Call this when a skill from the Available skills list is relevant, then follow its body. Bundled scripts live under the skill directory returned with the body. CLI tools (list_files, read_file, write_file, run_command) stay available after loading. Optional allowed-tools in the skill is a hint only, not a sandbox.",
 				Parameters: api.ToolFunctionParameters{
 					Type:     "object",
 					Required: []string{"name"},
@@ -217,7 +190,7 @@ func voiceAssistantTools(catalog []skills.Skill) api.Tools {
 
 // executeTool runs a tool call and returns the result as a string.
 // catalog is used by read_skill; other tools ignore it.
-// Prefer toolSession.execute so allowed-tools and activation are applied.
+// Prefer toolSession.execute so skill activation (and hints) are tracked.
 func executeTool(ctx context.Context, workDir string, call api.ToolCall, catalog []skills.Skill) string {
 	args := call.Function.Arguments.ToMap()
 

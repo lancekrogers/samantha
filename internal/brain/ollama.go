@@ -116,7 +116,7 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 		defer close(out)
 		defer close(done)
 
-		// Per-turn tool session: tracks active skill + allowed-tools filtering.
+		// Per-turn tool session: tracks active skill for progressive disclosure.
 		sess := &toolSession{catalog: o.skills}
 
 		for i := 0; i < maxToolIterations; i++ {
@@ -168,7 +168,7 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 					ToolCalls: toolCalls,
 				})
 
-				// Execute each tool and add results (enforces allowed-tools).
+				// Execute each tool and add results (skills + full CLI tools).
 				for _, tc := range toolCalls {
 					result := sess.execute(ctx, o.workDir, tc)
 					o.history = append(o.history, api.Message{
@@ -240,7 +240,7 @@ func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOp
 			return "", fmt.Errorf("ollama error: %w", err)
 		}
 
-		// Tool calls — execute and loop (enforces allowed-tools after read_skill).
+		// Tool calls — execute and loop (skills stack on full CLI tools).
 		if len(response.ToolCalls) > 0 {
 			o.history = append(o.history, api.Message{
 				Role:      "assistant",

@@ -9,9 +9,9 @@ type Skill struct {
 	Description string
 	Body        string
 	Dir         string
-	// AllowedTools is the optional frontmatter allowed-tools list: tools that
-	// may run while this skill is active (after read_skill). Empty means no
-	// restriction. Values are matched against Samantha tool names
+	// AllowedTools is optional frontmatter allowed-tools (Agent Skills
+	// experimental). Parsed and surfaced as a soft hint after read_skill;
+	// it does not remove CLI tools. Values map to Samantha tool names
 	// (list_files, read_file, write_file, run_command) with common aliases
 	// (Read → read_file, Bash → run_command). See agentskills.io specification.
 	AllowedTools []string

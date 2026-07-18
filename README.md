@@ -334,11 +334,12 @@ skill's name and description in the system prompt and offers a `read_skill` tool
 to load full instructions on demand (progressive disclosure).
 
 Optional frontmatter `allowed-tools` (Agent Skills experimental field) is
-enforced after a skill is loaded: only listed tools remain available for the
-rest of the turn (plus `read_skill` so the model can switch skills). Tokens
-match Samantha tools (`list_files`, `read_file`, `write_file`, `run_command`)
-with common aliases (`Read` → `read_file`, `Bash` / `Bash(…)` → `run_command`).
-Empty `allowed-tools` means no restriction.
+parsed and shown as a **hint** when a skill is loaded. It does **not** strip
+or deny CLI tools — skills (playbooks) stack on top of the full tool set
+(`list_files`, `read_file`, `write_file`, `run_command`). Tokens use common
+aliases (`Read` → `read_file`, `Bash` / `Bash(…)` → `run_command`) for
+display/matching helpers. Safety stays at `voice_tools_enabled` /
+`remote_tools_enabled`, not skill frontmatter.
 
 Claude and Grok pick up skills via their own CLIs. Remote `samantha serve` still
 gates all tools (including `read_skill`) behind `remote_tools_enabled`.

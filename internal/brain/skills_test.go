@@ -251,14 +251,14 @@ func TestReadSkillTool(t *testing.T) {
 	}
 }
 
-func TestToolSessionEnforcesAllowedTools(t *testing.T) {
+func TestToolSessionHintsAllowedToolsKeepsCLI(t *testing.T) {
 	t.Parallel()
 
 	catalog := []skills.Skill{
 		{
 			Name:         "restricted",
-			Description:  "only read",
-			Body:         "use read_file only",
+			Description:  "suggests read",
+			Body:         "prefer read_file for this workflow",
 			Dir:          "/skills/restricted",
 			AllowedTools: []string{"Read"},
 		},
@@ -271,50 +271,42 @@ func TestToolSessionEnforcesAllowedTools(t *testing.T) {
 		t.Fatalf("pre-activation tools incomplete: %#v", toolNames(before))
 	}
 
-	// Activate via read_skill.
+	// Activate via read_skill — body + soft hint.
 	got := sess.execute(context.Background(), "/work", skillCall("restricted"))
-	if !strings.Contains(got, "use read_file only") {
+	if !strings.Contains(got, "prefer read_file") {
 		t.Fatalf("activation body missing: %q", got)
 	}
-	if !strings.Contains(got, "allowed-tools active") {
-		t.Fatalf("activation should mention allow-list: %q", got)
+	if !strings.Contains(got, "skill hint: allowed-tools") {
+		t.Fatalf("activation should soft-hint allow-list: %q", got)
+	}
+	if strings.Contains(got, "other tools are denied") {
+		t.Fatalf("must not claim tools are denied: %q", got)
 	}
 	if sess.active == nil || sess.active.Name != "restricted" {
 		t.Fatal("expected active skill after read_skill")
 	}
 
-	// After activation: only Read-compatible tools + read_skill.
+	// After activation: FULL CLI still offered (skills + tools, not tools-from-skills).
 	after := sess.tools()
-	if !hasTool(after, "read_file") {
-		t.Fatal("read_file must remain after Read allow-list")
-	}
-	if !hasTool(after, "read_skill") {
-		t.Fatal("read_skill must remain so skills can be switched")
-	}
-	if hasTool(after, "write_file") || hasTool(after, "run_command") {
-		t.Fatalf("write/run must be filtered out: %#v", toolNames(after))
+	for _, name := range []string{"list_files", "read_file", "write_file", "run_command", "read_skill"} {
+		if !hasTool(after, name) {
+			t.Fatalf("after skill load, missing CLI/tool %s: %#v", name, toolNames(after))
+		}
 	}
 
-	// Execution deny for disallowed tools.
-	deny := sess.execute(context.Background(), "/work", api.ToolCall{
+	// write_file still executes (workdir write), not blocked by allow-list.
+	dir := t.TempDir()
+	write := sess.execute(context.Background(), dir, api.ToolCall{
 		Function: api.ToolCallFunction{
 			Name:      "write_file",
-			Arguments: mustArgs(map[string]any{"path": "x", "content": "y"}),
+			Arguments: mustArgs(map[string]any{"path": "out.txt", "content": "ok"}),
 		},
 	})
-	if !strings.Contains(deny, "not allowed") {
-		t.Fatalf("want deny message, got %q", deny)
+	if strings.Contains(write, "not allowed") {
+		t.Fatalf("write_file must not be sandbox-denied: %q", write)
 	}
-
-	// Allowed tool still runs (path may fail but not allow-list).
-	allow := sess.execute(context.Background(), t.TempDir(), api.ToolCall{
-		Function: api.ToolCallFunction{
-			Name:      "read_file",
-			Arguments: mustArgs(map[string]any{"path": "missing.txt"}),
-		},
-	})
-	if strings.Contains(allow, "not allowed") {
-		t.Fatalf("read_file should be allowed: %q", allow)
+	if !strings.Contains(write, "wrote") {
+		t.Fatalf("write_file should succeed: %q", write)
 	}
 }
 
