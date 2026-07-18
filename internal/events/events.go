@@ -160,3 +160,23 @@ type Info struct {
 }
 
 func (e Info) eventType() string { return "info" }
+
+// ToolCallStarted signals the brain is invoking a tool (Ollama function call).
+// Name is the tool id (list_files, read_file, write_file, run_command, read_skill).
+// Summary is a short, non-sensitive arg preview for status UI.
+type ToolCallStarted struct {
+	Name    string
+	Summary string
+}
+
+func (e ToolCallStarted) eventType() string { return "tool_call_started" }
+
+// ToolCallFinished signals a tool finished. Preview is a short result snippet
+// for status/transcript (truncated; never secrets by design of tool handlers).
+type ToolCallFinished struct {
+	Name    string
+	Preview string
+	Err     string // empty on success
+}
+
+func (e ToolCallFinished) eventType() string { return "tool_call_finished" }

@@ -1,17 +1,25 @@
 # Demos
 
-## skills-plus-cli
+## tool-calls.gif
 
-Shows **skills + CLI tools**: `allowed-tools` is a soft hint; `write_file` / `run_command` stay available after skill load.
+Live Samantha conversation (text mode) where Ollama **actually calls** `list_files`.
 
-| File | Purpose |
-|------|---------|
-| `skills-plus-cli.gif` | Terminal recording |
-| `skills-plus-cli.tape` | VHS source (regenerate with `vhs demos/skills-plus-cli.tape`) |
-| `../scripts/demo_skills_plus_cli.go` | Contract script (`go run ./scripts/demo_skills_plus_cli.go`) |
+Requires:
+
+- `just build` → `./bin/samantha`
+- Ollama running with a tools-capable model (`ollama_model`)
+- `VOICE_TOOLS_ENABLED=true`
+
+Regenerate:
 
 ```bash
-go test ./internal/brain/ -count=1 -v -run TestToolSessionHintsAllowedToolsKeepsCLI
-go run ./scripts/demo_skills_plus_cli.go
-vhs demos/skills-plus-cli.tape   # optional: rebuild gif
+just build
+VOICE_TOOLS_ENABLED=true vhs demos/tool-calls.tape
+```
+
+This is **not** a unit-test recording. You should see lines like:
+
+```text
+🔧 list_files (.)
+✓ list_files → …
 ```

@@ -200,6 +200,8 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 	brainStream, err := p.Brain.ThinkStream(turnCtx, text, brain.StreamOptions{
 		VoiceMode:    true,
 		ToolsEnabled: p.VoiceToolsEnabled,
+		OnToolStart:  p.toolStartHook(),
+		OnToolEnd:    p.toolEndHook(),
 	})
 	if err != nil {
 		turn.finish(TurnFailed)
@@ -261,6 +263,8 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 
 	stream, err := p.Brain.ThinkStream(ctx, input, brain.StreamOptions{
 		ToolsEnabled: p.VoiceToolsEnabled,
+		OnToolStart:  p.toolStartHook(),
+		OnToolEnd:    p.toolEndHook(),
 	})
 	if err != nil {
 		turn.finish(TurnFailed)
@@ -820,6 +824,20 @@ func (p *Pipeline) resetEchoState() {
 func (p *Pipeline) emit(event events.Event) {
 	if p.Events != nil {
 		p.Events.Emit(event)
+	}
+}
+
+// toolStartHook emits ToolCallStarted for UI (stdout + TUI).
+func (p *Pipeline) toolStartHook() func(name, summary string) {
+	return func(name, summary string) {
+		p.emit(events.ToolCallStarted{Name: name, Summary: summary})
+	}
+}
+
+// toolEndHook emits ToolCallFinished for UI.
+func (p *Pipeline) toolEndHook() func(name, preview string) {
+	return func(name, preview string) {
+		p.emit(events.ToolCallFinished{Name: name, Preview: preview})
 	}
 }
 

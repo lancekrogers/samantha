@@ -62,6 +62,9 @@ func (b *eventBridge) attach(bus *events.Bus) {
 	forward[events.ConversationCleared](b, bus)
 	forward[events.Error](b, bus)
 	forward[events.Info](b, bus)
+	// Tool call visibility for Ollama (and any future tool-using brain).
+	forward[events.ToolCallStarted](b, bus)
+	forward[events.ToolCallFinished](b, bus)
 }
 
 func forward[T events.Event](b *eventBridge, bus *events.Bus) {
@@ -75,7 +78,8 @@ func isDurableBridgeMsg(msg tea.Msg) bool {
 		return false
 	}
 	switch be.event.(type) {
-	case events.UserInput, events.ResponseReady, events.ConversationCleared, events.Error:
+	case events.UserInput, events.ResponseReady, events.ConversationCleared, events.Error,
+		events.ToolCallStarted, events.ToolCallFinished:
 		return true
 	default:
 		return false

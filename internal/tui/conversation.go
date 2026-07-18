@@ -492,6 +492,30 @@ func (m *conversationModel) handleEvent(e events.Event) {
 	case events.Info:
 		m.appendActivity("info", e.Message, 0)
 		m.appendTranscript(dimStyle.Render("  " + e.Message))
+
+	case events.ToolCallStarted:
+		msg := "tool " + e.Name
+		if e.Summary != "" {
+			msg += " (" + e.Summary + ")"
+		}
+		m.appendActivity("tool", msg, 0)
+		m.setStatus("🔧 "+msg+"...", false)
+		m.appendTranscript(dimStyle.Render("  🔧 " + msg))
+
+	case events.ToolCallFinished:
+		msg := "tool " + e.Name + " done"
+		if e.Err != "" {
+			msg = "tool " + e.Name + " failed: " + e.Err
+			m.setStatus("✗ "+msg, true)
+			m.appendTranscript(dimStyle.Render("  ✗ " + msg))
+		} else {
+			if e.Preview != "" {
+				msg += " → " + e.Preview
+			}
+			m.setStatus("● "+m.agentName+" thinking...", false)
+			m.appendTranscript(dimStyle.Render("  ✓ " + msg))
+		}
+		m.appendActivity("tool", msg, 0)
 	}
 }
 

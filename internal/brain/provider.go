@@ -6,6 +6,10 @@ import "context"
 type StreamOptions struct {
 	VoiceMode    bool
 	ToolsEnabled bool
+	// OnToolStart is invoked just before a tool runs (optional; for UI).
+	OnToolStart func(name, summary string)
+	// OnToolEnd is invoked after a tool returns (optional; for UI).
+	OnToolEnd func(name, preview string)
 }
 
 // StreamResult reports the terminal outcome of a streamed response.

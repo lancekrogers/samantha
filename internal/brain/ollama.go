@@ -117,7 +117,11 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 		defer close(done)
 
 		// Per-turn tool session: tracks active skill for progressive disclosure.
-		sess := &toolSession{catalog: o.skills}
+		sess := &toolSession{
+			catalog: o.skills,
+			onStart: opts.OnToolStart,
+			onEnd:   opts.OnToolEnd,
+		}
 
 		for i := 0; i < maxToolIterations; i++ {
 			var tools api.Tools
@@ -214,7 +218,11 @@ func sendChunk(ctx context.Context, out chan<- string, chunk string) error {
 func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOptions) (string, error) {
 	o.history = append(o.history, api.Message{Role: "user", Content: input})
 
-	sess := &toolSession{catalog: o.skills}
+	sess := &toolSession{
+		catalog: o.skills,
+		onStart: opts.OnToolStart,
+		onEnd:   opts.OnToolEnd,
+	}
 
 	for i := 0; i < maxToolIterations; i++ {
 		var tools api.Tools

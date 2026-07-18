@@ -32,6 +32,9 @@ type toolSession struct {
 	catalog []skills.Skill
 	// active is set after a successful read_skill (for hints / future policy).
 	active *skills.Skill
+	// Optional UI hooks (from StreamOptions).
+	onStart func(name, summary string)
+	onEnd   func(name, preview string)
 }
 
 // tools returns the full tool definitions for the next model request.
@@ -43,10 +46,59 @@ func (s *toolSession) tools() api.Tools {
 // execute runs a tool call. Successful read_skill activates the skill and
 // may append an allowed-tools hint; CLI tools remain fully available.
 func (s *toolSession) execute(ctx context.Context, workDir string, call api.ToolCall) string {
-	if call.Function.Name == "read_skill" {
-		return s.executeReadSkill(call)
+	name := call.Function.Name
+	summary := toolArgSummary(call)
+	if s.onStart != nil {
+		s.onStart(name, summary)
 	}
-	return executeTool(ctx, workDir, call, s.catalog)
+	var result string
+	if name == "read_skill" {
+		result = s.executeReadSkill(call)
+	} else {
+		result = executeTool(ctx, workDir, call, s.catalog)
+	}
+	if s.onEnd != nil {
+		s.onEnd(name, toolResultPreview(result))
+	}
+	return result
+}
+
+// toolArgSummary is a short, non-sensitive description of tool arguments.
+func toolArgSummary(call api.ToolCall) string {
+	args := call.Function.Arguments.ToMap()
+	switch call.Function.Name {
+	case "list_files", "read_file", "write_file":
+		if p, _ := args["path"].(string); p != "" {
+			return p
+		}
+	case "run_command":
+		if c, _ := args["command"].(string); c != "" {
+			if len(c) > 60 {
+				return c[:60] + "…"
+			}
+			return c
+		}
+	case "read_skill":
+		if n, _ := args["name"].(string); n != "" {
+			return n
+		}
+	}
+	return ""
+}
+
+func toolResultPreview(result string) string {
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return "(empty)"
+	}
+	// One line, short.
+	if i := strings.IndexByte(result, '\n'); i >= 0 {
+		result = result[:i] + "…"
+	}
+	if len(result) > 80 {
+		return result[:80] + "…"
+	}
+	return result
 }
 
 func (s *toolSession) executeReadSkill(call api.ToolCall) string {
