@@ -110,7 +110,7 @@ func TestChatRetriesWithoutToolsWhenUnsupported(t *testing.T) {
 	req := &api.ChatRequest{
 		Model:    "m",
 		Messages: []api.Message{{Role: "user", Content: "hi"}},
-		Tools:    voiceAssistantTools(),
+		Tools:    voiceAssistantTools(nil),
 		Stream:   &stream,
 	}
 

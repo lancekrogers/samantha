@@ -12,6 +12,7 @@ import (
 	"github.com/ollama/ollama/api"
 
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/skills"
 )
 
 // OllamaBrain implements Provider using the Ollama API with tool calling.
@@ -22,6 +23,7 @@ type OllamaBrain struct {
 	history      []api.Message
 	cfg          *config.Config
 	systemPrompt string
+	skills       []skills.Skill
 }
 
 // NewOllama creates an Ollama brain provider.
@@ -66,13 +68,40 @@ func NewOllama(cfg *config.Config) (*OllamaBrain, error) {
 		return nil, err
 	}
 
+	catalog, err := loadSkillsCatalog(context.Background(), cfg, workDir)
+	if err != nil {
+		return nil, err
+	}
+
 	return &OllamaBrain{
 		client:       client,
 		model:        cfg.OllamaModel,
 		workDir:      workDir,
 		cfg:          cfg,
 		systemPrompt: systemPrompt,
+		skills:       catalog,
 	}, nil
+}
+
+// loadSkillsCatalog returns the Agent Skills catalog when skills_enabled is
+// true; otherwise an empty catalog. Discovery follows the cross-client
+// .agents/skills convention (project then user) plus the configured Samantha
+// skills_dir. .claude/skills is intentionally not scanned — Claude Code owns
+// that path. Missing dirs yield empty contributions, not errors.
+func loadSkillsCatalog(ctx context.Context, cfg *config.Config, workDir string) ([]skills.Skill, error) {
+	if cfg == nil || !cfg.SkillsEnabled {
+		return nil, nil
+	}
+	configured := cfg.SkillsDir
+	if configured == "" {
+		configured = config.SkillsDir()
+	}
+	dirs := skills.DefaultSearchPaths(workDir, configured)
+	catalog, err := skills.Loader{Dirs: dirs}.Catalog(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("loading skills: %w", err)
+	}
+	return catalog, nil
 }
 
 // ThinkStream sends input and returns a channel of streaming text chunks.
@@ -89,7 +118,7 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 
 		var tools api.Tools
 		if opts.ToolsEnabled {
-			tools = voiceAssistantTools()
+			tools = voiceAssistantTools(o.skills)
 		}
 
 		for i := 0; i < maxToolIterations; i++ {
@@ -138,7 +167,7 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 
 				// Execute each tool and add results.
 				for _, tc := range toolCalls {
-					result := executeTool(ctx, o.workDir, tc)
+					result := executeTool(ctx, o.workDir, tc, o.skills)
 					o.history = append(o.history, api.Message{
 						Role:    "tool",
 						Content: result,
@@ -184,7 +213,7 @@ func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOp
 
 	var tools api.Tools
 	if opts.ToolsEnabled {
-		tools = voiceAssistantTools()
+		tools = voiceAssistantTools(o.skills)
 	}
 
 	for i := 0; i < maxToolIterations; i++ {
@@ -215,7 +244,7 @@ func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOp
 			})
 
 			for _, tc := range response.ToolCalls {
-				result := executeTool(ctx, o.workDir, tc)
+				result := executeTool(ctx, o.workDir, tc, o.skills)
 				o.history = append(o.history, api.Message{
 					Role:    "tool",
 					Content: result,
@@ -300,6 +329,9 @@ func (o *OllamaBrain) LoadHistory(turns []Turn) {
 
 func (o *OllamaBrain) buildMessages() []api.Message {
 	systemPrompt := o.systemPrompt + "\n" + EnvironmentContext(o.workDir)
+	if sc := SkillContext(o.skills); sc != "" {
+		systemPrompt += sc
+	}
 
 	msgs := []api.Message{
 		{Role: "system", Content: systemPrompt},

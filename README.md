@@ -308,11 +308,53 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `agent_name` | `Samantha` | | Display name |
 | `persona` | `samantha` | `PERSONA` | Prompt document name for the interactive persona |
 | `prompts_dir` | empty | `PROMPTS_DIR` | Prompt document directory; defaults to `~/.obey/agents/voice/samantha/prompts` when unset |
+| `skills_enabled` | `false` | `SKILLS_ENABLED` | Opt-in Agent Skills (`SKILL.md`) for the Ollama provider. When true, Ollama advertises skill name+description in the system prompt and offers a `read_skill` tool to load full instructions on demand. Claude/Grok already discover skills via their CLIs. |
+| `skills_dir` | empty | `SKILLS_DIR` | Extra Samantha skills root (after project/user harness dirs); defaults to `~/.obey/agents/voice/samantha/skills` when unset. |
 | `models_dir` | `~/.cache/samantha/models` | `MODELS_DIR` | Model download directory |
 | `language` | `en-US` | | Recognition language |
 | `max_history` | `10` | | Saved conversation history length |
 | `listen_timeout` | `10` | | Listen timeout in seconds |
 | `phrase_time_limit` | `30` | | Maximum phrase length in seconds |
+
+### Agent Skills (Ollama)
+
+With `skills_enabled=true`, the Ollama provider discovers Agent Skills via the
+cross-client **`.agents/skills`** convention
+([agentskills.io](https://agentskills.io/client-implementation/adding-skills-support))
+— **project then user** — plus Samantha's own skills root:
+
+1. `<cwd>/.agents/skills/*/SKILL.md` — project skills (shared with Codex, VS Code, camp, …)
+2. `~/.agents/skills/*/SKILL.md` — user skills
+3. `skills_dir` (default `~/.obey/agents/voice/samantha/skills`) — Samantha-only
+
+Ollama does **not** scan `.claude/skills`; the Claude Code provider owns that
+path, and dual-scanning would duplicate skills when both trees are projected.
+Duplicate skill names resolve with **project first**. Ollama advertises each
+skill's name and description in the system prompt and offers a `read_skill` tool
+to load full instructions on demand (progressive disclosure). Claude and Grok
+pick up skills via their own CLIs. Remote `samantha serve` still gates all
+tools (including `read_skill`) behind `remote_tools_enabled`.
+
+```text
+# project (cwd where samantha was started)
+./.agents/skills/hello/SKILL.md
+
+# user
+~/.agents/skills/hello/SKILL.md
+
+# Samantha config root
+~/.obey/agents/voice/samantha/skills/hello/SKILL.md
+```
+
+```markdown
+---
+name: hello
+description: Greet the user warmly.
+---
+
+# Hello skill
+Say hello to the user.
+```
 
 The preferred STT schema is `stt_provider` + `stt_mode` (e.g. `stt_provider: sherpa` with `stt_mode: streaming`). The legacy compound aliases (`sherpa-streaming`, `sherpa-offline`) still work with `stt_mode` unset and are never rewritten; combining a compound alias with a conflicting `stt_mode` is a config error.
 

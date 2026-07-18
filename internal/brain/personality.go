@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/prompts"
+	"github.com/lancekrogers/samantha/internal/skills"
 )
 
 // personaSystemPrompt resolves the configured persona document and returns the
@@ -54,4 +56,21 @@ Environment:
 - OS: %s/%s
 - You have tools available: list_files, read_file, write_file, run_command
 - All file paths are relative to the working directory unless absolute`, user, workDir, hostname, runtime.GOOS, runtime.GOARCH)
+}
+
+// SkillContext renders the progressive-disclosure skills menu for the Ollama
+// system prompt: names and descriptions only. Empty catalog yields "".
+// Descriptions are re-capped at skills.MaxDescriptionRunes so a pre-built
+// catalog cannot blow the system prompt budget.
+func SkillContext(catalog []skills.Skill) string {
+	if len(catalog) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n## Available skills (call read_skill(\"<name>\") to load full instructions)\n")
+	for _, s := range catalog {
+		desc := skills.TruncateRunes(strings.TrimSpace(s.Description), skills.MaxDescriptionRunes)
+		fmt.Fprintf(&b, "- %s: %s\n", s.Name, desc)
+	}
+	return b.String()
 }
