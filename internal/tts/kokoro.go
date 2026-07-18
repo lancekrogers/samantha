@@ -83,10 +83,19 @@ func NewKokoroTTS(cfg *config.Config) (*KokoroTTS, error) {
 		}
 	}
 
+	// eSpeak emits syllabic-n (U+0329) for words like "wasn't" and "button".
+	// Stock Kokoro tokens omit that codepoint, so sherpa skips the phone and
+	// speech clips. Alias U+0329 → n in a sidecar tokens file so real
+	// contractions and unhyphenated stems work without text mangling.
+	tokensPath, err := ensureKokoroTokensWithSyllabicN(modelsDir)
+	if err != nil {
+		return nil, err
+	}
+
 	kokoroConfig := sherpa.OfflineTtsKokoroModelConfig{
 		Model:       filepath.Join(modelsDir, "model.onnx"),
 		Voices:      filepath.Join(modelsDir, "voices.bin"),
-		Tokens:      filepath.Join(modelsDir, "tokens.txt"),
+		Tokens:      tokensPath,
 		DataDir:     filepath.Join(modelsDir, "espeak-ng-data"),
 		DictDir:     filepath.Join(modelsDir, "dict"),
 		Lexicon:     lexicon,

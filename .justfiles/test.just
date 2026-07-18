@@ -52,6 +52,13 @@ voiceflow:
 audio-crackle:
     go test -race ./internal/audio/ -count=1 -run 'Crackle|Expand|Choose|Pick|StudioDisplay|CallbackExpand|MultiChannelExpand|Whole|Chunk|FinalizeSegmentThen|Early|Pump|Analyze|Layout|DebugMetadataRecords'
 
+# Live Kokoro regression: real model, real WAV sample counts for contractions.
+# Requires Kokoro assets under models_dir (config.yaml / MODELS_DIR). Skips if missing.
+# Pins: U+0329 token alias, no text mangling of wasn't/isn't/don't, full audio vs stock tokens.
+[no-cd]
+kokoro-contractions:
+    go test -tags=integration ./internal/tts/ -count=1 -run 'LiveKokoro' -timeout 5m -v
+
 # Opt-in hardware playback on the real default device (Studio Display, etc.).
 # Requires speakers; plays a short tone. Use after any internal/audio change.
 [no-cd]
