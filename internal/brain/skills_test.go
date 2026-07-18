@@ -103,7 +103,7 @@ func TestBuildMessagesOmitsSkillsWhenEmpty(t *testing.T) {
 }
 
 func TestLoadSkillsCatalogGated(t *testing.T) {
-	// Isolate from the developer's real ~/.claude/skills.
+	// Isolate from the developer's real ~/.agents/skills.
 	fakeHome := t.TempDir()
 	prev := skills.SetUserHomeDirForTest(func() (string, error) { return fakeHome, nil })
 	t.Cleanup(prev)
@@ -138,7 +138,7 @@ func TestLoadSkillsCatalogGated(t *testing.T) {
 	got, err = loadSkillsCatalog(context.Background(), &config.Config{
 		SkillsEnabled: true,
 		SkillsDir:     fixture,
-	}, t.TempDir()) // empty project .claude/skills
+	}, t.TempDir()) // empty project .agents/skills
 	if err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
@@ -153,7 +153,8 @@ func TestLoadSkillsCatalogProjectOverridesSystem(t *testing.T) {
 	t.Cleanup(prev)
 
 	root := t.TempDir()
-	projectSkill := filepath.Join(root, ".claude", "skills", "shared")
+	// Project skills live under .agents/skills (not .claude).
+	projectSkill := filepath.Join(root, ".agents", "skills", "shared")
 	if err := os.MkdirAll(projectSkill, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -185,6 +186,34 @@ func TestLoadSkillsCatalogProjectOverridesSystem(t *testing.T) {
 	}
 	if got[0].Description != "from project" {
 		t.Fatalf("description = %q, want project to win over system", got[0].Description)
+	}
+}
+
+func TestLoadSkillsCatalogIgnoresClaudeSkills(t *testing.T) {
+	fakeHome := t.TempDir()
+	prev := skills.SetUserHomeDirForTest(func() (string, error) { return fakeHome, nil })
+	t.Cleanup(prev)
+
+	root := t.TempDir()
+	// Only .claude/skills present — Ollama must not load these.
+	claudeSkill := filepath.Join(root, ".claude", "skills", "claude-only")
+	if err := os.MkdirAll(claudeSkill, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: claude-only\ndescription: should not load\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(claudeSkill, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadSkillsCatalog(context.Background(), &config.Config{
+		SkillsEnabled: true,
+		SkillsDir:     filepath.Join(root, "missing-samantha-skills"),
+	}, root)
+	if err != nil {
+		t.Fatalf("Catalog: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %d skills from .claude/skills, want 0 (Claude harness owns that path)", len(got))
 	}
 }
 

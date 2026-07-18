@@ -211,8 +211,8 @@ func TestDefaultSearchPaths(t *testing.T) {
 	configured := "/custom/samantha/skills"
 	got := DefaultSearchPaths(work, configured)
 	want := []string{
-		filepath.Join(work, ".claude", "skills"),
-		filepath.Join(home, ".claude", "skills"),
+		filepath.Join(work, ".agents", "skills"),
+		filepath.Join(home, ".agents", "skills"),
 		filepath.Clean(configured),
 	}
 	if len(got) != len(want) {
@@ -224,9 +224,16 @@ func TestDefaultSearchPaths(t *testing.T) {
 		}
 	}
 
+	// Must not include Claude-native paths (Claude harness owns those).
+	for _, p := range got {
+		if strings.Contains(p, ".claude") {
+			t.Fatalf("Ollama must not scan .claude skills: %q", p)
+		}
+	}
+
 	// Empty workDir still includes user + configured.
 	got = DefaultSearchPaths("", configured)
-	if len(got) != 2 || got[0] != filepath.Join(home, ".claude", "skills") || got[1] != filepath.Clean(configured) {
+	if len(got) != 2 || got[0] != filepath.Join(home, ".agents", "skills") || got[1] != filepath.Clean(configured) {
 		t.Fatalf("empty workDir paths = %v", got)
 	}
 }

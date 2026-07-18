@@ -298,26 +298,29 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 
 ### Agent Skills (Ollama)
 
-With `skills_enabled=true`, the Ollama provider discovers Agent Skills the same
-way other agent harnesses do — **project (launch directory) then system/user**,
-plus Samantha's own skills root:
+With `skills_enabled=true`, the Ollama provider discovers Agent Skills via the
+cross-client **`.agents/skills`** convention
+([agentskills.io](https://agentskills.io/client-implementation/adding-skills-support))
+— **project then user** — plus Samantha's own skills root:
 
-1. `<cwd>/.claude/skills/*/SKILL.md` — skills next to where you launched Samantha
-2. `~/.claude/skills/*/SKILL.md` — user/system skills shared with Claude Code etc.
+1. `<cwd>/.agents/skills/*/SKILL.md` — project skills (shared with Codex, VS Code, camp, …)
+2. `~/.agents/skills/*/SKILL.md` — user skills
 3. `skills_dir` (default `~/.obey/agents/voice/samantha/skills`) — Samantha-only
 
+Ollama does **not** scan `.claude/skills`; the Claude Code provider owns that
+path, and dual-scanning would duplicate skills when both trees are projected.
 Duplicate skill names resolve with **project first**. Ollama advertises each
 skill's name and description in the system prompt and offers a `read_skill` tool
 to load full instructions on demand (progressive disclosure). Claude and Grok
-already pick up skills via their CLIs. Remote `samantha serve` still gates all
+pick up skills via their own CLIs. Remote `samantha serve` still gates all
 tools (including `read_skill`) behind `remote_tools_enabled`.
 
 ```text
 # project (cwd where samantha was started)
-./.claude/skills/hello/SKILL.md
+./.agents/skills/hello/SKILL.md
 
-# user/system
-~/.claude/skills/hello/SKILL.md
+# user
+~/.agents/skills/hello/SKILL.md
 
 # Samantha config root
 ~/.obey/agents/voice/samantha/skills/hello/SKILL.md

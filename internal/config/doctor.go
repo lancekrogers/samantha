@@ -97,7 +97,7 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 			diags = append(diags, Diagnostic{
 				Name:     "skills",
 				Severity: SeverityOK,
-				Detail:   fmt.Sprintf("skills_enabled=true (scan cwd/.claude/skills, ~/.claude/skills, then %s)", dir),
+				Detail:   fmt.Sprintf("skills_enabled=true (scan cwd/.agents/skills, ~/.agents/skills, then %s)", dir),
 			})
 		} else {
 			diags = append(diags, Diagnostic{
