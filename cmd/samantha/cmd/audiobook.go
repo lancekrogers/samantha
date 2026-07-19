@@ -2,13 +2,16 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/lancekrogers/samantha/internal/audiobook"
 	"github.com/lancekrogers/samantha/internal/calibre"
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/render"
@@ -28,6 +31,8 @@ func newAudiobookCmd(run renderRunner, loadConfig configLoader) *cobra.Command {
 	}
 	cmd.AddCommand(newAudiobookCreateCmd(run, loadConfig))
 	cmd.AddCommand(newAudiobookPreviewCmd(loadConfig))
+	cmd.AddCommand(newAudiobookPlanCmd())
+	cmd.AddCommand(newAudiobookReviewCmd())
 	return cmd
 }
 
@@ -292,4 +297,113 @@ func shellQuote(s string) string {
 
 func formatSpeed(speed float64) string {
 	return strconv.FormatFloat(speed, 'f', -1, 64)
+}
+
+// newAudiobookPlanCmd builds the read-only extraction and classification step.
+func newAudiobookPlanCmd() *cobra.Command {
+	var (
+		outDir, format    string
+		overwrite, asJSON bool
+	)
+	cmd := &cobra.Command{
+		Use:   "plan INPUT --out-dir DIR",
+		Short: "Build a reviewable audiobook production plan without TTS",
+		Long: `Extract an EPUB or PDF into a production-plan.yaml plus extracted text
+and a human-readable production-plan.md preview. No audio is rendered.
+
+Examples:
+  samantha audiobook plan book.epub --out-dir out/book
+  samantha audiobook plan book.epub --out-dir out/book --overwrite --json`,
+		Args:          cobra.ExactArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			res, err := audiobook.BuildPlan(cmd.Context(), audiobook.PlanOptions{
+				Input: args[0], OutDir: outDir, Format: render.Format(format), Overwrite: overwrite,
+			})
+			if err != nil {
+				return err
+			}
+			unresolved := len(res.Plan.Unresolved())
+			if asJSON {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
+					"plan": res.PlanPath, "preview": res.MDPath, "sections": len(res.Plan.Sections), "unresolved": unresolved,
+				})
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "  Audiobook production plan: %s\n", res.PlanPath)
+			fmt.Fprintf(cmd.OutOrStdout(), "  Preview: %s\n", res.MDPath)
+			fmt.Fprintf(cmd.OutOrStdout(), "  Sections: %d  unresolved: %d\n", len(res.Plan.Sections), unresolved)
+			fmt.Fprintln(cmd.OutOrStdout(), "  No audio was rendered.")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&outDir, "out-dir", "", "Write the production plan and extracted text to DIR (required)")
+	cmd.Flags().StringVar(&format, "format", "auto", "Input format: auto|epub|pdf")
+	cmd.Flags().BoolVar(&overwrite, "overwrite", false, "Replace existing production-plan.yaml")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Print a machine-readable summary")
+	_ = cmd.MarkFlagRequired("out-dir")
+	return cmd
+}
+
+// newAudiobookReviewCmd prints a plan and optionally applies explicit human
+// decisions. It is intentionally file-based so YAML/Markdown remain inspectable
+// and the TUI can be added later without creating a second source of truth.
+func newAudiobookReviewCmd() *cobra.Command {
+	var includes, excludes []string
+	var reason string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "review PLAN.yaml",
+		Short: "Review or update audiobook production-plan decisions",
+		Long: `Show every planned section and its include/exclude/review decision.
+Use --include and --exclude to apply explicit decisions, then inspect the
+updated production-plan.md before rendering.`,
+		Args:          cobra.ExactArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			plan, err := audiobook.Load(args[0])
+			if err != nil {
+				return err
+			}
+			changed := len(includes) > 0 || len(excludes) > 0
+			if changed {
+				if err := plan.ApplyDecisions(includes, excludes, reason); err != nil {
+					return err
+				}
+				if err := plan.Save(args[0]); err != nil {
+					return err
+				}
+				if err := plan.WriteMarkdown(strings.TrimSuffix(args[0], filepath.Ext(args[0])) + ".md"); err != nil {
+					return err
+				}
+			}
+			return writeAudiobookReview(cmd, args[0], plan, changed, asJSON)
+		},
+	}
+	cmd.Flags().StringSliceVar(&includes, "include", nil, "Mark section IDs for narration (repeat or comma-separate)")
+	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Mark section IDs to omit (repeat or comma-separate)")
+	cmd.Flags().StringVar(&reason, "reason", "", "Reason recorded for explicit decisions")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Print a machine-readable summary")
+	return cmd
+}
+
+func writeAudiobookReview(cmd *cobra.Command, path string, plan *audiobook.Plan, changed, asJSON bool) error {
+	unresolved := plan.Unresolved()
+	if asJSON {
+		rows := make([]map[string]any, 0, len(plan.Sections))
+		for _, sec := range plan.Sections {
+			rows = append(rows, map[string]any{"id": sec.ID, "order": sec.Order, "title": sec.Title, "kind": sec.Kind, "suggestion": sec.Suggestion, "decision": sec.Decision, "estimated_duration_ms": sec.EstimatedDurationMS})
+		}
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"plan": path, "changed": changed, "sections": rows, "unresolved": len(unresolved)})
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "  Audiobook review: %s\n", path)
+	for _, sec := range plan.Sections {
+		fmt.Fprintf(cmd.OutOrStdout(), "  %02d %-8s %-14s %s\n", sec.Order, sec.Decision, sec.Kind, sec.Title)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "  unresolved: %d\n", len(unresolved))
+	if changed {
+		fmt.Fprintln(cmd.OutOrStdout(), "  decisions saved")
+	}
+	return nil
 }
