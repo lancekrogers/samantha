@@ -108,6 +108,16 @@ func TestLauncherOffersMeeting(t *testing.T) {
 	t.Fatal("launcher has no Meeting action")
 }
 
+func TestLauncherBannerSurfacesMeetingCloseError(t *testing.T) {
+	m := newLauncher(&config.Config{}, nil)
+	m.width, m.height = 80, 24
+	m = m.withBanner("close meeting log: disk full", true)
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "close meeting log: disk full") {
+		t.Fatalf("banner missing from launcher:\n%s", view)
+	}
+}
+
 func TestLauncherCompactsForSmallTerminal(t *testing.T) {
 	saved := []session.Session{{
 		ID: "session-123", Summary: strings.Repeat("long summary ", 10), UpdatedAt: time.Now(),

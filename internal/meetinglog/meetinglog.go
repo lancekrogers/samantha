@@ -76,6 +76,8 @@ type Writer struct {
 	notes       int
 	bookmarks   int
 	errors      int
+	closed      bool
+	summary     Summary // last Close result; returned again on idempotent Close
 }
 
 // Create opens path (.log) exclusively and a sibling .jsonl file. Path must
@@ -233,9 +235,14 @@ func (w *Writer) AddBookmark(label, text string) error {
 }
 
 // Close writes the trailer / session_end and closes both files.
+// Safe to call more than once: later calls return the first Summary and a nil
+// error so embedded teardown and the CLI summary path can both Close.
 func (w *Writer) Close() (Summary, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.closed {
+		return w.summary, nil
+	}
 	s := Summary{
 		Description: w.description,
 		File:        w.path,
@@ -255,6 +262,8 @@ func (w *Writer) Close() (Summary, error) {
 	jerr := w.writeEvent(Event{Type: TypeSessionEnd, TS: s.EndedAt.Format(time.RFC3339)})
 	cerr1 := w.log.Close()
 	cerr2 := w.jsonl.Close()
+	w.closed = true
+	w.summary = s
 	if werr != nil {
 		return s, werr
 	}

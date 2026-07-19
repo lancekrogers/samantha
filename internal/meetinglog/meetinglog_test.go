@@ -155,6 +155,36 @@ func TestCreateRefusesToOverwrite(t *testing.T) {
 	}
 }
 
+func TestCloseIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "once.log")
+	w, err := Create(path, "Once", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.OnUtterance(listen.Utterance{Text: "hello", At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	sum1, err := w.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum2, err := w.Close()
+	if err != nil {
+		t.Fatalf("second Close must be nil: %v", err)
+	}
+	if sum1.Utterances != 1 || sum2.Utterances != 1 {
+		t.Fatalf("summaries = %+v / %+v", sum1, sum2)
+	}
+	// Must not double-append trailer.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(data), "# Ended:"); n != 1 {
+		t.Fatalf("Ended trailer count = %d, want 1", n)
+	}
+}
+
 func TestCreateUsesOwnerOnlyPermissions(t *testing.T) {
 	// Meeting transcripts are private (personal speech / credentials spoken
 	// aloud). Create must not leave world-readable logs.

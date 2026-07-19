@@ -56,7 +56,9 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 	if outDir == "" {
 		outDir = config.MeetingsDir()
 	}
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
+	// 0o700: meeting filenames include description slugs; keep the directory
+	// private the same way auth/cert paths are.
+	if err := os.MkdirAll(outDir, 0o700); err != nil {
 		return fmt.Errorf("meeting record: create out dir: %w", err)
 	}
 	path := filepath.Join(outDir, meetingFilename(opts.Description, time.Now()))
@@ -139,7 +141,7 @@ func meetingRuntimeBuilder() appTUI.MeetingBuilder {
 			return nil, err
 		}
 		outDir := config.MeetingsDir()
-		if err := os.MkdirAll(outDir, 0o755); err != nil {
+		if err := os.MkdirAll(outDir, 0o700); err != nil {
 			return nil, fmt.Errorf("meeting: create out dir: %w", err)
 		}
 		path := filepath.Join(outDir, meetingFilename(description, time.Now()))

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -126,7 +127,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+c" {
 			a.settings.closePreview()
 			a.tailscale.stop()
-			a.stopMeetingRuntime()
+			if err := a.stopMeetingRuntime(); err != nil {
+				a.fatalErr = errors.Join(a.fatalErr, err)
+			}
 			a.quitting = true
 			return a, tea.Quit
 		}
@@ -155,11 +158,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.screen == screenTailscale && target != screenTailscale {
 			a.tailscale.stop()
 		}
+		var leaveMeetingErr error
 		if a.screen == screenMeeting && target != screenMeeting {
-			a.stopMeetingRuntime()
+			leaveMeetingErr = a.stopMeetingRuntime()
 		}
 		prev := a.screen
 		a.screen = target
+		if leaveMeetingErr != nil && target == screenLauncher {
+			a.launcher = a.launcher.withBanner(leaveMeetingErr.Error(), true)
+		}
 		switch a.screen {
 		case screenSettings:
 			// Replacing the model must not orphan an in-flight preview or player.
@@ -217,8 +224,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 
 	case meetingDoneMsg:
-		a.stopMeetingRuntime()
+		closeErr := a.stopMeetingRuntime()
 		a.screen = screenLauncher
+		if err := errors.Join(msg.Err, closeErr); err != nil {
+			a.launcher = a.launcher.withBanner(fmt.Sprintf("Meeting ended with error: %v", err), true)
+		}
 		return a, nil
 
 	case bookPickedMsg:
@@ -347,20 +357,28 @@ func (a App) View() string {
 	}
 }
 
-func (a *App) stopMeetingRuntime() {
+// stopMeetingRuntime cancels the listen loop, writes the dual-log trailer, and
+// releases STT resources. Returns any Writer.Close failure so callers can
+// surface a silent trailer/session_end write problem (files may already hold
+// synced events). Idempotent when no runtime is active.
+func (a *App) stopMeetingRuntime() error {
 	if a.meetingRT == nil {
-		return
+		return nil
 	}
 	if a.meeting.opts.Cancel != nil {
 		a.meeting.opts.Cancel()
 	}
+	var closeErr error
 	if a.meetingRT.Writer != nil {
-		_, _ = a.meetingRT.Writer.Close()
+		if _, err := a.meetingRT.Writer.Close(); err != nil {
+			closeErr = fmt.Errorf("close meeting log: %w", err)
+		}
 	}
 	if a.meetingRT.Cleanup != nil {
 		a.meetingRT.Cleanup()
 	}
 	a.meetingRT = nil
+	return closeErr
 }
 
 // Run starts the TUI as one continuous program: launcher, settings, and the
@@ -442,6 +460,12 @@ func run(cfg *config.Config, build RuntimeBuilder, meeting MeetingBuilder, start
 		final.slot.cleanup()
 	} else if app.slot != nil {
 		app.slot.cleanup()
+	}
+
+	// Meeting recorder may still be open if the program quit mid-session
+	// without a meetingDoneMsg (e.g. outer Quit). Idempotent when already closed.
+	if err := final.stopMeetingRuntime(); err != nil {
+		final.fatalErr = errors.Join(final.fatalErr, err)
 	}
 
 	if runErr != nil {

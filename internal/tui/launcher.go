@@ -41,6 +41,16 @@ type launcherModel struct {
 	items     []launcherItem
 	width     int
 	height    int
+	// banner is a one-shot status line (e.g. meeting close error after return).
+	banner    string
+	bannerErr bool
+}
+
+// withBanner returns a copy carrying a status banner shown above the menu.
+func (m launcherModel) withBanner(text string, isErr bool) launcherModel {
+	m.banner = strings.TrimSpace(text)
+	m.bannerErr = isErr
+	return m
 }
 
 func newLauncher(cfg *config.Config, providers []discovery.ProviderInfo, saved ...[]session.Session) launcherModel {
@@ -188,6 +198,15 @@ func (m launcherModel) fullView(width int) string {
 	b.WriteString(ansi.Truncate(chips, width, "…"))
 	b.WriteString("\n\n")
 
+	if m.banner != "" {
+		style := statusStyle
+		if m.bannerErr {
+			style = errorStyle
+		}
+		b.WriteString(ansi.Truncate(style.Render("  "+m.banner), width, "…"))
+		b.WriteString("\n\n")
+	}
+
 	// Menu width
 	menuWidth := width - 2
 	if menuWidth > 58 {
@@ -241,6 +260,14 @@ func (m launcherModel) compactView(width int) string {
 	var b strings.Builder
 	b.WriteString(ansi.Truncate(headerStyle.Render("  SAMANTHA"), width, "…"))
 	b.WriteString("\n")
+	if m.banner != "" {
+		style := statusStyle
+		if m.bannerErr {
+			style = errorStyle
+		}
+		b.WriteString(ansi.Truncate(style.Render("  "+m.banner), width, "…"))
+		b.WriteString("\n")
+	}
 
 	visible := max(m.height-3, 1)
 	start := min(max(m.cursor-visible/2, 0), max(len(m.items)-visible, 0))

@@ -271,7 +271,8 @@ full-screen recorder:
 | Spoken stop phrase | "stop recording" / "end meeting" / "stop listening" (exact utterance; not written to the log) |
 
 Spoken stop phrases end the session like Ctrl+C and are **not** appended to the
-`.log` / `.jsonl` transcript. Files are created mode `0600` (owner-only).
+`.log` / `.jsonl` transcript. The meetings directory is created mode `0700` and
+log files mode `0600` (owner-only).
 
 JSONL events include `offset_ms` from meeting start for alignment:
 
