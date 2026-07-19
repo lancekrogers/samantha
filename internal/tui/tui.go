@@ -136,11 +136,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
-		// The conversation screen needs dimensions even while another screen
-		// is active, or entering it later renders at zero size.
+		// Keep every screen's geometry current so switching into Sessions /
+		// Settings / etc. does not render with height=0 (which capped the
+		// sessions list at 3 rows).
+		a.launcher, _ = a.launcher.Update(msg)
+		a.settings, _ = a.settings.Update(msg)
+		a.sessions, _ = a.sessions.Update(msg)
+		a.meetingSetup, _ = a.meetingSetup.Update(msg)
+		a.pickBook, _ = a.pickBook.Update(msg)
+		a.remote, _ = a.remote.Update(msg)
 		if a.screen != screenConversation {
 			a.conversation, _ = a.conversation.Update(msg)
 		}
+		// Meeting is updated via the fall-through delegate (typed tea.Model).
 
 	case switchScreenMsg:
 		target := screen(msg)
@@ -173,6 +181,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.settings.closePreview()
 			a.settings = newSettings(a.cfg, a.providers)
 			return a, tea.Batch(a.settings.loadDevices(), pauseVoice)
+		case screenSessions:
+			// Apply stored geometry immediately — Bubble Tea only re-emits
+			// WindowSize on actual resize, not on screen switches.
+			a.sessions.width, a.sessions.height = a.width, a.height
+			a.sessions.ensureVisible()
 		case screenMeetingSetup:
 			a.meetingSetup = newMeetingSetup()
 			a.meetingSetup.width, a.meetingSetup.height = a.width, a.height

@@ -11,6 +11,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/tts"
+)
+
+// Audiobook form choice lists — cycle with enter / ← / → instead of free text.
+// Empty string for format means WAV-only (no --audio-format). Empty string for
+// voice means omit --voice (config default).
+var (
+	audiobookSpeeds  = []string{"0.75", "0.9", "1", "1.1", "1.25", "1.5", "1.75", "2"}
+	audiobookFormats = []string{"", "mp3", "m4a", "m4b", "aac", "opus"}
 )
 
 // audiobook field indices.
@@ -88,6 +97,14 @@ func (m audiobookModel) Update(msg tea.Msg) (audiobookModel, tea.Cmd) {
 			if m.cursor < abFieldCount-1 {
 				m.cursor++
 			}
+		case "left", "h":
+			if m.cycleChoice(-1) {
+				return m, nil
+			}
+		case "right", "l":
+			if m.cycleChoice(1) {
+				return m, nil
+			}
 		case "enter", " ":
 			return m.activate()
 		case "esc", "b":
@@ -97,6 +114,83 @@ func (m audiobookModel) Update(msg tea.Msg) (audiobookModel, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// cycleChoice advances Voice / Speed / Audio format options. Returns true when
+// the focused field is a choice field.
+func (m *audiobookModel) cycleChoice(delta int) bool {
+	switch m.cursor {
+	case abFieldVoice:
+		m.voice = cycleString(m.voiceOptions(), m.voice, delta)
+	case abFieldSpeed:
+		m.speed = cycleString(audiobookSpeeds, m.speed, delta)
+	case abFieldAudioFormat:
+		m.audioFmt = cycleString(audiobookFormats, m.audioFmt, delta)
+	default:
+		return false
+	}
+	m.command = ""
+	m.message = ""
+	m.errText = ""
+	return true
+}
+
+// voiceOptions is the cycle list for Voice: empty = config default, then catalog
+// names. A configured voice missing from the catalog is kept so it stays selectable.
+func (m audiobookModel) voiceOptions() []string {
+	names := tts.VoiceNames()
+	opts := make([]string, 0, len(names)+2)
+	opts = append(opts, "") // config default / omit --voice
+	seen := map[string]bool{"": true}
+	if m.voice != "" {
+		// Keep an unknown/custom voice in the list so it is not lost when cycling.
+		found := false
+		for _, n := range names {
+			if n == m.voice {
+				found = true
+				break
+			}
+		}
+		if !found {
+			opts = append(opts, m.voice)
+			seen[m.voice] = true
+		}
+	}
+	for _, n := range names {
+		if seen[n] {
+			continue
+		}
+		opts = append(opts, n)
+		seen[n] = true
+	}
+	return opts
+}
+
+// cycleString moves through options, wrapping at the ends. Empty current value
+// starts at the first option when stepping forward, or the last when stepping
+// backward.
+func cycleString(options []string, current string, delta int) string {
+	if len(options) == 0 {
+		return current
+	}
+	idx := -1
+	for i, o := range options {
+		if o == current {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		if delta >= 0 {
+			return options[0]
+		}
+		return options[len(options)-1]
+	}
+	idx = (idx + delta) % len(options)
+	if idx < 0 {
+		idx += len(options)
+	}
+	return options[idx]
 }
 
 func (m audiobookModel) handleEdit(key string) (audiobookModel, tea.Cmd) {
@@ -385,17 +479,12 @@ func longestCommonPathPrefix(paths []string) string {
 }
 
 func (m *audiobookModel) applyEdit() {
+	// Only path fields open free-text edit mode; choice fields cycle instead.
 	switch m.cursor {
 	case abFieldInput:
 		m.input = strings.TrimSpace(m.editBuf)
 	case abFieldOutDir:
 		m.outDir = strings.TrimSpace(m.editBuf)
-	case abFieldVoice:
-		m.voice = strings.TrimSpace(m.editBuf)
-	case abFieldSpeed:
-		m.speed = strings.TrimSpace(m.editBuf)
-	case abFieldAudioFormat:
-		m.audioFmt = strings.TrimSpace(m.editBuf)
 	}
 	m.command = ""
 	m.errText = ""
@@ -404,10 +493,13 @@ func (m *audiobookModel) applyEdit() {
 
 func (m audiobookModel) activate() (audiobookModel, tea.Cmd) {
 	switch m.cursor {
-	case abFieldInput, abFieldOutDir, abFieldVoice, abFieldSpeed, abFieldAudioFormat:
+	case abFieldInput, abFieldOutDir:
+		// Paths need free-text (+ tab complete). Voice/speed/format cycle.
 		m.editing = true
 		m.editBuf = m.fieldValue(m.cursor)
 		m.clearPathCompletion()
+	case abFieldVoice, abFieldSpeed, abFieldAudioFormat:
+		m.cycleChoice(1)
 	case abFieldCalibre:
 		return m.toggleCalibre()
 	case abFieldPickLibrary:
@@ -550,10 +642,10 @@ func (m audiobookModel) View() string {
 		{abFieldCalibre, "Calibre library", calibreState},
 		{abFieldPickLibrary, "Pick from library", pickLibraryHint(m.calibreEnabled())},
 		{abFieldOutDir, "Output dir", displayOr(m.outDir, "(required)")},
-		{abFieldVoice, "Voice", displayOr(m.voice, "(config default)")},
-		{abFieldSpeed, "Speed", displayOr(m.speed, "1")},
+		{abFieldVoice, "Voice", displayOr(m.voice, "(config default)") + choiceHint(m.cursor == abFieldVoice)},
+		{abFieldSpeed, "Speed", displayOr(m.speed, "1") + choiceHint(m.cursor == abFieldSpeed)},
 		{abFieldResume, "Resume", map[bool]string{true: "on", false: "off"}[m.resume]},
-		{abFieldAudioFormat, "Audio format", displayOr(m.audioFmt, "(none)")},
+		{abFieldAudioFormat, "Audio format", displayOr(m.audioFmt, "(wav only)") + choiceHint(m.cursor == abFieldAudioFormat)},
 		{abFieldGenerate, "Generate command", ""},
 		{abFieldBack, "Back to launcher", ""},
 	}
@@ -593,16 +685,19 @@ func (m audiobookModel) View() string {
 
 	b.WriteString("\n")
 	if m.editing {
-		if m.cursor == abFieldInput || m.cursor == abFieldOutDir {
-			b.WriteString(dimStyle.Render("  type path • tab complete • enter save • esc cancel"))
-		} else {
-			b.WriteString(dimStyle.Render("  type to edit • enter save • esc cancel"))
-		}
+		b.WriteString(dimStyle.Render("  type path • tab complete • enter save • esc cancel"))
 	} else {
-		b.WriteString(dimStyle.Render("  ↑/↓ navigate • enter edit/toggle/pick/generate • b back • q quit"))
+		b.WriteString(dimStyle.Render("  ↑/↓ navigate • ←/→ or enter cycle choices • enter paths/toggle/pick • b back"))
 	}
 	b.WriteString("\n")
 	return b.String()
+}
+
+func choiceHint(focused bool) string {
+	if !focused {
+		return ""
+	}
+	return "  ←/→"
 }
 
 func displayOr(v, fallback string) string {
