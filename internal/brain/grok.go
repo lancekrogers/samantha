@@ -96,11 +96,13 @@ func (g *GrokBrain) ThinkStream(ctx context.Context, input string, streamOpts St
 			return
 		}
 
-		response := fullResponse.String()
-		if response != "" {
-			g.history = append(g.history, Turn{Role: "samantha", Content: response})
-			g.trimHistory()
+		response, finErr := finalizeStreamedText(ctx, out, fullResponse.String())
+		if finErr != nil {
+			done <- StreamResult{Err: finErr}
+			return
 		}
+		g.history = append(g.history, Turn{Role: "samantha", Content: response})
+		g.trimHistory()
 		done <- StreamResult{}
 	}()
 

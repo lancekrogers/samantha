@@ -183,14 +183,17 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 				continue // re-request with tool results
 			}
 
-			// No tool calls — the answer already streamed above; record the
-			// cleaned form in history.
-			response := textBuf.String()
-			if response != "" {
-				response = cleanForVoice(response)
-				o.history = append(o.history, api.Message{Role: "assistant", Content: response})
-				o.trimHistory()
+			// No tool calls — the answer already streamed above; record a
+			// cleaned form in history. Tool-only turns often finish with an
+			// empty final message; finalizeStreamedText streams a fallback so
+			// the UI never ends on "looking into it" with silence.
+			response, err := finalizeStreamedText(ctx, out, textBuf.String())
+			if err != nil {
+				done <- StreamResult{Err: err}
+				return
 			}
+			o.history = append(o.history, api.Message{Role: "assistant", Content: response})
+			o.trimHistory()
 			done <- StreamResult{}
 			return
 		}
@@ -199,6 +202,11 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 			done <- StreamResult{Err: err}
 			return
 		}
+		o.history = append(o.history, api.Message{
+			Role:    "assistant",
+			Content: "I seem to be going in circles with my tools. Let me just answer directly.",
+		})
+		o.trimHistory()
 		done <- StreamResult{}
 	}()
 
