@@ -1,25 +1,18 @@
 # Demos
 
-## tool-calls.gif
+## tool-calls.gif — main TUI + live tool call
 
-Live Samantha conversation (text mode) where Ollama **actually calls** `list_files`.
+Bubble Tea **Samantha** interface:
 
-Requires:
+1. Launcher → **New conversation**
+2. User asks for `list_files`
+3. Transcript shows tool start/finish, then Samantha’s answer
 
-- `just build` → `./bin/samantha`
-- Ollama running with a tools-capable model (`ollama_model`)
-- `VOICE_TOOLS_ENABLED=true`
-
-Regenerate:
+Regenerate (repo root, Ollama up, tools-capable model):
 
 ```bash
 just build
-VOICE_TOOLS_ENABLED=true vhs demos/tool-calls.tape
+vhs demos/tool-calls.tape
 ```
 
-This is **not** a unit-test recording. You should see lines like:
-
-```text
-🔧 list_files (.)
-✓ list_files → …
-```
+Requires `VOICE_TOOLS_ENABLED=true` (set in the tape via isolated HOME config).
