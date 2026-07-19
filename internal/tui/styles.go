@@ -2,46 +2,58 @@ package tui
 
 import "github.com/charmbracelet/lipgloss"
 
+// Truecolor-friendly palette (reads well on dark themes in VHS + Ghostty).
+var (
+	colorAccent = lipgloss.Color("#8BE9FD") // cyan
+	colorUser   = lipgloss.Color("#82AAFF") // blue
+	colorAgent  = lipgloss.Color("#C3E88D") // green
+	colorDim    = lipgloss.Color("#6272A4") // muted
+	colorNormal = lipgloss.Color("#F8F8F2") // near-white
+	colorStatus = lipgloss.Color("#50FA7B") // bright green
+	colorError  = lipgloss.Color("#FF5555") // red
+	colorSelect = lipgloss.Color("#FF79C6") // pink
+)
+
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("14")).
+			Foreground(colorAccent).
 			MarginBottom(1)
 
 	// headerStyle is titleStyle without the margin, for single-line headers.
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("14"))
+			Foreground(colorAccent)
 
 	subtitleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240"))
+			Foreground(colorDim)
 
 	selectedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("14")).
+			Foreground(colorSelect).
 			Bold(true)
 
 	normalStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252"))
+			Foreground(colorNormal)
 
 	dimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240"))
+			Foreground(colorDim)
 
 	statusStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("40"))
+			Foreground(colorStatus)
 
 	errorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("196"))
+			Foreground(colorError)
 
 	userStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("39")).
+			Foreground(colorUser).
 			Bold(true)
 
 	samanthaStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("14")).
+			Foreground(colorAgent).
 			Bold(true)
 
 	boxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("14")).
+			BorderForeground(colorAccent).
 			Padding(0, 1)
 )

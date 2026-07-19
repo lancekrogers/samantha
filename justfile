@@ -32,6 +32,27 @@ default:
 build:
     @{{BUILDTOOL}} build
 
+# Build and record the README demo from the real Bubble Tea TUI. The tape
+# writes a raw VHS GIF; the final pass matches termcast's compact, low-noise
+# terminal output and replaces it with the optimized artifact.
+demo: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    vhs demos/tool-calls.tape
+    palette="$(mktemp /tmp/samantha-demo-palette.XXXXXX.png)"
+    optimized="$(mktemp /tmp/samantha-demo-output.XXXXXX.gif)"
+    trap 'rm -f "$palette" "$optimized"' EXIT
+    ffmpeg -y -loglevel error -i demos/tool-calls.gif \
+        -vf "fps=20,scale=960:-1:flags=lanczos,palettegen=max_colors=128:stats_mode=diff" \
+        "$palette"
+    ffmpeg -y -loglevel error -i demos/tool-calls.gif -i "$palette" \
+        -lavfi "fps=20,scale=960:-1:flags=lanczos,paletteuse=dither=none:diff_mode=rectangle" \
+        "$optimized"
+    mv "$optimized" demos/tool-calls.gif
+    trap - EXIT
+    rm -f "$palette"
+    ls -lh demos/tool-calls.gif
+
 # Build, sign, install to $GOBIN
 install: build
     #!/usr/bin/env bash

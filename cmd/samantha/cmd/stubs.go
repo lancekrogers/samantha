@@ -266,10 +266,9 @@ var continueCmd = &cobra.Command{
 }
 
 // startResumed lands an interactive resume directly in the conversation
-// screen with history seeded. The gate matches root: non-TTY, --no-tui, and
-// --no-voice keep the plain stdout loop (D3).
+// screen with history seeded. Gate matches root useConversationTUI (D3).
 func startResumed(cfg *config.Config, sess *session.Session) error {
-	if !skipTUI && !noVoice && stdinIsTerminal() {
+	if useConversationTUI() {
 		return appTUI.RunConversation(cfg, conversationRuntimeBuilder(sess))
 	}
 	return startPipeline(cfg, sess)

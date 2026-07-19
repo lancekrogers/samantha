@@ -67,15 +67,29 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("load config: %w", err)
 		}
 
-		// The TUI serves every interactive invocation — including --text,
-		// which enters with voice off (D3). Non-TTY, --no-tui, and
-		// --no-voice runs keep the plain stdout loop.
-		if !skipTUI && !noVoice && stdinIsTerminal() {
+		// The TUI serves interactive invocations including --text (voice
+		// input off, D3). Non-TTY, --no-tui, and --no-voice without --text
+		// keep the plain stdout loop (scripts / demos without mic).
+		if useConversationTUI() {
 			return appTUI.Run(cfg, conversationRuntimeBuilder(nil))
 		}
 
 		return startPipeline(cfg, nil)
 	},
+}
+
+// useConversationTUI is true for a terminal session that should open the
+// Bubble Tea UI. --text enters the TUI even with --no-voice so demos and
+// typing-only use still get the conversation screen (and tool visibility).
+func useConversationTUI() bool {
+	if skipTUI || !stdinIsTerminal() {
+		return false
+	}
+	// Plain --no-voice (no --text): headless stdout loop for scripts.
+	if noVoice && !textMode {
+		return false
+	}
+	return true
 }
 
 func shouldSeedPrompts(cmd *cobra.Command) bool {

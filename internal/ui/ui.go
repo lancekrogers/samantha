@@ -32,6 +32,8 @@ func New(bus *events.Bus, agentName string) *UI {
 	events.Subscribe(bus, u.onCleared)
 	events.Subscribe(bus, u.onError)
 	events.Subscribe(bus, u.onInfo)
+	events.Subscribe(bus, u.onToolCallStarted)
+	events.Subscribe(bus, u.onToolCallFinished)
 
 	return u
 }
@@ -148,4 +150,22 @@ func (u *UI) onError(e events.Error) {
 
 func (u *UI) onInfo(e events.Info) {
 	fmt.Printf("  %s\n", dimStyle.Render(e.Message))
+}
+
+func (u *UI) onToolCallStarted(e events.ToolCallStarted) {
+	msg := "🔧 " + e.Name
+	if e.Summary != "" {
+		msg += " (" + e.Summary + ")"
+	}
+	fmt.Printf("  %s\n", dimStyle.Render(msg))
+}
+
+func (u *UI) onToolCallFinished(e events.ToolCallFinished) {
+	msg := "✓ " + e.Name
+	if e.Err != "" {
+		msg = "✗ " + e.Name + ": " + e.Err
+	} else if e.Preview != "" {
+		msg += " → " + e.Preview
+	}
+	fmt.Printf("  %s\n", dimStyle.Render(msg))
 }
