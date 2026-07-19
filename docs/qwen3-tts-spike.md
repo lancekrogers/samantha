@@ -23,12 +23,21 @@ Configuration:
 tts_provider: kokoro          # unchanged default
 qwen_tts_binary: qwen3-tts-cli
 qwen_tts_model: /path/to/qwen3-tts.cpp/models
-qwen_tts_timeout: 60
+qwen_tts_timeout: 120
 ```
 
 This is intentionally a provider seam, not a complete Qwen product feature.
-The current upstream CLI is file-oriented, so this spike does not add a
-persistent worker, streaming-token protocol, speed control, static voice
-picker, or cloning UI. Those can be added behind the same provider boundary
-after the native worker contract and latency are validated. Voice cloning is
-therefore a follow-up integration, not a reason to replace Kokoro.
+The current upstream CLI is file-oriented and loads model/runtime state for each
+request. Cold-start cost can be substantial, especially on CPU, so the default
+120-second timeout is intentionally conservative and can be tuned with
+`qwen_tts_timeout` for longer render segments. The provider places each worker
+in its own process group on Unix so cancellation also cleans up forked helpers.
+
+The native CLI currently does not expose Samantha's static voice or speed
+controls. Qwen requests therefore use the model-native default voice/speed;
+batch render rejects explicit `--voice`/`--speed` overrides and keeps those
+unused fields out of manifests and resume identities. This spike does not add a
+persistent worker, streaming-token protocol, static voice picker, or cloning
+UI. Those can be added behind the same provider boundary after the native
+worker contract and latency are validated. Voice cloning is therefore a
+follow-up integration, not a reason to replace Kokoro.

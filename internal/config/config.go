@@ -116,7 +116,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("speech_speed", 0.95)
 	v.SetDefault("qwen_tts_binary", "qwen3-tts-cli")
 	v.SetDefault("qwen_tts_model", "")
-	v.SetDefault("qwen_tts_timeout", 60)
+	v.SetDefault("qwen_tts_timeout", 120)
 	v.SetDefault("output_device", "")
 
 	v.SetDefault("stt_provider", "sherpa")

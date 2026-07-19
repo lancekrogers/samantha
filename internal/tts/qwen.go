@@ -19,7 +19,7 @@ import (
 const (
 	qwen3TTSProviderName  = "qwen3-tts"
 	qwen3TTSSampleRate    = 24000
-	defaultQwenTTSTimeout = 60 * time.Second
+	defaultQwenTTSTimeout = 120 * time.Second
 	maxWorkerOutput       = 8 << 10
 )
 
@@ -71,8 +71,15 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 	if model == "" {
 		return nil, errors.New("qwen3-tts: qwen_tts_model is required")
 	}
-	if _, err := exec.LookPath(binary); err != nil {
+	binaryPath, err := exec.LookPath(binary)
+	if err != nil {
 		return nil, fmt.Errorf("qwen3-tts: native worker %q not found: %w", binary, err)
+	}
+	if !filepath.IsAbs(binaryPath) {
+		binaryPath, err = filepath.Abs(binaryPath)
+		if err != nil {
+			return nil, fmt.Errorf("qwen3-tts: resolve native worker %q: %w", binary, err)
+		}
 	}
 	modelInfo, err := os.Stat(model)
 	if err != nil {
@@ -87,7 +94,7 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 		timeout = time.Duration(cfg.QwenTTSTimeout) * time.Second
 	}
 
-	q := newQwen3TTS(binary, model, timeout, exec.CommandContext)
+	q := newQwen3TTS(binaryPath, model, timeout, exec.CommandContext)
 	q.alive.Store(true)
 	return q, nil
 }
@@ -128,6 +135,12 @@ func (q *Qwen3TTS) SynthesizeRequest(ctx context.Context, req SynthesisRequest) 
 	if req.SampleRate != 0 && req.SampleRate != qwen3TTSSampleRate {
 		return SynthesisResult{}, fmt.Errorf("qwen3-tts cannot resample to %d Hz (native rate %d Hz)", req.SampleRate, qwen3TTSSampleRate)
 	}
+	if voice := strings.TrimSpace(req.Voice); voice != "" && !strings.EqualFold(voice, "default") {
+		return SynthesisResult{}, fmt.Errorf("qwen3-tts: voice %q is unsupported by the native CLI; use the model's default voice", req.Voice)
+	}
+	if req.Speed != 0 {
+		return SynthesisResult{}, fmt.Errorf("qwen3-tts: speech speed is unsupported by the native CLI; omit speed")
+	}
 
 	voice := req.Voice
 	if voice == "" {
@@ -162,6 +175,7 @@ func (q *Qwen3TTS) synthesize(ctx context.Context, req SynthesisRequest, stream 
 		"-o", outputPath,
 	}
 	cmd := q.command(runCtx, q.binary, args...)
+	configureQwenCommand(cmd)
 	var stdout, stderr limitedBuffer
 	stdout.limit = maxWorkerOutput
 	stderr.limit = maxWorkerOutput

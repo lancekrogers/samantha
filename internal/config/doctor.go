@@ -98,7 +98,7 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 			Name:        "tts-provider",
 			Severity:    SeverityWarn,
 			Detail:      fmt.Sprintf("tts_provider %q is not a managed provider", cfg.TTSProvider),
-			Remediation: "set tts_provider=kokoro for managed TTS assets",
+			Remediation: "set tts_provider=kokoro or tts_provider=qwen3-tts with its native worker and model configured",
 		})
 	}
 

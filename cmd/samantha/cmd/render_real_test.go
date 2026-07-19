@@ -134,6 +134,32 @@ func TestSynthIdentityIncludesEffectiveVoiceAndSpeed(t *testing.T) {
 	}
 }
 
+func TestSynthIdentityIncludesQwenModelAndBinary(t *testing.T) {
+	base := synthIdentityFor(&config.Config{
+		TTSProvider:   "qwen3-tts",
+		TTSVoice:      "af_heart",
+		SpeechSpeed:   0.95,
+		QwenTTSModel:  "/models/qwen-a",
+		QwenTTSBinary: "/bin/qwen3-tts-cli",
+	})
+	if !strings.Contains(base, "model=/models/qwen-a") || !strings.Contains(base, "binary=/bin/qwen3-tts-cli") {
+		t.Fatalf("identity = %q, want Qwen model and binary", base)
+	}
+	if strings.Contains(base, "voice=") || strings.Contains(base, "speed=") {
+		t.Fatalf("identity = %q, want unused Qwen voice/speed omitted", base)
+	}
+
+	modelChanged := synthIdentityFor(&config.Config{TTSProvider: "qwen3-tts", QwenTTSModel: "/models/qwen-b", QwenTTSBinary: "/bin/qwen3-tts-cli"})
+	if modelChanged == base {
+		t.Fatal("changing the Qwen model must change the synth identity")
+	}
+
+	binaryChanged := synthIdentityFor(&config.Config{TTSProvider: "qwen3-tts", QwenTTSModel: "/models/qwen-a", QwenTTSBinary: "/bin/other-qwen"})
+	if binaryChanged == base {
+		t.Fatal("changing the Qwen binary must change the synth identity")
+	}
+}
+
 // TestApplyVoiceOverridesRecordsEffectiveValues guards manifest auditability:
 // a config-driven render (no CLI flags) must still end up with the effective
 // voice/speed in opts, which is what manifests and resume keys record.

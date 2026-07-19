@@ -7,12 +7,14 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/internal/config"
 )
 
 func TestQwenFakeWorker(t *testing.T) {
@@ -40,6 +42,47 @@ func TestQwenFakeWorker(t *testing.T) {
 	os.Exit(0)
 }
 
+func TestNewQwen3TTSValidation(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		cfg  *config.Config
+		want string
+	}{
+		{name: "nil config", cfg: nil, want: "nil config"},
+		{name: "empty model", cfg: &config.Config{QwenTTSBinary: executable}, want: "qwen_tts_model is required"},
+		{name: "missing binary", cfg: &config.Config{QwenTTSBinary: filepath.Join(t.TempDir(), "missing"), QwenTTSModel: t.TempDir()}, want: "not found"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewQwen3TTS(tt.cfg)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("NewQwen3TTS() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+
+	nonDir := filepath.Join(t.TempDir(), "model-file")
+	if err := os.WriteFile(nonDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewQwen3TTS(&config.Config{QwenTTSBinary: executable, QwenTTSModel: nonDir}); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("NewQwen3TTS() non-directory error = %v, want not a directory", err)
+	}
+
+	q, err := NewQwen3TTS(&config.Config{QwenTTSBinary: executable, QwenTTSModel: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewQwen3TTS() valid config error = %v", err)
+	}
+	if !filepath.IsAbs(q.binary) {
+		t.Fatalf("resolved binary = %q, want absolute path", q.binary)
+	}
+}
+
 func TestQwenSynthesizeRequestRunsNativeWorkerAndStreamsWAV(t *testing.T) {
 	model := t.TempDir()
 	var gotArgs []string
@@ -49,7 +92,7 @@ func TestQwenSynthesizeRequestRunsNativeWorkerAndStreamsWAV(t *testing.T) {
 
 	result, err := q.SynthesizeRequest(context.Background(), SynthesisRequest{
 		Text:       "hello native worker",
-		Voice:      "qwen-default",
+		Voice:      "default",
 		SampleRate: qwen3TTSSampleRate,
 	})
 	if err != nil {
@@ -82,8 +125,30 @@ func TestQwenSynthesizeRequestRunsNativeWorkerAndStreamsWAV(t *testing.T) {
 	if want := []string{"-m", model, "-t", "hello native worker"}; !reflect.DeepEqual(gotArgs[:4], want) {
 		t.Fatalf("worker args = %v, want prefix %v", gotArgs, want)
 	}
-	if len(gotArgs) != 6 || gotArgs[4] != "-o" || !strings.HasSuffix(gotArgs[5], "/speech.wav") {
+	if len(gotArgs) != 6 || gotArgs[4] != "-o" || filepath.Base(gotArgs[5]) != "speech.wav" {
 		t.Fatalf("worker output args = %v, want -o <temp>/speech.wav", gotArgs)
+	}
+}
+
+func TestQwenSynthesizeRequestRejectsUnsupportedControls(t *testing.T) {
+	q := newQwen3TTS("fake-qwen3-tts", t.TempDir(), time.Second, nil)
+	q.alive.Store(true)
+
+	tests := []struct {
+		name string
+		req  SynthesisRequest
+		want string
+	}{
+		{name: "voice", req: SynthesisRequest{Text: "hi", Voice: "af_heart"}, want: "voice"},
+		{name: "speed", req: SynthesisRequest{Text: "hi", Speed: 1.1}, want: "speech speed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := q.SynthesizeRequest(context.Background(), tt.req)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("SynthesizeRequest() error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

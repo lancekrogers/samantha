@@ -293,7 +293,7 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `speech_speed` | `0.95` | | Playback speed |
 | `qwen_tts_binary` | `qwen3-tts-cli` | `QWEN_TTS_BINARY` | Optional native Qwen3-TTS CLI/worker |
 | `qwen_tts_model` | empty | `QWEN_TTS_MODEL` | Qwen model directory; required when `tts_provider=qwen3-tts` |
-| `qwen_tts_timeout` | `60` | `QWEN_TTS_TIMEOUT` | Per-request native worker timeout in seconds |
+| `qwen_tts_timeout` | `120` | `QWEN_TTS_TIMEOUT` | Per-request native worker timeout in seconds; tune for cold starts/long segments |
 | `output_device` | empty | `OUTPUT_DEVICE` | Playback device name; empty follows the system default |
 | `stt_provider` | `sherpa` | `STT_PROVIDER` | STT backend: `sherpa`, `sherpa-streaming`, `sherpa-offline`, or `whispercpp` |
 | `input_device` | empty | `INPUT_DEVICE` | Capture device name; empty follows the system default |

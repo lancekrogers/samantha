@@ -139,6 +139,20 @@ func TestDiagnoseQwenNativeWorker(t *testing.T) {
 	if diags["qwen3-tts-binary"].Severity != SeverityError {
 		t.Errorf("missing qwen worker = %+v, want error", diags["qwen3-tts-binary"])
 	}
+
+	cfg.QwenTTSModel = ""
+	diags = diagByName(Diagnose(cfg, t.TempDir(), okLookPath))
+	if diags["qwen3-tts-model"].Severity != SeverityError {
+		t.Errorf("empty qwen model = %+v, want error", diags["qwen3-tts-model"])
+	}
+
+	nonDir := filepath.Join(t.TempDir(), "model-file")
+	touchFile(t, nonDir)
+	cfg.QwenTTSModel = nonDir
+	diags = diagByName(Diagnose(cfg, t.TempDir(), okLookPath))
+	if diags["qwen3-tts-model"].Severity != SeverityError {
+		t.Errorf("non-directory qwen model = %+v, want error", diags["qwen3-tts-model"])
+	}
 }
 
 func TestDiagnoseDoesNotCheckBinaryForSherpa(t *testing.T) {
