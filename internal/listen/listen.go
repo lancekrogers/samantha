@@ -45,6 +45,15 @@ const (
 	retryBackoff           = 500 * time.Millisecond
 )
 
+// Hooks are optional, droppable UI callbacks for live meters and partials.
+// They must never block: STT runs on the loop goroutine and a slow hook would
+// stall capture. Nil fields are no-ops.
+type Hooks struct {
+	OnPhase   func(phase string)  // "listening", "hearing", "transcribing"
+	OnLevel   func(level float64) // mic energy 0..1 (throttled by STT)
+	OnPartial func(text string)   // incremental transcript
+}
+
 // Loop repeatedly runs STT sessions against provider and dispatches events to
 // sink until ctx is cancelled or consecutive failures exceed the threshold.
 // Each iteration mirrors pipeline.transcribeTurn's session shape: reset the
@@ -53,6 +62,11 @@ const (
 // Return contract: nil when ctx was cancelled (clean stop); non-nil only when
 // the consecutive-failure threshold was exceeded.
 func Loop(ctx context.Context, capture Resetter, provider stt.Provider, sink Sink) error {
+	return LoopWithHooks(ctx, capture, provider, sink, Hooks{})
+}
+
+// LoopWithHooks is Loop plus optional phase/level/partial hooks for TUI meters.
+func LoopWithHooks(ctx context.Context, capture Resetter, provider stt.Provider, sink Sink, hooks Hooks) error {
 	failures := 0
 	for {
 		if ctx.Err() != nil {
@@ -78,7 +92,7 @@ func Loop(ctx context.Context, capture Resetter, provider stt.Provider, sink Sin
 			continue
 		}
 
-		failed, sinkErr := drainSession(ctx, session, sink, &failures)
+		failed, sinkErr := drainSession(ctx, session, sink, hooks, &failures)
 		_ = session.Close()
 		if sinkErr != nil {
 			return fmt.Errorf("listen sink: %w", sinkErr)
@@ -96,10 +110,30 @@ func Loop(ctx context.Context, capture Resetter, provider stt.Provider, sink Sin
 // drainSession consumes one session's events until its channel closes,
 // reporting whether the session ended in failure. A final transcript or a
 // clean timeout resets the consecutive-failure counter.
-func drainSession(ctx context.Context, session stt.Session, sink Sink, failures *int) (failed bool, sinkErr error) {
+func drainSession(ctx context.Context, session stt.Session, sink Sink, hooks Hooks, failures *int) (failed bool, sinkErr error) {
 	for event := range session.Events() {
+		// InputLevel is droppable UI meter data — handle before typed switch.
+		if lvl, ok := event.(stt.InputLevel); ok {
+			if hooks.OnLevel != nil {
+				hooks.OnLevel(lvl.Level)
+			}
+			continue
+		}
+
 		te := stt.ToTyped(event)
 		switch te.Kind {
+		case stt.KindPhase:
+			if hooks.OnPhase != nil {
+				hooks.OnPhase(te.Phase)
+			}
+		case stt.KindPartialTranscript:
+			if te.Text != "" && hooks.OnPartial != nil {
+				hooks.OnPartial(te.Text)
+			}
+		case stt.KindInputLevel:
+			if hooks.OnLevel != nil {
+				hooks.OnLevel(te.Level)
+			}
 		case stt.KindFinalTranscript:
 			*failures = 0
 			if err := sink.OnUtterance(Utterance{Text: te.Text, At: time.Now()}); err != nil {

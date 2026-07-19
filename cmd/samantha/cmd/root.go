@@ -71,7 +71,7 @@ var rootCmd = &cobra.Command{
 		// input off, D3). Non-TTY, --no-tui, and --no-voice without --text
 		// keep the plain stdout loop (scripts / demos without mic).
 		if useConversationTUI() {
-			return appTUI.Run(cfg, conversationRuntimeBuilder(nil))
+			return appTUI.RunWithMeeting(cfg, conversationRuntimeBuilder(nil), meetingRuntimeBuilder())
 		}
 
 		return startPipeline(cfg, nil)

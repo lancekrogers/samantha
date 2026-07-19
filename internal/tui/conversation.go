@@ -373,22 +373,7 @@ func (m *conversationModel) ensureVoiceTick() tea.Cmd {
 }
 
 func (m conversationModel) animStyles() anim.Styles {
-	// Prefer bright ANSI indices so VHS/termcast themes paint vivid cyan /
-	// amber / magenta even when truecolor is flattened by the recorder.
-	return anim.Styles{
-		Tip:     lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true), // bright cyan
-		Mid:     lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true), // bright blue
-		Core:    lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
-		Muted:   dimStyle,
-		Label:   lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true),
-		Error:   errorStyle,
-		Accent:  lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true),
-		Hearing: lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true), // bright yellow
-		Speak:   lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true), // bright magenta
-		Think:   lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true),
-		Border:  lipgloss.NewStyle().Foreground(lipgloss.Color("14")),
-		Badge:   chipStyle,
-	}
+	return voiceAnimStyles()
 }
 
 func (m conversationModel) voiceLevel() float64 {
