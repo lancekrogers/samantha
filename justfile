@@ -54,6 +54,16 @@ demo-voice-meter: build
         vhs demos/voice-meter.tape
     ls -lh demos/voice-meter.gif
 
+# Main launcher + Meeting recorder (notes, ★ bookmarks, voice EQ). Full color.
+demo-meeting: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    env -u NO_COLOR -u CLICOLOR \
+        CLICOLOR_FORCE=1 FORCE_COLOR=1 \
+        TERM=xterm-256color COLORTERM=truecolor \
+        vhs demos/meeting.tape
+    ls -lh demos/meeting.gif
+
 [private]
 _optimize-demo-gif path:
     #!/usr/bin/env bash

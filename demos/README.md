@@ -39,3 +39,19 @@ paints bright theme colors.
 ```bash
 just demo-voice-meter
 ```
+
+## meeting.gif — main launcher + Meeting recorder
+
+Full Bubble Tea app (not a CLI stub):
+
+1. **Launcher** — brand plate, status chips, **Meeting** selection  
+2. **Title** — meeting name entry  
+3. **Recorder** — live voice EQ, scripted speech, typed **note**, **Ctrl+B** ★ bookmark  
+4. **Stop** — return to launcher  
+
+`SAMANTHA_DEMO_MEETING=1` scripts STT events (no live mic). Color: `env -u NO_COLOR`
+plus `SAMANTHA_COLOR_PROFILE=ansi` so the termcast theme paints bright cyan/amber/magenta.
+
+```bash
+just demo-meeting
+```

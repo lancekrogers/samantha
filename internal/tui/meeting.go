@@ -169,7 +169,11 @@ func (m *meetingModel) startLoop() tea.Cmd {
 			OnLevel:   func(level float64) { trySendMeeting(ch, meetingLevelMsg(level)) },
 			OnPartial: func(text string) { trySendMeeting(ch, meetingPartialMsg(text)) },
 		}
-		err := listen.LoopWithHooks(opts.Ctx, opts.Capture, opts.Provider, sink, hooks)
+		capture, provider := opts.Capture, opts.Provider
+		if demoMeetingEnabled() {
+			capture, provider = demoMeetingDeps()
+		}
+		err := listen.LoopWithHooks(opts.Ctx, capture, provider, sink, hooks)
 		trySendMeeting(ch, meetingLoopDoneMsg{err: err})
 	}()
 

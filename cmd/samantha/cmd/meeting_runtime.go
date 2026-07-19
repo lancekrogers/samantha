@@ -130,23 +130,44 @@ func useMeetingRecordTUI(opts meetingOptions) bool {
 	return isatty.IsTerminal(os.Stdout.Fd()) && isatty.IsTerminal(os.Stdin.Fd())
 }
 
-// meetingRuntimeBuilder powers the main launcher "Record meeting" entry.
+// meetingRuntimeBuilder powers the main launcher "Meeting" entry.
 func meetingRuntimeBuilder() appTUI.MeetingBuilder {
 	return func(ctx context.Context, description string, progress func(string, float64)) (*appTUI.MeetingRuntime, error) {
 		cfg, err := config.Load()
 		if err != nil {
 			return nil, err
 		}
+		outDir := config.MeetingsDir()
+		if err := os.MkdirAll(outDir, 0o755); err != nil {
+			return nil, fmt.Errorf("meeting: create out dir: %w", err)
+		}
+		path := filepath.Join(outDir, meetingFilename(description, time.Now()))
+
+		// VHS/demo path: skip real mic/models; the TUI scripts STT events.
+		if os.Getenv("SAMANTHA_DEMO_MEETING") == "1" ||
+			os.Getenv("SAMANTHA_DEMO_MEETING") == "true" ||
+			os.Getenv("SAMANTHA_DEMO_MEETING") == "yes" {
+			writer, err := meetinglog.Create(path, description, "demo")
+			if err != nil {
+				return nil, err
+			}
+			return &appTUI.MeetingRuntime{
+				// Non-nil placeholders; meeting loop swaps in demo provider when
+				// SAMANTHA_DEMO_MEETING is set.
+				Capture:     noopResetter{},
+				Provider:    noopProvider{},
+				Writer:      writer,
+				Description: description,
+				Path:        path,
+				StopPhrases: stopPhraseSet(nil),
+				Cleanup:     func() {},
+			}, nil
+		}
+
 		capture, provider, sttLabel, cleanup, err := buildSTTOnly(ctx, cfg, progress)
 		if err != nil {
 			return nil, err
 		}
-		outDir := config.MeetingsDir()
-		if err := os.MkdirAll(outDir, 0o755); err != nil {
-			cleanup()
-			return nil, fmt.Errorf("meeting: create out dir: %w", err)
-		}
-		path := filepath.Join(outDir, meetingFilename(description, time.Now()))
 		writer, err := meetinglog.Create(path, description, sttLabel)
 		if err != nil {
 			cleanup()
@@ -162,6 +183,19 @@ func meetingRuntimeBuilder() appTUI.MeetingBuilder {
 			Cleanup:     cleanup,
 		}, nil
 	}
+}
+
+// noopResetter/provider satisfy the MeetingRuntime fields for demo builds.
+// The meeting TUI replaces them when SAMANTHA_DEMO_MEETING is set.
+type noopResetter struct{}
+
+func (noopResetter) Reset() {}
+
+type noopProvider struct{}
+
+func (noopProvider) Available() bool { return true }
+func (noopProvider) Start(ctx context.Context) (stt.Session, error) {
+	return nil, fmt.Errorf("demo noop provider")
 }
 
 func meetingAssetProgress(jsonOutput bool) func(string, float64) {
