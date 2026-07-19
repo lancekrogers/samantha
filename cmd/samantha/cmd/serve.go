@@ -4,11 +4,15 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -37,6 +41,7 @@ var (
 	serveRevokeTokens bool
 	serveRemoteMic    bool
 	serveTailscale    bool
+	serveBannerJSON   bool
 	// publicHost is the hostname phones should open (MagicDNS). Empty when
 	// clients should use the bind address as-is.
 	servePublicHost string
@@ -44,6 +49,11 @@ var (
 	// HTTPS cert and fell back to self-signed (still reachable over the tailnet).
 	serveTLSFallbackNote string
 )
+
+// serveHumanOut receives all human-readable banner and log output. With
+// --banner-json it is redirected to stderr so stdout carries only the
+// machine-readable JSON event lines a supervisor parses.
+var serveHumanOut io.Writer = os.Stdout
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
@@ -81,6 +91,9 @@ _samantha._tcp on the LAN (--no-mdns to disable; --tailscale implies
 remote_tools_enabled is set.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if serveBannerJSON {
+			serveHumanOut = os.Stderr
+		}
 		if serveRevokeTokens {
 			return runRevokeTokens()
 		}
@@ -106,6 +119,7 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveRevokeTokens, "revoke-tokens", false, "Revoke the serve bearer token, stop a running server, and exit")
 	serveCmd.Flags().BoolVar(&serveRemoteMic, "remote-mic", true, "Enable remote push-to-talk (client STT over the WebSocket)")
 	serveCmd.Flags().BoolVar(&serveTailscale, "tailscale", false, "Tailscale remote mode: 100.x bind, MagicDNS URL, prefer trusted cert (self-signed fallback), host speaker muted unless --no-voice=false")
+	serveCmd.Flags().BoolVar(&serveBannerJSON, "banner-json", false, "Emit machine-readable JSON event lines on stdout (ready, pairing_code) and route human logs to stderr")
 	rootCmd.AddCommand(serveCmd)
 }
 
@@ -147,20 +161,20 @@ func applyServeTailscaleDefaults(cmd *cobra.Command) error {
 			serveTLSFallbackNote = summarizeTailscaleCertError(err)
 			// Stable labels for the TUI (and readable for CLI users).
 			// Product outcomes only — any device, not iOS-specific.
-			fmt.Printf("  %s %s\n", failStyle.Render(netapi.LabelClientAccess), netapi.AccessLimited)
-			fmt.Printf("  %s %s\n", keyStyle.Render(netapi.LabelClientSetup), netapi.ClientSetupURL)
-			fmt.Println(dimStyle.Render("  Most desktop browsers work after one warning. Full mic support on"))
-			fmt.Println(dimStyle.Render("  every device: open Client setup → turn on HTTPS Certificates → restart."))
+			fmt.Fprintf(serveHumanOut, "  %s %s\n", failStyle.Render(netapi.LabelClientAccess), netapi.AccessLimited)
+			fmt.Fprintf(serveHumanOut, "  %s %s\n", keyStyle.Render(netapi.LabelClientSetup), netapi.ClientSetupURL)
+			fmt.Fprintln(serveHumanOut, dimStyle.Render("  Most desktop browsers work after one warning. Full mic support on"))
+			fmt.Fprintln(serveHumanOut, dimStyle.Render("  every device: open Client setup → turn on HTTPS Certificates → restart."))
 			if serveTLSFallbackNote != "" {
-				fmt.Printf("  %s %s\n", dimStyle.Render("Detail:"), serveTLSFallbackNote)
+				fmt.Fprintf(serveHumanOut, "  %s %s\n", dimStyle.Render("Detail:"), serveTLSFallbackNote)
 			}
 		} else {
 			serveTLSCert, serveTLSKey = cert, key
-			fmt.Printf("  %s %s\n", keyStyle.Render(netapi.LabelClientAccess), netapi.AccessFull)
+			fmt.Fprintf(serveHumanOut, "  %s %s\n", keyStyle.Render(netapi.LabelClientAccess), netapi.AccessFull)
 		}
-		fmt.Printf("  %s %s\n", keyStyle.Render(netapi.LabelNetwork), netapi.NetworkTailscale)
-		fmt.Printf("  %s %s\n", keyStyle.Render("Network name:"), id.DNSName)
-		fmt.Printf("  %s %s\n", dimStyle.Render("Bind:"), serveBind)
+		fmt.Fprintf(serveHumanOut, "  %s %s\n", keyStyle.Render(netapi.LabelNetwork), netapi.NetworkTailscale)
+		fmt.Fprintf(serveHumanOut, "  %s %s\n", keyStyle.Render("Network name:"), id.DNSName)
+		fmt.Fprintf(serveHumanOut, "  %s %s\n", dimStyle.Render("Bind:"), serveBind)
 	}
 	return nil
 }
@@ -170,9 +184,9 @@ func runRevokeTokens() error {
 	if err := netapi.RevokeTokens(dir); err != nil {
 		return err
 	}
-	fmt.Printf("  Revoked serve token under %s\n", dir)
-	fmt.Println(dimStyle.Render("  Any running serve instance using that token will stop."))
-	fmt.Println(dimStyle.Render("  Next `samantha serve` will mint a new token (and pairing code)."))
+	fmt.Fprintf(serveHumanOut, "  Revoked serve token under %s\n", dir)
+	fmt.Fprintln(serveHumanOut, dimStyle.Render("  Any running serve instance using that token will stop."))
+	fmt.Fprintln(serveHumanOut, dimStyle.Render("  Next `samantha serve` will mint a new token (and pairing code)."))
 	return nil
 }
 
@@ -187,7 +201,7 @@ func runServe(cfg *config.Config) error {
 		NeedSTT: serveRemoteMic,
 		NeedVAD: serveRemoteMic,
 	}
-	if err := config.EnsureRuntimeAssets(ctx, cfg, req, modelProgress); err != nil {
+	if err := config.EnsureRuntimeAssets(ctx, cfg, req, serveModelProgress); err != nil {
 		return fmt.Errorf("ensure runtime assets: %w", err)
 	}
 
@@ -223,7 +237,7 @@ func runServe(cfg *config.Config) error {
 	}
 	defer func() {
 		if err := ref.save(p.Brain.History()); err != nil {
-			fmt.Printf("  warning: failed to save session: %v\n", err)
+			fmt.Fprintf(serveHumanOut, "  warning: failed to save session: %v\n", err)
 		}
 	}()
 
@@ -297,16 +311,20 @@ func runServe(cfg *config.Config) error {
 			if listenAddr == "" {
 				listenAddr = addr
 			}
-			printServeBanner(listenAddr, creds, cfg)
+			if serveBannerJSON {
+				emitServeBannerJSON(listenAddr, creds)
+			} else {
+				printServeBanner(listenAddr, creds, cfg)
+			}
 			if !serveNoMDNS {
 				if disc, err := netapi.StartDiscovery(listenAddr, creds.Fingerprint, cfg.AgentName); err != nil {
-					fmt.Printf("  warning: mDNS advertise failed: %v\n", err)
+					fmt.Fprintf(serveHumanOut, "  warning: mDNS advertise failed: %v\n", err)
 				} else if disc != nil {
 					go func() {
 						<-ctx.Done()
 						disc.Stop()
 					}()
-					fmt.Println(dimStyle.Render("  mDNS: advertising " + netapi.ServiceType + " (disable with --no-mdns)"))
+					fmt.Fprintln(serveHumanOut, dimStyle.Render("  mDNS: advertising "+netapi.ServiceType+" (disable with --no-mdns)"))
 				}
 			}
 		},
@@ -485,6 +503,81 @@ func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config
 	fmt.Println(dimStyle.Render("  Debug: samantha connect " + addr + " --token <token>"))
 	fmt.Println(dimStyle.Render("  Local full voice on this machine: run `samantha` (TUI), not serve"))
 	fmt.Println()
+}
+
+// emitServeBannerJSON writes the machine-readable ready line (and a
+// pairing_code line when a code is minted) to stdout, one JSON object per
+// line. The supervising process reads the ready line to learn the URL,
+// credentials, and fingerprint instead of scraping the human banner.
+func emitServeBannerJSON(listenAddr string, creds *netapi.Credentials) {
+	host, port := hostPortFromAddr(listenAddr)
+	pageHost := servePublicHost
+	if pageHost == "" {
+		pageHost = host
+	}
+
+	emitBannerLine(netapi.ReadyBanner{
+		Event:           "ready",
+		ProtocolVersion: netapi.ProtocolVersion,
+		URL:             "https://" + net.JoinHostPort(pageHost, strconv.Itoa(port)),
+		Port:            port,
+		Fingerprint:     creds.Fingerprint,
+		Token:           creds.Token,
+		MDNS:            !serveNoMDNS,
+		Tailscale:       serveTailscale,
+		PID:             os.Getpid(),
+	})
+
+	if creds.Pairing != nil {
+		emitBannerLine(netapi.PairingCodeBanner{
+			Event:     "pairing_code",
+			Code:      creds.Pairing.Code,
+			ExpiresAt: creds.Pairing.ExpiresAt.Format(time.RFC3339),
+		})
+	}
+}
+
+// hostPortFromAddr splits a host:port listen address, falling back to the
+// configured serve port when the address carries no parseable port.
+func hostPortFromAddr(addr string) (host string, port int) {
+	port = servePort
+	h, p, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr, port
+	}
+	if n, err := strconv.Atoi(p); err == nil {
+		port = n
+	}
+	return h, port
+}
+
+func emitBannerLine(v any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  warning: encode serve banner: %v\n", err)
+		return
+	}
+	fmt.Fprintf(os.Stdout, "%s\n", data)
+}
+
+// serveModelProgress mirrors modelProgress but writes to serveHumanOut so
+// asset-download output never pollutes stdout under --banner-json.
+var serveLastProgressPct int
+
+func serveModelProgress(name string, pct float64) {
+	iPct := int(pct)
+	if pct == 0 {
+		serveLastProgressPct = -1
+		fmt.Fprintf(serveHumanOut, "  Downloading %s...\n", name)
+		return
+	}
+	if iPct != serveLastProgressPct {
+		serveLastProgressPct = iPct
+		fmt.Fprintf(serveHumanOut, "\r  %s: %d%%", name, iPct)
+		if iPct >= 100 {
+			fmt.Fprintln(serveHumanOut)
+		}
+	}
 }
 
 func serveModelName(cfg *config.Config) string {

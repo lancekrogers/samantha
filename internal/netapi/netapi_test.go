@@ -592,6 +592,77 @@ func TestEncodeEventEnvelopes(t *testing.T) {
 	}
 }
 
+func TestBannerEventsMarshalToSingleLine(t *testing.T) {
+	tests := []struct {
+		name   string
+		banner any
+		want   map[string]any
+	}{
+		{
+			name: "ready",
+			banner: ReadyBanner{
+				Event:           "ready",
+				ProtocolVersion: ProtocolVersion,
+				URL:             "https://192.168.1.20:7262",
+				Port:            7262,
+				Fingerprint:     "abc123",
+				Token:           "deadbeef",
+				MDNS:            true,
+				Tailscale:       false,
+				PID:             4242,
+			},
+			want: map[string]any{
+				"event":            "ready",
+				"protocol_version": float64(1),
+				"url":              "https://192.168.1.20:7262",
+				"port":             float64(7262),
+				"fingerprint":      "abc123",
+				"token":            "deadbeef",
+				"mdns":             true,
+				"tailscale":        false,
+				"pid":              float64(4242),
+			},
+		},
+		{
+			name: "pairing_code",
+			banner: PairingCodeBanner{
+				Event:     "pairing_code",
+				Code:      "123456",
+				ExpiresAt: "2026-07-19T12:00:00Z",
+			},
+			want: map[string]any{
+				"event":      "pairing_code",
+				"code":       "123456",
+				"expires_at": "2026-07-19T12:00:00Z",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.banner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), "\n") {
+				t.Fatalf("banner JSON must be a single line, got %q", data)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("field count = %d (%v), want %d (%v)", len(got), got, len(tt.want), tt.want)
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("field %q = %v, want %v", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
 func TestTurnMetricsEncodeAsMilliseconds(t *testing.T) {
 	data, err := marshalEvent(events.TurnMetrics{ModelCompleteElapsed: 2 * time.Second})
 	if err != nil {
@@ -944,6 +1015,9 @@ func TestServerStatusAndSessions(t *testing.T) {
 	status := get("/v1/status")
 	if status["turn_active"] != false {
 		t.Errorf("turn_active = %v, want false", status["turn_active"])
+	}
+	if status["protocol_version"] != float64(ProtocolVersion) {
+		t.Errorf("protocol_version = %v, want %d", status["protocol_version"], ProtocolVersion)
 	}
 	providers := status["providers"].(map[string]any)
 	if providers["brain"] != "claude" {
