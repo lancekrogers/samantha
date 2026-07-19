@@ -23,9 +23,9 @@ const conversationInputHeight = 3
 // voiceTickInterval drives the conversation meter animation (~10 fps).
 const voiceTickInterval = 100 * time.Millisecond
 
-// voicePanelRows is the vertical space reserved for the animated voice stage
-// card when an active voice mode is showing under the header rule.
-const voicePanelRows = 12
+// voicePanelRows is the vertical space reserved for the compact voice EQ strip
+// under the header (not a tall art panel).
+const voicePanelRows = 5
 
 // voiceTickMsg advances ambient voice animations.
 type voiceTickMsg time.Time
@@ -285,7 +285,7 @@ func (m *conversationModel) reflow() {
 	// more. Command matches consume only the rows currently available above
 	// the composer.
 	chrome := 6
-	if m.voiceMode != anim.ModeIdle && m.height >= 18 {
+	if m.voiceMode != anim.ModeIdle && m.height >= 14 {
 		chrome += voicePanelRows
 	}
 	vpHeight := max(m.height-inputHeight-chrome-m.commandPaletteRows(), 1)
@@ -373,19 +373,20 @@ func (m *conversationModel) ensureVoiceTick() tea.Cmd {
 }
 
 func (m conversationModel) animStyles() anim.Styles {
+	// Prefer bright ANSI indices so VHS/termcast themes paint vivid cyan /
+	// amber / magenta even when truecolor is flattened by the recorder.
 	return anim.Styles{
-		Tip:     lipgloss.NewStyle().Foreground(colorFireTip).Bold(true),
-		Mid:     lipgloss.NewStyle().Foreground(colorAccent).Bold(true),
-		Core:    lipgloss.NewStyle().Foreground(colorDim),
+		Tip:     lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true), // bright cyan
+		Mid:     lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true), // bright blue
+		Core:    lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
 		Muted:   dimStyle,
-		Label:   statusStyle.Bold(true),
+		Label:   lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true),
 		Error:   errorStyle,
-		Accent:  headerStyle,
-		Hearing: hearingStyle,
-		Speak:   speakStyle,
-		Think:   thinkStyle,
-		Fire:    lipgloss.NewStyle().Foreground(colorFire).Bold(true),
-		Border:  lipgloss.NewStyle().Foreground(colorAccent),
+		Accent:  lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true),
+		Hearing: lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true), // bright yellow
+		Speak:   lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true), // bright magenta
+		Think:   lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true),
+		Border:  lipgloss.NewStyle().Foreground(lipgloss.Color("14")),
 		Badge:   chipStyle,
 	}
 }
@@ -734,10 +735,10 @@ func (m conversationModel) View() string {
 	styles := m.animStyles()
 	w := max(m.width, 1)
 
-	// Brand header bar with tabs + live compact meter.
-	left := headerStyle.Render("✦ "+m.agentName) + "  " + m.renderTabs()
+	// Clean header: name, tabs, compact EQ chip.
+	left := headerStyle.Render(m.agentName) + "  " + m.renderTabs()
 	if m.sessionID != "" {
-		left += "  " + chipMutedStyle.Render(shortSessionID(m.sessionID))
+		left += "  " + dimStyle.Render(shortSessionID(m.sessionID))
 	}
 	right := ""
 	if m.voiceMode != anim.ModeIdle {
@@ -751,19 +752,18 @@ func (m conversationModel) View() string {
 	}
 	headerInner := left
 	if right != "" {
-		pad := w - 2 - lipgloss.Width(left) - lipgloss.Width(right)
+		pad := w - lipgloss.Width(left) - lipgloss.Width(right) - 2
 		if pad < 1 {
 			pad = 1
 		}
 		headerInner = left + strings.Repeat(" ", pad) + right
 	}
-	header := headerBarStyle.Width(w).Render(ansi.Truncate(headerInner, max(w-2, 1), "…"))
+	header := ansi.Truncate(headerInner, w, "…")
 
-	ruleColor := m.inputBorderColor()
-	rule := lipgloss.NewStyle().Foreground(ruleColor).Render(strings.Repeat("─", w))
+	rule := lipgloss.NewStyle().Foreground(m.inputBorderColor()).Render(strings.Repeat("─", w))
 
 	voiceStrip := ""
-	if m.voiceMode != anim.ModeIdle && m.height >= 18 {
+	if m.voiceMode != anim.ModeIdle && m.height >= 14 {
 		voiceStrip = anim.Stage(m.voiceMode, m.voiceFrame, m.voiceLevel(), w, m.status, styles, m.reducedMotion)
 		if voiceStrip != "" {
 			voiceStrip += "\n"

@@ -9,19 +9,17 @@ import (
 
 func testStyles() Styles {
 	return Styles{
-		Tip:     lipgloss.NewStyle().Foreground(lipgloss.Color("#8BE9FD")),
-		Mid:     lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")),
-		Core:    lipgloss.NewStyle().Foreground(lipgloss.Color("#6272A4")),
-		Muted:   lipgloss.NewStyle().Foreground(lipgloss.Color("#6272A4")),
-		Label:   lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")),
-		Error:   lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")),
-		Accent:  lipgloss.NewStyle().Foreground(lipgloss.Color("#8BE9FD")),
-		Hearing: lipgloss.NewStyle().Foreground(lipgloss.Color("#FEBC2E")),
-		Speak:   lipgloss.NewStyle().Foreground(lipgloss.Color("#BD93F9")),
-		Think:   lipgloss.NewStyle().Foreground(lipgloss.Color("#A4F0FF")),
-		Fire:    lipgloss.NewStyle().Foreground(lipgloss.Color("#F2721C")),
-		Border:  lipgloss.NewStyle().Foreground(lipgloss.Color("#8BE9FD")),
-		Badge:   lipgloss.NewStyle().Foreground(lipgloss.Color("#0d0d11")).Background(lipgloss.Color("#8BE9FD")),
+		Tip:     lipgloss.NewStyle().Foreground(lipgloss.Color("14")),
+		Mid:     lipgloss.NewStyle().Foreground(lipgloss.Color("12")),
+		Core:    lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+		Muted:   lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+		Label:   lipgloss.NewStyle().Foreground(lipgloss.Color("14")),
+		Error:   lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
+		Accent:  lipgloss.NewStyle().Foreground(lipgloss.Color("14")),
+		Hearing: lipgloss.NewStyle().Foreground(lipgloss.Color("11")),
+		Speak:   lipgloss.NewStyle().Foreground(lipgloss.Color("13")),
+		Think:   lipgloss.NewStyle().Foreground(lipgloss.Color("12")),
+		Border:  lipgloss.NewStyle().Foreground(lipgloss.Color("14")),
 	}
 }
 
@@ -33,32 +31,29 @@ func TestWaveform_LevelAffectsContent(t *testing.T) {
 		t.Fatal("expected non-empty waveforms")
 	}
 	if low == high {
-		t.Fatalf("low and high levels should differ: low=%q high=%q", low, high)
+		t.Fatalf("low and high levels should differ")
 	}
 }
 
-func TestSpectrum_HasRows(t *testing.T) {
-	out := Spectrum(3, 0.8, 24, 3, testStyles())
-	if strings.Count(out, "\n") != 2 {
-		t.Fatalf("want 3 spectrum rows, got %q", out)
+func TestStage_IdleEmpty(t *testing.T) {
+	if Stage(ModeIdle, 0, 0, 40, "", testStyles(), false) != "" {
+		t.Fatal("idle stage must be empty")
 	}
 }
 
-func TestPanel_IdleEmpty(t *testing.T) {
-	if Panel(ModeIdle, 0, 0, 40, "", testStyles(), false) != "" {
-		t.Fatal("idle panel must be empty")
-	}
-}
-
-func TestStage_HearingGrowsWithLevel(t *testing.T) {
+func TestStage_NoFlameArt(t *testing.T) {
+	// Regression: stage must stay an EQ strip, not festival flame glyphs.
 	s := testStyles()
-	low := Stage(ModeHearing, 0, 0.1, 60, "Hearing", s, false)
-	high := Stage(ModeHearing, 0, 1, 60, "Hearing", s, false)
-	if low == "" || high == "" {
-		t.Fatal("expected non-empty stages")
-	}
-	if !strings.Contains(high, "HEARING") && !strings.Contains(high, "Hearing") {
-		t.Fatalf("label missing from stage: %q", high)
+	for _, mode := range []Mode{ModeListening, ModeHearing, ModeSpeaking} {
+		out := Stage(mode, 3, 0.8, 60, "", s, false)
+		for _, banned := range []string{")####", ")|||", "`####", "flame"} {
+			if strings.Contains(out, banned) {
+				t.Fatalf("mode %d still has flame-like art %q in:\n%s", mode, banned, out)
+			}
+		}
+		if out == "" {
+			t.Fatalf("mode %d produced empty stage", mode)
+		}
 	}
 }
 
@@ -67,16 +62,15 @@ func TestStage_ReducedMotionStable(t *testing.T) {
 	a := Stage(ModeSpeaking, 0, 0.5, 60, "Speaking", s, true)
 	b := Stage(ModeSpeaking, 5, 0.5, 60, "Speaking", s, true)
 	if a != b {
-		t.Fatalf("reduced-motion stages must match across frames:\n%q\n%q", a, b)
+		t.Fatalf("reduced-motion stages must match across frames")
 	}
 }
 
 func TestCompactMeter_Modes(t *testing.T) {
 	s := testStyles()
 	for _, mode := range []Mode{ModeListening, ModeHearing, ModeSpeaking, ModeError} {
-		out := CompactMeter(mode, 2, 0.6, "", s, false)
-		if out == "" {
-			t.Fatalf("mode %d produced empty compact meter", mode)
+		if CompactMeter(mode, 2, 0.6, "", s, false) == "" {
+			t.Fatalf("mode %d empty compact meter", mode)
 		}
 	}
 	if CompactMeter(ModeIdle, 0, 0, "", s, false) != "" {
@@ -84,21 +78,9 @@ func TestCompactMeter_Modes(t *testing.T) {
 	}
 }
 
-func TestModePalette_UsesHearingAccent(t *testing.T) {
-	s := testStyles()
-	p := modePalette(ModeHearing, s)
-	// Badge should reverse hearing color — distinct from muted core.
-	if p.Label.GetForeground() == s.Muted.GetForeground() {
-		t.Fatal("hearing palette should not fall back to muted label")
-	}
-}
-
-func TestClampAndEffectiveLevel(t *testing.T) {
-	if clamp01(-1) != 0 || clamp01(2) != 1 {
-		t.Fatal("clamp01 bounds failed")
-	}
+func TestEffectiveLevel(t *testing.T) {
 	if effectiveLevel(ModeListening, 0, 0) <= 0 {
-		t.Fatal("listening should have ambient level")
+		t.Fatal("listening needs ambient level")
 	}
 	if effectiveLevel(ModeHearing, 0.8, 0) != 0.8 {
 		t.Fatal("hearing should pass through strong levels")

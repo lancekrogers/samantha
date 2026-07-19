@@ -26,8 +26,6 @@ var (
 	colorHearing = lipgloss.Color("#FEBC2E") // amber → bright yellow
 	colorSpeak   = lipgloss.Color("#BD93F9") // purple → bright magenta
 	colorThink   = lipgloss.Color("#A4F0FF") // ice cyan
-	colorFire    = lipgloss.Color("#F2721C") // brand fire → yellow/red
-	colorFireTip = lipgloss.Color("#FFB347")
 )
 
 func init() {
