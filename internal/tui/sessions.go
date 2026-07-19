@@ -78,10 +78,17 @@ func (m *sessionsModel) ensureVisible() {
 }
 
 func (m sessionsModel) visibleRows() int {
-	if m.height > 0 && m.height < 10 {
-		return max(m.height-2, 1)
+	// Title + subtitle + blank + footer consume ~5 rows on a normal terminal;
+	// compact mode keeps only the header/footer chrome.
+	h := m.height
+	if h <= 0 {
+		// No WindowSize yet — still show a full-ish list rather than three rows.
+		h = 24
 	}
-	return max(m.height-6, 3)
+	if h < 10 {
+		return max(h-2, 1)
+	}
+	return max(h-6, 1)
 }
 
 func (m sessionsModel) View() string {

@@ -66,6 +66,83 @@ func TestAudiobookScreenGenerateShowsCommand(t *testing.T) {
 	}
 }
 
+func TestAudiobookChoiceFieldsCycleWithoutTyping(t *testing.T) {
+	m := newAudiobook(&config.Config{TTSVoice: "af_heart"})
+	m.cursor = abFieldSpeed
+	m, _ = m.activate() // enter cycles forward
+	if m.editing {
+		t.Fatal("speed must not open free-text edit mode")
+	}
+	if m.speed == "1" {
+		// default is "1"; one step forward should leave it
+		t.Fatalf("speed still %q after cycle", m.speed)
+	}
+	first := m.speed
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if m.speed == first {
+		t.Fatalf("right arrow did not advance speed from %q", first)
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	if m.speed != first {
+		t.Fatalf("left arrow speed = %q, want back to %q", m.speed, first)
+	}
+
+	m.cursor = abFieldAudioFormat
+	m.audioFmt = ""
+	m, _ = m.activate()
+	if m.audioFmt != "mp3" {
+		t.Fatalf("audio format after enter = %q, want mp3 (first non-empty)", m.audioFmt)
+	}
+	if m.editing {
+		t.Fatal("audio format must not open free-text edit")
+	}
+
+	m.cursor = abFieldVoice
+	m.voice = "af_heart"
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if m.voice == "af_heart" {
+		// Voice list is non-trivial for kokoro; at least one other voice should exist.
+		if len(m.voiceOptions()) <= 1 {
+			t.Skip("only one voice available")
+		}
+		t.Fatalf("voice did not cycle from af_heart (options=%v)", m.voiceOptions())
+	}
+}
+
+func TestAudiobookVoiceCanReturnToConfigDefault(t *testing.T) {
+	m := newAudiobook(&config.Config{TTSVoice: "af_heart"})
+	m.voice = "af_heart"
+	m.cursor = abFieldVoice
+	// Walk until we wrap back to empty (config default).
+	seenEmpty := false
+	for range len(m.voiceOptions()) + 2 {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+		if m.voice == "" {
+			seenEmpty = true
+			break
+		}
+	}
+	if !seenEmpty {
+		t.Fatalf("voice options never cycled back to empty config default; stuck at %q options=%v", m.voice, m.voiceOptions())
+	}
+	if m.editing {
+		t.Fatal("voice cycle must not open free-text edit")
+	}
+}
+
+func TestCycleStringWraps(t *testing.T) {
+	opts := []string{"a", "b", "c"}
+	if got := cycleString(opts, "c", 1); got != "a" {
+		t.Fatalf("wrap forward = %q, want a", got)
+	}
+	if got := cycleString(opts, "a", -1); got != "c" {
+		t.Fatalf("wrap back = %q, want c", got)
+	}
+	if got := cycleString(opts, "missing", 1); got != "a" {
+		t.Fatalf("unknown current forward = %q, want a", got)
+	}
+}
+
 func TestCompleteFilesystemPathUniqueFile(t *testing.T) {
 	dir := t.TempDir()
 	book := filepath.Join(dir, "tiny-book.epub")
