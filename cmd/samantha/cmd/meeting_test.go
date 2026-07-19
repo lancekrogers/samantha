@@ -98,6 +98,16 @@ func TestMeetingAssetProgressKeepsJSONOutputClean(t *testing.T) {
 	}
 }
 
+func TestUseMeetingRecordTUIRespectsFlags(t *testing.T) {
+	// Flag gates only — TTY detection is environment-dependent.
+	if useMeetingRecordTUI(meetingOptions{JSON: true}) {
+		t.Fatal("--json must disable meeting TUI")
+	}
+	if useMeetingRecordTUI(meetingOptions{NoTUI: true}) {
+		t.Fatal("--no-tui must disable meeting TUI")
+	}
+}
+
 func TestJSONSinkReturnsEncoderFailure(t *testing.T) {
 	want := errors.New("output closed")
 	sink := &jsonSink{enc: json.NewEncoder(errorWriter{err: want})}
