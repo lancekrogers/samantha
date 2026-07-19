@@ -4,14 +4,16 @@ import "github.com/charmbracelet/lipgloss"
 
 // Truecolor-friendly palette (reads well on dark themes in VHS + Ghostty).
 var (
-	colorAccent = lipgloss.Color("#8BE9FD") // cyan
-	colorUser   = lipgloss.Color("#82AAFF") // blue
-	colorAgent  = lipgloss.Color("#C3E88D") // green
-	colorDim    = lipgloss.Color("#6272A4") // muted
-	colorNormal = lipgloss.Color("#F8F8F2") // near-white
-	colorStatus = lipgloss.Color("#50FA7B") // bright green
-	colorError  = lipgloss.Color("#FF5555") // red
-	colorSelect = lipgloss.Color("#FF79C6") // pink
+	colorAccent  = lipgloss.Color("#8BE9FD") // cyan
+	colorUser    = lipgloss.Color("#82AAFF") // blue
+	colorAgent   = lipgloss.Color("#C3E88D") // green
+	colorDim     = lipgloss.Color("#6272A4") // muted
+	colorNormal  = lipgloss.Color("#F8F8F2") // near-white
+	colorStatus  = lipgloss.Color("#50FA7B") // bright green
+	colorError   = lipgloss.Color("#FF5555") // red
+	colorSelect  = lipgloss.Color("#FF79C6") // pink
+	colorHearing = lipgloss.Color("#FFB86C") // warm orange — recording
+	colorSpeak   = lipgloss.Color("#BD93F9") // purple — playback
 )
 
 var (
@@ -56,4 +58,10 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(colorAccent).
 			Padding(0, 1)
+
+	hearingStyle = lipgloss.NewStyle().
+			Foreground(colorHearing)
+
+	speakStyle = lipgloss.NewStyle().
+			Foreground(colorSpeak)
 )

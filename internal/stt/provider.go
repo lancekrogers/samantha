@@ -41,6 +41,14 @@ type Failure struct {
 
 func (e Failure) sttEvent() string { return "failure" }
 
+// InputLevel is a throttled mic energy sample for UI meters (0..1).
+// It is advisory and droppable — loops must never block on delivery.
+type InputLevel struct {
+	Level float64
+}
+
+func (e InputLevel) sttEvent() string { return "input_level" }
+
 // Session produces STT events for one conversational turn.
 type Session interface {
 	Events() <-chan Event

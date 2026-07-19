@@ -50,6 +50,7 @@ func runStreamingLoop(ctx context.Context, deps streamingLoopDeps, events chan<-
 	track := newSpeechTracker()
 	transcribing := false
 	lastPartial := ""
+	var levels levelEmitter
 
 	// resetListening discards a rejected or false-positive utterance and opens a
 	// fresh listening window. It returns false when the loop should stop.
@@ -79,6 +80,7 @@ func runStreamingLoop(ctx context.Context, deps streamingLoopDeps, events chan<-
 		eof := read.eof
 
 		if read.ready && len(read.frame.Samples) > 0 {
+			levels.maybeEmit(events, read.frame.Samples)
 			deps.seg.AcceptWaveform(read.frame.Samples)
 			if track.observe(deps.seg.IsSpeech(), frameDur(read.frame)) {
 				if !emitPhase("hearing") {

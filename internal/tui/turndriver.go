@@ -12,6 +12,7 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/app"
 	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/tui/anim"
 )
 
 // turnRunner is the slice of pipeline.Pipeline the conversation driver uses.
@@ -132,6 +133,11 @@ func (m *conversationModel) setInputMuted(muted bool) tea.Cmd {
 			return nil
 		}
 		m.voiceEnabled = false
+		// Stop the listening/hearing meter while input is paused.
+		if m.voiceMode == anim.ModeListening || m.voiceMode == anim.ModeHearing || m.voiceMode == anim.ModeTranscribing {
+			m.setVoiceMode(anim.ModeIdle)
+			m.setStatus("", false)
+		}
 		m.emit(events.Info{Message: "Voice input paused."})
 		if m.turnState == turnVoiceListening && m.canCancelVoice != nil && m.canCancelVoice.Load() {
 			m.turnState = turnVoiceCanceling

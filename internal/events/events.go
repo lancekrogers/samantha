@@ -33,6 +33,15 @@ type TranscriptPartial struct {
 
 func (e TranscriptPartial) eventType() string { return "transcript_partial" }
 
+// AudioLevel is a throttled, droppable energy sample for TUI meters.
+// Source is "input" (mic) or "output" (playback). Level is in [0, 1].
+type AudioLevel struct {
+	Source string
+	Level  float64
+}
+
+func (e AudioLevel) eventType() string { return "audio_level" }
+
 // ThinkingStarted signals Claude has begun processing.
 type ThinkingStarted struct{}
 

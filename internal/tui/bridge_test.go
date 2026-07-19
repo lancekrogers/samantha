@@ -204,13 +204,13 @@ func TestConversationEventMapping(t *testing.T) {
 		wantStatus string
 		wantErr    bool
 	}{
-		{"listening", events.STTPhase{Phase: "listening"}, "🎙 Listening...", false},
-		{"hearing", events.STTPhase{Phase: "hearing"}, "🎙 Hearing you...", false},
-		{"transcribing", events.STTPhase{Phase: "transcribing"}, "● Transcribing...", false},
-		{"partial", events.TranscriptPartial{Text: "so I was"}, "🎙 so I was", false},
-		{"thinking", events.ThinkingStarted{}, "● Samantha thinking...", false},
-		{"generating", events.GeneratingVoice{}, "● Synthesizing voice...", false},
-		{"speaking", events.SpeakingStarted{}, "● Speaking...", false},
+		{"listening", events.STTPhase{Phase: "listening"}, "Listening", false},
+		{"hearing", events.STTPhase{Phase: "hearing"}, "Hearing you", false},
+		{"transcribing", events.STTPhase{Phase: "transcribing"}, "Transcribing", false},
+		{"partial", events.TranscriptPartial{Text: "so I was"}, "so I was", false},
+		{"thinking", events.ThinkingStarted{}, "Samantha thinking", false},
+		{"generating", events.GeneratingVoice{}, "Synthesizing voice", false},
+		{"speaking", events.SpeakingStarted{}, "Speaking", false},
 		{"speaking done", events.SpeakingComplete{}, "", false},
 		{"response ready clears status", events.ResponseReady{Response: "hi"}, "", false},
 		{"interrupted", events.TurnInterrupted{Reason: "barge-in"}, "turn interrupted (barge-in)", false},
