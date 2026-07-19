@@ -40,79 +40,92 @@ func startDemoVoiceAnim(bus *events.Bus) tea.Cmd {
 }
 
 func runDemoVoiceAnim(bus *events.Bus) {
-	sleep := func(d time.Duration) {
-		time.Sleep(d)
-	}
-	emit := func(e events.Event) {
-		bus.Emit(e)
-	}
+	sleep := func(d time.Duration) { time.Sleep(d) }
+	emit := func(e events.Event) { bus.Emit(e) }
 
-	// Ambient listen
-	sleep(400 * time.Millisecond)
+	// Ambient listen — cyan radar
+	sleep(350 * time.Millisecond)
 	emit(events.STTPhase{Phase: "listening"})
-	sleep(1200 * time.Millisecond)
+	sleep(1600 * time.Millisecond)
 
-	// Rising mic energy → hearing
-	for i := 0; i < 18; i++ {
-		level := 0.15 + float64(i)*0.045
+	// Rising mic energy → amber hearing plume
+	for i := 0; i < 22; i++ {
+		level := 0.12 + float64(i)*0.04
 		if level > 1 {
 			level = 1
 		}
-		emit(events.AudioLevel{Source: "input", Level: level})
-		if i == 4 {
+		// Add a little jitter so the spectrum feels alive.
+		jitter := 0.05 * float64((i*3)%5) / 5
+		emit(events.AudioLevel{Source: "input", Level: clampDemo(level + jitter)})
+		if i == 3 {
 			emit(events.STTPhase{Phase: "hearing"})
 		}
-		if i == 10 {
-			emit(events.TranscriptPartial{Text: "show me the voice meter"})
+		if i == 8 {
+			emit(events.TranscriptPartial{Text: "show me that voice stage"})
 		}
-		sleep(90 * time.Millisecond)
+		if i == 16 {
+			emit(events.TranscriptPartial{Text: "show me that voice stage at full power"})
+		}
+		sleep(85 * time.Millisecond)
 	}
 
 	emit(events.STTPhase{Phase: "transcribing"})
-	sleep(700 * time.Millisecond)
+	sleep(650 * time.Millisecond)
 
-	emit(events.UserInput{Text: "show me the voice meter"})
+	emit(events.UserInput{Text: "show me that voice stage at full power"})
 	emit(events.ThinkingStarted{})
-	sleep(1100 * time.Millisecond)
+	sleep(1200 * time.Millisecond)
 
-	emit(events.GeneratingVoice{Sentence: "Here is the live voice meter."})
+	emit(events.GeneratingVoice{Sentence: "Watch the meter ride your voice."})
 	sleep(900 * time.Millisecond)
 
-	emit(events.SpeakingStarted{Text: "Here is the live voice meter."})
-	// Synthetic playback energy so the speaking art breathes.
-	for i := 0; i < 22; i++ {
-		// Triangle envelope 0.3..0.95..0.35
+	emit(events.SpeakingStarted{Text: "Watch the meter ride your voice."})
+	// Dramatic triangle + pulse envelope for speaking art.
+	for i := 0; i < 28; i++ {
 		var level float64
-		if i < 11 {
-			level = 0.3 + float64(i)*0.06
-		} else {
-			level = 0.95 - float64(i-11)*0.05
+		switch {
+		case i < 8:
+			level = 0.35 + float64(i)*0.08
+		case i < 18:
+			level = 0.95 - 0.15*float64((i%4))/4
+		default:
+			level = 0.85 - float64(i-18)*0.05
 		}
-		if level < 0.25 {
-			level = 0.25
-		}
-		emit(events.AudioLevel{Source: "output", Level: level})
-		sleep(100 * time.Millisecond)
+		emit(events.AudioLevel{Source: "output", Level: clampDemo(level)})
+		sleep(95 * time.Millisecond)
 	}
 
-	emit(events.SpeakingComplete{Elapsed: 2200 * time.Millisecond})
-	emit(events.ResponseReady{Response: "Here is the live voice meter — listening, hearing your level, and speaking."})
-	sleep(1800 * time.Millisecond)
+	emit(events.SpeakingComplete{Elapsed: 2600 * time.Millisecond})
+	emit(events.ResponseReady{Response: "Watch the meter ride your voice — listening, hearing, and speaking, all live."})
+	sleep(1500 * time.Millisecond)
 
-	// Second cycle: quieter listen → short speak
+	// Second cycle: quick listen → hot hearing → short speak
 	emit(events.STTPhase{Phase: "listening"})
-	sleep(900 * time.Millisecond)
-	for i := 0; i < 10; i++ {
-		emit(events.AudioLevel{Source: "input", Level: 0.25 + float64(i)*0.05})
-		if i == 2 {
+	sleep(800 * time.Millisecond)
+	for i := 0; i < 12; i++ {
+		emit(events.AudioLevel{Source: "input", Level: clampDemo(0.3 + float64(i)*0.06)})
+		if i == 1 {
 			emit(events.STTPhase{Phase: "hearing"})
 		}
-		sleep(80 * time.Millisecond)
+		sleep(75 * time.Millisecond)
 	}
 	emit(events.SpeakingStarted{Text: "Ready when you are."})
-	sleep(1600 * time.Millisecond)
+	for i := 0; i < 14; i++ {
+		emit(events.AudioLevel{Source: "output", Level: clampDemo(0.4 + 0.4*float64(i%5)/5)})
+		sleep(90 * time.Millisecond)
+	}
 	emit(events.SpeakingComplete{})
 	emit(events.STTPhase{Phase: "listening"})
 	// Hold listening for the end of the GIF.
-	sleep(2 * time.Second)
+	sleep(2200 * time.Millisecond)
+}
+
+func clampDemo(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }

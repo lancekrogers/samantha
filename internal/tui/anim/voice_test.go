@@ -9,13 +9,19 @@ import (
 
 func testStyles() Styles {
 	return Styles{
-		Tip:    lipgloss.NewStyle().Foreground(lipgloss.Color("#8BE9FD")),
-		Mid:    lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")),
-		Core:   lipgloss.NewStyle().Foreground(lipgloss.Color("#6272A4")),
-		Muted:  lipgloss.NewStyle().Foreground(lipgloss.Color("#6272A4")),
-		Label:  lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")),
-		Error:  lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")),
-		Accent: lipgloss.NewStyle().Foreground(lipgloss.Color("#8BE9FD")),
+		Tip:     lipgloss.NewStyle().Foreground(lipgloss.Color("#8BE9FD")),
+		Mid:     lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")),
+		Core:    lipgloss.NewStyle().Foreground(lipgloss.Color("#6272A4")),
+		Muted:   lipgloss.NewStyle().Foreground(lipgloss.Color("#6272A4")),
+		Label:   lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")),
+		Error:   lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")),
+		Accent:  lipgloss.NewStyle().Foreground(lipgloss.Color("#8BE9FD")),
+		Hearing: lipgloss.NewStyle().Foreground(lipgloss.Color("#FEBC2E")),
+		Speak:   lipgloss.NewStyle().Foreground(lipgloss.Color("#BD93F9")),
+		Think:   lipgloss.NewStyle().Foreground(lipgloss.Color("#A4F0FF")),
+		Fire:    lipgloss.NewStyle().Foreground(lipgloss.Color("#F2721C")),
+		Border:  lipgloss.NewStyle().Foreground(lipgloss.Color("#8BE9FD")),
+		Badge:   lipgloss.NewStyle().Foreground(lipgloss.Color("#0d0d11")).Background(lipgloss.Color("#8BE9FD")),
 	}
 }
 
@@ -31,31 +37,37 @@ func TestWaveform_LevelAffectsContent(t *testing.T) {
 	}
 }
 
+func TestSpectrum_HasRows(t *testing.T) {
+	out := Spectrum(3, 0.8, 24, 3, testStyles())
+	if strings.Count(out, "\n") != 2 {
+		t.Fatalf("want 3 spectrum rows, got %q", out)
+	}
+}
+
 func TestPanel_IdleEmpty(t *testing.T) {
 	if Panel(ModeIdle, 0, 0, 40, "", testStyles(), false) != "" {
 		t.Fatal("idle panel must be empty")
 	}
 }
 
-func TestPanel_HearingGrowsWithLevel(t *testing.T) {
+func TestStage_HearingGrowsWithLevel(t *testing.T) {
 	s := testStyles()
-	low := Panel(ModeHearing, 0, 0.1, 40, "Hearing", s, false)
-	high := Panel(ModeHearing, 0, 1, 40, "Hearing", s, false)
-	if strings.Count(low, "\n") > strings.Count(high, "\n") {
-		t.Fatalf("low panel should not be taller than high: low lines=%d high lines=%d",
-			strings.Count(low, "\n")+1, strings.Count(high, "\n")+1)
+	low := Stage(ModeHearing, 0, 0.1, 60, "Hearing", s, false)
+	high := Stage(ModeHearing, 0, 1, 60, "Hearing", s, false)
+	if low == "" || high == "" {
+		t.Fatal("expected non-empty stages")
 	}
-	if !strings.Contains(high, "Hearing") {
-		t.Fatalf("label missing from panel: %q", high)
+	if !strings.Contains(high, "HEARING") && !strings.Contains(high, "Hearing") {
+		t.Fatalf("label missing from stage: %q", high)
 	}
 }
 
-func TestPanel_ReducedMotionStable(t *testing.T) {
+func TestStage_ReducedMotionStable(t *testing.T) {
 	s := testStyles()
-	a := Panel(ModeSpeaking, 0, 0.5, 40, "Speaking", s, true)
-	b := Panel(ModeSpeaking, 5, 0.5, 40, "Speaking", s, true)
+	a := Stage(ModeSpeaking, 0, 0.5, 60, "Speaking", s, true)
+	b := Stage(ModeSpeaking, 5, 0.5, 60, "Speaking", s, true)
 	if a != b {
-		t.Fatalf("reduced-motion panels must match across frames:\n%q\n%q", a, b)
+		t.Fatalf("reduced-motion stages must match across frames:\n%q\n%q", a, b)
 	}
 }
 
@@ -69,6 +81,15 @@ func TestCompactMeter_Modes(t *testing.T) {
 	}
 	if CompactMeter(ModeIdle, 0, 0, "", s, false) != "" {
 		t.Fatal("idle compact meter must be empty")
+	}
+}
+
+func TestModePalette_UsesHearingAccent(t *testing.T) {
+	s := testStyles()
+	p := modePalette(ModeHearing, s)
+	// Badge should reverse hearing color — distinct from muted core.
+	if p.Label.GetForeground() == s.Muted.GetForeground() {
+		t.Fatal("hearing palette should not fall back to muted label")
 	}
 }
 

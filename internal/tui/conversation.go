@@ -23,9 +23,9 @@ const conversationInputHeight = 3
 // voiceTickInterval drives the conversation meter animation (~10 fps).
 const voiceTickInterval = 100 * time.Millisecond
 
-// voicePanelRows is the vertical space reserved for the animated voice panel
-// when an active voice mode is showing art under the header rule.
-const voicePanelRows = 4
+// voicePanelRows is the vertical space reserved for the animated voice stage
+// card when an active voice mode is showing under the header rule.
+const voicePanelRows = 12
 
 // voiceTickMsg advances ambient voice animations.
 type voiceTickMsg time.Time
@@ -285,7 +285,7 @@ func (m *conversationModel) reflow() {
 	// more. Command matches consume only the rows currently available above
 	// the composer.
 	chrome := 6
-	if m.voiceMode != anim.ModeIdle && m.height >= 16 {
+	if m.voiceMode != anim.ModeIdle && m.height >= 18 {
 		chrome += voicePanelRows
 	}
 	vpHeight := max(m.height-inputHeight-chrome-m.commandPaletteRows(), 1)
@@ -374,13 +374,19 @@ func (m *conversationModel) ensureVoiceTick() tea.Cmd {
 
 func (m conversationModel) animStyles() anim.Styles {
 	return anim.Styles{
-		Tip:    lipgloss.NewStyle().Foreground(colorAccent).Bold(true),
-		Mid:    statusStyle,
-		Core:   dimStyle,
-		Muted:  dimStyle,
-		Label:  statusStyle,
-		Error:  errorStyle,
-		Accent: headerStyle,
+		Tip:     lipgloss.NewStyle().Foreground(colorFireTip).Bold(true),
+		Mid:     lipgloss.NewStyle().Foreground(colorAccent).Bold(true),
+		Core:    lipgloss.NewStyle().Foreground(colorDim),
+		Muted:   dimStyle,
+		Label:   statusStyle.Bold(true),
+		Error:   errorStyle,
+		Accent:  headerStyle,
+		Hearing: hearingStyle,
+		Speak:   speakStyle,
+		Think:   thinkStyle,
+		Fire:    lipgloss.NewStyle().Foreground(colorFire).Bold(true),
+		Border:  lipgloss.NewStyle().Foreground(colorAccent),
+		Badge:   chipStyle,
 	}
 }
 
@@ -711,55 +717,54 @@ func formatSeconds(d time.Duration) string {
 // renderUserTurn and renderAgentTurn are the single rendering path for both
 // live events and replayed session history, so the two cannot drift apart.
 func renderUserTurn(text string) string {
-	return "  " + userStyle.Render("› You") + "\n  " + text
+	body := userStyle.Render("› You") + "\n" + normalStyle.Render(text)
+	return userBubbleStyle.Render(body)
 }
 
 func renderAgentTurn(name, text string) string {
-	return "  " + samanthaStyle.Render("● "+name) + "\n  " + text
+	body := samanthaStyle.Render("● "+name) + "\n" + normalStyle.Render(text)
+	return agentBubbleStyle.Render(body)
 }
 
 func (m conversationModel) View() string {
 	if !m.ready {
-		return "\n  Preparing conversation...\n"
+		return "\n  " + headerStyle.Render("Preparing conversation…") + "\n"
 	}
 
 	styles := m.animStyles()
-	// Header keeps a compact live meter; full art sits under the rule when space allows.
-	header := "  " + headerStyle.Render(m.agentName) + "  " + m.renderTabs()
+	w := max(m.width, 1)
+
+	// Brand header bar with tabs + live compact meter.
+	left := headerStyle.Render("✦ "+m.agentName) + "  " + m.renderTabs()
 	if m.sessionID != "" {
-		header += "  " + dimStyle.Render("session "+shortSessionID(m.sessionID))
+		left += "  " + chipMutedStyle.Render(shortSessionID(m.sessionID))
 	}
+	right := ""
 	if m.voiceMode != anim.ModeIdle {
-		statusStyleForMode := statusStyle
-		if m.statusErr {
-			statusStyleForMode = errorStyle
-		} else {
-			switch m.voiceMode {
-			case anim.ModeHearing:
-				statusStyleForMode = hearingStyle
-			case anim.ModeSpeaking, anim.ModeSynthesizing:
-				statusStyleForMode = speakStyle
-			}
-		}
-		styles.Label = statusStyleForMode
-		meter := anim.CompactMeter(m.voiceMode, m.voiceFrame, m.voiceLevel(), m.status, styles, m.reducedMotion)
-		if meter != "" {
-			header += "  " + meter
-		}
+		right = anim.CompactMeter(m.voiceMode, m.voiceFrame, m.voiceLevel(), m.status, styles, m.reducedMotion)
 	} else if m.status != "" {
 		style := statusStyle
 		if m.statusErr {
 			style = errorStyle
 		}
-		header += "  " + style.Render(m.status)
+		right = style.Render(m.status)
 	}
-	header = ansi.Truncate(header, max(m.width, 1), "…")
+	headerInner := left
+	if right != "" {
+		pad := w - 2 - lipgloss.Width(left) - lipgloss.Width(right)
+		if pad < 1 {
+			pad = 1
+		}
+		headerInner = left + strings.Repeat(" ", pad) + right
+	}
+	header := headerBarStyle.Width(w).Render(ansi.Truncate(headerInner, max(w-2, 1), "…"))
 
-	rule := dimStyle.Render(strings.Repeat("─", max(m.width, 1)))
+	ruleColor := m.inputBorderColor()
+	rule := lipgloss.NewStyle().Foreground(ruleColor).Render(strings.Repeat("─", w))
 
 	voiceStrip := ""
-	if m.voiceMode != anim.ModeIdle && m.height >= 16 {
-		voiceStrip = anim.Panel(m.voiceMode, m.voiceFrame, m.voiceLevel(), max(m.width, 1), m.status, styles, m.reducedMotion)
+	if m.voiceMode != anim.ModeIdle && m.height >= 18 {
+		voiceStrip = anim.Stage(m.voiceMode, m.voiceFrame, m.voiceLevel(), w, m.status, styles, m.reducedMotion)
 		if voiceStrip != "" {
 			voiceStrip += "\n"
 		}
@@ -767,21 +772,27 @@ func (m conversationModel) View() string {
 
 	// Capture stays armed while voice input is paused; wording must not claim
 	// the OS microphone was released.
-	micState := "voice input off"
+	micChip := chipMutedStyle.Render("mic off")
 	if m.voiceOn() {
-		micState = "voice input on"
-	}
-	outputState := "audio unavailable"
-	if m.outputAvailable {
-		outputState = "audio on"
-		if m.outputMuted {
-			outputState = "audio off"
+		micChip = chipStyle.Render("mic on")
+		if m.voiceMode == anim.ModeHearing {
+			micChip = lipgloss.NewStyle().Foreground(colorBg).Background(colorHearing).Bold(true).Padding(0, 1).Render("recording")
 		}
 	}
-	footerLeft := "  " + micState + "  •  " + outputState
+	outChip := chipMutedStyle.Render("audio n/a")
+	if m.outputAvailable {
+		if m.outputMuted {
+			outChip = chipMutedStyle.Render("audio off")
+		} else if m.voiceMode == anim.ModeSpeaking {
+			outChip = lipgloss.NewStyle().Foreground(colorBg).Background(colorSpeak).Bold(true).Padding(0, 1).Render("speaking")
+		} else {
+			outChip = lipgloss.NewStyle().Foreground(colorBg).Background(colorAgent).Bold(true).Padding(0, 1).Render("audio on")
+		}
+	}
+	footerLeft := "  " + micChip + " " + outChip
 	activeViewport := m.activeViewport()
 	if activeViewport.TotalLineCount() > activeViewport.VisibleLineCount() {
-		footerLeft += fmt.Sprintf("  •  %d%%", int(activeViewport.ScrollPercent()*100))
+		footerLeft += " " + chipMutedStyle.Render(fmt.Sprintf("%d%%", int(activeViewport.ScrollPercent()*100)))
 	}
 	footerHelp := m.vimFooterHelp()
 	footerText := footerLeft
@@ -795,25 +806,33 @@ func (m conversationModel) View() string {
 			footerText += strings.Repeat(" ", m.width-lipgloss.Width(compactHelp)-lipgloss.Width(footerLeft)) + footerLeft
 		}
 	case m.width >= lipgloss.Width(footerLeft)+lipgloss.Width(footerHelp)+4:
-		footerText += strings.Repeat(" ", m.width-lipgloss.Width(footerLeft)-lipgloss.Width(footerHelp)) + footerHelp
+		footerText += strings.Repeat(" ", m.width-lipgloss.Width(footerLeft)-lipgloss.Width(footerHelp)) + dimStyle.Render(footerHelp)
 	case m.width >= 60:
-		footerText += "  •  ^G mic  ^O audio  ^T switch"
+		footerText += dimStyle.Render("  ·  ^G mic  ^O audio  ^T switch")
 	default:
-		footerText += "  ^G  ^O  ^T"
+		footerText += dimStyle.Render("  ^G  ^O  ^T")
 	}
-	footer := dimStyle.Render(ansi.Truncate(footerText, max(m.width, 1), "…"))
+	footer := ansi.Truncate(footerText, w, "…")
 
 	content := m.viewport.View()
 	if m.activityFocused {
 		content = m.activityViewport.View()
 	}
 
-	inputLabel := "Your message:"
-	switch m.turnState {
-	case turnVoiceListening:
-		inputLabel = "🎙 Listening — type to interrupt:"
-	case turnVoiceResponding, turnVoiceCanceling, turnTextRunning:
-		inputLabel = "⏳ Samantha is responding — keep drafting:"
+	inputLabel := "Your message"
+	switch {
+	case m.voiceMode == anim.ModeHearing:
+		inputLabel = hearingStyle.Render("● Hearing you — type to interrupt")
+	case m.voiceMode == anim.ModeListening:
+		inputLabel = headerStyle.Render("◎ Listening — type anytime")
+	case m.voiceMode == anim.ModeSpeaking || m.voiceMode == anim.ModeSynthesizing:
+		inputLabel = speakStyle.Render("◉ Speaking — type to barge in")
+	case m.turnState == turnVoiceListening:
+		inputLabel = headerStyle.Render("🎙 Listening — type to interrupt")
+	case m.turnState == turnVoiceResponding || m.turnState == turnVoiceCanceling || m.turnState == turnTextRunning:
+		inputLabel = thinkStyle.Render("✦ Responding — keep drafting")
+	default:
+		inputLabel = dimStyle.Render(inputLabel)
 	}
 	inputLabel = m.vimInputLabel(inputLabel)
 	inputBox := lipgloss.NewStyle().
@@ -830,20 +849,22 @@ func (m conversationModel) View() string {
 	return header + "\n" + rule + "\n" +
 		voiceStrip +
 		content + "\n" +
-		dimStyle.Render(ansi.Truncate(inputLabel, max(m.width, 1), "…")) + "\n" +
+		ansi.Truncate(inputLabel, w, "…") + "\n" +
 		inputBox + "\n" +
 		footer
 }
 
 func (m conversationModel) renderTabs() string {
-	chat := dimStyle.Render("Chat")
-	activity := dimStyle.Render("Activity")
+	inactive := lipgloss.NewStyle().Foreground(colorDim).Padding(0, 1)
+	active := lipgloss.NewStyle().Foreground(colorBg).Background(colorSelect).Bold(true).Padding(0, 1)
+	chat := inactive.Render("Chat")
+	activity := inactive.Render("Activity")
 	if m.activityFocused {
-		activity = selectedStyle.Copy().Background(lipgloss.Color("236")).Padding(0, 1).Render("Activity")
+		activity = active.Render("Activity")
 	} else {
-		chat = selectedStyle.Copy().Background(lipgloss.Color("236")).Padding(0, 1).Render("Chat")
+		chat = active.Render("Chat")
 	}
-	return chat + "  " + activity
+	return chat + " " + activity
 }
 
 func shortSessionID(id string) string {

@@ -3,6 +3,9 @@ package main
 import (
 	"os"
 
+	// Seed lipgloss dark-background cache before bubbletea OSC queries.
+	_ "github.com/lancekrogers/samantha/internal/bginit"
+
 	"github.com/lancekrogers/samantha/cmd/samantha/cmd"
 )
 
