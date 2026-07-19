@@ -26,6 +26,10 @@ import (
 
 const defaultServePort = 7262 // "SAMA"
 
+// tailscaleHTTPSCertsURL is the free Tailscale admin page that enables
+// trusted HTTPS so mobile Safari (and other strict browsers) can use the mic.
+const tailscaleHTTPSCertsURL = "https://login.tailscale.com/admin/dns"
+
 var (
 	serveBind         string
 	servePort         int
@@ -48,26 +52,27 @@ var (
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Serve Samantha to your LAN or Tailscale over HTTPS + WebSocket",
-	Long: `Run Samantha as a network-accessible instance: phones, tablets, laptops,
-and other tailnet or LAN devices send text or push-to-talk audio and stream
-the live conversation over /v1/stream.
+	Long: `Run Samantha as a network-accessible instance for any device on your
+LAN or Tailscale network: phones, tablets, laptops, browsers, or
+samantha connect. Clients send text or push-to-talk audio and stream the
+live conversation over /v1/stream.
 
 Quick paths:
 
   samantha serve --tailscale
-      One-shot remote access over Tailscale: bind the 100.x address, prefer a
-      real HTTPS cert via "tailscale cert" (falls back to self-signed when the
-      tailnet cannot mint certs), mute the host speaker by default, and print
-      the MagicDNS URL + pairing code. Works from any device on the tailnet —
-      browser, samantha connect, or a future native client — not just iPad.
+      Remote access over Tailscale (anywhere on your tailnet): bind the 100.x
+      address, print a link + pairing code, mute the host speaker. Prefers a
+      trusted cert so every browser can use the mic; if that is unavailable,
+      starts in limited mode (most desktop browsers work after one warning;
+      the UI prints a free setup link for full mic support).
 
   samantha serve
-      LAN (or auto-detected private bind). Self-signed TLS by default; pass
-      --tls-cert/--tls-key for a real cert (required for iOS Safari mic/audio).
+      Same Wi‑Fi / LAN (auto-detected private bind). Same client page and
+      pairing flow. Prefer --tailscale when devices are not on the same
+      network, or pass --tls-cert/--tls-key for trusted HTTPS on the LAN.
 
-Embedded voice page: https://<host>:<port>/ — pair with the short code (or
-paste the bearer token), tap Start, hold Talk. Protocol details:
-docs/serve-protocol.md.
+Embedded voice page: open the link → enter code → Pair → Start → Hold to Talk.
+Protocol details: docs/serve-protocol.md.
 
 Local full voice (mic + speakers on this machine) is still "samantha" TUI —
 serve is for remote clients, not a replacement for the conversation TUI.
@@ -103,8 +108,8 @@ func init() {
 	serveCmd.Flags().StringVar(&serveTLSKey, "tls-key", "", "TLS private key PEM (e.g. from tailscale cert)")
 	serveCmd.Flags().BoolVar(&serveNoMDNS, "no-mdns", false, "Do not advertise via mDNS/Bonjour")
 	serveCmd.Flags().BoolVar(&serveRevokeTokens, "revoke-tokens", false, "Revoke the serve bearer token, stop a running server, and exit")
-	serveCmd.Flags().BoolVar(&serveRemoteMic, "remote-mic", true, "Enable phone push-to-talk (remote STT over the WebSocket)")
-	serveCmd.Flags().BoolVar(&serveTailscale, "tailscale", false, "One-shot Tailscale mode: 100.x bind, MagicDNS URL, prefer tailscale cert (self-signed fallback), host speaker muted unless --no-voice=false")
+	serveCmd.Flags().BoolVar(&serveRemoteMic, "remote-mic", true, "Enable remote push-to-talk (client STT over the WebSocket)")
+	serveCmd.Flags().BoolVar(&serveTailscale, "tailscale", false, "Tailscale remote mode: 100.x bind, MagicDNS URL, prefer trusted cert (self-signed fallback), host speaker muted unless --no-voice=false")
 	rootCmd.AddCommand(serveCmd)
 }
 
@@ -144,17 +149,22 @@ func applyServeTailscaleDefaults(cmd *cobra.Command) error {
 		cert, key, err := ensureTailscaleCert(tlsDir, id.DNSName)
 		if err != nil {
 			serveTLSFallbackNote = summarizeTailscaleCertError(err)
-			fmt.Printf("  %s %s\n", failStyle.Render("Tailscale cert:"), "unavailable — using self-signed TLS")
-			fmt.Printf("  %s %s\n", dimStyle.Render("Reason:"), serveTLSFallbackNote)
-			fmt.Println(dimStyle.Render("  Remote clients on the tailnet still work (accept the browser warning,"))
-			fmt.Println(dimStyle.Render("  or use `samantha connect`). iOS Safari mic needs a real cert — enable"))
-			fmt.Println(dimStyle.Render("  HTTPS Certificates in the Tailscale admin console, then restart serve."))
+			// Stable labels for the TUI (and readable for CLI users).
+			// Product outcomes only — any device, not iOS-specific.
+			fmt.Printf("  %s %s\n", failStyle.Render("Client access:"), "limited")
+			fmt.Printf("  %s %s\n", keyStyle.Render("Client setup:"), tailscaleHTTPSCertsURL)
+			fmt.Println(dimStyle.Render("  Most desktop browsers work after one warning. Full mic support on"))
+			fmt.Println(dimStyle.Render("  every device: open Client setup → turn on HTTPS Certificates → restart."))
+			if serveTLSFallbackNote != "" {
+				fmt.Printf("  %s %s\n", dimStyle.Render("Detail:"), serveTLSFallbackNote)
+			}
 		} else {
 			serveTLSCert, serveTLSKey = cert, key
-			fmt.Printf("  %s %s\n", keyStyle.Render("Tailscale cert:"), cert)
+			fmt.Printf("  %s %s\n", keyStyle.Render("Client access:"), "full")
 		}
-		fmt.Printf("  %s %s\n", keyStyle.Render("MagicDNS:"), id.DNSName)
-		fmt.Printf("  %s %s\n", keyStyle.Render("Bind:"), serveBind)
+		fmt.Printf("  %s %s\n", keyStyle.Render("Network:"), "tailscale")
+		fmt.Printf("  %s %s\n", keyStyle.Render("Network name:"), id.DNSName)
+		fmt.Printf("  %s %s\n", dimStyle.Render("Bind:"), serveBind)
 	}
 	return nil
 }
@@ -226,13 +236,18 @@ func runServe(cfg *config.Config) error {
 	if serveTLSCert != "" || serveTLSKey != "" {
 		creds, err = netapi.LoadOrCreateCredentialsWithTLS(credsDir, serveTLSCert, serveTLSKey)
 	} else {
-		// Stamp MagicDNS / bind IP into a new self-signed cert so browsers
-		// opening the public URL see a matching name (TOFU still pins fingerprint).
+		// Stamp MagicDNS and/or the real bind IP into the self-signed cert so
+		// browsers opening the printed URL pass hostname checks on LAN and
+		// Tailscale (TOFU still pins the fingerprint).
 		id := netapi.CertIdentity{}
 		if servePublicHost != "" {
 			id.DNSNames = append(id.DNSNames, servePublicHost)
 		}
-		if ip := net.ParseIP(serveBind); ip != nil {
+		bindForSAN := serveBind
+		if bindForSAN == "" {
+			bindForSAN = defaultServeBind()
+		}
+		if ip := net.ParseIP(bindForSAN); ip != nil {
 			id.IPs = append(id.IPs, ip)
 		}
 		if len(id.DNSNames) > 0 || len(id.IPs) > 0 {
@@ -382,10 +397,9 @@ func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus
 
 func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config) {
 	fmt.Println()
-	fmt.Printf("  %s\n", titleStyle.Render("Samantha serve"))
-	fmt.Printf("  %s %s\n", keyStyle.Render("Listening:"), "https://"+addr)
+	fmt.Printf("  %s\n", titleStyle.Render("Use on another device"))
 
-	// Prefer MagicDNS (or other public host) for the phone-facing URL.
+	// Prefer MagicDNS (or other public host) for the client-facing URL.
 	pageHost := servePublicHost
 	if pageHost == "" {
 		if host, _, err := net.SplitHostPort(addr); err == nil {
@@ -397,21 +411,52 @@ func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config
 	pageURL := publicServeURL(pageHost, servePort)
 	fmt.Printf("  %s %s\n", keyStyle.Render("Open on client:"), pageURL)
 
+	if serveTailscale {
+		fmt.Printf("  %s %s\n", keyStyle.Render("Network:"), "tailscale")
+	} else {
+		fmt.Printf("  %s %s\n", keyStyle.Render("Network:"), "lan")
+	}
+
+	// Product-facing access mode (TUI parses these labels).
+	// Trusted certs → full voice mic in any browser.
+	// Self-signed → page works after a warning; some mobile browsers block mic.
+	if creds.ExternalTLS {
+		fmt.Printf("  %s %s\n", keyStyle.Render("Client access:"), "full")
+		fmt.Println(dimStyle.Render("  Any device on this network can use text and the microphone."))
+	} else {
+		fmt.Printf("  %s %s\n", failStyle.Render("Client access:"), "limited")
+		if serveTailscale || servePublicHost != "" {
+			fmt.Printf("  %s %s\n", keyStyle.Render("Client setup:"), tailscaleHTTPSCertsURL)
+			fmt.Println(dimStyle.Render("  Works now: most desktop browsers (accept one warning) + text on any device."))
+			fmt.Println(dimStyle.Render("  Full mic on every browser: Client setup → HTTPS Certificates → restart."))
+		} else {
+			fmt.Println(dimStyle.Render("  Works now: most desktop browsers (accept one warning) + text on any device."))
+			fmt.Println(dimStyle.Render("  Full mic on every browser: samantha serve --tailscale (with HTTPS"))
+			fmt.Println(dimStyle.Render("  Certificates on), or pass --tls-cert/--tls-key."))
+		}
+	}
+
+	if creds.Pairing != nil {
+		fmt.Printf("  %s %s  (expires %s)\n",
+			keyStyle.Render("Pairing code:"),
+			creds.Pairing.Code,
+			creds.Pairing.ExpiresAt.Format("15:04:05"))
+		fmt.Println(dimStyle.Render("  On the device: open link → enter code → Pair → Start → Hold to Talk"))
+		fmt.Println(dimStyle.Render("  The code is single-use; restart serve to issue another."))
+	}
+
+	// Secondary / power-user lines stay dim and last.
+	fmt.Printf("  %s %s\n", dimStyle.Render("Listening:"), "https://"+addr)
 	if creds.ExternalTLS {
 		fp := creds.Fingerprint
 		if len(fp) > 16 {
 			fp = fp[:16] + "…"
 		}
-		fmt.Printf("  %s %s\n", keyStyle.Render("TLS:"), "external cert ("+fp+")")
+		fmt.Printf("  %s %s\n", dimStyle.Render("TLS:"), "trusted ("+fp+")")
 	} else {
-		fmt.Printf("  %s %s\n", keyStyle.Render("Cert SHA-256:"), creds.Fingerprint)
-		if serveTLSFallbackNote != "" || serveTailscale {
-			fmt.Println(dimStyle.Render("  Self-signed TLS (TOFU). Any tailnet client can connect; accept the"))
-			fmt.Println(dimStyle.Render("  browser warning or use `samantha connect`. iOS Safari mic needs a real"))
-			fmt.Println(dimStyle.Render("  cert — enable HTTPS Certificates in the Tailscale admin console."))
-		} else {
-			fmt.Println(dimStyle.Render("  Self-signed — for trusted HTTPS (iOS Safari mic) use --tls-cert/--tls-key"))
-			fmt.Println(dimStyle.Render("  or: samantha serve --tailscale (when the tailnet can mint certs)"))
+		fmt.Printf("  %s %s\n", dimStyle.Render("TLS:"), "browser warning (self-signed)")
+		if serveTLSFallbackNote != "" {
+			fmt.Printf("  %s %s\n", dimStyle.Render("Detail:"), serveTLSFallbackNote)
 		}
 	}
 	if creds.TokenCreated {
@@ -419,14 +464,6 @@ func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config
 		fmt.Println(dimStyle.Render("  Shown once — stored under " + config.ConfigDir() + "/serve/"))
 	} else {
 		fmt.Println(dimStyle.Render("  Token on file at " + config.ConfigDir() + "/serve/token"))
-	}
-	if creds.Pairing != nil {
-		fmt.Printf("  %s %s  (expires %s)\n",
-			keyStyle.Render("Pairing code:"),
-			creds.Pairing.Code,
-			creds.Pairing.ExpiresAt.Format("15:04:05"))
-		fmt.Println(dimStyle.Render("  Client: open the URL → enter code → Pair → Start → Hold to Talk"))
-		fmt.Println(dimStyle.Render("  The code is single-use; restart serve to issue another."))
 	}
 	fmt.Println(dimStyle.Render("  Revoke: samantha serve --revoke-tokens"))
 	if cfg.RemoteToolsEnabled {
@@ -445,7 +482,9 @@ func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config
 		fmt.Println(dimStyle.Render("  Remote mic: off (--remote-mic=false)"))
 	}
 	if serveTailscale {
-		fmt.Println(dimStyle.Render("  Mode: --tailscale (MagicDNS URL above; host speaker muted unless --no-voice=false)"))
+		fmt.Println(dimStyle.Render("  Mode: --tailscale (shared Tailscale network; host speaker muted unless --no-voice=false)"))
+	} else {
+		fmt.Println(dimStyle.Render("  Mode: LAN / same network (mDNS when enabled)"))
 	}
 	fmt.Println(dimStyle.Render("  Debug: samantha connect " + addr + " --token <token>"))
 	fmt.Println(dimStyle.Render("  Local full voice on this machine: run `samantha` (TUI), not serve"))

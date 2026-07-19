@@ -60,11 +60,11 @@ func TestLauncherDefaultsToContinueWhenSessionExists(t *testing.T) {
 func TestLauncherOffersTailscaleAndOpensItsScreen(t *testing.T) {
 	m := newLauncher(&config.Config{}, nil)
 	for i, item := range m.items {
-		if item.action != actionTailscale {
+		if item.action != actionRemote {
 			continue
 		}
-		if !strings.Contains(item.label, "Remote") || !strings.Contains(item.label, "Tailscale") {
-			t.Fatalf("Tailscale launcher label = %q", item.label)
+		if !strings.Contains(strings.ToLower(item.label), "device") {
+			t.Fatalf("remote launcher label = %q", item.label)
 		}
 		m.cursor = i
 		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -72,7 +72,7 @@ func TestLauncherOffersTailscaleAndOpensItsScreen(t *testing.T) {
 			t.Fatal("Tailscale launcher action returned no command")
 		}
 		msg, ok := cmd().(switchScreenMsg)
-		if !ok || screen(msg) != screenTailscale {
+		if !ok || screen(msg) != screenRemote {
 			t.Fatalf("Tailscale launcher message = %#v", msg)
 		}
 		return

@@ -22,7 +22,7 @@ const (
 	screenSessions
 	screenAudiobook
 	screenPickBook
-	screenTailscale
+	screenRemote
 )
 
 // App is the top-level bubbletea model.
@@ -39,7 +39,7 @@ type App struct {
 	sessions     sessionsModel
 	audiobook    audiobookModel
 	pickBook     pickBookModel
-	tailscale    tailscaleModel
+	remote       remoteModel
 
 	// Conversation runtime wiring, set by Run before the program starts.
 	builder  RuntimeBuilder
@@ -113,7 +113,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.String() == "ctrl+c" {
 			a.settings.closePreview()
-			a.tailscale.stop()
+			a.remote.stop()
 			a.quitting = true
 			return a, tea.Quit
 		}
@@ -139,8 +139,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.screen == screenSettings {
 			a.settings.closePreview()
 		}
-		if a.screen == screenTailscale && target != screenTailscale {
-			a.tailscale.stop()
+		if a.screen == screenRemote && target != screenRemote {
+			a.remote.stop()
 		}
 		prev := a.screen
 		a.screen = target
@@ -158,10 +158,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case screenPickBook:
 			a.pickBook = newPickBook(a.cfg)
 			a.pickBook.width, a.pickBook.height = a.width, a.height
-		case screenTailscale:
-			a.tailscale = newTailscale(a.runCtx, nil)
-			a.tailscale.width, a.tailscale.height = a.width, a.height
-			return a, a.tailscale.start()
+		case screenRemote:
+			a.remote = newRemote(a.runCtx, nil)
+			a.remote.width, a.remote.height = a.width, a.height
+			return a, a.remote.start()
 		}
 		return a, nil
 
@@ -233,7 +233,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 
 	case quitMsg:
-		a.tailscale.stop()
+		a.remote.stop()
 		a.quitting = true
 		return a, tea.Quit
 	}
@@ -253,8 +253,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.audiobook, cmd = a.audiobook.Update(msg)
 	case screenPickBook:
 		a.pickBook, cmd = a.pickBook.Update(msg)
-	case screenTailscale:
-		a.tailscale, cmd = a.tailscale.Update(msg)
+	case screenRemote:
+		a.remote, cmd = a.remote.Update(msg)
 	}
 
 	return a, cmd
@@ -274,8 +274,8 @@ func (a App) View() string {
 		return a.audiobook.View()
 	case screenPickBook:
 		return a.pickBook.View()
-	case screenTailscale:
-		return a.tailscale.View()
+	case screenRemote:
+		return a.remote.View()
 	default:
 		return ""
 	}
@@ -335,10 +335,10 @@ func run(cfg *config.Config, build RuntimeBuilder, startInConversation bool) err
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	m, runErr := p.Run()
 	final, _ := m.(App)
-	if final.tailscale.server != nil {
-		final.tailscale.stopAndWait(tailscaleStopTimeout)
+	if final.remote.server != nil {
+		final.remote.stopAndWait(remoteStopTimeout)
 	} else {
-		app.tailscale.stopAndWait(tailscaleStopTimeout)
+		app.remote.stopAndWait(remoteStopTimeout)
 	}
 
 	// Stop the in-flight turn, drain it, then tear the pipeline down — the

@@ -88,8 +88,9 @@ samantha --no-voice   # Voice input, text output
 ### Remote access (phone / another device)
 
 Any device on the same Tailscale tailnet can use remote voice. Open the Samantha
-TUI and choose **Remote over Tailscale**. The TUI starts the remote server,
-shows the MagicDNS URL and pairing code, and stops the server when you leave
+TUI and choose **Use on another device**. Pick **Tailscale** or **Same Wi‑Fi**,
+then open the link on any phone, tablet, or laptop. The TUI shows pairing and
+client setup when the mic needs trusted HTTPS, and stops when you leave
 that screen.
 
 The equivalent CLI path remains available for headless use:
@@ -106,11 +107,11 @@ samantha serve --revoke-tokens   # Invalidate the bearer; next serve mints a new
 samantha connect <host:port> --token <token>   # Debug text client
 ```
 
-If `tailscale cert` is unavailable (common when HTTPS Certificates are off for
-the tailnet), serve falls back to self-signed TLS. Remote clients still work:
-accept the browser warning, or use `samantha connect`. Enable **HTTPS
-Certificates** in the Tailscale admin console for trusted certs (needed for
-iOS Safari mic without installing a custom CA).
+If a trusted cert is not available yet, remote access still starts in
+**limited** mode: text works on every device; most desktop browsers can use
+voice after one warning; some mobile browsers need trusted HTTPS. The TUI/CLI
+print a **Client setup** link (`https://login.tailscale.com/admin/dns` →
+enable **HTTPS Certificates**), then restart. Same flow for LAN or Tailscale.
 
 On the client: open the printed URL → enter the pairing code → **Start** →
 **Hold to Talk** (or type). Protocol for custom clients:
@@ -120,7 +121,7 @@ On the client: open the printed URL → enter the pairing code → **Start** →
 |------|---------|-------------------|
 | Full local voice | `samantha` (TUI) | This machine’s mic + speakers |
 | Remote keyboard only | Termius/SSH → `samantha` | Still this machine |
-| Remote voice (tailnet) | TUI → **Remote over Tailscale**, or `samantha serve --tailscale` | Client mic + speakers via WebSocket |
+| Remote voice (LAN/tailnet) | TUI → **Use on another device**, or `samantha serve` / `--tailscale` | Client mic + speakers via WebSocket |
 
 ### Commands
 
