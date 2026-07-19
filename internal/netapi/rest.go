@@ -24,10 +24,11 @@ type Providers struct {
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"turn_active":    s.dispatcher.TurnActive(),
-		"providers":      s.providers,
-		"uptime_seconds": int64(time.Since(s.started).Seconds()),
-		"fingerprint":    s.opts.Credentials.Fingerprint,
+		"protocol_version": ProtocolVersion,
+		"turn_active":      s.dispatcher.TurnActive(),
+		"providers":        s.providers,
+		"uptime_seconds":   int64(time.Since(s.started).Seconds()),
+		"fingerprint":      s.opts.Credentials.Fingerprint,
 	})
 }
 
