@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -20,9 +21,11 @@ const (
 	screenSettings
 	screenConversation
 	screenSessions
+	screenMeetingSetup
+	screenMeeting
 	screenAudiobook
 	screenPickBook
-	screenTailscale
+	screenRemote
 )
 
 // App is the top-level bubbletea model.
@@ -37,9 +40,11 @@ type App struct {
 	settings     settingsModel
 	conversation conversationModel
 	sessions     sessionsModel
+	meetingSetup meetingSetupModel
+	meeting      meetingModel
 	audiobook    audiobookModel
 	pickBook     pickBookModel
-	tailscale    tailscaleModel
+	remote       remoteModel
 
 	// Conversation runtime wiring, set by Run before the program starts.
 	builder  RuntimeBuilder
@@ -49,6 +54,10 @@ type App struct {
 	// slot owns the built runtime for shutdown cleanup even when a ready
 	// message is dropped because the user quit mid-build.
 	slot *runtimeSlot
+
+	// Meeting recorder wiring (launcher → setup → recorder).
+	meetingBuilder MeetingBuilder
+	meetingRT      *MeetingRuntime
 
 	// Set once the conversation runtime is built; Run tears it down after
 	// the program exits.
@@ -111,9 +120,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.conversation.copySelection()
 			return a, nil
 		}
+		// Meeting owns Ctrl+C as "stop recording" (returns to launcher).
+		if msg.String() == "ctrl+c" && (a.screen == screenMeeting || a.screen == screenMeetingSetup) {
+			break // fall through to screen Update
+		}
 		if msg.String() == "ctrl+c" {
 			a.settings.closePreview()
-			a.tailscale.stop()
+			a.remote.stop()
+			if err := a.stopMeetingRuntime(); err != nil {
+				a.fatalErr = errors.Join(a.fatalErr, err)
+			}
 			a.quitting = true
 			return a, tea.Quit
 		}
@@ -139,17 +155,27 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.screen == screenSettings {
 			a.settings.closePreview()
 		}
-		if a.screen == screenTailscale && target != screenTailscale {
-			a.tailscale.stop()
+		if a.screen == screenRemote && target != screenRemote {
+			a.remote.stop()
+		}
+		var leaveMeetingErr error
+		if a.screen == screenMeeting && target != screenMeeting {
+			leaveMeetingErr = a.stopMeetingRuntime()
 		}
 		prev := a.screen
 		a.screen = target
+		if leaveMeetingErr != nil && target == screenLauncher {
+			a.launcher = a.launcher.withBanner(leaveMeetingErr.Error(), true)
+		}
 		switch a.screen {
 		case screenSettings:
 			// Replacing the model must not orphan an in-flight preview or player.
 			a.settings.closePreview()
 			a.settings = newSettings(a.cfg, a.providers)
 			return a, tea.Batch(a.settings.loadDevices(), pauseVoice)
+		case screenMeetingSetup:
+			a.meetingSetup = newMeetingSetup()
+			a.meetingSetup.width, a.meetingSetup.height = a.width, a.height
 		case screenAudiobook:
 			// Preserve form state when returning from the library picker.
 			if prev != screenPickBook {
@@ -158,10 +184,50 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case screenPickBook:
 			a.pickBook = newPickBook(a.cfg)
 			a.pickBook.width, a.pickBook.height = a.width, a.height
-		case screenTailscale:
-			a.tailscale = newTailscale(a.runCtx, nil)
-			a.tailscale.width, a.tailscale.height = a.width, a.height
-			return a, a.tailscale.start()
+		case screenRemote:
+			a.remote = newRemote(a.runCtx, nil)
+			a.remote.width, a.remote.height = a.width, a.height
+			return a, a.remote.start()
+		}
+		return a, nil
+
+	case startMeetingMsg:
+		a.screen = screenMeeting
+		a.meeting = newEmbeddedMeeting()
+		a.meeting.width, a.meeting.height = a.width, a.height
+		a.meeting.reflow()
+		a.meeting.status = "Preparing models…"
+		return a, buildMeeting(a.meetingBuilder, a.runCtx, msg.Description)
+
+	case meetingReadyMsg:
+		if msg.err != nil {
+			a.screen = screenMeetingSetup
+			a.meetingSetup = newMeetingSetup()
+			a.meetingSetup.width, a.meetingSetup.height = a.width, a.height
+			a.meetingSetup.err = msg.err.Error()
+			return a, nil
+		}
+		a.meetingRT = msg.rt
+		// Child cancel stops the listen loop without ending the whole App.
+		mctx, mcancel := context.WithCancel(a.runCtx)
+		cmd := a.meeting.beginRecording(MeetingOpts{
+			Ctx:         mctx,
+			Cancel:      mcancel,
+			Capture:     msg.rt.Capture,
+			Provider:    msg.rt.Provider,
+			Writer:      msg.rt.Writer,
+			Description: msg.rt.Description,
+			Path:        msg.rt.Path,
+			StopPhrases: msg.rt.StopPhrases,
+			Embedded:    true,
+		})
+		return a, cmd
+
+	case meetingDoneMsg:
+		closeErr := a.stopMeetingRuntime()
+		a.screen = screenLauncher
+		if err := errors.Join(msg.Err, closeErr); err != nil {
+			a.launcher = a.launcher.withBanner(fmt.Sprintf("Meeting ended with error: %v", err), true)
 		}
 		return a, nil
 
@@ -233,7 +299,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 
 	case quitMsg:
-		a.tailscale.stop()
+		a.remote.stop()
 		a.quitting = true
 		return a, tea.Quit
 	}
@@ -249,12 +315,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.conversation, cmd = a.conversation.Update(msg)
 	case screenSessions:
 		a.sessions, cmd = a.sessions.Update(msg)
+	case screenMeetingSetup:
+		a.meetingSetup, cmd = a.meetingSetup.Update(msg)
+	case screenMeeting:
+		var m tea.Model
+		m, cmd = a.meeting.Update(msg)
+		a.meeting = m.(meetingModel)
 	case screenAudiobook:
 		a.audiobook, cmd = a.audiobook.Update(msg)
 	case screenPickBook:
 		a.pickBook, cmd = a.pickBook.Update(msg)
-	case screenTailscale:
-		a.tailscale, cmd = a.tailscale.Update(msg)
+	case screenRemote:
+		a.remote, cmd = a.remote.Update(msg)
 	}
 
 	return a, cmd
@@ -270,15 +342,43 @@ func (a App) View() string {
 		return a.conversation.View()
 	case screenSessions:
 		return a.sessions.View()
+	case screenMeetingSetup:
+		return a.meetingSetup.View()
+	case screenMeeting:
+		return a.meeting.View()
 	case screenAudiobook:
 		return a.audiobook.View()
 	case screenPickBook:
 		return a.pickBook.View()
-	case screenTailscale:
-		return a.tailscale.View()
+	case screenRemote:
+		return a.remote.View()
 	default:
 		return ""
 	}
+}
+
+// stopMeetingRuntime cancels the listen loop, writes the dual-log trailer, and
+// releases STT resources. Returns any Writer.Close failure so callers can
+// surface a silent trailer/session_end write problem (files may already hold
+// synced events). Idempotent when no runtime is active.
+func (a *App) stopMeetingRuntime() error {
+	if a.meetingRT == nil {
+		return nil
+	}
+	if a.meeting.opts.Cancel != nil {
+		a.meeting.opts.Cancel()
+	}
+	var closeErr error
+	if a.meetingRT.Writer != nil {
+		if _, err := a.meetingRT.Writer.Close(); err != nil {
+			closeErr = fmt.Errorf("close meeting log: %w", err)
+		}
+	}
+	if a.meetingRT.Cleanup != nil {
+		a.meetingRT.Cleanup()
+	}
+	a.meetingRT = nil
+	return closeErr
 }
 
 // Run starts the TUI as one continuous program: launcher, settings, and the
@@ -286,21 +386,28 @@ func (a App) View() string {
 // entering the conversation screen (D2) and torn down here after the program
 // exits.
 func Run(cfg *config.Config, build RuntimeBuilder) error {
-	return run(cfg, build, false)
+	return RunWithMeeting(cfg, build, nil)
+}
+
+// RunWithMeeting is Run plus an optional MeetingBuilder for the launcher
+// "Record meeting" entry.
+func RunWithMeeting(cfg *config.Config, build RuntimeBuilder, meeting MeetingBuilder) error {
+	return run(cfg, build, meeting, false)
 }
 
 // RunConversation starts the TUI directly in the conversation screen —
 // resume/continue land in the live conversation, not the launcher.
 func RunConversation(cfg *config.Config, build RuntimeBuilder) error {
-	return run(cfg, build, true)
+	return run(cfg, build, nil, true)
 }
 
-func run(cfg *config.Config, build RuntimeBuilder, startInConversation bool) error {
+func run(cfg *config.Config, build RuntimeBuilder, meeting MeetingBuilder, startInConversation bool) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	app := NewApp(cfg)
 	app.builder = build
+	app.meetingBuilder = meeting
 	app.startInConversation = startInConversation
 	app.runCtx = ctx
 	app.wg = &sync.WaitGroup{}
@@ -335,10 +442,10 @@ func run(cfg *config.Config, build RuntimeBuilder, startInConversation bool) err
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	m, runErr := p.Run()
 	final, _ := m.(App)
-	if final.tailscale.server != nil {
-		final.tailscale.stopAndWait(tailscaleStopTimeout)
+	if final.remote.server != nil {
+		final.remote.stopAndWait(remoteStopTimeout)
 	} else {
-		app.tailscale.stopAndWait(tailscaleStopTimeout)
+		app.remote.stopAndWait(remoteStopTimeout)
 	}
 
 	// Stop the in-flight turn, drain it, then tear the pipeline down — the
@@ -353,6 +460,12 @@ func run(cfg *config.Config, build RuntimeBuilder, startInConversation bool) err
 		final.slot.cleanup()
 	} else if app.slot != nil {
 		app.slot.cleanup()
+	}
+
+	// Meeting recorder may still be open if the program quit mid-session
+	// without a meetingDoneMsg (e.g. outer Quit). Idempotent when already closed.
+	if err := final.stopMeetingRuntime(); err != nil {
+		final.fatalErr = errors.Join(final.fatalErr, err)
 	}
 
 	if runErr != nil {

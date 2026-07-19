@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -135,6 +137,60 @@ func TestRunTurnTextModeStreamsDeltas(t *testing.T) {
 	}
 	if final.Response != "Hello world." {
 		t.Fatalf("ResponseReady.Response = %q, want %q", final.Response, "Hello world.")
+	}
+}
+
+// hangBrain never emits chunks and only unblocks when the turn context expires —
+// models that stall after tools used to freeze the TUI forever.
+type hangBrain struct{}
+
+func (h *hangBrain) ThinkStream(ctx context.Context, input string, opts brain.StreamOptions) (*brain.Stream, error) {
+	out := make(chan string)
+	done := make(chan brain.StreamResult, 1)
+	go func() {
+		defer close(out)
+		defer close(done)
+		<-ctx.Done()
+		done <- brain.StreamResult{Err: ctx.Err()}
+	}()
+	return &brain.Stream{Chunks: out, Done: done}, nil
+}
+func (h *hangBrain) ThinkFull(context.Context, string, brain.StreamOptions) (string, error) {
+	return "", context.DeadlineExceeded
+}
+func (h *hangBrain) ClearHistory()            {}
+func (h *hangBrain) History() []brain.Turn    { return nil }
+func (h *hangBrain) LoadHistory([]brain.Turn) {}
+
+func TestRunTurnTextModeBrainTimeoutRecovers(t *testing.T) {
+	bus := events.NewBus()
+	var errEvt events.Error
+	events.Subscribe(bus, func(e events.Error) { errEvt = e })
+	var metrics events.TurnMetrics
+	events.Subscribe(bus, func(e events.TurnMetrics) { metrics = e })
+
+	p := &Pipeline{
+		Brain:            &hangBrain{},
+		Events:           bus,
+		BrainTurnTimeout: 40 * time.Millisecond,
+	}
+
+	start := time.Now()
+	err := p.RunTurnTextMode(context.Background(), "look into this")
+	if err == nil {
+		t.Fatal("expected brain timeout error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("timeout recovery took %v, want prompt return", elapsed)
+	}
+	if errEvt.Stage != "brain" || !strings.Contains(errEvt.Message, "timed out") {
+		t.Fatalf("Error event = %+v, want brain timeout message", errEvt)
+	}
+	if metrics.Outcome != "failed" {
+		t.Fatalf("TurnMetrics.Outcome = %q, want failed", metrics.Outcome)
 	}
 }
 

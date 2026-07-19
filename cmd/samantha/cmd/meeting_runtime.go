@@ -12,18 +12,23 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/listen"
+	"github.com/lancekrogers/samantha/internal/meeting"
 	"github.com/lancekrogers/samantha/internal/meetinglog"
 	"github.com/lancekrogers/samantha/internal/stt"
+	appTUI "github.com/lancekrogers/samantha/internal/tui"
 )
 
 // runMeetingRecord wires the STT-only chain into listen.Loop with the file
 // writer and console/JSON sinks. Nothing is written to disk until the STT
-// stack has constructed successfully.
+// stack has constructed successfully. On an interactive TTY (and not
+// --json / --no-tui) the Bubble Tea meeting UI shows the same voice EQ as
+// the conversation screen.
 func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -51,7 +56,9 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 	if outDir == "" {
 		outDir = config.MeetingsDir()
 	}
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
+	// 0o700: meeting filenames include description slugs; keep the directory
+	// private the same way auth/cert paths are.
+	if err := os.MkdirAll(outDir, 0o700); err != nil {
 		return fmt.Errorf("meeting record: create out dir: %w", err)
 	}
 	path := filepath.Join(outDir, meetingFilename(opts.Description, time.Now()))
@@ -62,23 +69,39 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 	}
 
 	out := cmd.OutOrStdout()
-	var sinks []listen.Sink
-	sinks = append(sinks, writer)
-	if opts.JSON {
-		sinks = append(sinks, &jsonSink{enc: json.NewEncoder(out)})
+	useTUI := useMeetingRecordTUI(opts)
+
+	var loopErr error
+	if useTUI {
+		loopErr = appTUI.RunMeeting(appTUI.MeetingOpts{
+			Ctx:         ctx,
+			Cancel:      cancel,
+			Capture:     capture,
+			Provider:    provider,
+			Writer:      writer,
+			Description: opts.Description,
+			Path:        path,
+			StopPhrases: stopPhraseSet(opts.StopPhrases),
+		})
 	} else {
-		fmt.Fprintf(out, "Recording meeting: %q\n", opts.Description)
-		fmt.Fprintf(out, "Writing to: %s\n", path)
-		fmt.Fprintln(out, "🎙 Listening... (say \"stop recording\" or press Ctrl+C to stop)")
-		sinks = append(sinks, &consoleSink{out: out, errOut: cmd.ErrOrStderr()})
-	}
-	sink := &stopPhraseSink{
-		inner:   multiSink(sinks),
-		phrases: stopPhraseSet(opts.StopPhrases),
-		stop:    cancel,
+		var sinks []listen.Sink
+		sinks = append(sinks, writer)
+		if opts.JSON {
+			sinks = append(sinks, &jsonSink{enc: json.NewEncoder(out)})
+		} else {
+			fmt.Fprintf(out, "Recording meeting: %q\n", opts.Description)
+			fmt.Fprintf(out, "Writing to: %s\n", path)
+			fmt.Fprintln(out, "🎙 Listening... (say \"stop recording\" or press Ctrl+C to stop)")
+			sinks = append(sinks, &consoleSink{out: out, errOut: cmd.ErrOrStderr()})
+		}
+		sink := &stopPhraseSink{
+			inner:   multiSink(sinks),
+			phrases: stopPhraseSet(opts.StopPhrases),
+			stop:    cancel,
+		}
+		loopErr = listen.Loop(ctx, capture, provider, sink)
 	}
 
-	loopErr := listen.Loop(ctx, capture, provider, sink)
 	summary, closeErr := writer.Close()
 
 	var outputErr error
@@ -88,11 +111,94 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Meeting recording stopped.")
 		fmt.Fprintf(out, "  Description: %s\n", summary.Description)
-		fmt.Fprintf(out, "  File:        %s\n", summary.File)
+		fmt.Fprintf(out, "  Log:         %s\n", summary.File)
+		if summary.JSONLFile != "" {
+			fmt.Fprintf(out, "  JSONL:       %s\n", summary.JSONLFile)
+		}
 		fmt.Fprintf(out, "  Duration:    %s\n", summary.Duration().Round(time.Second))
 		fmt.Fprintf(out, "  Utterances:  %d\n", summary.Utterances)
+		fmt.Fprintf(out, "  Notes:       %d\n", summary.Notes)
+		fmt.Fprintf(out, "  Bookmarks:   %d\n", summary.Bookmarks)
 	}
 	return errors.Join(loopErr, closeErr, outputErr)
+}
+
+// useMeetingRecordTUI is true for an interactive terminal session that should
+// open the Bubble Tea recorder. --json and --no-tui keep the plain sinks so
+// scripts never hang on a full-screen UI.
+func useMeetingRecordTUI(opts meetingOptions) bool {
+	if opts.JSON || opts.NoTUI {
+		return false
+	}
+	return isatty.IsTerminal(os.Stdout.Fd()) && isatty.IsTerminal(os.Stdin.Fd())
+}
+
+// meetingRuntimeBuilder powers the main launcher "Meeting" entry.
+func meetingRuntimeBuilder() appTUI.MeetingBuilder {
+	return func(ctx context.Context, description string, progress func(string, float64)) (*appTUI.MeetingRuntime, error) {
+		cfg, err := config.Load()
+		if err != nil {
+			return nil, err
+		}
+		outDir := config.MeetingsDir()
+		if err := os.MkdirAll(outDir, 0o700); err != nil {
+			return nil, fmt.Errorf("meeting: create out dir: %w", err)
+		}
+		path := filepath.Join(outDir, meetingFilename(description, time.Now()))
+
+		// VHS/demo path: skip real mic/models; the TUI scripts STT events.
+		if os.Getenv("SAMANTHA_DEMO_MEETING") == "1" ||
+			os.Getenv("SAMANTHA_DEMO_MEETING") == "true" ||
+			os.Getenv("SAMANTHA_DEMO_MEETING") == "yes" {
+			writer, err := meetinglog.Create(path, description, "demo")
+			if err != nil {
+				return nil, err
+			}
+			return &appTUI.MeetingRuntime{
+				// Non-nil placeholders; meeting loop swaps in demo provider when
+				// SAMANTHA_DEMO_MEETING is set.
+				Capture:     noopResetter{},
+				Provider:    noopProvider{},
+				Writer:      writer,
+				Description: description,
+				Path:        path,
+				StopPhrases: stopPhraseSet(nil),
+				Cleanup:     func() {},
+			}, nil
+		}
+
+		capture, provider, sttLabel, cleanup, err := buildSTTOnly(ctx, cfg, progress)
+		if err != nil {
+			return nil, err
+		}
+		writer, err := meetinglog.Create(path, description, sttLabel)
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
+		return &appTUI.MeetingRuntime{
+			Capture:     capture,
+			Provider:    provider,
+			Writer:      writer,
+			Description: description,
+			Path:        path,
+			StopPhrases: stopPhraseSet(nil),
+			Cleanup:     cleanup,
+		}, nil
+	}
+}
+
+// noopResetter/provider satisfy the MeetingRuntime fields for demo builds.
+// The meeting TUI replaces them when SAMANTHA_DEMO_MEETING is set.
+type noopResetter struct{}
+
+func (noopResetter) Reset() {}
+
+type noopProvider struct{}
+
+func (noopProvider) Available() bool { return true }
+func (noopProvider) Start(ctx context.Context) (stt.Session, error) {
+	return nil, fmt.Errorf("demo noop provider")
 }
 
 func meetingAssetProgress(jsonOutput bool) func(string, float64) {
@@ -180,7 +286,8 @@ func (m multiSink) OnError(err error) error {
 }
 
 // stopPhraseSink intercepts stop phrases before they reach the log: a match
-// ends the recording (same path as Ctrl+C) and is not written as content.
+// ends the recording (same path as Ctrl+C) and is intentionally not written
+// as content (operators should not see the stop command in the transcript).
 type stopPhraseSink struct {
 	inner   listen.Sink
 	phrases map[string]bool
@@ -188,7 +295,7 @@ type stopPhraseSink struct {
 }
 
 func (s *stopPhraseSink) OnUtterance(u listen.Utterance) error {
-	if s.phrases[normalizeStopPhrase(u.Text)] {
+	if s.phrases[meeting.NormalizeStopPhrase(u.Text)] {
 		s.stop()
 		return nil
 	}

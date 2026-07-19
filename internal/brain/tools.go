@@ -45,22 +45,23 @@ func (s *toolSession) tools() api.Tools {
 
 // execute runs a tool call. Successful read_skill activates the skill and
 // may append an allowed-tools hint; CLI tools remain fully available.
-func (s *toolSession) execute(ctx context.Context, workDir string, call api.ToolCall) string {
+// onEnd always runs (via defer) so a slow or failed tool cannot leave the TUI
+// stuck on "🔧 tool..." without a finish event.
+func (s *toolSession) execute(ctx context.Context, workDir string, call api.ToolCall) (result string) {
 	name := call.Function.Name
 	summary := toolArgSummary(call)
 	if s.onStart != nil {
 		s.onStart(name, summary)
 	}
-	var result string
+	defer func() {
+		if s.onEnd != nil {
+			s.onEnd(name, toolResultPreview(result))
+		}
+	}()
 	if name == "read_skill" {
-		result = s.executeReadSkill(call)
-	} else {
-		result = executeTool(ctx, workDir, call, s.catalog)
+		return s.executeReadSkill(call)
 	}
-	if s.onEnd != nil {
-		s.onEnd(name, toolResultPreview(result))
-	}
-	return result
+	return executeTool(ctx, workDir, call, s.catalog)
 }
 
 // toolArgSummary is a short, non-sensitive description of tool arguments.

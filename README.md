@@ -88,8 +88,9 @@ samantha --no-voice   # Voice input, text output
 ### Remote access (phone / another device)
 
 Any device on the same Tailscale tailnet can use remote voice. Open the Samantha
-TUI and choose **Remote over Tailscale**. The TUI starts the remote server,
-shows the MagicDNS URL and pairing code, and stops the server when you leave
+TUI and choose **Use on another device**. Pick **Tailscale** or **Same Wi‑Fi**,
+then open the link on any phone, tablet, or laptop. The TUI shows pairing and
+client setup when the mic needs trusted HTTPS, and stops when you leave
 that screen.
 
 The equivalent CLI path remains available for headless use:
@@ -106,11 +107,11 @@ samantha serve --revoke-tokens   # Invalidate the bearer; next serve mints a new
 samantha connect <host:port> --token <token>   # Debug text client
 ```
 
-If `tailscale cert` is unavailable (common when HTTPS Certificates are off for
-the tailnet), serve falls back to self-signed TLS. Remote clients still work:
-accept the browser warning, or use `samantha connect`. Enable **HTTPS
-Certificates** in the Tailscale admin console for trusted certs (needed for
-iOS Safari mic without installing a custom CA).
+If a trusted cert is not available yet, remote access still starts in
+**limited** mode: text works on every device; most desktop browsers can use
+voice after one warning; some mobile browsers need trusted HTTPS. The TUI/CLI
+print a **Client setup** link (`https://login.tailscale.com/admin/dns` →
+enable **HTTPS Certificates**), then restart. Same flow for LAN or Tailscale.
 
 On the client: open the printed URL → enter the pairing code → **Start** →
 **Hold to Talk** (or type). Protocol for custom clients:
@@ -120,7 +121,7 @@ On the client: open the printed URL → enter the pairing code → **Start** →
 |------|---------|-------------------|
 | Full local voice | `samantha` (TUI) | This machine’s mic + speakers |
 | Remote keyboard only | Termius/SSH → `samantha` | Still this machine |
-| Remote voice (tailnet) | TUI → **Remote over Tailscale**, or `samantha serve --tailscale` | Client mic + speakers via WebSocket |
+| Remote voice (LAN/tailnet) | TUI → **Use on another device**, or `samantha serve` / `--tailscale` | Client mic + speakers via WebSocket |
 
 ### Commands
 
@@ -224,6 +225,22 @@ pass-through flags (`--resume`, `--voice`, `--speed`, `--audio-format`,
 `--encoder`, `--json`, `--manifest`, `--overwrite`). Use `samantha render` for
 markdown, HTML, URL (including sectioned `--out-dir`), and text sources.
 
+Before synthesis, build a reviewable production plan. This writes the
+extracted sections, a YAML source of truth, and a Markdown preview; it does
+not load TTS or create audio:
+
+```bash
+samantha audiobook plan book.epub --out-dir out/book
+samantha audiobook review out/book/production-plan.yaml
+# Apply explicit human decisions when needed:
+samantha audiobook review out/book/production-plan.yaml --exclude contents --exclude body --reason "navigation/front matter"
+```
+
+The plan classifies likely navigation, index, front matter, main content,
+reference, and back matter. Ambiguous sections remain `review` until a human
+decides. Rendering from the approved plan will be added in a follow-up slice;
+the current `create` command remains the direct raw-spine compatibility path.
+
 ```bash
 samantha audiobook create book.epub --out-dir out/book
 samantha audiobook create book.epub --out-dir out/book --audio-format m4b --resume --json
@@ -256,22 +273,42 @@ samantha audiobook create book.pdf --out-dir out/book
 ### Meeting recording
 
 `samantha meeting record` listens continuously (STT only — no Brain, no TTS)
-and appends every utterance to a timestamped log file, synced per line so a
-crash never loses what was already heard. Interactive runs prompt once for a
-description; `--description`, `--no-tui`, or a non-TTY stdin/stdout skip the
-prompt so cron jobs and hotkey launchers can never hang on it. Stop with
-Ctrl+C or by saying "stop recording" / "end meeting" / "stop listening"
-(exact phrase; `--stop-phrase` adds more).
+and dual-writes a human `.log` plus a structured `.jsonl` event stream
+(utterances, typed notes, important bookmarks), each synced so a crash never
+loses what was already captured.
+
+From the main `samantha` launcher choose **Record meeting**, or run
+`samantha meeting record` on a TTY (not `--json` / `--no-tui`) for the
+full-screen recorder:
+
+| Control | Action |
+|---------|--------|
+| Type + **Enter** | Save a note at the current timestamp |
+| **Ctrl+B** | Mark this moment ★ important (optional caption from the note field) |
+| **Ctrl+C** / **Ctrl+Q** | Stop recording |
+| Spoken stop phrase | "stop recording" / "end meeting" / "stop listening" (exact utterance; not written to the log) |
+
+Spoken stop phrases end the session like Ctrl+C and are **not** appended to the
+`.log` / `.jsonl` transcript. The meetings directory is created mode `0700` and
+log files mode `0600` (owner-only).
+
+JSONL events include `offset_ms` from meeting start for alignment:
+
+```json
+{"type":"utterance","ts":"...","offset_ms":12340,"text":"next agenda item"}
+{"type":"note","ts":"...","offset_ms":15000,"text":"follow up with finance"}
+{"type":"bookmark","ts":"...","offset_ms":18200,"label":"important","text":"budget decision"}
+```
 
 ```bash
 samantha meeting record
 samantha meeting record --description "Weekly planning sync"
 samantha meeting record --description "Standup" --out-dir ~/notes/meetings --json
+samantha meeting record --description "CI log" --no-tui
 ```
 
-Logs default to `~/.obey/agents/voice/samantha/meetings/<slug>-<timestamp>.log`.
-`--json` additionally emits one JSON line per utterance plus a final summary
-object on stdout for live scripting; the plain-text file is always written.
+Files default to `~/.obey/agents/voice/samantha/meetings/<slug>-<timestamp>.{log,jsonl}`.
+`--json` also emits one JSON line per utterance plus a final summary on stdout.
 
 ## Configuration
 

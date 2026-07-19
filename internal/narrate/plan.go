@@ -64,6 +64,7 @@ type ExtractOptions struct {
 type Section struct {
 	ID               string       `yaml:"id"`
 	Title            string       `yaml:"title,omitempty"`
+	SourceRef        string       `yaml:"source_ref,omitempty"`
 	SourceRange      *SourceRange `yaml:"source_range,omitempty"`
 	ExtractedPath    string       `yaml:"extracted_path"`
 	ExtractedSHA256  string       `yaml:"extracted_sha256,omitempty"`
