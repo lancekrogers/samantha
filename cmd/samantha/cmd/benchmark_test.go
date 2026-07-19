@@ -6,12 +6,21 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/lancekrogers/samantha/internal/events"
 )
+
+// ansiCSI matches lipgloss/termenv SGR sequences so assertions can treat
+// colored CLI output as plain text. CI often enables color (COLORTERM /
+// FORCE_COLOR) even when stdout is a pipe, which splits "label: value"
+// across reset codes and breaks contiguous substring checks.
+var ansiCSI = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func stripANSI(s string) string { return ansiCSI.ReplaceAllString(s, "") }
 
 func captureStdout(t *testing.T, f func()) string {
 	t.Helper()
@@ -29,7 +38,7 @@ func captureStdout(t *testing.T, f func()) string {
 	if _, err := io.Copy(&buf, r); err != nil {
 		t.Fatalf("read captured stdout: %v", err)
 	}
-	return buf.String()
+	return stripANSI(buf.String())
 }
 
 func TestBenchmarkExitErr(t *testing.T) {
