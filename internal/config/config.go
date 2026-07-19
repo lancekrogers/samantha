@@ -16,10 +16,13 @@ import (
 // Config holds all application configuration.
 type Config struct {
 	// TTS
-	TTSProvider  string  `mapstructure:"tts_provider"`
-	TTSVoice     string  `mapstructure:"tts_voice"`
-	SpeechSpeed  float64 `mapstructure:"speech_speed"`
-	OutputDevice string  `mapstructure:"output_device"`
+	TTSProvider    string  `mapstructure:"tts_provider"`
+	TTSVoice       string  `mapstructure:"tts_voice"`
+	SpeechSpeed    float64 `mapstructure:"speech_speed"`
+	QwenTTSBinary  string  `mapstructure:"qwen_tts_binary"`
+	QwenTTSModel   string  `mapstructure:"qwen_tts_model"`
+	QwenTTSTimeout int     `mapstructure:"qwen_tts_timeout"`
+	OutputDevice   string  `mapstructure:"output_device"`
 
 	// STT
 	STTProvider          string `mapstructure:"stt_provider"`
@@ -65,11 +68,11 @@ type Config struct {
 
 	// Calibre (optional library catalog/resolver for audiobook input).
 	// Off by default so non-users are unaffected.
-	CalibreEnabled        bool   `mapstructure:"calibre_enabled"`
-	CalibreLibraryPath    string `mapstructure:"calibre_library_path"`
-	CalibredbBinary       string `mapstructure:"calibredb_binary"`
-	CalibreConvertBinary  string `mapstructure:"calibre_convert_binary"`
-	CalibrePreferFormat   string `mapstructure:"calibre_prefer_format"`
+	CalibreEnabled       bool   `mapstructure:"calibre_enabled"`
+	CalibreLibraryPath   string `mapstructure:"calibre_library_path"`
+	CalibredbBinary      string `mapstructure:"calibredb_binary"`
+	CalibreConvertBinary string `mapstructure:"calibre_convert_binary"`
+	CalibrePreferFormat  string `mapstructure:"calibre_prefer_format"`
 
 	// Paths
 	ModelsDir string `mapstructure:"models_dir"`
@@ -111,6 +114,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("tts_provider", "kokoro")
 	v.SetDefault("tts_voice", "af_heart")
 	v.SetDefault("speech_speed", 0.95)
+	v.SetDefault("qwen_tts_binary", "qwen3-tts-cli")
+	v.SetDefault("qwen_tts_model", "")
+	v.SetDefault("qwen_tts_timeout", 60)
 	v.SetDefault("output_device", "")
 
 	v.SetDefault("stt_provider", "sherpa")
@@ -177,6 +183,9 @@ func Load() (*Config, error) {
 	bindings := map[string]string{
 		"tts_provider":            "TTS_PROVIDER",
 		"tts_voice":               "TTS_VOICE",
+		"qwen_tts_binary":         "QWEN_TTS_BINARY",
+		"qwen_tts_model":          "QWEN_TTS_MODEL",
+		"qwen_tts_timeout":        "QWEN_TTS_TIMEOUT",
 		"output_device":           "OUTPUT_DEVICE",
 		"stt_provider":            "STT_PROVIDER",
 		"input_device":            "INPUT_DEVICE",

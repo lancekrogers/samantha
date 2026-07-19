@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -52,6 +53,46 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 			Severity: SeverityOK,
 			Detail:   "kokoro (" + KokoroPack() + ")",
 		})
+	} else if strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), "qwen3-tts") {
+		diags = append(diags, Diagnostic{
+			Name:     "tts-provider",
+			Severity: SeverityOK,
+			Detail:   "qwen3-tts (external native worker)",
+		})
+
+		binary := strings.TrimSpace(cfg.QwenTTSBinary)
+		if binary == "" {
+			binary = "qwen3-tts-cli"
+		}
+		if _, err := lookPath(binary); err != nil {
+			diags = append(diags, Diagnostic{
+				Name:        "qwen3-tts-binary",
+				Severity:    SeverityError,
+				Detail:      fmt.Sprintf("native Qwen3-TTS worker %q not found in PATH", binary),
+				Remediation: "install qwen3-tts.cpp's qwen3-tts-cli and set qwen_tts_binary if needed",
+			})
+		} else {
+			diags = append(diags, Diagnostic{Name: "qwen3-tts-binary", Severity: SeverityOK, Detail: binary})
+		}
+
+		model := strings.TrimSpace(cfg.QwenTTSModel)
+		if model == "" {
+			diags = append(diags, Diagnostic{
+				Name:        "qwen3-tts-model",
+				Severity:    SeverityError,
+				Detail:      "qwen_tts_model is not configured",
+				Remediation: "set qwen_tts_model to the native Qwen3-TTS model directory",
+			})
+		} else if info, err := os.Stat(model); err != nil || !info.IsDir() {
+			diags = append(diags, Diagnostic{
+				Name:        "qwen3-tts-model",
+				Severity:    SeverityError,
+				Detail:      fmt.Sprintf("Qwen3-TTS model directory %q is unavailable", model),
+				Remediation: "install/convert the Qwen3-TTS native model artifacts and set qwen_tts_model",
+			})
+		} else {
+			diags = append(diags, Diagnostic{Name: "qwen3-tts-model", Severity: SeverityOK, Detail: model})
+		}
 	} else {
 		diags = append(diags, Diagnostic{
 			Name:        "tts-provider",

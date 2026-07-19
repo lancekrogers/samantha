@@ -11,6 +11,7 @@ It captures speech, transcribes it locally, streams the prompt through an AI cod
 - Local speech-to-text with sherpa-onnx Whisper by default.
 - Optional streaming STT through sherpa-onnx Zipformer and utterance-final STT through whisper.cpp.
 - Local text-to-speech with Kokoro through sherpa-onnx.
+- Optional native Qwen3-TTS through an externally installed CLI/worker (Kokoro remains the default).
 - Claude CLI and Ollama brain providers.
 - Voice activity detection with Silero.
 - Streaming playback, barge-in handling, and session resume.
@@ -31,7 +32,7 @@ Implemented providers:
 |-------|-----------|
 | Brain | `claude`, `ollama` |
 | STT | `sherpa`, `sherpa-streaming`, `sherpa-offline`, `whispercpp` |
-| TTS | `kokoro` |
+| TTS | `kokoro`, optional `qwen3-tts` |
 | VAD | Silero through sherpa-onnx |
 | Audio | miniaudio through malgo |
 
@@ -290,6 +291,9 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `tts_provider` | `kokoro` | `TTS_PROVIDER` | TTS backend |
 | `tts_voice` | `af_heart` | `TTS_VOICE` | Kokoro voice name |
 | `speech_speed` | `0.95` | | Playback speed |
+| `qwen_tts_binary` | `qwen3-tts-cli` | `QWEN_TTS_BINARY` | Optional native Qwen3-TTS CLI/worker |
+| `qwen_tts_model` | empty | `QWEN_TTS_MODEL` | Qwen model directory; required when `tts_provider=qwen3-tts` |
+| `qwen_tts_timeout` | `60` | `QWEN_TTS_TIMEOUT` | Per-request native worker timeout in seconds |
 | `output_device` | empty | `OUTPUT_DEVICE` | Playback device name; empty follows the system default |
 | `stt_provider` | `sherpa` | `STT_PROVIDER` | STT backend: `sherpa`, `sherpa-streaming`, `sherpa-offline`, or `whispercpp` |
 | `input_device` | empty | `INPUT_DEVICE` | Capture device name; empty follows the system default |

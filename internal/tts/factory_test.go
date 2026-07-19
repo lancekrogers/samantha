@@ -28,3 +28,22 @@ func TestStaticVoicesForKokoro(t *testing.T) {
 		t.Fatal("StaticVoices() returned no voices, want at least one")
 	}
 }
+
+func TestProvidersIncludesOptionalQwen(t *testing.T) {
+	for _, spec := range Providers() {
+		if spec.Name == "qwen3-tts" {
+			return
+		}
+	}
+	t.Fatalf("Providers() = %+v, missing qwen3-tts", Providers())
+}
+
+func TestStaticVoicesForQwenIsDynamic(t *testing.T) {
+	voices, err := StaticVoices("qwen3-tts", "", "")
+	if err != nil {
+		t.Fatalf("StaticVoices() error = %v", err)
+	}
+	if len(voices) != 0 {
+		t.Fatalf("StaticVoices() = %+v, want no static voices", voices)
+	}
+}
