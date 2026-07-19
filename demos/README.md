@@ -22,3 +22,18 @@ The recipe builds `./bin/samantha`, runs `vhs demos/tool-calls.tape` against a
 disposable `$HOME`, then applies the termcast-style 20fps/960px palette pass.
 
 Still frames: `demos/frames/launcher.png`, `demos/frames/chat-tools.png`
+
+## voice-meter.gif — listening / hearing / speaking animation
+
+Full Bubble Tea conversation UI with the festival-style voice meter:
+
+1. **Listening** — ambient breath while waiting  
+2. **Hearing** — level-reactive waveform driven by mic energy  
+3. **Speaking** — outward speech art while TTS plays  
+
+`SAMANTHA_DEMO_VOICE_ANIM=1` scripts the same bus events production turns use
+(so the GIF does not depend on a live mic). The binary and PTY are still real.
+
+```bash
+just demo-voice-meter
+```

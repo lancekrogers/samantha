@@ -39,19 +39,33 @@ demo: build
     #!/usr/bin/env bash
     set -euo pipefail
     vhs demos/tool-calls.tape
+    just _optimize-demo-gif demos/tool-calls.gif
+
+# Voice meter animation demo (listening / hearing / speaking).
+demo-voice-meter: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    vhs demos/voice-meter.tape
+    just _optimize-demo-gif demos/voice-meter.gif
+
+[private]
+_optimize-demo-gif path:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    gif="{{path}}"
     palette="$(mktemp /tmp/samantha-demo-palette.XXXXXX.png)"
     optimized="$(mktemp /tmp/samantha-demo-output.XXXXXX.gif)"
     trap 'rm -f "$palette" "$optimized"' EXIT
-    ffmpeg -y -loglevel error -i demos/tool-calls.gif \
+    ffmpeg -y -loglevel error -i "$gif" \
         -vf "fps=20,scale=960:-1:flags=lanczos,palettegen=max_colors=128:stats_mode=diff" \
         "$palette"
-    ffmpeg -y -loglevel error -i demos/tool-calls.gif -i "$palette" \
+    ffmpeg -y -loglevel error -i "$gif" -i "$palette" \
         -lavfi "fps=20,scale=960:-1:flags=lanczos,paletteuse=dither=none:diff_mode=rectangle" \
         "$optimized"
-    mv "$optimized" demos/tool-calls.gif
+    mv "$optimized" "$gif"
     trap - EXIT
     rm -f "$palette"
-    ls -lh demos/tool-calls.gif
+    ls -lh "$gif"
 
 # Build, sign, install to $GOBIN
 install: build

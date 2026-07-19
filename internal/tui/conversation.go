@@ -139,11 +139,18 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 		if m.inputLevel < 0.02 {
 			m.inputLevel = 0
 		}
+		m.outputLevel *= 0.88
+		if m.outputLevel < 0.02 {
+			m.outputLevel = 0
+		}
 		if !m.shouldAnimateVoice() {
 			m.voiceTicking = false
 			return m, nil
 		}
 		return m, voiceTickCmd()
+
+	case demoVoiceAnimStartedMsg:
+		return m, m.ensureVoiceTick()
 
 	case busEventMsg:
 		m.handleEvent(msg.event)

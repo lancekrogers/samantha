@@ -96,6 +96,11 @@ func (m *conversationModel) startConversation(deps conversationDeps) tea.Cmd {
 	if deps.output {
 		m.appendActivity("output", deviceLabel(deps.outputDevice), 0)
 	}
+	// Scripted meter for VHS/termcast demos — skips real mic/TTS turns.
+	if demoVoiceAnimEnabled() {
+		cmds = append(cmds, startDemoVoiceAnim(deps.bus), m.ensureVoiceTick())
+		return tea.Batch(cmds...)
+	}
 	if m.voiceOn() {
 		cmds = append(cmds, m.dispatchVoiceTurn())
 	}
