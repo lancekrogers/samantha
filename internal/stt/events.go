@@ -11,6 +11,7 @@ const (
 	KindFinalTranscript   EventKind = "final_transcript"
 	KindTimeout           EventKind = "timeout"
 	KindFailure           EventKind = "failure"
+	KindInputLevel        EventKind = "input_level"
 )
 
 // TypedEvent is a serializable, uniform envelope for STT events. It carries
@@ -24,6 +25,7 @@ type TypedEvent struct {
 	ErrText    string
 	Confidence float64
 	Elapsed    time.Duration
+	Level      float64 // KindInputLevel only (0..1)
 }
 
 // ToTyped converts any STT event into its TypedEvent envelope.
@@ -43,6 +45,8 @@ func ToTyped(ev Event) TypedEvent {
 			te.ErrText = e.Err.Error()
 		}
 		return te
+	case InputLevel:
+		return TypedEvent{Kind: KindInputLevel, Level: e.Level}
 	case nil:
 		return TypedEvent{}
 	default:

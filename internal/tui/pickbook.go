@@ -32,20 +32,20 @@ type bookPickedMsg struct {
 }
 
 type pickBookModel struct {
-	cfg      *config.Config
-	client   calibre.Client
-	width    int
-	height   int
-	query    string
-	editing  bool
-	editBuf  string
-	focus    int // pickFocusQuery or pickFocusList
-	books    []calibre.Book
-	cursor   int
-	offset   int
+	cfg       *config.Config
+	client    calibre.Client
+	width     int
+	height    int
+	query     string
+	editing   bool
+	editBuf   string
+	focus     int // pickFocusQuery or pickFocusList
+	books     []calibre.Book
+	cursor    int
+	offset    int
 	searching bool
-	errText  string
-	message  string
+	errText   string
+	message   string
 }
 
 func newPickBook(cfg *config.Config) pickBookModel {

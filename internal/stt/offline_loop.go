@@ -56,6 +56,7 @@ func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Eve
 	}
 
 	track := newSpeechTracker()
+	var levels levelEmitter
 
 	// finalize collects buffered segments and transcribes them. It returns true
 	// when the session is resolved (final transcript, timeout, or failure). When
@@ -110,6 +111,7 @@ func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Eve
 		}
 
 		if read.ready && len(read.frame.Samples) > 0 {
+			levels.maybeEmit(events, read.frame.Samples)
 			deps.seg.AcceptWaveform(read.frame.Samples)
 			if track.observe(deps.seg.IsSpeech(), frameDur(read.frame)) {
 				if !emitPhase("hearing") {

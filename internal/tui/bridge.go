@@ -43,6 +43,8 @@ func (b *eventBridge) attach(bus *events.Bus) {
 	forward[events.STTPhase](b, bus)
 	forward[events.UserInput](b, bus)
 	forward[events.TranscriptPartial](b, bus)
+	// AudioLevel is high-rate and droppable; never durable (fitBridgeQueue).
+	forward[events.AudioLevel](b, bus)
 	forward[events.ThinkingStarted](b, bus)
 	forward[events.ResponseStreamingStarted](b, bus)
 	// ResponseDelta streams assistant text token-by-token. It is non-durable:

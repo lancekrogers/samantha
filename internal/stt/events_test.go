@@ -44,6 +44,11 @@ func TestToTyped(t *testing.T) {
 			TypedEvent{Kind: KindFailure},
 		},
 		{
+			"input level",
+			InputLevel{Level: 0.42},
+			TypedEvent{Kind: KindInputLevel, Level: 0.42},
+		},
+		{
 			"nil event",
 			nil,
 			TypedEvent{},

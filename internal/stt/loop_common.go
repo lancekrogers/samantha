@@ -3,11 +3,19 @@ package stt
 import (
 	"context"
 	"errors"
+	"math"
 	"time"
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/endpoint"
 )
+
+// levelEmitMinInterval caps UI meter events so high-rate capture never floods
+// the session channel or the TUI bridge.
+const levelEmitMinInterval = 50 * time.Millisecond
+
+// speechRMSScale maps typical close-mic speech RMS (~0.02–0.15) into 0..1.
+const speechRMSScale = 0.12
 
 // sendEvent delivers an event, preferring a non-blocking send and falling back
 // to a cancellable blocking send when the channel is full.
@@ -23,6 +31,58 @@ func sendEvent(ctx context.Context, events chan<- Event, event Event) bool {
 	case events <- event:
 		return true
 	}
+}
+
+// trySendEvent never blocks. Used for droppable meter samples.
+func trySendEvent(events chan<- Event, event Event) {
+	select {
+	case events <- event:
+	default:
+	}
+}
+
+// frameRMS returns the root-mean-square amplitude of mono samples.
+func frameRMS(samples []float32) float64 {
+	if len(samples) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, s := range samples {
+		v := float64(s)
+		sum += v * v
+	}
+	return math.Sqrt(sum / float64(len(samples)))
+}
+
+// normalizeInputLevel maps raw RMS into a 0..1 UI meter reading.
+func normalizeInputLevel(rms float64) float64 {
+	if rms <= 0 {
+		return 0
+	}
+	level := rms / speechRMSScale
+	if level > 1 {
+		return 1
+	}
+	return level
+}
+
+// levelEmitter throttles InputLevel samples so the TUI can animate without
+// back-pressuring capture.
+type levelEmitter struct {
+	last time.Time
+}
+
+// maybeEmit sends a non-blocking InputLevel when the throttle window has elapsed.
+func (e *levelEmitter) maybeEmit(events chan<- Event, samples []float32) {
+	if len(samples) == 0 {
+		return
+	}
+	now := time.Now()
+	if !e.last.IsZero() && now.Sub(e.last) < levelEmitMinInterval {
+		return
+	}
+	e.last = now
+	trySendEvent(events, InputLevel{Level: normalizeInputLevel(frameRMS(samples))})
 }
 
 // newPhaseEmitter returns a phase-event emitter that stamps the elapsed time

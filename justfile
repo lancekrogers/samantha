@@ -39,19 +39,40 @@ demo: build
     #!/usr/bin/env bash
     set -euo pipefail
     vhs demos/tool-calls.tape
+    just _optimize-demo-gif demos/tool-calls.gif
+
+# Voice meter animation demo (listening / hearing / speaking).
+# Matches festival/termcast tapes: shell-exported color env, raw VHS GIF.
+# Important: clear NO_COLOR from the parent env — agent/CI shells often set it
+# and lipgloss then emits monochrome frames.
+demo-voice-meter: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    env -u NO_COLOR -u CLICOLOR \
+        CLICOLOR_FORCE=1 FORCE_COLOR=1 \
+        TERM=xterm-256color COLORTERM=truecolor \
+        vhs demos/voice-meter.tape
+    ls -lh demos/voice-meter.gif
+
+[private]
+_optimize-demo-gif path:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    gif="{{path}}"
     palette="$(mktemp /tmp/samantha-demo-palette.XXXXXX.png)"
     optimized="$(mktemp /tmp/samantha-demo-output.XXXXXX.gif)"
     trap 'rm -f "$palette" "$optimized"' EXIT
-    ffmpeg -y -loglevel error -i demos/tool-calls.gif \
-        -vf "fps=20,scale=960:-1:flags=lanczos,palettegen=max_colors=128:stats_mode=diff" \
+    # Optional compact pass for README weight — prefer full palette.
+    ffmpeg -y -loglevel error -i "$gif" \
+        -vf "fps=20,scale=1000:-1:flags=lanczos,palettegen=max_colors=256:stats_mode=full" \
         "$palette"
-    ffmpeg -y -loglevel error -i demos/tool-calls.gif -i "$palette" \
-        -lavfi "fps=20,scale=960:-1:flags=lanczos,paletteuse=dither=none:diff_mode=rectangle" \
+    ffmpeg -y -loglevel error -i "$gif" -i "$palette" \
+        -lavfi "fps=20,scale=1000:-1:flags=lanczos,paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle" \
         "$optimized"
-    mv "$optimized" demos/tool-calls.gif
+    mv "$optimized" "$gif"
     trap - EXIT
     rm -f "$palette"
-    ls -lh demos/tool-calls.gif
+    ls -lh "$gif"
 
 # Build, sign, install to $GOBIN
 install: build

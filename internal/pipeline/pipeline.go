@@ -364,6 +364,13 @@ func (p *Pipeline) transcribeTurn(ctx context.Context, metrics *turnMetrics, tur
 				return "", nil
 			}
 
+			// InputLevel is droppable UI meter data; handle before the typed
+			// switch so high-rate samples never participate in turn control.
+			if lvl, ok := event.(stt.InputLevel); ok {
+				p.emit(events.AudioLevel{Source: "input", Level: lvl.Level})
+				continue
+			}
+
 			te := stt.ToTyped(event)
 			switch te.Kind {
 			case stt.KindPhase:
@@ -390,6 +397,8 @@ func (p *Pipeline) transcribeTurn(ctx context.Context, metrics *turnMetrics, tur
 					return "", ctx.Err()
 				}
 				return "", fmt.Errorf("STT: %w", fail.Err)
+			case stt.KindInputLevel:
+				p.emit(events.AudioLevel{Source: "input", Level: te.Level})
 			}
 		}
 	}

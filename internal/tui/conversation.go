@@ -15,9 +15,20 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/tui/anim"
 )
 
 const conversationInputHeight = 3
+
+// voiceTickInterval drives the conversation meter animation (~10 fps).
+const voiceTickInterval = 100 * time.Millisecond
+
+// voicePanelRows is the vertical space reserved for the compact voice EQ strip
+// under the header (not a tall art panel).
+const voicePanelRows = 5
+
+// voiceTickMsg advances ambient voice animations.
+type voiceTickMsg time.Time
 
 // conversationModel renders the live conversation screen: a scrollable
 // transcript viewport, a persistent status indicator, and an always-focused
@@ -71,6 +82,14 @@ type conversationModel struct {
 	commandSelection int
 	editor           editorBuffer
 	vim              vimState
+
+	// Voice meter animation (festival-style multi-frame art + level bar).
+	voiceMode     anim.Mode
+	voiceFrame    int
+	inputLevel    float64 // smoothed mic energy 0..1
+	outputLevel   float64 // reserved; speaking uses synthetic envelope for now
+	reducedMotion bool
+	voiceTicking  bool
 }
 
 func newConversation(agentName string) conversationModel {
@@ -92,7 +111,12 @@ func newConversation(agentName string) conversationModel {
 		input:          input,
 		canCancelVoice: &atomic.Bool{},
 		startedAt:      time.Now(),
+		reducedMotion:  anim.ReducedMotion(),
 	}
+}
+
+func voiceTickCmd() tea.Cmd {
+	return tea.Tick(voiceTickInterval, func(t time.Time) tea.Msg { return voiceTickMsg(t) })
 }
 
 type activityEntry struct {
@@ -106,20 +130,40 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.setSize(msg.Width, msg.Height)
-		return m, nil
+		return m, m.ensureVoiceTick()
+
+	case voiceTickMsg:
+		m.voiceFrame++
+		// Decay mic energy so the meter settles when speech pauses.
+		m.inputLevel *= 0.82
+		if m.inputLevel < 0.02 {
+			m.inputLevel = 0
+		}
+		m.outputLevel *= 0.88
+		if m.outputLevel < 0.02 {
+			m.outputLevel = 0
+		}
+		if !m.shouldAnimateVoice() {
+			m.voiceTicking = false
+			return m, nil
+		}
+		return m, voiceTickCmd()
+
+	case demoVoiceAnimStartedMsg:
+		return m, m.ensureVoiceTick()
 
 	case busEventMsg:
 		m.handleEvent(msg.event)
-		return m, m.rearm()
+		return m, tea.Batch(m.rearm(), m.ensureVoiceTick())
 
 	case voiceTurnDoneMsg:
-		return m, m.handleVoiceTurnDone(msg)
+		return m, tea.Batch(m.handleVoiceTurnDone(msg), m.ensureVoiceTick())
 
 	case textTurnDoneMsg:
-		return m, m.handleTextTurnDone(msg)
+		return m, tea.Batch(m.handleTextTurnDone(msg), m.ensureVoiceTick())
 
 	case voiceRetryMsg:
-		return m, m.handleVoiceRetry()
+		return m, tea.Batch(m.handleVoiceRetry(), m.ensureVoiceTick())
 
 	case clipboardPasteMsg:
 		if msg.err != nil {
@@ -237,9 +281,14 @@ func (m *conversationModel) reflow() {
 		inputHeight = 1
 	}
 	// Header + rule + label + input border + footer consume six rows in
-	// addition to the textarea's own height. Command matches consume only the
-	// rows currently available above the composer.
-	vpHeight := max(m.height-inputHeight-6-m.commandPaletteRows(), 1)
+	// addition to the textarea's own height. An active voice panel adds a few
+	// more. Command matches consume only the rows currently available above
+	// the composer.
+	chrome := 6
+	if m.voiceMode != anim.ModeIdle && m.height >= 14 {
+		chrome += voicePanelRows
+	}
+	vpHeight := max(m.height-inputHeight-chrome-m.commandPaletteRows(), 1)
 	if !m.ready {
 		m.viewport = viewport.New(max(m.width, 1), vpHeight)
 		m.activityViewport = viewport.New(max(m.width, 1), vpHeight)
@@ -292,6 +341,85 @@ func (m *conversationModel) clearTranscript() {
 func (m *conversationModel) setStatus(text string, isErr bool) {
 	m.status = text
 	m.statusErr = isErr
+}
+
+// setVoiceMode updates the animated meter state and reflows when the panel
+// appears or disappears so the viewport height stays correct.
+func (m *conversationModel) setVoiceMode(mode anim.Mode) {
+	prev := m.voiceMode
+	m.voiceMode = mode
+	if mode == anim.ModeIdle {
+		m.inputLevel = 0
+	}
+	if (prev == anim.ModeIdle) != (mode == anim.ModeIdle) && m.ready {
+		m.reflow()
+	}
+}
+
+func (m *conversationModel) shouldAnimateVoice() bool {
+	if m.reducedMotion {
+		return false
+	}
+	return m.voiceMode != anim.ModeIdle
+}
+
+// ensureVoiceTick starts the animation loop once while a voice mode is active.
+func (m *conversationModel) ensureVoiceTick() tea.Cmd {
+	if !m.shouldAnimateVoice() || m.voiceTicking {
+		return nil
+	}
+	m.voiceTicking = true
+	return voiceTickCmd()
+}
+
+func (m conversationModel) animStyles() anim.Styles {
+	// Prefer bright ANSI indices so VHS/termcast themes paint vivid cyan /
+	// amber / magenta even when truecolor is flattened by the recorder.
+	return anim.Styles{
+		Tip:     lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true), // bright cyan
+		Mid:     lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true), // bright blue
+		Core:    lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+		Muted:   dimStyle,
+		Label:   lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true),
+		Error:   errorStyle,
+		Accent:  lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true),
+		Hearing: lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true), // bright yellow
+		Speak:   lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true), // bright magenta
+		Think:   lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true),
+		Border:  lipgloss.NewStyle().Foreground(lipgloss.Color("14")),
+		Badge:   chipStyle,
+	}
+}
+
+func (m conversationModel) voiceLevel() float64 {
+	switch m.voiceMode {
+	case anim.ModeHearing, anim.ModeListening, anim.ModeTranscribing:
+		return m.inputLevel
+	case anim.ModeSpeaking, anim.ModeSynthesizing:
+		if m.outputLevel > 0 {
+			return m.outputLevel
+		}
+		return 0
+	default:
+		return 0
+	}
+}
+
+func (m conversationModel) inputBorderColor() lipgloss.Color {
+	switch m.voiceMode {
+	case anim.ModeHearing:
+		return colorHearing
+	case anim.ModeListening:
+		return colorAccent
+	case anim.ModeSpeaking, anim.ModeSynthesizing:
+		return colorSpeak
+	case anim.ModeError:
+		return colorError
+	case anim.ModeThinking, anim.ModeTranscribing:
+		return colorStatus
+	default:
+		return colorAccent
+	}
 }
 
 func (m *conversationModel) refreshContent() {
@@ -392,19 +520,54 @@ func (m *conversationModel) handleEvent(e events.Event) {
 	}
 
 	switch e := e.(type) {
+	case events.AudioLevel:
+		// Peak-hold + light smoothing so quiet frames don't flatten the meter.
+		level := e.Level
+		if level < 0 {
+			level = 0
+		}
+		if level > 1 {
+			level = 1
+		}
+		switch e.Source {
+		case "output":
+			if level > m.outputLevel {
+				m.outputLevel = level
+			} else {
+				m.outputLevel = m.outputLevel*0.6 + level*0.4
+			}
+		default:
+			if level > m.inputLevel {
+				m.inputLevel = level
+			} else {
+				m.inputLevel = m.inputLevel*0.55 + level*0.45
+			}
+			// Real energy while listening implies the user is speaking.
+			if m.voiceMode == anim.ModeListening && m.inputLevel > 0.12 {
+				m.setVoiceMode(anim.ModeHearing)
+				m.setStatus("Hearing you", false)
+			}
+		}
+
 	case events.STTPhase:
 		m.appendActivity("input", e.Phase, e.Elapsed)
 		switch e.Phase {
 		case "listening":
-			m.setStatus("🎙 Listening...", false)
+			m.setVoiceMode(anim.ModeListening)
+			m.setStatus("Listening", false)
 		case "hearing":
-			m.setStatus("🎙 Hearing you...", false)
+			m.setVoiceMode(anim.ModeHearing)
+			m.setStatus("Hearing you", false)
 		case "transcribing":
-			m.setStatus("● Transcribing...", false)
+			m.setVoiceMode(anim.ModeTranscribing)
+			m.setStatus("Transcribing", false)
 		}
 
 	case events.TranscriptPartial:
-		m.setStatus("🎙 "+e.Text, false)
+		if m.voiceMode != anim.ModeHearing && m.voiceMode != anim.ModeTranscribing {
+			m.setVoiceMode(anim.ModeHearing)
+		}
+		m.setStatus(e.Text, false)
 
 	case events.UserInput:
 		m.appendActivity("input", "final", 0)
@@ -419,7 +582,8 @@ func (m *conversationModel) handleEvent(e events.Event) {
 			m.refreshContent()
 		}
 		m.appendActivity("model", "started", 0)
-		m.setStatus("● "+m.agentName+" thinking...", false)
+		m.setVoiceMode(anim.ModeThinking)
+		m.setStatus(m.agentName+" thinking", false)
 
 	case events.ResponseStreamingStarted:
 		m.appendActivity("model", "first response", e.Elapsed)
@@ -435,32 +599,40 @@ func (m *conversationModel) handleEvent(e events.Event) {
 
 	case events.GeneratingVoice:
 		m.appendActivity("voice", "synthesizing", 0)
-		m.setStatus("● Synthesizing voice...", false)
+		m.setVoiceMode(anim.ModeSynthesizing)
+		m.setStatus("Synthesizing voice", false)
 
 	case events.VoiceGenerated:
 		m.appendActivity("voice", "generated", e.Elapsed)
 
 	case events.SpeakingStarted:
 		m.appendActivity("output", "playing", 0)
-		m.setStatus("● Speaking...", false)
+		m.setVoiceMode(anim.ModeSpeaking)
+		m.setStatus("Speaking", false)
 
 	case events.SpeakingComplete:
 		m.appendActivity("output", "complete", e.Elapsed)
+		m.setVoiceMode(anim.ModeIdle)
 		m.setStatus("", false)
 
 	case events.SpeakingInterrupted:
 		m.appendActivity("output", "interrupted: "+e.Reason, 0)
+		m.setVoiceMode(anim.ModeIdle)
 		m.setStatus("speech interrupted ("+e.Reason+")", false)
 
 	case events.TurnInterrupted:
 		m.appendActivity("turn", "interrupted: "+e.Reason, 0)
+		m.setVoiceMode(anim.ModeIdle)
 		m.setStatus("turn interrupted ("+e.Reason+")", false)
 
 	case events.ResponseReady:
 		m.appendActivity("turn", "response ready", 0)
 		// Text-only / no-TTS turns never emit SpeakingComplete; clear the
 		// thinking status here so it does not stick after a successful reply.
-		m.setStatus("", false)
+		if m.voiceMode != anim.ModeSpeaking && m.voiceMode != anim.ModeSynthesizing {
+			m.setVoiceMode(anim.ModeIdle)
+			m.setStatus("", false)
+		}
 		// Finalize the streamed turn: clear the live buffer first so it is not
 		// rendered twice, then append the canonical response to the transcript.
 		m.streamingAgent = ""
@@ -487,6 +659,7 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		if e.Stage != "" {
 			msg = "[" + e.Stage + "] " + e.Message
 		}
+		m.setVoiceMode(anim.ModeError)
 		m.setStatus("Error: "+msg, true)
 
 	case events.Info:
@@ -506,13 +679,15 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		msg := "tool " + e.Name + " done"
 		if e.Err != "" {
 			msg = "tool " + e.Name + " failed: " + e.Err
+			m.setVoiceMode(anim.ModeError)
 			m.setStatus("✗ "+msg, true)
 			m.appendTranscript(dimStyle.Render("  ✗ " + msg))
 		} else {
 			if e.Preview != "" {
 				msg += " → " + e.Preview
 			}
-			m.setStatus("● "+m.agentName+" thinking...", false)
+			m.setVoiceMode(anim.ModeThinking)
+			m.setStatus(m.agentName+" thinking", false)
 			m.appendTranscript(dimStyle.Render("  ✓ " + msg))
 		}
 		m.appendActivity("tool", msg, 0)
@@ -543,51 +718,81 @@ func formatSeconds(d time.Duration) string {
 // renderUserTurn and renderAgentTurn are the single rendering path for both
 // live events and replayed session history, so the two cannot drift apart.
 func renderUserTurn(text string) string {
-	return "  " + userStyle.Render("› You") + "\n  " + text
+	body := userStyle.Render("› You") + "\n" + normalStyle.Render(text)
+	return userBubbleStyle.Render(body)
 }
 
 func renderAgentTurn(name, text string) string {
-	return "  " + samanthaStyle.Render("● "+name) + "\n  " + text
+	body := samanthaStyle.Render("● "+name) + "\n" + normalStyle.Render(text)
+	return agentBubbleStyle.Render(body)
 }
 
 func (m conversationModel) View() string {
 	if !m.ready {
-		return "\n  Preparing conversation...\n"
+		return "\n  " + headerStyle.Render("Preparing conversation…") + "\n"
 	}
 
-	status := m.status
-	style := statusStyle
-	if m.statusErr {
-		style = errorStyle
-	}
+	styles := m.animStyles()
+	w := max(m.width, 1)
 
-	header := "  " + headerStyle.Render(m.agentName) + "  " + m.renderTabs()
+	// Clean header: name, tabs, compact EQ chip.
+	left := headerStyle.Render(m.agentName) + "  " + m.renderTabs()
 	if m.sessionID != "" {
-		header += "  " + dimStyle.Render("session "+shortSessionID(m.sessionID))
+		left += "  " + dimStyle.Render(shortSessionID(m.sessionID))
 	}
-	if status != "" {
-		header += "  " + style.Render(status)
+	right := ""
+	if m.voiceMode != anim.ModeIdle {
+		right = anim.CompactMeter(m.voiceMode, m.voiceFrame, m.voiceLevel(), m.status, styles, m.reducedMotion)
+	} else if m.status != "" {
+		style := statusStyle
+		if m.statusErr {
+			style = errorStyle
+		}
+		right = style.Render(m.status)
 	}
-	header = ansi.Truncate(header, max(m.width, 1), "…")
+	headerInner := left
+	if right != "" {
+		pad := w - lipgloss.Width(left) - lipgloss.Width(right) - 2
+		if pad < 1 {
+			pad = 1
+		}
+		headerInner = left + strings.Repeat(" ", pad) + right
+	}
+	header := ansi.Truncate(headerInner, w, "…")
 
-	rule := dimStyle.Render(strings.Repeat("─", max(m.width, 1)))
-	// Capture stays armed while voice input is paused; wording must not claim
-	// the OS microphone was released.
-	micState := "voice input off"
-	if m.voiceOn() {
-		micState = "voice input on"
-	}
-	outputState := "audio unavailable"
-	if m.outputAvailable {
-		outputState = "audio on"
-		if m.outputMuted {
-			outputState = "audio off"
+	rule := lipgloss.NewStyle().Foreground(m.inputBorderColor()).Render(strings.Repeat("─", w))
+
+	voiceStrip := ""
+	if m.voiceMode != anim.ModeIdle && m.height >= 14 {
+		voiceStrip = anim.Stage(m.voiceMode, m.voiceFrame, m.voiceLevel(), w, m.status, styles, m.reducedMotion)
+		if voiceStrip != "" {
+			voiceStrip += "\n"
 		}
 	}
-	footerLeft := "  " + micState + "  •  " + outputState
+
+	// Capture stays armed while voice input is paused; wording must not claim
+	// the OS microphone was released.
+	micChip := chipMutedStyle.Render("mic off")
+	if m.voiceOn() {
+		micChip = chipStyle.Render("mic on")
+		if m.voiceMode == anim.ModeHearing {
+			micChip = lipgloss.NewStyle().Foreground(colorBg).Background(colorHearing).Bold(true).Padding(0, 1).Render("recording")
+		}
+	}
+	outChip := chipMutedStyle.Render("audio n/a")
+	if m.outputAvailable {
+		if m.outputMuted {
+			outChip = chipMutedStyle.Render("audio off")
+		} else if m.voiceMode == anim.ModeSpeaking {
+			outChip = lipgloss.NewStyle().Foreground(colorBg).Background(colorSpeak).Bold(true).Padding(0, 1).Render("speaking")
+		} else {
+			outChip = lipgloss.NewStyle().Foreground(colorBg).Background(colorAgent).Bold(true).Padding(0, 1).Render("audio on")
+		}
+	}
+	footerLeft := "  " + micChip + " " + outChip
 	activeViewport := m.activeViewport()
 	if activeViewport.TotalLineCount() > activeViewport.VisibleLineCount() {
-		footerLeft += fmt.Sprintf("  •  %d%%", int(activeViewport.ScrollPercent()*100))
+		footerLeft += " " + chipMutedStyle.Render(fmt.Sprintf("%d%%", int(activeViewport.ScrollPercent()*100)))
 	}
 	footerHelp := m.vimFooterHelp()
 	footerText := footerLeft
@@ -601,30 +806,38 @@ func (m conversationModel) View() string {
 			footerText += strings.Repeat(" ", m.width-lipgloss.Width(compactHelp)-lipgloss.Width(footerLeft)) + footerLeft
 		}
 	case m.width >= lipgloss.Width(footerLeft)+lipgloss.Width(footerHelp)+4:
-		footerText += strings.Repeat(" ", m.width-lipgloss.Width(footerLeft)-lipgloss.Width(footerHelp)) + footerHelp
+		footerText += strings.Repeat(" ", m.width-lipgloss.Width(footerLeft)-lipgloss.Width(footerHelp)) + dimStyle.Render(footerHelp)
 	case m.width >= 60:
-		footerText += "  •  ^G mic  ^O audio  ^T switch"
+		footerText += dimStyle.Render("  ·  ^G mic  ^O audio  ^T switch")
 	default:
-		footerText += "  ^G  ^O  ^T"
+		footerText += dimStyle.Render("  ^G  ^O  ^T")
 	}
-	footer := dimStyle.Render(ansi.Truncate(footerText, max(m.width, 1), "…"))
+	footer := ansi.Truncate(footerText, w, "…")
 
 	content := m.viewport.View()
 	if m.activityFocused {
 		content = m.activityViewport.View()
 	}
 
-	inputLabel := "Your message:"
-	switch m.turnState {
-	case turnVoiceListening:
-		inputLabel = "🎙 Listening — type to interrupt:"
-	case turnVoiceResponding, turnVoiceCanceling, turnTextRunning:
-		inputLabel = "⏳ Samantha is responding — keep drafting:"
+	inputLabel := "Your message"
+	switch {
+	case m.voiceMode == anim.ModeHearing:
+		inputLabel = hearingStyle.Render("● Hearing you — type to interrupt")
+	case m.voiceMode == anim.ModeListening:
+		inputLabel = headerStyle.Render("◎ Listening — type anytime")
+	case m.voiceMode == anim.ModeSpeaking || m.voiceMode == anim.ModeSynthesizing:
+		inputLabel = speakStyle.Render("◉ Speaking — type to barge in")
+	case m.turnState == turnVoiceListening:
+		inputLabel = headerStyle.Render("🎙 Listening — type to interrupt")
+	case m.turnState == turnVoiceResponding || m.turnState == turnVoiceCanceling || m.turnState == turnTextRunning:
+		inputLabel = thinkStyle.Render("✦ Responding — keep drafting")
+	default:
+		inputLabel = dimStyle.Render(inputLabel)
 	}
 	inputLabel = m.vimInputLabel(inputLabel)
 	inputBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("14")).
+		BorderForeground(m.inputBorderColor()).
 		Padding(0, 1).
 		Render(m.input.View())
 
@@ -634,21 +847,24 @@ func (m conversationModel) View() string {
 	}
 
 	return header + "\n" + rule + "\n" +
+		voiceStrip +
 		content + "\n" +
-		dimStyle.Render(ansi.Truncate(inputLabel, max(m.width, 1), "…")) + "\n" +
+		ansi.Truncate(inputLabel, w, "…") + "\n" +
 		inputBox + "\n" +
 		footer
 }
 
 func (m conversationModel) renderTabs() string {
-	chat := dimStyle.Render("Chat")
-	activity := dimStyle.Render("Activity")
+	inactive := lipgloss.NewStyle().Foreground(colorDim).Padding(0, 1)
+	active := lipgloss.NewStyle().Foreground(colorBg).Background(colorSelect).Bold(true).Padding(0, 1)
+	chat := inactive.Render("Chat")
+	activity := inactive.Render("Activity")
 	if m.activityFocused {
-		activity = selectedStyle.Copy().Background(lipgloss.Color("236")).Padding(0, 1).Render("Activity")
+		activity = active.Render("Activity")
 	} else {
-		chat = selectedStyle.Copy().Background(lipgloss.Color("236")).Padding(0, 1).Render("Chat")
+		chat = active.Render("Chat")
 	}
-	return chat + "  " + activity
+	return chat + " " + activity
 }
 
 func shortSessionID(id string) string {

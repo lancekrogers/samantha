@@ -12,6 +12,7 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/app"
 	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/tui/anim"
 )
 
 // turnRunner is the slice of pipeline.Pipeline the conversation driver uses.
@@ -95,6 +96,11 @@ func (m *conversationModel) startConversation(deps conversationDeps) tea.Cmd {
 	if deps.output {
 		m.appendActivity("output", deviceLabel(deps.outputDevice), 0)
 	}
+	// Scripted meter for VHS/termcast demos — skips real mic/TTS turns.
+	if demoVoiceAnimEnabled() {
+		cmds = append(cmds, startDemoVoiceAnim(deps.bus), m.ensureVoiceTick())
+		return tea.Batch(cmds...)
+	}
 	if m.voiceOn() {
 		cmds = append(cmds, m.dispatchVoiceTurn())
 	}
@@ -132,6 +138,11 @@ func (m *conversationModel) setInputMuted(muted bool) tea.Cmd {
 			return nil
 		}
 		m.voiceEnabled = false
+		// Stop the listening/hearing meter while input is paused.
+		if m.voiceMode == anim.ModeListening || m.voiceMode == anim.ModeHearing || m.voiceMode == anim.ModeTranscribing {
+			m.setVoiceMode(anim.ModeIdle)
+			m.setStatus("", false)
+		}
 		m.emit(events.Info{Message: "Voice input paused."})
 		if m.turnState == turnVoiceListening && m.canCancelVoice != nil && m.canCancelVoice.Load() {
 			m.turnState = turnVoiceCanceling

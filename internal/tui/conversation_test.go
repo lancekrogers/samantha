@@ -116,6 +116,43 @@ func TestConversationStatus(t *testing.T) {
 	}
 }
 
+func TestVoiceMeterTracksInputLevelAndModes(t *testing.T) {
+	m := sizedConversation(t, 80, 24)
+	m.handleEvent(events.STTPhase{Phase: "listening"})
+	if m.status != "Listening" {
+		t.Fatalf("status = %q, want Listening", m.status)
+	}
+
+	m.handleEvent(events.AudioLevel{Source: "input", Level: 0.8})
+	if m.inputLevel < 0.7 {
+		t.Fatalf("inputLevel = %v, want elevated after AudioLevel", m.inputLevel)
+	}
+	// Strong mic energy while listening promotes to the hearing animation.
+	if m.status != "Hearing you" {
+		t.Fatalf("status = %q after loud input, want Hearing you", m.status)
+	}
+	if !strings.Contains(m.View(), "Hearing you") {
+		t.Fatalf("voice meter not visible in view:\n%s", m.View())
+	}
+
+	m, cmd := m.Update(voiceTickMsg(time.Now()))
+	if m.voiceFrame != 1 {
+		t.Fatalf("voiceFrame = %d after tick, want 1", m.voiceFrame)
+	}
+	if cmd == nil {
+		t.Fatal("active voice mode must keep the animation tick armed")
+	}
+
+	m.handleEvent(events.SpeakingStarted{})
+	if m.status != "Speaking" {
+		t.Fatalf("status = %q, want Speaking", m.status)
+	}
+	m.handleEvent(events.SpeakingComplete{})
+	if m.status != "" {
+		t.Fatalf("status = %q after speaking complete, want empty", m.status)
+	}
+}
+
 func TestConversationTypingGoesToInput(t *testing.T) {
 	m := sizedConversation(t, 80, 24)
 
