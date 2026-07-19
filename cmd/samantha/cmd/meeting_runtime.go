@@ -108,9 +108,14 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Meeting recording stopped.")
 		fmt.Fprintf(out, "  Description: %s\n", summary.Description)
-		fmt.Fprintf(out, "  File:        %s\n", summary.File)
+		fmt.Fprintf(out, "  Log:         %s\n", summary.File)
+		if summary.JSONLFile != "" {
+			fmt.Fprintf(out, "  JSONL:       %s\n", summary.JSONLFile)
+		}
 		fmt.Fprintf(out, "  Duration:    %s\n", summary.Duration().Round(time.Second))
 		fmt.Fprintf(out, "  Utterances:  %d\n", summary.Utterances)
+		fmt.Fprintf(out, "  Notes:       %d\n", summary.Notes)
+		fmt.Fprintf(out, "  Bookmarks:   %d\n", summary.Bookmarks)
 	}
 	return errors.Join(loopErr, closeErr, outputErr)
 }

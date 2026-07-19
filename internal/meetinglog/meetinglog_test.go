@@ -1,6 +1,7 @@
 package meetinglog
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"os"
@@ -30,13 +31,22 @@ func TestWriterLifecycle(t *testing.T) {
 	if err := w.OnUtterance(listen.Utterance{Text: "second point", At: time.Date(2026, 7, 10, 9, 31, 2, 0, time.Local)}); err != nil {
 		t.Fatal(err)
 	}
+	if err := w.AddNote("follow up with finance"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.AddBookmark("important", "budget decision"); err != nil {
+		t.Fatal(err)
+	}
 
 	sum, err := w.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sum.Utterances != 2 || sum.Errors != 1 || sum.Description != "Standup" {
+	if sum.Utterances != 2 || sum.Errors != 1 || sum.Notes != 1 || sum.Bookmarks != 1 || sum.Description != "Standup" {
 		t.Fatalf("summary = %+v", sum)
+	}
+	if sum.JSONLFile == "" || sum.File != path {
+		t.Fatalf("paths: file=%q jsonl=%q", sum.File, sum.JSONLFile)
 	}
 
 	data, err := os.ReadFile(path)
@@ -47,10 +57,13 @@ func TestWriterLifecycle(t *testing.T) {
 	for _, want := range []string{
 		"# Meeting: Standup",
 		"# STT: sherpa (offline)",
+		"# JSONL:",
 		"[09:30:12] first point",
 		"[transcription error: session hiccup]",
 		"[09:31:02] second point",
-		"2 utterances, 1 errors",
+		"📝 note: follow up with finance",
+		"★ IMPORTANT: budget decision",
+		"2 utterances, 1 notes, 1 bookmarks, 1 errors",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("log missing %q:\n%s", want, content)
@@ -59,6 +72,46 @@ func TestWriterLifecycle(t *testing.T) {
 	if strings.Contains(content, "timeout") {
 		t.Fatal("timeouts must not be written to the log")
 	}
+
+	// JSONL must contain typed events with offsets.
+	events := readJSONL(t, sum.JSONLFile)
+	kinds := map[string]int{}
+	for _, e := range events {
+		kinds[e.Type]++
+		if e.Type != TypeSessionStart && e.Type != TypeSessionEnd && e.OffsetMs < 0 {
+			t.Fatalf("negative offset on %+v", e)
+		}
+	}
+	for _, want := range []string{TypeSessionStart, TypeUtterance, TypeNote, TypeBookmark, TypeError, TypeSessionEnd} {
+		if kinds[want] == 0 {
+			t.Fatalf("jsonl missing type %s: %v", want, kinds)
+		}
+	}
+	if kinds[TypeUtterance] != 2 {
+		t.Fatalf("utterance events = %d", kinds[TypeUtterance])
+	}
+}
+
+func readJSONL(t *testing.T, path string) []Event {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var out []Event
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		var e Event
+		if err := json.Unmarshal(sc.Bytes(), &e); err != nil {
+			t.Fatalf("jsonl line: %v", err)
+		}
+		out = append(out, e)
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func TestSummaryJSONIncludesDurationSeconds(t *testing.T) {
@@ -82,6 +135,9 @@ func TestSummaryJSONIncludesDurationSeconds(t *testing.T) {
 	}
 	if got["duration_seconds"] != float64(92) {
 		t.Fatalf("duration_seconds = %v, want 92", got["duration_seconds"])
+	}
+	if got["notes"] != float64(0) || got["bookmarks"] != float64(0) {
+		t.Fatalf("notes/bookmarks missing: %v", got)
 	}
 }
 
@@ -107,7 +163,7 @@ func TestWriterReportsFailedUtteranceWithoutCountingIt(t *testing.T) {
 	}
 	// Closing the descriptor simulates a filesystem write failure while the
 	// recorder is active.
-	if err := w.f.Close(); err != nil {
+	if err := w.log.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.OnUtterance(listen.Utterance{Text: "must not be counted", At: time.Now()}); err == nil {
@@ -116,4 +172,27 @@ func TestWriterReportsFailedUtteranceWithoutCountingIt(t *testing.T) {
 	if w.utterances != 0 {
 		t.Fatalf("utterances = %d, want 0 after failed write", w.utterances)
 	}
+}
+
+func TestJSONLPathFor(t *testing.T) {
+	if got := jsonlPathFor("/tmp/a.log"); got != "/tmp/a.jsonl" {
+		t.Fatalf("got %q", got)
+	}
+	if got := jsonlPathFor("/tmp/a"); got != "/tmp/a.jsonl" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestAddNoteEmptyIsNoop(t *testing.T) {
+	w, err := Create(filepath.Join(t.TempDir(), "n.log"), "n", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.AddNote("  "); err != nil {
+		t.Fatal(err)
+	}
+	if w.notes != 0 {
+		t.Fatalf("notes = %d", w.notes)
+	}
+	_, _ = w.Close()
 }

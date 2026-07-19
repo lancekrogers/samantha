@@ -53,11 +53,19 @@ Interactive runs without --description prompt once for a meeting
 description; --description, --no-tui, or a non-TTY stdin/stdout skip the
 prompt so automation can never hang on it.
 
-On a TTY (and not --json/--no-tui), recording opens a full-screen TUI with
-the same live voice EQ as the conversation screen, a scrolling transcript,
-and elapsed time. --no-tui and --json keep the plain line-oriented sinks.
+On a TTY (and not --json/--no-tui), recording opens a full-screen TUI with:
+  - live voice EQ (listening / hearing)
+  - scrolling timeline of speech, notes, and ★ important marks
+  - note composer (Enter saves a timestamped note)
+  - Ctrl+B marks the current moment important (optional caption from the note field)
 
-Stop with q / Ctrl+C or by saying one of the stop phrases ("stop recording",
+Each session writes a human .log and a structured .jsonl event stream
+(session_start, utterance, note, bookmark, error, session_end) with offset_ms
+from the start of the meeting.
+
+--no-tui and --json keep plain line-oriented sinks (still dual-write log+jsonl).
+
+Stop with Ctrl+C / Ctrl+Q or by saying one of the stop phrases ("stop recording",
 "end meeting", "stop listening" — exact phrase, not substring; --stop-phrase
 adds more).
 
