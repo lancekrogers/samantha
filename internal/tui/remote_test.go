@@ -184,27 +184,6 @@ func TestRemoteModelSwitchNetworkKeys(t *testing.T) {
 	}
 }
 
-func TestRemoteModelLegacySelfSignedBannerStillMapsToLimited(t *testing.T) {
-	m := newRemote(context.Background(), nil)
-	m.consumeLine("Tailscale cert: unavailable — using self-signed TLS")
-	m.consumeLine("Open on client: https://mac-studio.tail37114b.ts.net:7262/")
-	if !m.clientLimited {
-		t.Fatal("legacy self-signed banner should mark clientLimited")
-	}
-	if m.status != "Ready — mic limited in some browsers" {
-		t.Fatalf("status = %q", m.status)
-	}
-}
-
-func TestRemoteModelLegacyPhoneLabelsStillParse(t *testing.T) {
-	m := newRemote(context.Background(), nil)
-	m.consumeLine("Phone access: full")
-	m.consumeLine("Open on client: https://mac.tailnet.ts.net:7262/")
-	if !m.clientReady || m.clientLimited {
-		t.Fatalf("legacy Phone access full → clientReady/limited = %v/%v", m.clientReady, m.clientLimited)
-	}
-}
-
 func TestRemoteManagedProcessStreamsBannerAndExit(t *testing.T) {
 	factory := func(ctx context.Context) (*exec.Cmd, error) {
 		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestRemoteHelperProcess", "--")

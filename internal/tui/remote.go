@@ -1,32 +1,19 @@
 package tui
 
 import (
-	"bufio"
 	"context"
 	"errors"
-	"fmt"
-	"io"
-	"os"
-	"os/exec"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 	ansi "github.com/charmbracelet/x/ansi"
 
-	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/internal/netapi"
 )
 
-const (
-	remoteStopTimeout = 3 * time.Second
-	remoteLogLimit    = 200
-	// clientSetupURL is where users enable free Tailscale HTTPS Certificates
-	// so strict browsers (notably mobile Safari) can use the microphone.
-	clientSetupURL = "https://login.tailscale.com/admin/dns"
-)
+const remoteLogLimit = 200
 
 // remoteNetwork is how clients reach this machine.
 type remoteNetwork int
@@ -54,197 +41,9 @@ func (n remoteNetwork) detail() string {
 	}
 }
 
-type remoteCommandFactory func(context.Context) (*exec.Cmd, error)
-
-type remoteStartedMsg struct {
-	server *remoteServer
-	err    error
-}
-
-type remoteOutputMsg struct {
-	server *remoteServer
-	line   string
-}
-
-type remoteExitedMsg struct {
-	server  *remoteServer
-	err     error
-	stopped bool
-}
-
 type remoteCopiedMsg struct {
 	label string
 	err   error
-}
-
-// remoteServer owns one `samantha serve` child (LAN or --tailscale).
-// Reusing the CLI entrypoint keeps TLS, pairing, auth, and remote-audio
-// behavior on the same code path instead of duplicating security-sensitive
-// setup in the TUI.
-type remoteServer struct {
-	mu       sync.Mutex
-	cmd      *exec.Cmd
-	events   chan tea.Msg
-	done     chan struct{}
-	stopping atomic.Bool
-	stopOnce sync.Once
-}
-
-func newRemoteServer() *remoteServer {
-	return &remoteServer{
-		events: make(chan tea.Msg, 512),
-		done:   make(chan struct{}),
-	}
-}
-
-func defaultRemoteCommand(network remoteNetwork) remoteCommandFactory {
-	return func(ctx context.Context) (*exec.Cmd, error) {
-		executable, err := os.Executable()
-		if err != nil {
-			return nil, fmt.Errorf("locate Samantha executable: %w", err)
-		}
-		// Always mute host speaker for remote use — audio lives on the client.
-		args := []string{"serve", "--no-voice"}
-		if network == remoteNetworkTailscale {
-			args = append(args, "--tailscale")
-		}
-		if dir := audio.DebugAudioDir(); dir != "" {
-			args = append(args, "--debug-audio="+dir)
-		}
-		return exec.CommandContext(ctx, executable, args...), nil
-	}
-}
-
-func (s *remoteServer) start(ctx context.Context, factory remoteCommandFactory) error {
-	cmd, err := factory(ctx)
-	if err != nil {
-		return err
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("capture remote server output: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("capture remote server diagnostics: %w", err)
-	}
-
-	s.mu.Lock()
-	s.cmd = cmd
-	s.mu.Unlock()
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start Samantha remote server: %w", err)
-	}
-	if s.stopping.Load() {
-		// The user can leave the screen while exec.Start is still in flight.
-		// Honor that earlier stop request now that a process exists.
-		_ = cmd.Process.Signal(os.Interrupt)
-	}
-
-	var readers sync.WaitGroup
-	readers.Add(2)
-	go s.scan(&readers, stdout)
-	go s.scan(&readers, stderr)
-	go func() {
-		err := cmd.Wait()
-		readers.Wait()
-		close(s.done)
-		s.emit(remoteExitedMsg{server: s, err: err, stopped: s.stopping.Load()})
-	}()
-	return nil
-}
-
-func (s *remoteServer) scan(wg *sync.WaitGroup, reader io.Reader) {
-	defer wg.Done()
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 4096), 1024*1024)
-	scanner.Split(scanTerminalLines)
-	for scanner.Scan() {
-		s.emit(remoteOutputMsg{server: s, line: scanner.Text()})
-	}
-	if err := scanner.Err(); err != nil && !s.stopping.Load() {
-		s.emit(remoteOutputMsg{server: s, line: "read server output: " + err.Error()})
-	}
-}
-
-// scanTerminalLines treats carriage-return status updates as individual
-// records as well as normal newline-delimited output. The plain CLI UI uses
-// both forms, and waiting for a later newline would otherwise concatenate an
-// entire stream of live status updates into one large scanner token.
-func scanTerminalLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	for i, b := range data {
-		if b != '\r' && b != '\n' {
-			continue
-		}
-		advance = i + 1
-		if b == '\r' && advance < len(data) && data[advance] == '\n' {
-			advance++
-		}
-		return advance, data[:i], nil
-	}
-	if atEOF && len(data) > 0 {
-		return len(data), data, nil
-	}
-	return 0, nil, nil
-}
-
-func (s *remoteServer) emit(msg tea.Msg) {
-	// Server output is diagnostic. Never let an inactive screen or a burst of
-	// conversation logs block the child process. The structured URL, code, and
-	// exit messages fit comfortably inside this bounded queue.
-	select {
-	case s.events <- msg:
-	default:
-	}
-}
-
-func (s *remoteServer) nextEvent() tea.Cmd {
-	return func() tea.Msg { return <-s.events }
-}
-
-func (s *remoteServer) stop() {
-	if s == nil {
-		return
-	}
-	s.stopOnce.Do(func() {
-		s.stopping.Store(true)
-		s.mu.Lock()
-		cmd := s.cmd
-		s.mu.Unlock()
-		if cmd == nil || cmd.Process == nil {
-			return
-		}
-
-		// The serve command handles an interrupt by canceling its context and
-		// running pipeline/session cleanup. Escalate only if graceful shutdown
-		// does not finish promptly.
-		_ = cmd.Process.Signal(os.Interrupt)
-		go func() {
-			select {
-			case <-s.done:
-			case <-time.After(remoteStopTimeout):
-				_ = cmd.Process.Kill()
-			}
-		}()
-	})
-}
-
-func (s *remoteServer) stopAndWait(timeout time.Duration) {
-	if s == nil {
-		return
-	}
-	s.stop()
-	s.mu.Lock()
-	cmd := s.cmd
-	s.mu.Unlock()
-	if cmd == nil || cmd.Process == nil {
-		return
-	}
-	select {
-	case <-s.done:
-	case <-time.After(timeout):
-		_ = cmd.Process.Kill()
-	}
 }
 
 type remoteModel struct {
@@ -453,7 +252,7 @@ func (m *remoteModel) clientSetupLink() string {
 		return m.setupURL
 	}
 	if m.clientLimited && m.network == remoteNetworkTailscale {
-		return clientSetupURL
+		return netapi.ClientSetupURL
 	}
 	return ""
 }
@@ -472,7 +271,7 @@ func (m *remoteModel) markReady() {
 		m.detail = m.network.detail() + " — open the link, pair, then talk"
 		return
 	}
-	// Cert mode unknown yet (older serve binary).
+	// Access mode not reported yet (still starting).
 	m.status = "Ready"
 	m.detail = "Open the link on any device, enter the code, then Start"
 }
@@ -481,7 +280,7 @@ func (m *remoteModel) setClientAccess(limited bool) {
 	m.clientLimited = limited
 	m.clientReady = !limited
 	if limited && m.setupURL == "" && m.network == remoteNetworkTailscale {
-		m.setupURL = clientSetupURL
+		m.setupURL = netapi.ClientSetupURL
 	}
 	m.markReady()
 }
@@ -491,49 +290,32 @@ func (m *remoteModel) consumeLine(line string) {
 	if clean == "" {
 		return
 	}
-	// Prefer the client-facing URL labels serve prints (legacy "Open on phone"
-	// kept for older binaries / log replay).
-	for _, label := range []string{"Open on client:", "Open on phone:"} {
-		if value, ok := remoteField(clean, label); ok {
-			m.url = value
-			m.markReady()
-			break
-		}
+	if value, ok := remoteField(clean, netapi.LabelOpenOnClient); ok {
+		m.url = value
+		m.markReady()
 	}
-	if value, ok := remoteField(clean, "Pairing code:"); ok {
+	if value, ok := remoteField(clean, netapi.LabelPairingCode); ok {
 		m.pairing = strings.Fields(value)[0]
 	}
-	if value, ok := remoteField(clean, "Network:"); ok {
+	if value, ok := remoteField(clean, netapi.LabelNetwork); ok {
 		switch strings.ToLower(strings.Fields(value)[0]) {
-		case "lan", "wifi", "wi-fi":
+		case netapi.NetworkLAN, "wifi", "wi-fi":
 			m.network = remoteNetworkLAN
-		case "tailscale", "tailnet":
+		case netapi.NetworkTailscale, "tailnet":
 			m.network = remoteNetworkTailscale
 		}
 	}
-	// Product labels (current + short-lived "Phone *" aliases from earlier builds).
-	for _, label := range []string{"Client setup:", "Phone setup:"} {
-		if value, ok := remoteField(clean, label); ok {
-			m.setupURL = strings.Fields(value)[0]
-			m.setClientAccess(true)
-			break
-		}
-	}
-	for _, label := range []string{"Client access:", "Phone access:"} {
-		if value, ok := remoteField(clean, label); ok {
-			switch strings.ToLower(strings.Fields(value)[0]) {
-			case "limited":
-				m.setClientAccess(true)
-			case "full":
-				m.setClientAccess(false)
-			}
-			break
-		}
-	}
-	// Legacy serve banners (pre product-language labels).
-	if strings.Contains(clean, "unavailable — using self-signed TLS") ||
-		strings.Contains(clean, "unavailable - using self-signed TLS") {
+	if value, ok := remoteField(clean, netapi.LabelClientSetup); ok {
+		m.setupURL = strings.Fields(value)[0]
 		m.setClientAccess(true)
+	}
+	if value, ok := remoteField(clean, netapi.LabelClientAccess); ok {
+		switch strings.ToLower(strings.Fields(value)[0]) {
+		case netapi.AccessLimited:
+			m.setClientAccess(true)
+		case netapi.AccessFull:
+			m.setClientAccess(false)
+		}
 	}
 	if _, ok := remoteField(clean, "Listening:"); ok && m.url == "" {
 		m.status = "Almost ready..."
