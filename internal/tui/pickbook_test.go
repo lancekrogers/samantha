@@ -97,15 +97,69 @@ func TestAudiobookPickLibrarySwitch(t *testing.T) {
 	}
 }
 
-func TestAudiobookHidesPickWhenDisabled(t *testing.T) {
+func TestAudiobookShowsCalibreRowsWhenDisabled(t *testing.T) {
 	m := newAudiobook(&config.Config{CalibreEnabled: false, TTSVoice: "af_heart"})
 	view := m.View()
-	if strings.Contains(view, "Pick from library") {
-		t.Fatalf("pick row should be hidden:\n%s", view)
+	if !strings.Contains(view, "Calibre library") {
+		t.Fatalf("missing Calibre library toggle:\n%s", view)
 	}
-	// Navigation skips the pick field.
-	if next := m.nextField(abFieldInput); next != abFieldOutDir {
-		t.Fatalf("next after input = %d", next)
+	if !strings.Contains(view, "Pick from library") {
+		t.Fatalf("pick row should always be visible under audiobooks:\n%s", view)
+	}
+	if !strings.Contains(view, "off") {
+		t.Fatalf("expected calibre off state:\n%s", view)
+	}
+	// Pick stays on the form when disabled; activate explains how to enable.
+	m.cursor = abFieldPickLibrary
+	m, cmd := m.activate()
+	if cmd != nil {
+		t.Fatal("should not open picker while Calibre is off")
+	}
+	if m.errText == "" || !strings.Contains(m.errText, "Calibre is off") {
+		t.Fatalf("errText = %q", m.errText)
+	}
+}
+
+func TestAudiobookToggleCalibrePersists(t *testing.T) {
+	cfg := &config.Config{CalibreEnabled: false, TTSVoice: "af_heart"}
+	m := newAudiobook(cfg)
+	var saved *bool
+	m.persistCalibre = func(enabled bool) error {
+		saved = &enabled
+		return nil
+	}
+	m.cursor = abFieldCalibre
+	m, cmd := m.activate()
+	if cmd != nil {
+		t.Fatalf("unexpected cmd %#v", cmd)
+	}
+	if saved == nil || !*saved {
+		t.Fatalf("persistCalibre got %v, want true", saved)
+	}
+	if !cfg.CalibreEnabled {
+		t.Fatal("cfg.CalibreEnabled should be true after toggle")
+	}
+	if !strings.Contains(m.message, "on") {
+		t.Fatalf("message = %q", m.message)
+	}
+	// Toggle off again.
+	m, _ = m.activate()
+	if saved == nil || *saved {
+		t.Fatalf("second toggle should save false, got %v", saved)
+	}
+	if cfg.CalibreEnabled {
+		t.Fatal("cfg.CalibreEnabled should be false after second toggle")
+	}
+}
+
+func TestAudiobookShowsCalibreOnWhenEnabled(t *testing.T) {
+	m := newAudiobook(&config.Config{CalibreEnabled: true, TTSVoice: "af_heart"})
+	view := m.View()
+	if !strings.Contains(view, "Calibre library") || !strings.Contains(view, "on") {
+		t.Fatalf("expected calibre on:\n%s", view)
+	}
+	if !strings.Contains(view, "search Calibre") {
+		t.Fatalf("expected pick hint:\n%s", view)
 	}
 }
 

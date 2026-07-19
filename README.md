@@ -234,8 +234,9 @@ samantha library search "cryptography"
 samantha audiobook create --from-library "Crypto 101" --out-dir out/crypto
 ```
 
-In the TUI **Create audiobook** screen, enable Calibre and use **Pick from library**
-to search and fill the input path (EPUB/PDF only for v1).
+In the TUI **Create audiobook** screen, toggle **Calibre library** on (saved to
+config) and use **Pick from library** to search and fill the input path
+(EPUB/PDF only for v1).
 
 ### Narrate pipeline (prompt-controlled)
 
