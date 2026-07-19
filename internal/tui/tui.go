@@ -3,10 +3,13 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
@@ -282,6 +285,22 @@ func (a App) View() string {
 	}
 }
 
+// forceTUIColorProfile ensures lipgloss emits real color sequences even when
+// the host terminal (or a recorder like VHS) reports a weak capability.
+func forceTUIColorProfile() {
+	if os.Getenv("NO_COLOR") != "" {
+		return
+	}
+	// Prefer truecolor when the environment advertises it or when forced.
+	if os.Getenv("CLICOLOR_FORCE") != "" || os.Getenv("COLORTERM") == "truecolor" || os.Getenv("COLORTERM") == "24bit" {
+		lipgloss.SetColorProfile(termenv.TrueColor)
+		return
+	}
+	if lipgloss.ColorProfile() == termenv.Ascii {
+		lipgloss.SetColorProfile(termenv.ANSI256)
+	}
+}
+
 // Run starts the TUI as one continuous program: launcher, settings, and the
 // live conversation all run inside it. The pipeline is built lazily on
 // entering the conversation screen (D2) and torn down here after the program
@@ -325,6 +344,11 @@ func run(cfg *config.Config, build RuntimeBuilder, startInConversation bool) err
 		return fmt.Errorf("redirect native diagnostics: %w", err)
 	}
 	defer func() { _ = restoreDiagnostics() }()
+
+	// Force a color profile before Bubble Tea attaches its renderer. VHS and
+	// some emulators mis-detect as monochrome; without this, lipgloss styles
+	// collapse to gray and demos look colorless.
+	forceTUIColorProfile()
 
 	// Do not enable Bubble Tea mouse reporting here. Claiming the mouse makes
 	// terminals send clicks and drags to Samantha instead of allowing native

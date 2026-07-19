@@ -1,16 +1,17 @@
-# Main Samantha Bubble Tea TUI — live Ollama tool call.
+# Main Samantha Bubble Tea TUI — live Ollama list_files tool call.
 # From repo root after `just build`:
 #   vhs demos/tool-calls.tape
-#
-# Isolated HOME → empty sessions → cursor on "New conversation".
 
 Output demos/tool-calls.gif
 
+# Settings first (VHS requires this before Env/Type).
 Set Shell "zsh"
-Set FontSize 14
-Set Width 1200
-Set Height 700
-Set Theme "Catppuccin Mocha"
+Set FontSize 15
+Set Width 1280
+Set Height 720
+# Brighter palette so lipgloss ANSI colors (cyan/green/blue) read clearly.
+# Light theme so lipgloss accents (blue/green/pink) stay vivid in the GIF.
+Set Theme "Catppuccin Latte"
 Set TypingSpeed 10ms
 Set PlaybackSpeed 0.85
 
@@ -18,8 +19,11 @@ Env HOME "/tmp/samantha-tui-demo-home"
 Env VOICE_TOOLS_ENABLED "true"
 Env SKILLS_ENABLED "true"
 Env TERM "xterm-256color"
+Env COLORTERM "truecolor"
+Env CLICOLOR_FORCE "1"
+Env FORCE_COLOR "1"
 
-# Prepare isolated config (no sessions → New conversation is first)
+# Isolated HOME: empty sessions → cursor on New conversation.
 Type "rm -rf /tmp/samantha-tui-demo-home && mkdir -p /tmp/samantha-tui-demo-home/.obey/agents/voice/samantha/sessions"
 Enter
 Type "cat > /tmp/samantha-tui-demo-home/.obey/agents/voice/samantha/config.yaml <<'EOF'"
@@ -50,27 +54,21 @@ Type "EOF"
 Enter
 Sleep 300ms
 
-# Launch MAIN TUI (not --no-tui)
+# MAIN Bubble Tea UI (not --no-tui)
 Type "./bin/samantha -t -n"
 Enter
 Sleep 5s
 
-# Launcher: New conversation selected → enter
+# New conversation
 Enter
-# Runtime build / conversation screen
 Sleep 8s
 
-# Composer: request a real tool call
+# Live tool call
 Type "Call list_files with path . then name the first three entries from the tool result. You must use list_files."
 Enter
-# Ollama + tool round-trip
 Sleep 40s
 
-# Quit conversation then launcher
 Type "q"
 Sleep 1s
 Type "q"
-Sleep 1s
-Type "echo DEMO_DONE"
-Enter
 Sleep 1s
