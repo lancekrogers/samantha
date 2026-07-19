@@ -224,6 +224,22 @@ pass-through flags (`--resume`, `--voice`, `--speed`, `--audio-format`,
 `--encoder`, `--json`, `--manifest`, `--overwrite`). Use `samantha render` for
 markdown, HTML, URL (including sectioned `--out-dir`), and text sources.
 
+Before synthesis, build a reviewable production plan. This writes the
+extracted sections, a YAML source of truth, and a Markdown preview; it does
+not load TTS or create audio:
+
+```bash
+samantha audiobook plan book.epub --out-dir out/book
+samantha audiobook review out/book/production-plan.yaml
+# Apply explicit human decisions when needed:
+samantha audiobook review out/book/production-plan.yaml --exclude contents --exclude body --reason "navigation/front matter"
+```
+
+The plan classifies likely navigation, index, front matter, main content,
+reference, and back matter. Ambiguous sections remain `review` until a human
+decides. Rendering from the approved plan will be added in a follow-up slice;
+the current `create` command remains the direct raw-spine compatibility path.
+
 ```bash
 samantha audiobook create book.epub --out-dir out/book
 samantha audiobook create book.epub --out-dir out/book --audio-format m4b --resume --json

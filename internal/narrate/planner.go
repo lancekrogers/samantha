@@ -242,6 +242,7 @@ func writeExtractedSections(dir string, units []render.RenderUnit) ([]Section, e
 		sections = append(sections, Section{
 			ID:              id,
 			Title:           u.Title,
+			SourceRef:       u.SourceRef,
 			ExtractedPath:   path,
 			ExtractedSHA256: hex.EncodeToString(sum[:]),
 		})
