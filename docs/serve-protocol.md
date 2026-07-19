@@ -23,7 +23,7 @@ Default port: `7262`.
 
 ### Tailscale one-shot
 
-Interactive: launch `samantha`, then choose **Remote over Tailscale**. The
+Interactive: launch `samantha`, then choose **Use on another device**. The
 TUI displays the MagicDNS URL and pairing code and stops the child server when
 the user leaves the screen. This is remote voice for **any** tailnet client
 (phone, tablet, laptop browser, `samantha connect`) — not iPad-only. SSH/Termius
@@ -39,13 +39,24 @@ Binds the node’s Tailscale IPv4, prefers a cert via `tailscale cert` under
 `~/.obey/agents/voice/samantha/serve/tls/`, mutes the host speaker by default,
 and prints the MagicDNS URL (e.g. `https://mac.tailnet.ts.net:7262/`).
 
-If `tailscale cert` fails (tailnet cannot mint HTTPS certs, CLI missing, etc.),
-serve **falls back to self-signed TLS** and keeps running. Browsers need an
-exception / TOFU; `samantha connect` pins the fingerprint. Enable HTTPS
-Certificates in the Tailscale admin console for publicly trusted certs (required
-for iOS Safari microphone without installing a custom CA).
+If `tailscale cert` fails (or LAN self-signed is used), serve stays up in
+**limited client access** mode and prints stable product labels the TUI parses:
 
-Requires: Tailscale CLI logged in and MagicDNS on.
+| Label | Meaning |
+|-------|---------|
+| `Network: tailscale` / `Network: lan` | How clients should reach the host |
+| `Client access: full` | Trusted cert — mic works in any browser |
+| `Client access: limited` | Warning path — desktop OK; some mobile browsers block mic |
+| `Client setup: https://login.tailscale.com/admin/dns` | Free HTTPS Certificates toggle (Tailscale) |
+
+Constants live in `internal/netapi/clientmode.go` and are shared by serve + TUI
+so the scrape contract cannot drift.
+
+Self-signed leaves are minted/rewritten with MagicDNS and/or the bind IP as
+SANs so the printed URL passes hostname checks on LAN and Tailscale. Primary
+UX is “any device on this network,” not a single OS.
+
+Requires for `--tailscale`: Tailscale CLI logged in and MagicDNS on.
 
 ## Auth
 

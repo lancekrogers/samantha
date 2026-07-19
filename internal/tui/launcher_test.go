@@ -62,27 +62,27 @@ func TestLauncherDefaultsToContinueWhenSessionExists(t *testing.T) {
 	}
 }
 
-func TestLauncherOffersTailscaleAndOpensItsScreen(t *testing.T) {
+func TestLauncherOffersRemoteAndOpensItsScreen(t *testing.T) {
 	m := newLauncher(&config.Config{}, nil)
 	for i, item := range m.items {
-		if item.action != actionTailscale {
+		if item.action != actionRemote {
 			continue
 		}
-		if !strings.Contains(item.label, "Remote") || !strings.Contains(item.label, "Tailscale") {
-			t.Fatalf("Tailscale launcher label = %q", item.label)
+		if !strings.Contains(strings.ToLower(item.label), "device") {
+			t.Fatalf("remote launcher label = %q", item.label)
 		}
 		m.cursor = i
 		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		if cmd == nil {
-			t.Fatal("Tailscale launcher action returned no command")
+			t.Fatal("remote launcher action returned no command")
 		}
 		msg, ok := cmd().(switchScreenMsg)
-		if !ok || screen(msg) != screenTailscale {
-			t.Fatalf("Tailscale launcher message = %#v", msg)
+		if !ok || screen(msg) != screenRemote {
+			t.Fatalf("remote launcher message = %#v", msg)
 		}
 		return
 	}
-	t.Fatal("launcher has no Tailscale action")
+	t.Fatal("launcher has no Remote action")
 }
 
 func TestLauncherOffersMeeting(t *testing.T) {

@@ -387,13 +387,62 @@ func TestLoadCredentialsWithIdentitySANs(t *testing.T) {
 	if !foundDNS || !foundIP {
 		t.Fatalf("SANs missing MagicDNS/IP: dns=%v ips=%v", leaf.DNSNames, leaf.IPAddresses)
 	}
-	// Existing cert must not rotate when identity is requested again.
-	again, err := LoadOrCreateCredentialsWithIdentity(dir, CertIdentity{DNSNames: []string{"other.example"}})
+	// Same identity must not rotate the TOFU fingerprint.
+	again, err := LoadOrCreateCredentialsWithIdentity(dir, id)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if again.Fingerprint != creds.Fingerprint {
-		t.Fatal("identity reload rewrote existing cert fingerprint")
+		t.Fatal("same-identity reload rewrote existing cert fingerprint")
+	}
+	// Expanded identity (e.g. LAN cert → MagicDNS) must rewrite so browsers
+	// opening the new hostname pass name verification.
+	expanded := CertIdentity{
+		DNSNames: []string{"mac-studio.tail37114b.ts.net", "other.example"},
+		IPs:      []net.IP{net.ParseIP("100.72.165.77")},
+	}
+	rewritten, err := LoadOrCreateCredentialsWithIdentity(dir, expanded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rewritten.Fingerprint == creds.Fingerprint {
+		t.Fatal("expanded identity should rewrite cert missing new SANs")
+	}
+	leaf2, err := x509.ParseCertificate(rewritten.Certificate.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !certSatisfiesIdentity(leaf2, expanded) {
+		t.Fatalf("rewritten cert missing expanded SANs: dns=%v ips=%v", leaf2.DNSNames, leaf2.IPAddresses)
+	}
+}
+
+func TestLoadCredentialsRewritesLANCertForMagicDNS(t *testing.T) {
+	// Reproduces the iPhone failure mode: first serve was LAN (localhost SANs
+	// only), then --tailscale prints a MagicDNS URL that the old cert does not
+	// cover → Safari hostname mismatch.
+	dir := t.TempDir()
+	lan, err := LoadOrCreateCredentials(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := CertIdentity{
+		DNSNames: []string{"mac-studio.tail37114b.ts.net"},
+		IPs:      []net.IP{net.ParseIP("100.72.165.77")},
+	}
+	tail, err := LoadOrCreateCredentialsWithIdentity(dir, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tail.Fingerprint == lan.Fingerprint {
+		t.Fatal("LAN-only cert should be rewritten for MagicDNS identity")
+	}
+	leaf, err := x509.ParseCertificate(tail.Certificate.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !certSatisfiesIdentity(leaf, id) {
+		t.Fatalf("rewritten SANs = dns=%v ips=%v", leaf.DNSNames, leaf.IPAddresses)
 	}
 }
 

@@ -129,10 +129,8 @@ func loadCredentials(dir, externalCert, externalKey string, id CertIdentity) (*C
 	certPath, keyPath := externalCert, externalKey
 	if certPath == "" {
 		certPath, keyPath = filepath.Join(dir, certFile), filepath.Join(dir, keyFile)
-		if _, err := os.Stat(certPath); os.IsNotExist(err) {
-			if err := generateSelfSignedCert(certPath, keyPath, id); err != nil {
-				return nil, err
-			}
+		if err := ensureSelfSignedCert(certPath, keyPath, id); err != nil {
+			return nil, err
 		}
 	} else {
 		creds.ExternalTLS = true
@@ -282,6 +280,93 @@ func (c *Credentials) VerifyRequest(r *http.Request) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(q), []byte(c.Token)) == 1
+}
+
+// ensureSelfSignedCert loads an existing self-signed pair or mints a new one.
+// When id carries MagicDNS names / Tailscale IPs (serve --tailscale), an
+// existing LAN-only cert (localhost + 127.0.0.1) is rewritten so browsers
+// opening the MagicDNS URL do not fail hostname verification. Same-identity
+// reloads keep the fingerprint stable for TOFU clients.
+func ensureSelfSignedCert(certPath, keyPath string, id CertIdentity) error {
+	if _, err := os.Stat(certPath); os.IsNotExist(err) {
+		return generateSelfSignedCert(certPath, keyPath, id)
+	}
+	if !identityRequiresSANs(id) {
+		// Keep the existing TOFU pair when no identity was requested.
+		return nil
+	}
+	leaf, err := readLeafCertificate(certPath)
+	if err != nil || !certSatisfiesIdentity(leaf, id) {
+		return generateSelfSignedCert(certPath, keyPath, id)
+	}
+	return nil
+}
+
+func identityRequiresSANs(id CertIdentity) bool {
+	if len(id.IPs) > 0 {
+		return true
+	}
+	for _, name := range id.DNSNames {
+		if strings.TrimSpace(strings.TrimSuffix(name, ".")) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// certSatisfiesIdentity reports whether leaf already lists every requested
+// DNS name and IP. Extra SANs on the leaf are fine.
+func certSatisfiesIdentity(leaf *x509.Certificate, id CertIdentity) bool {
+	if leaf == nil {
+		return false
+	}
+	haveDNS := make(map[string]struct{}, len(leaf.DNSNames))
+	for _, name := range leaf.DNSNames {
+		haveDNS[strings.ToLower(strings.TrimSuffix(name, "."))] = struct{}{}
+	}
+	for _, want := range id.DNSNames {
+		want = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(want, ".")))
+		if want == "" {
+			continue
+		}
+		if _, ok := haveDNS[want]; !ok {
+			return false
+		}
+	}
+	for _, wantIP := range id.IPs {
+		if wantIP == nil {
+			continue
+		}
+		found := false
+		for _, have := range leaf.IPAddresses {
+			if have.Equal(wantIP) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func readLeafCertificate(certPath string) (*x509.Certificate, error) {
+	raw, err := os.ReadFile(certPath)
+	if err != nil {
+		return nil, err
+	}
+	var block *pem.Block
+	for {
+		block, raw = pem.Decode(raw)
+		if block == nil {
+			return nil, fmt.Errorf("no PEM certificate in %s", certPath)
+		}
+		if block.Type == "CERTIFICATE" {
+			break
+		}
+	}
+	return x509.ParseCertificate(block.Bytes)
 }
 
 // generateSelfSignedCert writes a fresh ECDSA P-256 certificate for the

@@ -111,6 +111,10 @@ var (
 	errorStyle = lipgloss.NewStyle().
 			Foreground(colorError)
 
+	// warningStyle is amber callout text (limited modes, soft failures).
+	warningStyle = lipgloss.NewStyle().
+			Foreground(colorHearing)
+
 	userStyle = lipgloss.NewStyle().
 			Foreground(colorUser).
 			Bold(true)

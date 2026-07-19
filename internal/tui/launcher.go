@@ -20,7 +20,7 @@ const (
 	actionNew
 	actionSessions
 	actionMeeting
-	actionTailscale
+	actionRemote
 	actionAudiobook
 	actionSettings
 	actionQuit
@@ -95,8 +95,8 @@ func newLauncher(cfg *config.Config, providers []discovery.ProviderInfo, saved .
 			action: actionMeeting,
 		},
 		launcherItem{
-			label: "Remote over Tailscale", hint: "Share voice on your tailnet", glyph: "⇄",
-			action: actionTailscale,
+			label: "Use on another device", hint: "LAN or Tailscale · any client", glyph: "⇄",
+			action: actionRemote,
 		},
 		launcherItem{
 			label: "Create audiobook", hint: "Render long-form narration", glyph: "♪",
@@ -140,8 +140,8 @@ func (m launcherModel) Update(msg tea.Msg) (launcherModel, tea.Cmd) {
 				return m, func() tea.Msg { return switchScreenMsg(screenSessions) }
 			case actionMeeting:
 				return m, func() tea.Msg { return switchScreenMsg(screenMeetingSetup) }
-			case actionTailscale:
-				return m, func() tea.Msg { return switchScreenMsg(screenTailscale) }
+			case actionRemote:
+				return m, func() tea.Msg { return switchScreenMsg(screenRemote) }
 			case actionAudiobook:
 				return m, func() tea.Msg { return switchScreenMsg(screenAudiobook) }
 			case actionSettings:
