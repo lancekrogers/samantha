@@ -16,6 +16,7 @@ import (
 // audiobook field indices.
 const (
 	abFieldInput = iota
+	abFieldCalibre
 	abFieldPickLibrary
 	abFieldOutDir
 	abFieldVoice
@@ -45,6 +46,10 @@ type audiobookModel struct {
 	// Path tab-completion cycle state (only used while editing path fields).
 	pathMatches []string
 	pathCycle   int
+
+	// persistCalibre saves calibre_enabled. Injectable for tests; defaults to
+	// config.SetAndSave so the toggle survives across TUI sessions.
+	persistCalibre func(enabled bool) error
 }
 
 func newAudiobook(cfg *config.Config) audiobookModel {
@@ -57,6 +62,9 @@ func newAudiobook(cfg *config.Config) audiobookModel {
 		voice:  voice,
 		speed:  "1",
 		resume: true,
+		persistCalibre: func(enabled bool) error {
+			return config.SetAndSave("calibre_enabled", enabled)
+		},
 	}
 }
 
@@ -73,9 +81,13 @@ func (m audiobookModel) Update(msg tea.Msg) (audiobookModel, tea.Cmd) {
 		}
 		switch key {
 		case "up", "k":
-			m.cursor = m.prevField(m.cursor)
+			if m.cursor > 0 {
+				m.cursor--
+			}
 		case "down", "j":
-			m.cursor = m.nextField(m.cursor)
+			if m.cursor < abFieldCount-1 {
+				m.cursor++
+			}
 		case "enter", " ":
 			return m.activate()
 		case "esc", "b":
@@ -85,27 +97,6 @@ func (m audiobookModel) Update(msg tea.Msg) (audiobookModel, tea.Cmd) {
 		}
 	}
 	return m, nil
-}
-
-// nextField / prevField skip the library-pick row when Calibre is disabled.
-func (m audiobookModel) nextField(cur int) int {
-	for i := cur + 1; i < abFieldCount; i++ {
-		if i == abFieldPickLibrary && !m.calibreEnabled() {
-			continue
-		}
-		return i
-	}
-	return cur
-}
-
-func (m audiobookModel) prevField(cur int) int {
-	for i := cur - 1; i >= 0; i-- {
-		if i == abFieldPickLibrary && !m.calibreEnabled() {
-			continue
-		}
-		return i
-	}
-	return cur
 }
 
 func (m audiobookModel) handleEdit(key string) (audiobookModel, tea.Cmd) {
@@ -417,9 +408,12 @@ func (m audiobookModel) activate() (audiobookModel, tea.Cmd) {
 		m.editing = true
 		m.editBuf = m.fieldValue(m.cursor)
 		m.clearPathCompletion()
+	case abFieldCalibre:
+		return m.toggleCalibre()
 	case abFieldPickLibrary:
 		if !m.calibreEnabled() {
-			m.errText = "Calibre is disabled; enable with: samantha config calibre_enabled true"
+			m.errText = "Calibre is off — toggle Calibre library on above (or: samantha config calibre_enabled true)"
+			m.message = ""
 			return m, nil
 		}
 		return m, func() tea.Msg { return switchScreenMsg(screenPickBook) }
@@ -440,6 +434,36 @@ func (m audiobookModel) activate() (audiobookModel, tea.Cmd) {
 		}
 	case abFieldBack:
 		return m, func() tea.Msg { return switchScreenMsg(screenLauncher) }
+	}
+	return m, nil
+}
+
+// toggleCalibre flips calibre_enabled, persists it, and updates the live config
+// so Pick from library works immediately without restarting the TUI.
+func (m audiobookModel) toggleCalibre() (audiobookModel, tea.Cmd) {
+	if m.cfg == nil {
+		m.errText = "config not loaded"
+		return m, nil
+	}
+	next := !m.cfg.CalibreEnabled
+	save := m.persistCalibre
+	if save == nil {
+		save = func(enabled bool) error {
+			return config.SetAndSave("calibre_enabled", enabled)
+		}
+	}
+	if err := save(next); err != nil {
+		m.errText = fmt.Sprintf("Failed to save calibre_enabled: %v", err)
+		m.message = ""
+		return m, nil
+	}
+	m.cfg.CalibreEnabled = next
+	m.errText = ""
+	m.command = ""
+	if next {
+		m.message = "Calibre library on (saved). Use Pick from library to search."
+	} else {
+		m.message = "Calibre library off (saved)."
 	}
 	return m, nil
 }
@@ -520,21 +544,19 @@ func (m audiobookModel) View() string {
 		label string
 		value string
 	}
+	calibreState := map[bool]string{true: "on", false: "off"}[m.calibreEnabled()]
 	rows := []row{
 		{abFieldInput, "Input path", displayOr(m.input, "(required)")},
+		{abFieldCalibre, "Calibre library", calibreState},
+		{abFieldPickLibrary, "Pick from library", pickLibraryHint(m.calibreEnabled())},
+		{abFieldOutDir, "Output dir", displayOr(m.outDir, "(required)")},
+		{abFieldVoice, "Voice", displayOr(m.voice, "(config default)")},
+		{abFieldSpeed, "Speed", displayOr(m.speed, "1")},
+		{abFieldResume, "Resume", map[bool]string{true: "on", false: "off"}[m.resume]},
+		{abFieldAudioFormat, "Audio format", displayOr(m.audioFmt, "(none)")},
+		{abFieldGenerate, "Generate command", ""},
+		{abFieldBack, "Back to launcher", ""},
 	}
-	if m.calibreEnabled() {
-		rows = append(rows, row{abFieldPickLibrary, "Pick from library", ""})
-	}
-	rows = append(rows,
-		row{abFieldOutDir, "Output dir", displayOr(m.outDir, "(required)")},
-		row{abFieldVoice, "Voice", displayOr(m.voice, "(config default)")},
-		row{abFieldSpeed, "Speed", displayOr(m.speed, "1")},
-		row{abFieldResume, "Resume", map[bool]string{true: "on", false: "off"}[m.resume]},
-		row{abFieldAudioFormat, "Audio format", displayOr(m.audioFmt, "(none)")},
-		row{abFieldGenerate, "Generate command", ""},
-		row{abFieldBack, "Back to launcher", ""},
-	)
 	for _, r := range rows {
 		cursor := "  "
 		style := normalStyle
@@ -548,7 +570,7 @@ func (m audiobookModel) View() string {
 			if m.editing && r.field == m.cursor {
 				val = m.editBuf + "█"
 			}
-			line = fmt.Sprintf("%-14s %s", r.label, val)
+			line = fmt.Sprintf("%-18s %s", r.label, val)
 		}
 		b.WriteString("  " + cursor + style.Render(line) + "\n")
 	}
@@ -577,7 +599,7 @@ func (m audiobookModel) View() string {
 			b.WriteString(dimStyle.Render("  type to edit • enter save • esc cancel"))
 		}
 	} else {
-		b.WriteString(dimStyle.Render("  ↑/↓ navigate • enter edit/toggle/generate • b back • q quit"))
+		b.WriteString(dimStyle.Render("  ↑/↓ navigate • enter edit/toggle/pick/generate • b back • q quit"))
 	}
 	b.WriteString("\n")
 	return b.String()
@@ -588,4 +610,11 @@ func displayOr(v, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+func pickLibraryHint(enabled bool) string {
+	if enabled {
+		return "search Calibre…"
+	}
+	return "(enable Calibre first)"
 }
