@@ -37,3 +37,5 @@ vendor/
 # Models (downloaded at runtime)
 *.onnx
 *.bin
+
+projects/*
