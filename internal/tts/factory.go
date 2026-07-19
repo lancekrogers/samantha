@@ -15,6 +15,7 @@ type ProviderSpec struct {
 
 var providerSpecs = []ProviderSpec{
 	{Name: "kokoro", Description: "Local Kokoro TTS"},
+	{Name: "qwen3-tts", Description: "Optional native Qwen3-TTS CLI"},
 }
 
 // Providers returns the list of implemented TTS providers.
@@ -29,6 +30,12 @@ func NewProvider(cfg *config.Config) (Provider, func(), error) {
 	switch strings.TrimSpace(strings.ToLower(cfg.TTSProvider)) {
 	case "", "kokoro":
 		provider, err := NewKokoroTTS(cfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		return provider, provider.Delete, nil
+	case "qwen3-tts":
+		provider, err := NewQwen3TTS(cfg)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -66,6 +73,11 @@ func StaticVoices(providerName, locale, gender string) ([]Voice, error) {
 			})
 		}
 		return voices, nil
+	case "qwen3-tts":
+		// Qwen3-TTS voices are model/worker-specific. Keep the provider
+		// selectable without pretending that its CLI exposes Kokoro-style
+		// static voice metadata.
+		return nil, nil
 	default:
 		return nil, unsupportedProviderError(providerName)
 	}

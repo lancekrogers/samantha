@@ -5,6 +5,7 @@ package cmd
 import (
 	"archive/zip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -246,7 +247,23 @@ func newRenderSynth(ctx context.Context, opts *render.Options) (render.Synthesiz
 	if err != nil {
 		return nil, nil, err
 	}
+	cliVoice, cliSpeed := opts.Voice, opts.Speed
 	applyVoiceOverrides(cfg, opts)
+	if strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), "qwen3-tts") {
+		if cliVoice != "" {
+			return nil, nil, errors.New("render: qwen3-tts does not support --voice; use the model's default voice")
+		}
+		if cliSpeed > 0 {
+			return nil, nil, errors.New("render: qwen3-tts does not support --speed")
+		}
+		// The shared config defaults are Kokoro-specific. Qwen uses the
+		// model-native voice and speed, so keep those unused values out of the
+		// manifest and resume key rather than claiming they affected audio.
+		cfg.TTSVoice = ""
+		cfg.SpeechSpeed = 0
+		opts.Voice = ""
+		opts.Speed = 0
+	}
 	if err := config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
 		return nil, nil, fmt.Errorf("render: TTS assets: %w", err)
 	}
@@ -269,7 +286,17 @@ func newRenderSynth(ctx context.Context, opts *render.Options) (render.Synthesiz
 // output-affecting provider settings, and the effective voice/speed after config
 // plus CLI overrides have been resolved.
 func synthIdentityFor(cfg *config.Config) string {
-	id := cfg.TTSProvider
+	id := strings.TrimSpace(cfg.TTSProvider)
+	if strings.EqualFold(id, "qwen3-tts") {
+		id = "qwen3-tts"
+		if model := strings.TrimSpace(cfg.QwenTTSModel); model != "" {
+			id += "/model=" + model
+		}
+		if binary := strings.TrimSpace(cfg.QwenTTSBinary); binary != "" {
+			id += "/binary=" + binary
+		}
+		return id
+	}
 	if cfg.TTSVoice != "" {
 		id += "/voice=" + cfg.TTSVoice
 	}

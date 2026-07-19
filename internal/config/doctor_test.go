@@ -117,6 +117,44 @@ func TestDiagnoseWhisperCPPBinary(t *testing.T) {
 	}
 }
 
+func TestDiagnoseQwenNativeWorker(t *testing.T) {
+	cfg := &Config{
+		STTProvider:   "sherpa",
+		TTSProvider:   "qwen3-tts",
+		QwenTTSBinary: "qwen3-tts-cli",
+		QwenTTSModel:  t.TempDir(),
+	}
+
+	diags := diagByName(Diagnose(cfg, t.TempDir(), okLookPath))
+	for _, name := range []string{"tts-provider", "qwen3-tts-binary", "qwen3-tts-model"} {
+		if diags[name].Severity != SeverityOK {
+			t.Errorf("%s = %+v, want ok", name, diags[name])
+		}
+	}
+	if HasErrors([]Diagnostic{diags["tts-provider"], diags["qwen3-tts-binary"], diags["qwen3-tts-model"]}) {
+		t.Fatalf("healthy qwen setup reported errors: %+v", diags)
+	}
+
+	diags = diagByName(Diagnose(cfg, t.TempDir(), failLookPath))
+	if diags["qwen3-tts-binary"].Severity != SeverityError {
+		t.Errorf("missing qwen worker = %+v, want error", diags["qwen3-tts-binary"])
+	}
+
+	cfg.QwenTTSModel = ""
+	diags = diagByName(Diagnose(cfg, t.TempDir(), okLookPath))
+	if diags["qwen3-tts-model"].Severity != SeverityError {
+		t.Errorf("empty qwen model = %+v, want error", diags["qwen3-tts-model"])
+	}
+
+	nonDir := filepath.Join(t.TempDir(), "model-file")
+	touchFile(t, nonDir)
+	cfg.QwenTTSModel = nonDir
+	diags = diagByName(Diagnose(cfg, t.TempDir(), okLookPath))
+	if diags["qwen3-tts-model"].Severity != SeverityError {
+		t.Errorf("non-directory qwen model = %+v, want error", diags["qwen3-tts-model"])
+	}
+}
+
 func TestDiagnoseDoesNotCheckBinaryForSherpa(t *testing.T) {
 	cfg := &Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro"}
 	// failLookPath would error if a binary check ran; sherpa needs none.
