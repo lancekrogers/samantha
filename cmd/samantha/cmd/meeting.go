@@ -53,14 +53,19 @@ Interactive runs without --description prompt once for a meeting
 description; --description, --no-tui, or a non-TTY stdin/stdout skip the
 prompt so automation can never hang on it.
 
-Stop with Ctrl+C or by saying one of the stop phrases ("stop recording",
+On a TTY (and not --json/--no-tui), recording opens a full-screen TUI with
+the same live voice EQ as the conversation screen, a scrolling transcript,
+and elapsed time. --no-tui and --json keep the plain line-oriented sinks.
+
+Stop with q / Ctrl+C or by saying one of the stop phrases ("stop recording",
 "end meeting", "stop listening" — exact phrase, not substring; --stop-phrase
 adds more).
 
 Examples:
   samantha meeting record
   samantha meeting record --description "Weekly planning sync"
-  samantha meeting record --description "Standup" --out-dir ~/notes/meetings --json`,
+  samantha meeting record --description "Standup" --out-dir ~/notes/meetings --json
+  samantha meeting record --description "CI log" --no-tui`,
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -84,7 +89,7 @@ Examples:
 	f.StringVar(&opts.Description, "description", "", "Meeting description (skips the interactive prompt)")
 	f.StringVar(&opts.OutDir, "out-dir", "", "Directory for the log file (default: "+config.MeetingsDir()+")")
 	f.StringVar(&opts.STTProvider, "stt-provider", "", "One-shot STT provider override for this recording")
-	f.BoolVar(&opts.NoTUI, "no-tui", false, "Never show the interactive description prompt")
+	f.BoolVar(&opts.NoTUI, "no-tui", false, "Skip interactive description prompt and full-screen recorder TUI")
 	f.BoolVar(&opts.JSON, "json", false, "Emit one JSON line per utterance plus a final JSON summary on stdout")
 	f.StringArrayVar(&opts.StopPhrases, "stop-phrase", nil, "Additional spoken phrase that stops the recording (repeatable)")
 	return cmd

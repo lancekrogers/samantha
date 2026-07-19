@@ -256,16 +256,19 @@ samantha audiobook create book.pdf --out-dir out/book
 
 `samantha meeting record` listens continuously (STT only — no Brain, no TTS)
 and appends every utterance to a timestamped log file, synced per line so a
-crash never loses what was already heard. Interactive runs prompt once for a
-description; `--description`, `--no-tui`, or a non-TTY stdin/stdout skip the
-prompt so cron jobs and hotkey launchers can never hang on it. Stop with
-Ctrl+C or by saying "stop recording" / "end meeting" / "stop listening"
-(exact phrase; `--stop-phrase` adds more).
+crash never loses what was already heard. On a TTY (not `--json` / `--no-tui`)
+it opens a full-screen recorder with the live voice EQ, scrolling transcript,
+and elapsed timer. Interactive runs prompt once for a description;
+`--description`, `--no-tui`, or a non-TTY stdin/stdout skip the prompt so
+cron jobs and hotkey launchers can never hang on it. Stop with `q` / Ctrl+C
+or by saying "stop recording" / "end meeting" / "stop listening" (exact
+phrase; `--stop-phrase` adds more).
 
 ```bash
 samantha meeting record
 samantha meeting record --description "Weekly planning sync"
 samantha meeting record --description "Standup" --out-dir ~/notes/meetings --json
+samantha meeting record --description "CI log" --no-tui
 ```
 
 Logs default to `~/.obey/agents/voice/samantha/meetings/<slug>-<timestamp>.log`.

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
 	"github.com/lancekrogers/samantha/internal/audio"
@@ -19,11 +20,14 @@ import (
 	"github.com/lancekrogers/samantha/internal/listen"
 	"github.com/lancekrogers/samantha/internal/meetinglog"
 	"github.com/lancekrogers/samantha/internal/stt"
+	appTUI "github.com/lancekrogers/samantha/internal/tui"
 )
 
 // runMeetingRecord wires the STT-only chain into listen.Loop with the file
 // writer and console/JSON sinks. Nothing is written to disk until the STT
-// stack has constructed successfully.
+// stack has constructed successfully. On an interactive TTY (and not
+// --json / --no-tui) the Bubble Tea meeting UI shows the same voice EQ as
+// the conversation screen.
 func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -62,23 +66,39 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 	}
 
 	out := cmd.OutOrStdout()
-	var sinks []listen.Sink
-	sinks = append(sinks, writer)
-	if opts.JSON {
-		sinks = append(sinks, &jsonSink{enc: json.NewEncoder(out)})
+	useTUI := useMeetingRecordTUI(opts)
+
+	var loopErr error
+	if useTUI {
+		loopErr = appTUI.RunMeeting(appTUI.MeetingOpts{
+			Ctx:         ctx,
+			Cancel:      cancel,
+			Capture:     capture,
+			Provider:    provider,
+			Writer:      writer,
+			Description: opts.Description,
+			Path:        path,
+			StopPhrases: stopPhraseSet(opts.StopPhrases),
+		})
 	} else {
-		fmt.Fprintf(out, "Recording meeting: %q\n", opts.Description)
-		fmt.Fprintf(out, "Writing to: %s\n", path)
-		fmt.Fprintln(out, "🎙 Listening... (say \"stop recording\" or press Ctrl+C to stop)")
-		sinks = append(sinks, &consoleSink{out: out, errOut: cmd.ErrOrStderr()})
-	}
-	sink := &stopPhraseSink{
-		inner:   multiSink(sinks),
-		phrases: stopPhraseSet(opts.StopPhrases),
-		stop:    cancel,
+		var sinks []listen.Sink
+		sinks = append(sinks, writer)
+		if opts.JSON {
+			sinks = append(sinks, &jsonSink{enc: json.NewEncoder(out)})
+		} else {
+			fmt.Fprintf(out, "Recording meeting: %q\n", opts.Description)
+			fmt.Fprintf(out, "Writing to: %s\n", path)
+			fmt.Fprintln(out, "🎙 Listening... (say \"stop recording\" or press Ctrl+C to stop)")
+			sinks = append(sinks, &consoleSink{out: out, errOut: cmd.ErrOrStderr()})
+		}
+		sink := &stopPhraseSink{
+			inner:   multiSink(sinks),
+			phrases: stopPhraseSet(opts.StopPhrases),
+			stop:    cancel,
+		}
+		loopErr = listen.Loop(ctx, capture, provider, sink)
 	}
 
-	loopErr := listen.Loop(ctx, capture, provider, sink)
 	summary, closeErr := writer.Close()
 
 	var outputErr error
@@ -93,6 +113,16 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 		fmt.Fprintf(out, "  Utterances:  %d\n", summary.Utterances)
 	}
 	return errors.Join(loopErr, closeErr, outputErr)
+}
+
+// useMeetingRecordTUI is true for an interactive terminal session that should
+// open the Bubble Tea recorder. --json and --no-tui keep the plain sinks so
+// scripts never hang on a full-screen UI.
+func useMeetingRecordTUI(opts meetingOptions) bool {
+	if opts.JSON || opts.NoTUI {
+		return false
+	}
+	return isatty.IsTerminal(os.Stdout.Fd()) && isatty.IsTerminal(os.Stdin.Fd())
 }
 
 func meetingAssetProgress(jsonOutput bool) func(string, float64) {

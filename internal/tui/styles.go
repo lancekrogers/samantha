@@ -6,6 +6,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
+
+	"github.com/lancekrogers/samantha/internal/tui/anim"
 )
 
 // Brand palette. Hex values paint as truecolor on modern terminals; under
@@ -163,3 +165,22 @@ var (
 				Foreground(colorNormal).
 				PaddingLeft(1)
 )
+
+// voiceAnimStyles is the shared EQ palette for conversation and meeting TUIs.
+// Bright ANSI indices so VHS/termcast themes paint vividly.
+func voiceAnimStyles() anim.Styles {
+	return anim.Styles{
+		Tip:     lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true),
+		Mid:     lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true),
+		Core:    lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+		Muted:   dimStyle,
+		Label:   lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true),
+		Error:   errorStyle,
+		Accent:  lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true),
+		Hearing: lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true),
+		Speak:   lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true),
+		Think:   lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true),
+		Border:  lipgloss.NewStyle().Foreground(lipgloss.Color("14")),
+		Badge:   chipStyle,
+	}
+}
