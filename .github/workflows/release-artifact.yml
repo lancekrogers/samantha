@@ -1,0 +1,44 @@
+name: Release Artifact (macOS arm64)
+
+# Thin wrapper around `just release macos-artifact`: builds the relocatable,
+# self-contained samantha-macos-arm64.tar.gz the Obey Voice Mac app vendors
+# (delta D5). macos-latest is Apple Silicon, which the recipe requires.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-artifact:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git describe needs history/tags for the manifest version
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install just
+        run: brew install just
+      - name: Build relocatable macOS arm64 artifact
+        run: just release macos-artifact
+      - uses: actions/upload-artifact@v4
+        with:
+          name: samantha-macos-arm64
+          path: dist/samantha-macos-arm64.tar.gz
+          if-no-files-found: error
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" dist/samantha-macos-arm64.tar.gz --clobber
