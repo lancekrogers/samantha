@@ -18,6 +18,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/listen"
+	"github.com/lancekrogers/samantha/internal/meeting"
 	"github.com/lancekrogers/samantha/internal/meetinglog"
 	"github.com/lancekrogers/samantha/internal/stt"
 	appTUI "github.com/lancekrogers/samantha/internal/tui"
@@ -283,7 +284,8 @@ func (m multiSink) OnError(err error) error {
 }
 
 // stopPhraseSink intercepts stop phrases before they reach the log: a match
-// ends the recording (same path as Ctrl+C) and is not written as content.
+// ends the recording (same path as Ctrl+C) and is intentionally not written
+// as content (operators should not see the stop command in the transcript).
 type stopPhraseSink struct {
 	inner   listen.Sink
 	phrases map[string]bool
@@ -291,7 +293,7 @@ type stopPhraseSink struct {
 }
 
 func (s *stopPhraseSink) OnUtterance(u listen.Utterance) error {
-	if s.phrases[normalizeStopPhrase(u.Text)] {
+	if s.phrases[meeting.NormalizeStopPhrase(u.Text)] {
 		s.stop()
 		return nil
 	}

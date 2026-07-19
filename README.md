@@ -268,7 +268,10 @@ full-screen recorder:
 | Type + **Enter** | Save a note at the current timestamp |
 | **Ctrl+B** | Mark this moment ★ important (optional caption from the note field) |
 | **Ctrl+C** / **Ctrl+Q** | Stop recording |
-| Spoken stop phrase | "stop recording" / "end meeting" / "stop listening" |
+| Spoken stop phrase | "stop recording" / "end meeting" / "stop listening" (exact utterance; not written to the log) |
+
+Spoken stop phrases end the session like Ctrl+C and are **not** appended to the
+`.log` / `.jsonl` transcript. Files are created mode `0600` (owner-only).
 
 JSONL events include `offset_ms` from meeting start for alignment:
 

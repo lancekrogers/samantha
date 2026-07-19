@@ -165,6 +165,7 @@ func (m *meetingModel) startLoop() tea.Cmd {
 		defer close(ch)
 		sink := &meetingUISink{ch: ch, phrases: opts.StopPhrases, stop: opts.Cancel, writer: opts.Writer}
 		hooks := listen.Hooks{
+			// Phase/level/partial are high-rate and droppable under backpressure.
 			OnPhase:   func(phase string) { trySendMeeting(ch, meetingPhaseMsg(phase)) },
 			OnLevel:   func(level float64) { trySendMeeting(ch, meetingLevelMsg(level)) },
 			OnPartial: func(text string) { trySendMeeting(ch, meetingPartialMsg(text)) },
@@ -174,77 +175,11 @@ func (m *meetingModel) startLoop() tea.Cmd {
 			capture, provider = demoMeetingDeps()
 		}
 		err := listen.LoopWithHooks(opts.Ctx, capture, provider, sink, hooks)
-		trySendMeeting(ch, meetingLoopDoneMsg{err: err})
+		// Loop completion must not be dropped: UI uses it to exit cleanly.
+		sendMeeting(ch, meetingLoopDoneMsg{err: err})
 	}()
 
 	return waitMeetingCh(ch)
-}
-
-func waitMeetingCh(ch <-chan tea.Msg) tea.Cmd {
-	return func() tea.Msg {
-		msg, ok := <-ch
-		if !ok {
-			return meetingLoopDoneMsg{}
-		}
-		return meetingChMsg{msg: msg, ch: ch}
-	}
-}
-
-type meetingChMsg struct {
-	msg tea.Msg
-	ch  <-chan tea.Msg
-}
-
-func trySendMeeting(ch chan<- tea.Msg, msg tea.Msg) {
-	select {
-	case ch <- msg:
-	default:
-	}
-}
-
-type meetingUISink struct {
-	ch      chan<- tea.Msg
-	phrases map[string]bool
-	stop    context.CancelFunc
-	writer  *meetinglog.Writer
-}
-
-func (s *meetingUISink) OnUtterance(u listen.Utterance) error {
-	if s.phrases != nil && s.phrases[normalizeMeetingStop(u.Text)] {
-		if s.stop != nil {
-			s.stop()
-		}
-		return nil
-	}
-	if s.writer != nil {
-		if err := s.writer.OnUtterance(u); err != nil {
-			return err
-		}
-	}
-	trySendMeeting(s.ch, meetingUtteranceMsg(u))
-	return nil
-}
-
-func (s *meetingUISink) OnTimeout() error {
-	if s.writer != nil {
-		return s.writer.OnTimeout()
-	}
-	return nil
-}
-
-func (s *meetingUISink) OnError(err error) error {
-	if s.writer != nil {
-		if werr := s.writer.OnError(err); werr != nil {
-			return werr
-		}
-	}
-	trySendMeeting(s.ch, meetingErrorMsg{err: err})
-	return nil
-}
-
-func normalizeMeetingStop(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	return strings.TrimSpace(strings.TrimRight(s, ".,!?"))
 }
 
 func (m meetingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {

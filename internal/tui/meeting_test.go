@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -142,5 +143,86 @@ func TestFormatMeetingDuration(t *testing.T) {
 	}
 	if got := formatMeetingDuration(3661 * time.Second); got != "1:01:01" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestTrySendMeetingDropsWhenFull(t *testing.T) {
+	ch := make(chan tea.Msg) // unbuffered, no receiver
+	trySendMeeting(ch, meetingLevelMsg(0.5))
+	// Must return without blocking.
+}
+
+func TestSendMeetingDeliversWhenCapacityTight(t *testing.T) {
+	ch := make(chan tea.Msg, 1)
+	ch <- meetingLevelMsg(0.1) // fill the only slot with droppable noise
+	done := make(chan struct{})
+	go func() {
+		sendMeeting(ch, meetingUtteranceMsg(listen.Utterance{Text: "keep me", At: time.Now()}))
+		close(done)
+	}()
+	// Drain noise so the durable send can complete.
+	<-ch
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sendMeeting blocked forever with a live consumer")
+	}
+	msg := <-ch
+	if u, ok := msg.(meetingUtteranceMsg); !ok || listen.Utterance(u).Text != "keep me" {
+		t.Fatalf("durable msg = %#v", msg)
+	}
+}
+
+func TestMeetingUISinkOmitsStopPhraseFromLog(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stop.log")
+	w, err := meetinglog.Create(path, "Stop test", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopped := false
+	ch := make(chan tea.Msg, 4)
+	sink := &meetingUISink{
+		ch:      ch,
+		phrases: map[string]bool{"stop recording": true},
+		stop:    func() { stopped = true },
+		writer:  w,
+	}
+	if err := sink.OnUtterance(listen.Utterance{Text: "hello team", At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.OnUtterance(listen.Utterance{Text: "Stop recording.", At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if !stopped {
+		t.Fatal("stop phrase must cancel the session")
+	}
+	sum, err := w.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Utterances != 1 {
+		t.Fatalf("utterances = %d, want 1 (stop phrase omitted)", sum.Utterances)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(string(data)), "stop recording") {
+		t.Fatalf("stop phrase leaked into log:\n%s", data)
+	}
+	// Only the real utterance should have been UI-sent.
+	select {
+	case msg := <-ch:
+		if u, ok := msg.(meetingUtteranceMsg); !ok || listen.Utterance(u).Text != "hello team" {
+			t.Fatalf("first UI msg = %#v", msg)
+		}
+	default:
+		t.Fatal("expected UI utterance for non-stop speech")
+	}
+	select {
+	case msg := <-ch:
+		t.Fatalf("stop phrase must not emit UI utterance, got %#v", msg)
+	default:
 	}
 }

@@ -155,6 +155,33 @@ func TestCreateRefusesToOverwrite(t *testing.T) {
 	}
 }
 
+func TestCreateUsesOwnerOnlyPermissions(t *testing.T) {
+	// Meeting transcripts are private (personal speech / credentials spoken
+	// aloud). Create must not leave world-readable logs.
+	path := filepath.Join(t.TempDir(), "private.log")
+	w, err := Create(path, "Private", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsonl := w.JSONLPath()
+	if _, err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{path, jsonl} {
+		st, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mode := st.Mode().Perm()
+		if mode&0o077 != 0 {
+			t.Fatalf("%s mode = %04o, want owner-only (no group/other bits)", p, mode)
+		}
+		if mode&0o600 != 0o600 {
+			t.Fatalf("%s mode = %04o, want owner read+write", p, mode)
+		}
+	}
+}
+
 func TestWriterReportsFailedUtteranceWithoutCountingIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "failed.log")
 	w, err := Create(path, "Failure test", "fake")

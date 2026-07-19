@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/huh"
 
 	"github.com/lancekrogers/samantha/internal/listen"
+	"github.com/lancekrogers/samantha/internal/meeting"
 )
 
 func TestResolveMeetingDescription(t *testing.T) {
@@ -83,7 +84,7 @@ func TestStopPhraseSetMatchesExactNormalizedOnly(t *testing.T) {
 		"we should stop recording now": false,
 		"keep going":                   false,
 	} {
-		if got := set[normalizeStopPhrase(phrase)]; got != want {
+		if got := set[meeting.NormalizeStopPhrase(phrase)]; got != want {
 			t.Fatalf("match(%q) = %v, want %v", phrase, got, want)
 		}
 	}

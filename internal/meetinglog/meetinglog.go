@@ -81,12 +81,13 @@ type Writer struct {
 // Create opens path (.log) exclusively and a sibling .jsonl file. Path must
 // end in .log (or any extension); the JSONL path replaces/adds .jsonl.
 func Create(path, description, sttLabel string) (*Writer, error) {
-	logF, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	// 0o600: meeting transcripts are private (credentials, personal speech).
+	logF, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("meetinglog: create %s: %w", path, err)
 	}
 	jsonlPath := jsonlPathFor(path)
-	jsonlF, err := os.OpenFile(jsonlPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	jsonlF, err := os.OpenFile(jsonlPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		_ = logF.Close()
 		_ = os.Remove(path)

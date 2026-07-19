@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/meeting"
 )
 
 // meetingOptions carries the resolved `meeting record` invocation.
@@ -23,12 +24,6 @@ type meetingOptions struct {
 	JSON        bool
 	StopPhrases []string
 }
-
-// defaultStopPhrases end a recording when spoken. Matching is exact
-// full-utterance equality after normalization (never substring), mirroring
-// internal/app's exitPhrases semantics — a meeting that merely *mentions*
-// stopping must not stop.
-var defaultStopPhrases = []string{"stop recording", "end meeting", "stop listening"}
 
 // newMeetingCmd builds the `samantha meeting` command group.
 func newMeetingCmd() *cobra.Command {
@@ -66,8 +61,13 @@ from the start of the meeting.
 --no-tui and --json keep plain line-oriented sinks (still dual-write log+jsonl).
 
 Stop with Ctrl+C / Ctrl+Q or by saying one of the stop phrases ("stop recording",
-"end meeting", "stop listening" — exact phrase, not substring; --stop-phrase
-adds more).
+"end meeting", "stop listening" — exact full utterance after normalization, not
+substring; --stop-phrase adds more). Matching stop phrases end the session and
+are intentionally omitted from the transcript and JSONL (they are commands, not
+content).
+
+Meeting files are created mode 0600 (owner-only) because transcripts may contain
+sensitive speech.
 
 Examples:
   samantha meeting record
@@ -174,23 +174,7 @@ func meetingFilename(description string, now time.Time) string {
 	return fmt.Sprintf("%s-%s.log", meetingSlug(description), now.Format("20060102-150405"))
 }
 
-// normalizeStopPhrase mirrors internal/app's normalizeCommand: lowercase,
-// trim, strip trailing punctuation that STT output carries.
-func normalizeStopPhrase(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	return strings.TrimSpace(strings.TrimRight(s, ".,!?"))
-}
-
-// stopPhraseSet builds the normalized match set from defaults + extras.
+// stopPhraseSet is the shared meeting stop-phrase set (CLI + TUI).
 func stopPhraseSet(extra []string) map[string]bool {
-	set := make(map[string]bool, len(defaultStopPhrases)+len(extra))
-	for _, p := range defaultStopPhrases {
-		set[normalizeStopPhrase(p)] = true
-	}
-	for _, p := range extra {
-		if n := normalizeStopPhrase(p); n != "" {
-			set[n] = true
-		}
-	}
-	return set
+	return meeting.StopPhraseSet(extra)
 }
