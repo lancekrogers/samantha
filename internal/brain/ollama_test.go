@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/ollama/ollama/api"
@@ -99,6 +100,55 @@ func TestThinkStreamStreamsDeltasWithToolsEnabled(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("chunk %d = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// Tool-only turns used to close the stream with zero chunks, so the TUI showed
+// tool activity and then nothing — "looking into it" with no reply.
+func TestThinkStreamFallbackAfterToolOnlyTurn(t *testing.T) {
+	var reqs int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqs++
+		if reqs == 1 {
+			// First response: tool call, no text.
+			line := `{"model":"m","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"list_files","arguments":{"path":"."}}}]},"done":true}`
+			_, _ = io.WriteString(w, line+"\n")
+			return
+		}
+		// Second response after tool results: empty content again.
+		_, _ = io.WriteString(w, `{"model":"m","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop"}`+"\n")
+	}))
+	t.Cleanup(srv.Close)
+	base, _ := url.Parse(srv.URL)
+
+	o := &OllamaBrain{
+		client:  api.NewClient(base, http.DefaultClient),
+		model:   "m",
+		workDir: t.TempDir(),
+		cfg:     &config.Config{MaxHistory: 10},
+	}
+
+	stream, err := o.ThinkStream(context.Background(), "list files", StreamOptions{ToolsEnabled: true})
+	if err != nil {
+		t.Fatalf("ThinkStream() error = %v", err)
+	}
+
+	var chunks []string
+	for c := range stream.Chunks {
+		chunks = append(chunks, c)
+	}
+	if res := <-stream.Done; res.Err != nil {
+		t.Fatalf("stream done error = %v", res.Err)
+	}
+	if reqs < 2 {
+		t.Fatalf("expected tool loop to re-request model, got %d chat requests", reqs)
+	}
+	joined := strings.Join(chunks, "")
+	if joined != fallbackResponse {
+		t.Fatalf("streamed %q, want fallback %q after empty tool-only turn", joined, fallbackResponse)
+	}
+	if len(o.history) == 0 || o.history[len(o.history)-1].Content != fallbackResponse {
+		t.Fatalf("history tail = %+v, want fallback assistant message", o.history)
 	}
 }
 

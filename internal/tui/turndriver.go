@@ -269,6 +269,12 @@ func (m *conversationModel) handleSubmit() tea.Cmd {
 		m.editor.sync("", 0)
 		m.editor.resetUndo()
 		m.syncComposer(previous)
+		// Show the bubble immediately — cancel + text dispatch can take a
+		// full STT shutdown, and clearing the composer otherwise looks like
+		// the message was dropped.
+		if !isNonChatSubmit(text) {
+			m.echoUserTurn(text)
+		}
 		m.turnState = turnVoiceCanceling
 		if m.turnCancel != nil {
 			m.turnCancel()
@@ -278,6 +284,16 @@ func (m *conversationModel) handleSubmit() tea.Cmd {
 		// A response or text turn owns the pipeline; leave the draft alone.
 		return nil
 	}
+}
+
+// isNonChatSubmit reports slash commands and built-in control phrases that
+// must not leave a user bubble in the transcript.
+func isNonChatSubmit(text string) bool {
+	if _, _, _, slash := parseSlashCommand(text); slash {
+		return true
+	}
+	cmd := app.NormalizeCommand(text)
+	return app.IsExitCommand(cmd) || app.IsClearCommand(cmd)
 }
 
 // submitText applies the command policy to typed input — commands never reach
@@ -306,6 +322,11 @@ func (m *conversationModel) submitText(text string) tea.Cmd {
 
 	}
 
+	// Idle submit path: echo now. Cancel path already echoed in handleSubmit;
+	// echoUserTurn is idempotent via pendingUserEcho on the later UserInput.
+	if m.pendingUserEcho != text {
+		m.echoUserTurn(text)
+	}
 	return m.dispatchTextTurn(text)
 }
 

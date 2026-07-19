@@ -53,6 +53,11 @@ type conversationModel struct {
 	// turn, rendered live beneath the transcript until ResponseReady finalizes
 	// it into transcript. Empty when no turn is streaming.
 	streamingAgent string
+	// pendingUserEcho is the last optimistically rendered user turn text. When
+	// the pipeline later emits matching UserInput, the transcript skip avoids
+	// a duplicate bubble (typed submit shows immediately; voice still waits
+	// for the bus event).
+	pendingUserEcho string
 
 	bridge      *eventBridge
 	lastMetrics events.TurnMetrics
@@ -71,12 +76,19 @@ type conversationModel struct {
 	outputMuted     bool
 	outputAvailable bool
 	activityFocused bool
-	startedAt       time.Time
-	sessionID       string
-	inputDevice     string
-	outputDevice    string
-	voiceFailures   int
-	quitting        bool
+	// followChat / followActivity track whether the user is pinned to the
+	// tail. bubbles/viewport AtBottom() alone is not enough: reflow (voice
+	// panel open/close) shrinks height without adjusting YOffset, which
+	// falsely reports "scrolled up" and freezes auto-scroll for the rest of
+	// the session.
+	followChat     bool
+	followActivity bool
+	startedAt      time.Time
+	sessionID      string
+	inputDevice    string
+	outputDevice   string
+	voiceFailures  int
+	quitting       bool
 
 	commandQuery     string
 	commandSelection int
@@ -110,6 +122,8 @@ func newConversation(agentName string) conversationModel {
 		agentName:      agentName,
 		input:          input,
 		canCancelVoice: &atomic.Bool{},
+		followChat:     true,
+		followActivity: true,
 		startedAt:      time.Now(),
 		reducedMotion:  anim.ReducedMotion(),
 	}
@@ -213,9 +227,11 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 			return m.updateScroll(msg)
 		case "ctrl+home":
 			m.activeViewport().GotoTop()
+			m.syncFollowFromViewports()
 			return m, nil
 		case "ctrl+end":
 			m.activeViewport().GotoBottom()
+			m.syncFollowFromViewports()
 			return m, nil
 		case "home":
 			// Activity always jumps; Chat only when the composer is empty so
@@ -223,11 +239,13 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 			// line-start/end editing while drafting.
 			if m.activityFocused || m.input.Value() == "" {
 				m.activeViewport().GotoTop()
+				m.syncFollowFromViewports()
 				return m, nil
 			}
 		case "end":
 			if m.activityFocused || m.input.Value() == "" {
 				m.activeViewport().GotoBottom()
+				m.syncFollowFromViewports()
 				return m, nil
 			}
 		case "up", "down":
@@ -276,6 +294,8 @@ func (m *conversationModel) reflow() {
 	if m.width <= 0 || m.height <= 0 {
 		return
 	}
+	// Capture follow intent before height changes invalidate AtBottom().
+	m.syncFollowFromViewports()
 	inputHeight := conversationInputHeight
 	if m.height < 12 {
 		inputHeight = 1
@@ -293,6 +313,8 @@ func (m *conversationModel) reflow() {
 		m.viewport = viewport.New(max(m.width, 1), vpHeight)
 		m.activityViewport = viewport.New(max(m.width, 1), vpHeight)
 		m.ready = true
+		m.followChat = true
+		m.followActivity = true
 	} else {
 		m.viewport.Width = max(m.width, 1)
 		m.viewport.Height = vpHeight
@@ -303,6 +325,33 @@ func (m *conversationModel) reflow() {
 	m.input.SetHeight(inputHeight)
 	m.refreshContent()
 	m.refreshActivity()
+	m.applyFollow()
+}
+
+// syncFollowFromViewports updates the sticky follow flags from the current
+// scroll position. Call before mutating content or viewport height so a
+// reflow cannot flip "at bottom" into a permanent freeze.
+func (m *conversationModel) syncFollowFromViewports() {
+	if !m.ready {
+		m.followChat = true
+		m.followActivity = true
+		return
+	}
+	m.followChat = m.viewport.AtBottom()
+	m.followActivity = m.activityViewport.AtBottom()
+}
+
+// applyFollow pins each pane to the tail when its follow flag is set.
+func (m *conversationModel) applyFollow() {
+	if !m.ready {
+		return
+	}
+	if m.followChat {
+		m.viewport.GotoBottom()
+	}
+	if m.followActivity {
+		m.activityViewport.GotoBottom()
+	}
 }
 
 func (m *conversationModel) activeViewport() *viewport.Model {
@@ -319,23 +368,43 @@ func (m conversationModel) updateScroll(msg tea.Msg) (conversationModel, tea.Cmd
 	} else {
 		m.viewport, cmd = m.viewport.Update(msg)
 	}
+	// Manual scroll owns follow: pgup freezes the tail; jumping to bottom
+	// (End / ctrl+end) re-enables auto-follow for new messages.
+	m.syncFollowFromViewports()
 	return m, cmd
 }
 
 // appendTranscript adds rendered lines to the transcript, following the tail
-// only when the user has not scrolled up to review history.
+// when followChat is set. Sticky flags (not live AtBottom) own follow intent
+// so a prior reflow cannot freeze the chat mid-session.
 func (m *conversationModel) appendTranscript(lines ...string) {
-	follow := !m.ready || m.viewport.AtBottom()
 	m.transcript = append(m.transcript, lines...)
 	m.refreshContent()
-	if follow {
-		m.viewport.GotoBottom()
-	}
+	m.applyFollow()
 }
 
 func (m *conversationModel) clearTranscript() {
 	m.transcript = nil
+	m.pendingUserEcho = ""
 	m.refreshContent()
+	if m.followChat {
+		m.viewport.GotoBottom()
+	}
+}
+
+// echoUserTurn renders the user's message into Chat immediately. Typed
+// submits call this so clearing the composer never looks like the message
+// vanished while a voice turn cancels or the brain is reached. Matching
+// UserInput events skip a second bubble via pendingUserEcho.
+func (m *conversationModel) echoUserTurn(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	m.activityFocused = false
+	m.followChat = true
+	m.pendingUserEcho = text
+	m.appendTranscript(renderUserTurn(text))
 }
 
 func (m *conversationModel) setStatus(text string, isErr bool) {
@@ -427,18 +496,14 @@ func (m *conversationModel) refreshContent() {
 }
 
 // appendStreamingDelta grows the in-progress agent turn and re-renders,
-// following the tail unless the user has scrolled up to review history.
+// following the tail when followChat is set.
 func (m *conversationModel) appendStreamingDelta(text string) {
-	follow := !m.ready || m.viewport.AtBottom()
 	m.streamingAgent += text
 	m.refreshContent()
-	if follow {
-		m.viewport.GotoBottom()
-	}
+	m.applyFollow()
 }
 
 func (m *conversationModel) appendActivity(stage, detail string, elapsed time.Duration) {
-	follow := !m.ready || m.activityViewport.AtBottom()
 	m.activity = append(m.activity, activityEntry{
 		at: time.Since(m.startedAt), stage: stage, detail: detail, elapsed: elapsed,
 	})
@@ -446,9 +511,7 @@ func (m *conversationModel) appendActivity(stage, detail string, elapsed time.Du
 		m.activity = append([]activityEntry(nil), m.activity[len(m.activity)-500:]...)
 	}
 	m.refreshActivity()
-	if follow {
-		m.activityViewport.GotoBottom()
-	}
+	m.applyFollow()
 }
 
 func (m *conversationModel) refreshActivity() {
@@ -535,6 +598,15 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		}
 
 	case events.STTPhase:
+		// Skip consecutive "listening" ticks from the no-speech restart loop.
+		if e.Phase == "listening" && len(m.activity) > 0 {
+			last := m.activity[len(m.activity)-1]
+			if last.stage == "input" && last.detail == "listening" {
+				m.setVoiceMode(anim.ModeListening)
+				m.setStatus("Listening", false)
+				break
+			}
+		}
 		m.appendActivity("input", e.Phase, e.Elapsed)
 		switch e.Phase {
 		case "listening":
@@ -556,6 +628,15 @@ func (m *conversationModel) handleEvent(e events.Event) {
 
 	case events.UserInput:
 		m.appendActivity("input", "final", 0)
+		// Typed submits already echoed the bubble; voice transcripts still need
+		// one. Dedupe on exact text so a delayed cancel path cannot double-post.
+		if m.pendingUserEcho != "" && m.pendingUserEcho == e.Text {
+			m.pendingUserEcho = ""
+			break
+		}
+		m.pendingUserEcho = ""
+		m.activityFocused = false
+		m.followChat = true
 		m.appendTranscript(renderUserTurn(e.Text))
 
 	case events.ThinkingStarted:
@@ -565,6 +646,7 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		if m.streamingAgent != "" {
 			m.streamingAgent = ""
 			m.refreshContent()
+			m.applyFollow()
 		}
 		m.appendActivity("model", "started", 0)
 		m.setVoiceMode(anim.ModeThinking)
@@ -623,17 +705,28 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		m.streamingAgent = ""
 		if e.Response != "" {
 			m.appendTranscript(renderAgentTurn(m.agentName, e.Response), "")
-		} else {
+		} else if e.Interrupted {
 			m.refreshContent()
+			m.applyFollow()
+		} else {
+			// Tool-only or empty model finishes must still leave a visible
+			// trail so "looking into it" never ends in total silence.
+			m.appendTranscript(dimStyle.Render("  (no reply — model finished without text)"))
 		}
 
 	case events.ConversationCleared:
 		m.clearTranscript()
+		m.followChat = true
 		m.appendTranscript(dimStyle.Render("  Conversation cleared."))
 
 	case events.TurnMetrics:
-		m.appendActivity("turn", e.Outcome, e.PlaybackCompleteElapsed)
 		m.lastMetrics = e
+		// Idle no-speech timeouts restart listening every ~listen_timeout
+		// seconds. Logging each one floods Activity without helping the user.
+		if e.Outcome == "timed_out" {
+			break
+		}
+		m.appendActivity("turn", e.Outcome, e.PlaybackCompleteElapsed)
 		if line := formatTurnMetrics(e); line != "" {
 			m.appendTranscript(dimStyle.Render("    " + line))
 		}

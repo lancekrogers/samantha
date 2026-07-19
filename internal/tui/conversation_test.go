@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/tui/anim"
 )
 
 func sizedConversation(t *testing.T, width, height int) conversationModel {
@@ -257,6 +258,9 @@ func TestConversationScrollAndFollow(t *testing.T) {
 	if m.viewport.AtBottom() {
 		t.Fatal("pgup did not scroll away from the bottom")
 	}
+	if m.followChat {
+		t.Fatal("pgup must clear sticky chat follow")
+	}
 
 	// New content must not yank the view back down while reviewing history.
 	m.appendTranscript("fresh line while scrolled up")
@@ -268,10 +272,102 @@ func TestConversationScrollAndFollow(t *testing.T) {
 	if !m.viewport.AtBottom() {
 		t.Error("end key did not jump to bottom")
 	}
+	if !m.followChat {
+		t.Fatal("ctrl+end must re-enable sticky chat follow")
+	}
 
 	m.appendTranscript("tail line")
 	if !m.viewport.AtBottom() {
 		t.Error("append at bottom must keep following the tail")
+	}
+}
+
+// Voice-panel reflow shrinks the chat viewport. Without sticky follow, AtBottom
+// flips false and every later message stays off-screen.
+func TestConversationFollowSurvivesVoicePanelReflow(t *testing.T) {
+	m := sizedConversation(t, 80, 24)
+	for i := range 40 {
+		m.appendTranscript(fmt.Sprintf("history %d", i))
+	}
+	if !m.viewport.AtBottom() || !m.followChat {
+		t.Fatal("precondition: following the chat tail")
+	}
+
+	// Thinking opens the voice strip and reflows chrome — the classic path that
+	// used to strand YOffset above the new max after height shrinks.
+	m.setVoiceMode(anim.ModeThinking)
+	if !m.viewport.AtBottom() {
+		t.Fatalf("reflow while following must keep chat pinned to bottom (YOffset=%d)", m.viewport.YOffset)
+	}
+
+	m.echoUserTurn("can you see this?")
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "can you see this?") {
+		t.Fatalf("user message missing after reflow:\n%s", view)
+	}
+	if !m.viewport.AtBottom() {
+		t.Fatal("echo after reflow must still pin to bottom")
+	}
+}
+
+func TestEchoUserTurnDedupesMatchingUserInput(t *testing.T) {
+	m := sizedConversation(t, 80, 24)
+	m.echoUserTurn("hello from keyboard")
+	m.handleEvent(events.UserInput{Text: "hello from keyboard"})
+
+	view := stripANSI(m.View())
+	if got := strings.Count(view, "hello from keyboard"); got != 1 {
+		t.Fatalf("user text rendered %d times, want 1 (optimistic + bus dedupe):\n%s", got, view)
+	}
+	if got := strings.Count(view, "› You"); got != 1 {
+		t.Fatalf("user bubbles = %d, want 1:\n%s", got, view)
+	}
+	if m.pendingUserEcho != "" {
+		t.Fatalf("pendingUserEcho = %q after matching UserInput, want empty", m.pendingUserEcho)
+	}
+}
+
+func TestVoiceUserInputStillRendersWithoutEcho(t *testing.T) {
+	m := sizedConversation(t, 80, 24)
+	m.handleEvent(events.UserInput{Text: "spoken aloud"})
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "spoken aloud") {
+		t.Fatalf("voice UserInput missing from chat:\n%s", view)
+	}
+}
+
+func TestTimedOutMetricsDoNotSpamActivity(t *testing.T) {
+	m := sizedConversation(t, 80, 24)
+	m.handleEvent(events.STTPhase{Phase: "listening"})
+	m.handleEvent(events.TurnMetrics{Outcome: "timed_out"})
+	m.handleEvent(events.STTPhase{Phase: "listening"})
+	m.handleEvent(events.TurnMetrics{Outcome: "timed_out"})
+	m.handleEvent(events.STTPhase{Phase: "listening"})
+
+	var details []string
+	for _, e := range m.activity {
+		details = append(details, e.stage+":"+e.detail)
+	}
+	// One listening row; consecutive restarts and timed_out are suppressed.
+	if got := strings.Count(strings.Join(details, ","), "input:listening"); got != 1 {
+		t.Fatalf("listening activity rows = %v, want a single listening entry", details)
+	}
+	for _, d := range details {
+		if strings.Contains(d, "timed_out") {
+			t.Fatalf("timed_out must not spam activity: %v", details)
+		}
+	}
+}
+
+func TestEmptyResponseReadyLeavesVisibleTrace(t *testing.T) {
+	m := sizedConversation(t, 80, 24)
+	m.handleEvent(events.ToolCallStarted{Name: "list_files", Summary: "."})
+	m.handleEvent(events.ToolCallFinished{Name: "list_files", Preview: "a/"})
+	m.handleEvent(events.ResponseReady{Response: ""})
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "no reply") {
+		t.Fatalf("empty non-interrupted ResponseReady must leave a chat trail:\n%s", view)
 	}
 }
 

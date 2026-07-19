@@ -153,11 +153,13 @@ func (b *Brain) ThinkStream(ctx context.Context, input string, streamOpts Stream
 			return
 		}
 
-		response := fullResponse.String()
-		if response != "" {
-			b.history = append(b.history, Turn{Role: "samantha", Content: response})
-			b.trimHistory()
+		response, finErr := finalizeStreamedText(ctx, out, fullResponse.String())
+		if finErr != nil {
+			done <- StreamResult{Err: finErr}
+			return
 		}
+		b.history = append(b.history, Turn{Role: "samantha", Content: response})
+		b.trimHistory()
 		done <- StreamResult{}
 	}()
 
@@ -269,4 +271,25 @@ var (
 func cleanForVoice(s string) string {
 	s = fillerRE.ReplaceAllString(markdownReplacer.Replace(s), "")
 	return strings.TrimSpace(textclean.StripUnsupportedKokoroMarks(s))
+}
+
+// finalizeStreamedText cleans a streamed assistant reply and guarantees a
+// speakable/displayable string. When the model finished tool calls (or the
+// stream) with no usable text, the canned fallback is streamed so the TUI and
+// TTS do not silently end the turn with an empty ResponseReady.
+func finalizeStreamedText(ctx context.Context, out chan<- string, raw string) (string, error) {
+	cleaned := cleanForVoice(raw)
+	if cleaned != "" {
+		return cleaned, nil
+	}
+	// Nothing usable: stream the fallback only when no raw text was produced
+	// (tool-only turns). If raw had content that cleaning removed, the TUI
+	// already showed those deltas — still record the fallback in history so
+	// the next turn is not left without an assistant message.
+	if strings.TrimSpace(raw) == "" {
+		if err := sendChunk(ctx, out, fallbackResponse); err != nil {
+			return "", err
+		}
+	}
+	return fallbackResponse, nil
 }

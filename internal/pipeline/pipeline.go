@@ -18,6 +18,11 @@ import (
 
 const voiceQueueDepth = 2
 
+// defaultBrainTurnTimeout bounds model + tool work for one conversational
+// turn. Without this, a hung Ollama/Claude stream after tools leaves the TUI
+// stuck on "thinking" forever while listening never resumes.
+const defaultBrainTurnTimeout = 3 * time.Minute
+
 type captureMonitor interface {
 	Subscribe(buffer int) (int, <-chan []float32)
 	Unsubscribe(id int)
@@ -47,12 +52,36 @@ type Pipeline struct {
 	// PlaybackStallTimeout overrides the watchdog timeout; zero uses the default.
 	PlaybackStallTimeout time.Duration
 
+	// BrainTurnTimeout bounds ThinkStream (model + tools) per turn. Zero uses
+	// defaultBrainTurnTimeout; negative disables the bound.
+	BrainTurnTimeout time.Duration
+
 	// keepCapture preserves the capture buffer into the next turn after a
 	// barge-in, where the buffered audio is the user already mid-utterance.
 	keepCapture bool
 
 	// outputMuted is toggled by interactive clients while a turn may be active.
 	outputMuted atomic.Bool
+}
+
+// brainTimeout returns the per-turn model deadline and whether it is armed.
+func (p *Pipeline) brainTimeout() (time.Duration, bool) {
+	if p.BrainTurnTimeout < 0 {
+		return 0, false
+	}
+	if p.BrainTurnTimeout > 0 {
+		return p.BrainTurnTimeout, true
+	}
+	return defaultBrainTurnTimeout, true
+}
+
+// withBrainTimeout derives a child context that expires if the model/tools
+// stall. Parent cancellation still wins immediately.
+func (p *Pipeline) withBrainTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if d, ok := p.brainTimeout(); ok {
+		return context.WithTimeout(ctx, d)
+	}
+	return context.WithCancel(ctx)
 }
 
 // SetOutputMuted enables or disables spoken responses without rebuilding the
@@ -193,8 +222,9 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 	p.emit(events.ThinkingStarted{})
 
 	// turnCtx scopes the whole turn so the playback watchdog can abort the brain
-	// stream too — not just the derived playback context.
-	turnCtx, turnCancel := context.WithCancel(ctx)
+	// stream too — not just the derived playback context. Brain work is further
+	// bounded so a hung model after tools cannot wedge the conversation loop.
+	turnCtx, turnCancel := p.withBrainTimeout(ctx)
 	defer turnCancel()
 
 	brainStream, err := p.Brain.ThinkStream(turnCtx, text, brain.StreamOptions{
@@ -210,6 +240,12 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 
 	fullResponse, interrupted, err := p.streamResponse(turnCtx, turnCancel, brainStream, true, metrics, turn)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			// Model/tool stall — distinct from STT timed_out (no speech).
+			p.emit(events.Error{Stage: "brain", Message: "model timed out before finishing a reply"})
+			turn.finish(TurnFailed)
+			return text, fmt.Errorf("brain: %w", err)
+		}
 		if interrupted || errors.Is(err, context.Canceled) {
 			turn.finish(TurnInterrupted)
 		} else {
@@ -261,7 +297,12 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	p.emit(events.ThinkingStarted{})
 	thinkingStarted := time.Now()
 
-	stream, err := p.Brain.ThinkStream(ctx, input, brain.StreamOptions{
+	// Bound model + tools so a hung Ollama chat after tool results cannot leave
+	// the TUI forever on "thinking" / last tool status.
+	brainCtx, brainCancel := p.withBrainTimeout(ctx)
+	defer brainCancel()
+
+	stream, err := p.Brain.ThinkStream(brainCtx, input, brain.StreamOptions{
 		ToolsEnabled: p.VoiceToolsEnabled,
 		OnToolStart:  p.toolStartHook(),
 		OnToolEnd:    p.toolEndHook(),
@@ -274,8 +315,11 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	// Stream the reply so the TUI can render it token-by-token, then fall back
 	// to the existing whole-response synthesis path below. ResponseStreamingStarted
 	// and per-chunk ResponseDelta events are emitted inside observeStream.
-	response, err := p.collectTextStream(ctx, stream, metrics)
+	response, err := p.collectTextStream(brainCtx, stream, metrics)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			p.emit(events.Error{Stage: "brain", Message: "model timed out before finishing a reply"})
+		}
 		turn.finish(TurnFailed)
 		return fmt.Errorf("brain: %w", err)
 	}

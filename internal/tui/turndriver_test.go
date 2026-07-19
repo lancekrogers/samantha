@@ -130,6 +130,15 @@ func TestTextSubmitCancelsListeningVoiceTurn(t *testing.T) {
 	if m.input.Value() != "" {
 		t.Error("input not cleared on submit")
 	}
+	// Composer is empty immediately — the bubble must already be in Chat so
+	// the user does not think Enter dropped the message during cancel.
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "typed instead") {
+		t.Fatalf("typed message missing from chat during cancel wait:\n%s", view)
+	}
+	if m.activityFocused {
+		t.Fatal("submit must switch focus back to Chat")
+	}
 
 	var msg tea.Msg
 	select {
@@ -151,6 +160,29 @@ func TestTextSubmitCancelsListeningVoiceTurn(t *testing.T) {
 	}
 	if got := runner.texts(); len(got) != 1 || got[0] != "typed instead" {
 		t.Fatalf("RunTurnTextMode inputs = %v, want [typed instead]", got)
+	}
+	// Bus UserInput after dispatch must not double the optimistic bubble.
+	m.handleEvent(events.UserInput{Text: "typed instead"})
+	if got := strings.Count(stripANSI(m.View()), "typed instead"); got != 1 {
+		t.Fatalf("user text rendered %d times after UserInput, want 1", got)
+	}
+}
+
+func TestIdleTextSubmitEchoesImmediately(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	m, _ := startedConversation(t, runner, false)
+	m.turnState = turnIdle
+
+	m, cmd := typeAndEnter(m, "hello chat")
+	if cmd == nil {
+		t.Fatal("idle submit must dispatch a text turn")
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "hello chat") {
+		t.Fatalf("idle typed message missing from chat before pipeline events:\n%s", view)
+	}
+	if m.turnState != turnTextRunning {
+		t.Fatalf("turnState = %d, want text running", m.turnState)
 	}
 }
 
