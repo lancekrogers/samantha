@@ -130,6 +130,40 @@ func useMeetingRecordTUI(opts meetingOptions) bool {
 	return isatty.IsTerminal(os.Stdout.Fd()) && isatty.IsTerminal(os.Stdin.Fd())
 }
 
+// meetingRuntimeBuilder powers the main launcher "Record meeting" entry.
+func meetingRuntimeBuilder() appTUI.MeetingBuilder {
+	return func(ctx context.Context, description string, progress func(string, float64)) (*appTUI.MeetingRuntime, error) {
+		cfg, err := config.Load()
+		if err != nil {
+			return nil, err
+		}
+		capture, provider, sttLabel, cleanup, err := buildSTTOnly(ctx, cfg, progress)
+		if err != nil {
+			return nil, err
+		}
+		outDir := config.MeetingsDir()
+		if err := os.MkdirAll(outDir, 0o755); err != nil {
+			cleanup()
+			return nil, fmt.Errorf("meeting: create out dir: %w", err)
+		}
+		path := filepath.Join(outDir, meetingFilename(description, time.Now()))
+		writer, err := meetinglog.Create(path, description, sttLabel)
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
+		return &appTUI.MeetingRuntime{
+			Capture:     capture,
+			Provider:    provider,
+			Writer:      writer,
+			Description: description,
+			Path:        path,
+			StopPhrases: stopPhraseSet(nil),
+			Cleanup:     cleanup,
+		}, nil
+	}
+}
+
 func meetingAssetProgress(jsonOutput bool) func(string, float64) {
 	if jsonOutput {
 		// Machine-readable output must remain JSONL even on a first run that

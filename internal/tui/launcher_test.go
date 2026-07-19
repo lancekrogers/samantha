@@ -80,6 +80,29 @@ func TestLauncherOffersTailscaleAndOpensItsScreen(t *testing.T) {
 	t.Fatal("launcher has no Tailscale action")
 }
 
+func TestLauncherOffersRecordMeeting(t *testing.T) {
+	m := newLauncher(&config.Config{}, nil)
+	for i, item := range m.items {
+		if item.action != actionMeeting {
+			continue
+		}
+		if item.label != "Record meeting" {
+			t.Fatalf("meeting label = %q", item.label)
+		}
+		m.cursor = i
+		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if cmd == nil {
+			t.Fatal("meeting action returned no command")
+		}
+		msg, ok := cmd().(switchScreenMsg)
+		if !ok || screen(msg) != screenMeetingSetup {
+			t.Fatalf("meeting message = %#v", msg)
+		}
+		return
+	}
+	t.Fatal("launcher has no Record meeting action")
+}
+
 func TestLauncherCompactsForSmallTerminal(t *testing.T) {
 	saved := []session.Session{{
 		ID: "session-123", Summary: strings.Repeat("long summary ", 10), UpdatedAt: time.Now(),

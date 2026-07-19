@@ -259,7 +259,9 @@ and dual-writes a human `.log` plus a structured `.jsonl` event stream
 (utterances, typed notes, important bookmarks), each synced so a crash never
 loses what was already captured.
 
-On a TTY (not `--json` / `--no-tui`) it opens a full-screen recorder:
+From the main `samantha` launcher choose **Record meeting**, or run
+`samantha meeting record` on a TTY (not `--json` / `--no-tui`) for the
+full-screen recorder:
 
 | Control | Action |
 |---------|--------|

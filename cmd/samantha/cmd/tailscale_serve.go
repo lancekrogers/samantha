@@ -21,9 +21,9 @@ type tailscaleSelf struct {
 }
 
 type tailscaleStatusJSON struct {
-	Self             tailscaleSelf `json:"Self"`
-	MagicDNSSuffix   string        `json:"MagicDNSSuffix"`
-	CurrentTailnet   *struct {
+	Self           tailscaleSelf `json:"Self"`
+	MagicDNSSuffix string        `json:"MagicDNSSuffix"`
+	CurrentTailnet *struct {
 		MagicDNSSuffix string `json:"MagicDNSSuffix"`
 	} `json:"CurrentTailnet"`
 }

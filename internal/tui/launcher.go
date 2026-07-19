@@ -18,6 +18,7 @@ const (
 	actionContinue launcherAction = iota
 	actionNew
 	actionSessions
+	actionMeeting
 	actionTailscale
 	actionAudiobook
 	actionSettings
@@ -61,6 +62,7 @@ func newLauncher(cfg *config.Config, providers []discovery.ProviderInfo, saved .
 		m.items = append(m.items, launcherItem{label: "Browse sessions", action: actionSessions})
 	}
 	m.items = append(m.items,
+		launcherItem{label: "Record meeting", action: actionMeeting},
 		launcherItem{label: "Remote over Tailscale", action: actionTailscale},
 		launcherItem{label: "Create audiobook", action: actionAudiobook},
 		launcherItem{label: "Settings", action: actionSettings},
@@ -93,6 +95,8 @@ func (m launcherModel) Update(msg tea.Msg) (launcherModel, tea.Cmd) {
 				return m, func() tea.Msg { return startPipelineMsg{} }
 			case actionSessions:
 				return m, func() tea.Msg { return switchScreenMsg(screenSessions) }
+			case actionMeeting:
+				return m, func() tea.Msg { return switchScreenMsg(screenMeetingSetup) }
 			case actionTailscale:
 				return m, func() tea.Msg { return switchScreenMsg(screenTailscale) }
 			case actionAudiobook:

@@ -34,6 +34,9 @@ type MeetingOpts struct {
 	Description string
 	Path        string // .log path; JSONL is derived by the writer
 	StopPhrases map[string]bool
+	// Embedded is true when running inside the main Samantha App launcher
+	// flow. Stop returns meetingDoneMsg instead of quitting the process.
+	Embedded bool
 }
 
 type meetingPhaseMsg string
@@ -78,7 +81,7 @@ type meetingModel struct {
 	loopErr    error
 }
 
-// RunMeeting launches the Bubble Tea meeting recorder.
+// RunMeeting launches a standalone Bubble Tea meeting recorder (CLI path).
 func RunMeeting(opts MeetingOpts) error {
 	if opts.Ctx == nil {
 		opts.Ctx = context.Background()
@@ -89,24 +92,11 @@ func RunMeeting(opts MeetingOpts) error {
 		opts.Cancel = cancel
 	}
 	forceTUIColorProfile()
+	opts.Embedded = false
 
-	ta := textarea.New()
-	ta.Placeholder = "Type a note and press Enter…  (Ctrl+B marks this moment important)"
-	ta.CharLimit = 2000
-	ta.ShowLineNumbers = false
-	ta.SetHeight(meetingNoteHeight)
-	ta.Focus()
-	// Enter submits a note; newline via alt/ctrl enter is not needed for notes.
-	ta.KeyMap.InsertNewline.SetEnabled(false)
-
-	m := meetingModel{
-		opts:          opts,
-		note:          ta,
-		started:       time.Now(),
-		voiceMode:     anim.ModeListening,
-		status:        "Listening",
-		reducedMotion: anim.ReducedMotion(),
-	}
+	m := newEmbeddedMeeting()
+	m.opts = opts
+	m.started = time.Now()
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(opts.Ctx))
 	final, err := p.Run()
 	if err != nil {
@@ -118,8 +108,49 @@ func RunMeeting(opts MeetingOpts) error {
 	return nil
 }
 
-func (m meetingModel) Init() tea.Cmd {
+func newEmbeddedMeeting() meetingModel {
+	ta := textarea.New()
+	ta.Placeholder = "Type a note and press Enter…  (Ctrl+B marks this moment important)"
+	ta.CharLimit = 2000
+	ta.ShowLineNumbers = false
+	ta.SetHeight(meetingNoteHeight)
+	ta.Focus()
+	ta.KeyMap.InsertNewline.SetEnabled(false)
+	return meetingModel{
+		note:          ta,
+		started:       time.Now(),
+		voiceMode:     anim.ModeListening,
+		status:        "Listening",
+		reducedMotion: anim.ReducedMotion(),
+	}
+}
+
+// beginRecording attaches deps and returns the cmd that starts the listen loop
+// (used by the embedded main-menu flow after assets are ready).
+func (m *meetingModel) beginRecording(opts MeetingOpts) tea.Cmd {
+	m.opts = opts
+	m.started = time.Now()
+	m.voiceMode = anim.ModeListening
+	m.status = "Listening"
+	m.statusErr = false
+	m.lines = nil
+	m.utterances = 0
+	m.notes = 0
+	m.bookmarks = 0
+	m.errors = 0
+	m.quitting = false
+	m.loopDone = false
+	m.loopErr = nil
+	m.partial = ""
 	return tea.Batch(m.startLoop(), meetingTickCmd(), textarea.Blink)
+}
+
+func (m meetingModel) Init() tea.Cmd {
+	// Standalone CLI: start the listen loop when deps are already on opts.
+	if m.opts.Capture != nil && m.opts.Provider != nil {
+		return tea.Batch(m.startLoop(), meetingTickCmd(), textarea.Blink)
+	}
+	return nil
 }
 
 func meetingTickCmd() tea.Cmd {
@@ -223,8 +254,8 @@ func (m meetingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		inner := msg.msg
 		var cmd tea.Cmd
 		m, cmd = m.handleListenMsg(inner)
-		if m.loopDone || m.quitting {
-			return m, tea.Batch(cmd, tea.Quit)
+		if m.loopDone {
+			return m, tea.Batch(cmd, m.stopResultCmd())
 		}
 		return m, tea.Batch(cmd, waitMeetingCh(msg.ch), m.ensureVoiceTick())
 
@@ -287,9 +318,18 @@ func (m meetingModel) requestStop() (meetingModel, tea.Cmd) {
 		m.opts.Cancel()
 	}
 	if m.loopDone {
-		return m, tea.Quit
+		return m, m.stopResultCmd()
 	}
 	return m, nil
+}
+
+// stopResultCmd leaves the recorder: embedded → launcher; standalone → Quit.
+func (m meetingModel) stopResultCmd() tea.Cmd {
+	if m.opts.Embedded {
+		err := m.loopErr
+		return func() tea.Msg { return meetingDoneMsg{Err: err} }
+	}
+	return tea.Quit
 }
 
 func (m meetingModel) submitNote() (meetingModel, tea.Cmd) {
