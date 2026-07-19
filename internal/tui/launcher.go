@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	ansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/lancekrogers/samantha/internal/config"
@@ -27,6 +28,8 @@ const (
 
 type launcherItem struct {
 	label     string
+	hint      string
+	glyph     string
 	action    launcherAction
 	sessionID string
 }
@@ -51,22 +54,52 @@ func newLauncher(cfg *config.Config, providers []discovery.ProviderInfo, saved .
 	}
 	if len(sessions) > 0 {
 		summary := strings.Join(strings.Fields(sessions[0].Summary), " ")
-		label := "Continue: " + summary
+		label := "Continue"
+		hint := summary
 		if summary == "" {
-			label = "Continue recent conversation"
+			hint = "Resume the latest session"
 		}
-		m.items = append(m.items, launcherItem{label: label, action: actionContinue, sessionID: sessions[0].ID})
+		// Keep resume summary visible in the primary label when present.
+		if summary != "" {
+			label = "Continue: " + summary
+			hint = "Resume this session"
+		}
+		m.items = append(m.items, launcherItem{
+			label: label, hint: hint, glyph: "↻",
+			action: actionContinue, sessionID: sessions[0].ID,
+		})
 	}
-	m.items = append(m.items, launcherItem{label: "New conversation", action: actionNew})
+	m.items = append(m.items, launcherItem{
+		label: "New conversation", hint: "Voice + tools, fresh session", glyph: "✦",
+		action: actionNew,
+	})
 	if len(sessions) > 0 {
-		m.items = append(m.items, launcherItem{label: "Browse sessions", action: actionSessions})
+		m.items = append(m.items, launcherItem{
+			label: "Browse sessions", hint: "Pick a past conversation", glyph: "☰",
+			action: actionSessions,
+		})
 	}
 	m.items = append(m.items,
-		launcherItem{label: "Record meeting", action: actionMeeting},
-		launcherItem{label: "Remote over Tailscale", action: actionTailscale},
-		launcherItem{label: "Create audiobook", action: actionAudiobook},
-		launcherItem{label: "Settings", action: actionSettings},
-		launcherItem{label: "Quit", action: actionQuit},
+		launcherItem{
+			label: "Meeting", hint: "Record · notes · ★ bookmarks", glyph: "◉",
+			action: actionMeeting,
+		},
+		launcherItem{
+			label: "Remote over Tailscale", hint: "Share voice on your tailnet", glyph: "⇄",
+			action: actionTailscale,
+		},
+		launcherItem{
+			label: "Create audiobook", hint: "Render long-form narration", glyph: "♪",
+			action: actionAudiobook,
+		},
+		launcherItem{
+			label: "Settings", hint: "Brain, voice, devices", glyph: "⚙",
+			action: actionSettings,
+		},
+		launcherItem{
+			label: "Quit", hint: "Exit Samantha", glyph: "✕",
+			action: actionQuit,
+		},
 	)
 	return m
 }
@@ -114,65 +147,119 @@ func (m launcherModel) Update(msg tea.Msg) (launcherModel, tea.Cmd) {
 }
 
 func (m launcherModel) View() string {
-	var b strings.Builder
 	width := m.width
 	if width <= 0 {
 		width = 80
 	}
-	compact := m.height > 0 && m.height < 14
-
-	title := titleStyle.Render("  Samantha")
-	if compact {
-		title = headerStyle.Render("  Samantha")
+	if m.height > 0 && m.height < 16 {
+		return m.compactView(width)
 	}
-	b.WriteString(ansi.Truncate(title, width, "…"))
-	b.WriteString("\n")
-	if !compact {
-		b.WriteString(ansi.Truncate(subtitleStyle.Render("  Ultra-low-latency voice assistant for AI coding"), width, "…"))
-		b.WriteString("\n\n")
-	}
+	return m.fullView(width)
+}
 
-	// Current config summary.
+func (m launcherModel) fullView(width int) string {
+	var b strings.Builder
+
+	// Brand plate
+	wordmark := lipgloss.NewStyle().Bold(true).Foreground(colorAccent).Render("SAMANTHA")
+	tag := lipgloss.NewStyle().Foreground(colorDim).Italic(true).Render("voice · speed · signal")
+	brand := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorAccent).
+		Padding(0, 2).
+		Render(lipgloss.JoinVertical(lipgloss.Left, wordmark, tag))
+	b.WriteString(brand)
+	b.WriteString("\n\n")
+
+	// Status chips
 	brainStatus := m.cfg.BrainProvider
 	for _, p := range m.providers {
-		if p.Name == m.cfg.BrainProvider {
-			if !p.Available {
-				brainStatus += " " + errorStyle.Render("(not available)")
-			}
+		if p.Name == m.cfg.BrainProvider && !p.Available {
+			brainStatus += " !"
 		}
 	}
+	chips := lipgloss.JoinHorizontal(lipgloss.Center,
+		chipStyle.Render("brain "+brainStatus),
+		" ",
+		chipMutedStyle.Render("model "+m.activeModel()),
+		" ",
+		chipMutedStyle.Render("voice "+m.cfg.TTSVoice),
+	)
+	b.WriteString(ansi.Truncate(chips, width, "…"))
+	b.WriteString("\n\n")
 
-	model := m.activeModel()
-
-	if !compact {
-		b.WriteString(ansi.Truncate(dimStyle.Render(fmt.Sprintf("  Brain: %s  Model: %s  Voice: %s", brainStatus, model, m.cfg.TTSVoice)), width, "…"))
-		b.WriteString("\n\n")
+	// Menu width
+	menuWidth := width - 2
+	if menuWidth > 58 {
+		menuWidth = 58
+	}
+	if menuWidth < 24 {
+		menuWidth = max(width-1, 16)
 	}
 
-	// Menu items.
-	start, end := 0, len(m.items)
-	if compact {
-		visible := max(m.height-3, 1)
-		start = min(max(m.cursor-visible/2, 0), max(len(m.items)-visible, 0))
-		end = min(start+visible, len(m.items))
-	}
-	for i := start; i < end; i++ {
-		item := m.items[i]
-		cursor := "  "
-		style := normalStyle
+	sel := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(colorBg).
+		Background(colorAccent).
+		Width(menuWidth).
+		Padding(0, 1)
+	idle := lipgloss.NewStyle().
+		Foreground(colorNormal).
+		Width(menuWidth).
+		Padding(0, 1)
+	hint := lipgloss.NewStyle().
+		Foreground(colorDim).
+		Width(menuWidth).
+		PaddingLeft(4)
+
+	for i, item := range m.items {
+		g := item.glyph
+		if g == "" {
+			g = "·"
+		}
+		label := fmt.Sprintf("%s  %s", g, item.label)
 		if i == m.cursor {
-			cursor = "▸ "
-			style = selectedStyle
+			b.WriteString(sel.Render(ansi.Truncate(label, menuWidth-2, "…")))
+			b.WriteString("\n")
+			if item.hint != "" {
+				b.WriteString(hint.Render(ansi.Truncate(item.hint, menuWidth-4, "…")))
+				b.WriteString("\n")
+			}
+		} else {
+			b.WriteString(idle.Render(ansi.Truncate(label, menuWidth-2, "…")))
+			b.WriteString("\n")
 		}
-		b.WriteString(ansi.Truncate("  "+cursor+style.Render(item.label), width, "…") + "\n")
 	}
 
-	if !compact {
-		b.WriteString("\n")
-	}
-	b.WriteString(dimStyle.Render(ansi.Truncate("  ↑/↓ navigate • enter select • q quit", width, "…")))
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render(ansi.Truncate("  ↑/↓ navigate   enter select   q quit", width, "…")))
+	b.WriteString("\n")
+	return b.String()
+}
+
+func (m launcherModel) compactView(width int) string {
+	var b strings.Builder
+	b.WriteString(ansi.Truncate(headerStyle.Render("  SAMANTHA"), width, "…"))
 	b.WriteString("\n")
 
+	visible := max(m.height-3, 1)
+	start := min(max(m.cursor-visible/2, 0), max(len(m.items)-visible, 0))
+	end := min(start+visible, len(m.items))
+	for i := start; i < end; i++ {
+		item := m.items[i]
+		if i == m.cursor {
+			line := lipgloss.NewStyle().
+				Bold(true).
+				Foreground(colorBg).
+				Background(colorAccent).
+				Render(" ▸ " + item.label + " ")
+			b.WriteString(ansi.Truncate(line, width, "…") + "\n")
+		} else {
+			b.WriteString(ansi.Truncate(dimStyle.Render("   "+item.label), width, "…") + "\n")
+		}
+	}
+	b.WriteString(dimStyle.Render(ansi.Truncate("  ↑/↓ · enter · q", width, "…")))
+	b.WriteString("\n")
 	return b.String()
 }
 

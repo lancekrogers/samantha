@@ -21,25 +21,30 @@ func TestLauncherDisplaysConfiguredBrainModel(t *testing.T) {
 		{
 			name: "ollama",
 			cfg:  &config.Config{BrainProvider: "ollama", OllamaModel: "llama3.2", TTSVoice: "af_heart"},
-			want: "Model: llama3.2",
+			want: "model llama3.2",
 		},
 		{
 			name: "grok",
 			cfg:  &config.Config{BrainProvider: "grok", GrokModel: "grok-build", TTSVoice: "af_heart"},
-			want: "Model: grok-build",
+			want: "model grok-build",
 		},
 		{
 			name: "default",
 			cfg:  &config.Config{BrainProvider: "claude", TTSVoice: "af_heart"},
-			want: "Model: default",
+			want: "model default",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			view := stripANSI(newLauncher(tt.cfg, nil).View())
+			m := newLauncher(tt.cfg, nil)
+			m.width, m.height = 80, 24
+			view := strings.ToLower(stripANSI(m.View()))
 			if !strings.Contains(view, tt.want) {
 				t.Fatalf("launcher view missing %q:\n%s", tt.want, view)
+			}
+			if !strings.Contains(view, "samantha") {
+				t.Fatalf("launcher missing brand:\n%s", view)
 			}
 		})
 	}
@@ -80,13 +85,13 @@ func TestLauncherOffersTailscaleAndOpensItsScreen(t *testing.T) {
 	t.Fatal("launcher has no Tailscale action")
 }
 
-func TestLauncherOffersRecordMeeting(t *testing.T) {
+func TestLauncherOffersMeeting(t *testing.T) {
 	m := newLauncher(&config.Config{}, nil)
 	for i, item := range m.items {
 		if item.action != actionMeeting {
 			continue
 		}
-		if item.label != "Record meeting" {
+		if item.label != "Meeting" {
 			t.Fatalf("meeting label = %q", item.label)
 		}
 		m.cursor = i
@@ -100,7 +105,7 @@ func TestLauncherOffersRecordMeeting(t *testing.T) {
 		}
 		return
 	}
-	t.Fatal("launcher has no Record meeting action")
+	t.Fatal("launcher has no Meeting action")
 }
 
 func TestLauncherCompactsForSmallTerminal(t *testing.T) {

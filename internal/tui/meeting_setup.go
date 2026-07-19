@@ -64,9 +64,9 @@ func (m meetingSetupModel) View() string {
 		w = 80
 	}
 	var b strings.Builder
-	b.WriteString(ansi.Truncate(titleStyle.Render("  Record meeting"), w, "…"))
+	b.WriteString(ansi.Truncate(titleStyle.Render("  Meeting"), w, "…"))
 	b.WriteString("\n")
-	b.WriteString(ansi.Truncate(subtitleStyle.Render("  STT only — notes, ★ bookmarks, voice EQ"), w, "…"))
+	b.WriteString(ansi.Truncate(subtitleStyle.Render("  STT only — notes · ★ bookmarks · voice EQ"), w, "…"))
 	b.WriteString("\n\n")
 	b.WriteString(ansi.Truncate(dimStyle.Render("  Meeting title"), w, "…"))
 	b.WriteString("\n  ")
