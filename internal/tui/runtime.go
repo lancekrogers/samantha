@@ -10,7 +10,10 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/listen"
+	"github.com/lancekrogers/samantha/internal/meetinglog"
 	"github.com/lancekrogers/samantha/internal/pipeline"
+	"github.com/lancekrogers/samantha/internal/stt"
 )
 
 // ConversationRuntime is a live pipeline prepared for the conversation
@@ -34,6 +37,49 @@ type ConversationRuntime struct {
 // Asset download progress is reported through progress and rendered
 // in-screen.
 type RuntimeBuilder func(ctx context.Context, progress func(name string, pct float64), sessionID string) (*ConversationRuntime, error)
+
+// MeetingRuntime holds STT + dual-log writer for the embedded meeting screen.
+type MeetingRuntime struct {
+	Capture     listen.Resetter
+	Provider    stt.Provider
+	Writer      *meetinglog.Writer
+	Description string
+	Path        string
+	StopPhrases map[string]bool
+	Cleanup     func()
+}
+
+// MeetingBuilder constructs meeting resources when the user starts recording
+// from the main launcher (assets + mic hot only after title confirm).
+type MeetingBuilder func(ctx context.Context, description string, progress func(name string, pct float64)) (*MeetingRuntime, error)
+
+// meetingReadyMsg delivers a built meeting runtime (or error) into Update.
+type meetingReadyMsg struct {
+	rt  *MeetingRuntime
+	err error
+}
+
+// meetingProgressMsg is asset-download progress while preparing the recorder.
+type meetingProgressMsg struct {
+	name string
+	pct  float64
+}
+
+func buildMeeting(build MeetingBuilder, ctx context.Context, description string) tea.Cmd {
+	if build == nil {
+		return func() tea.Msg {
+			return meetingReadyMsg{err: fmt.Errorf("meeting builder not configured")}
+		}
+	}
+	return func() tea.Msg {
+		rt, err := build(ctx, description, func(name string, pct float64) {
+			// Progress is best-effort; the preparing screen shows a static label.
+			_ = name
+			_ = pct
+		})
+		return meetingReadyMsg{rt: rt, err: err}
+	}
+}
 
 // runtimeSlot owns the built ConversationRuntime across the race between the
 // builder Cmd finishing and the Bubble Tea program quitting. Without it, a

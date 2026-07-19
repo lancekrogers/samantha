@@ -188,11 +188,52 @@ func TestDrainSessionTreatsContextCancellationAsCleanStop(t *testing.T) {
 	session := &fakeSession{events: []stt.Event{stt.Failure{Err: context.Canceled}}}
 	sink := &recordingSink{}
 	failures := 0
-	failed, err := drainSession(ctx, session, sink, &failures)
+	failed, err := drainSession(ctx, session, sink, Hooks{}, &failures)
 	if err != nil || failed {
 		t.Fatalf("drainSession = (%v, %v), want clean stop", failed, err)
 	}
 	if failures != 0 || len(sink.errors) != 0 {
 		t.Fatalf("cancellation recorded as failure: failures=%d errors=%v", failures, sink.errors)
+	}
+}
+
+func TestLoopWithHooksReceivesPhaseLevelPartial(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p := &fakeProvider{
+		sessions: []*fakeSession{{
+			events: []stt.Event{
+				stt.PhaseEvent{Phase: "listening"},
+				stt.InputLevel{Level: 0.7},
+				stt.PhaseEvent{Phase: "hearing"},
+				stt.PartialTranscript{Text: "hel"},
+				stt.FinalTranscript{Text: "hello"},
+			},
+		}},
+		cancel: cancel,
+	}
+	sink := &recordingSink{}
+	var phases []string
+	var levels []float64
+	var partials []string
+	hooks := Hooks{
+		OnPhase:   func(p string) { phases = append(phases, p) },
+		OnLevel:   func(l float64) { levels = append(levels, l) },
+		OnPartial: func(t string) { partials = append(partials, t) },
+	}
+	if err := LoopWithHooks(ctx, p, p, sink, hooks); err != nil {
+		t.Fatalf("LoopWithHooks: %v", err)
+	}
+	if len(sink.utterances) != 1 || sink.utterances[0].Text != "hello" {
+		t.Fatalf("utterances = %+v", sink.utterances)
+	}
+	if len(phases) < 2 || phases[0] != "listening" {
+		t.Fatalf("phases = %v", phases)
+	}
+	if len(levels) != 1 || levels[0] != 0.7 {
+		t.Fatalf("levels = %v", levels)
+	}
+	if len(partials) != 1 || partials[0] != "hel" {
+		t.Fatalf("partials = %v", partials)
 	}
 }

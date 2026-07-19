@@ -256,22 +256,42 @@ samantha audiobook create book.pdf --out-dir out/book
 ### Meeting recording
 
 `samantha meeting record` listens continuously (STT only — no Brain, no TTS)
-and appends every utterance to a timestamped log file, synced per line so a
-crash never loses what was already heard. Interactive runs prompt once for a
-description; `--description`, `--no-tui`, or a non-TTY stdin/stdout skip the
-prompt so cron jobs and hotkey launchers can never hang on it. Stop with
-Ctrl+C or by saying "stop recording" / "end meeting" / "stop listening"
-(exact phrase; `--stop-phrase` adds more).
+and dual-writes a human `.log` plus a structured `.jsonl` event stream
+(utterances, typed notes, important bookmarks), each synced so a crash never
+loses what was already captured.
+
+From the main `samantha` launcher choose **Record meeting**, or run
+`samantha meeting record` on a TTY (not `--json` / `--no-tui`) for the
+full-screen recorder:
+
+| Control | Action |
+|---------|--------|
+| Type + **Enter** | Save a note at the current timestamp |
+| **Ctrl+B** | Mark this moment ★ important (optional caption from the note field) |
+| **Ctrl+C** / **Ctrl+Q** | Stop recording |
+| Spoken stop phrase | "stop recording" / "end meeting" / "stop listening" (exact utterance; not written to the log) |
+
+Spoken stop phrases end the session like Ctrl+C and are **not** appended to the
+`.log` / `.jsonl` transcript. The meetings directory is created mode `0700` and
+log files mode `0600` (owner-only).
+
+JSONL events include `offset_ms` from meeting start for alignment:
+
+```json
+{"type":"utterance","ts":"...","offset_ms":12340,"text":"next agenda item"}
+{"type":"note","ts":"...","offset_ms":15000,"text":"follow up with finance"}
+{"type":"bookmark","ts":"...","offset_ms":18200,"label":"important","text":"budget decision"}
+```
 
 ```bash
 samantha meeting record
 samantha meeting record --description "Weekly planning sync"
 samantha meeting record --description "Standup" --out-dir ~/notes/meetings --json
+samantha meeting record --description "CI log" --no-tui
 ```
 
-Logs default to `~/.obey/agents/voice/samantha/meetings/<slug>-<timestamp>.log`.
-`--json` additionally emits one JSON line per utterance plus a final summary
-object on stdout for live scripting; the plain-text file is always written.
+Files default to `~/.obey/agents/voice/samantha/meetings/<slug>-<timestamp>.{log,jsonl}`.
+`--json` also emits one JSON line per utterance plus a final summary on stdout.
 
 ## Configuration
 
