@@ -49,6 +49,9 @@ If `tailscale cert` fails (or LAN self-signed is used), serve stays up in
 | `Client access: limited` | Warning path — desktop OK; some mobile browsers block mic |
 | `Client setup: https://login.tailscale.com/admin/dns` | Free HTTPS Certificates toggle (Tailscale) |
 
+Constants live in `internal/netapi/clientmode.go` and are shared by serve + TUI
+so the scrape contract cannot drift.
+
 Self-signed leaves are minted/rewritten with MagicDNS and/or the bind IP as
 SANs so the printed URL passes hostname checks on LAN and Tailscale. Primary
 UX is “any device on this network,” not a single OS.

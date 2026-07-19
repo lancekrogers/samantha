@@ -26,10 +26,6 @@ import (
 
 const defaultServePort = 7262 // "SAMA"
 
-// tailscaleHTTPSCertsURL is the free Tailscale admin page that enables
-// trusted HTTPS so mobile Safari (and other strict browsers) can use the mic.
-const tailscaleHTTPSCertsURL = "https://login.tailscale.com/admin/dns"
-
 var (
 	serveBind         string
 	servePort         int
@@ -151,8 +147,8 @@ func applyServeTailscaleDefaults(cmd *cobra.Command) error {
 			serveTLSFallbackNote = summarizeTailscaleCertError(err)
 			// Stable labels for the TUI (and readable for CLI users).
 			// Product outcomes only — any device, not iOS-specific.
-			fmt.Printf("  %s %s\n", failStyle.Render("Client access:"), "limited")
-			fmt.Printf("  %s %s\n", keyStyle.Render("Client setup:"), tailscaleHTTPSCertsURL)
+			fmt.Printf("  %s %s\n", failStyle.Render(netapi.LabelClientAccess), netapi.AccessLimited)
+			fmt.Printf("  %s %s\n", keyStyle.Render(netapi.LabelClientSetup), netapi.ClientSetupURL)
 			fmt.Println(dimStyle.Render("  Most desktop browsers work after one warning. Full mic support on"))
 			fmt.Println(dimStyle.Render("  every device: open Client setup → turn on HTTPS Certificates → restart."))
 			if serveTLSFallbackNote != "" {
@@ -160,9 +156,9 @@ func applyServeTailscaleDefaults(cmd *cobra.Command) error {
 			}
 		} else {
 			serveTLSCert, serveTLSKey = cert, key
-			fmt.Printf("  %s %s\n", keyStyle.Render("Client access:"), "full")
+			fmt.Printf("  %s %s\n", keyStyle.Render(netapi.LabelClientAccess), netapi.AccessFull)
 		}
-		fmt.Printf("  %s %s\n", keyStyle.Render("Network:"), "tailscale")
+		fmt.Printf("  %s %s\n", keyStyle.Render(netapi.LabelNetwork), netapi.NetworkTailscale)
 		fmt.Printf("  %s %s\n", keyStyle.Render("Network name:"), id.DNSName)
 		fmt.Printf("  %s %s\n", dimStyle.Render("Bind:"), serveBind)
 	}
@@ -409,24 +405,24 @@ func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config
 		}
 	}
 	pageURL := publicServeURL(pageHost, servePort)
-	fmt.Printf("  %s %s\n", keyStyle.Render("Open on client:"), pageURL)
+	fmt.Printf("  %s %s\n", keyStyle.Render(netapi.LabelOpenOnClient), pageURL)
 
 	if serveTailscale {
-		fmt.Printf("  %s %s\n", keyStyle.Render("Network:"), "tailscale")
+		fmt.Printf("  %s %s\n", keyStyle.Render(netapi.LabelNetwork), netapi.NetworkTailscale)
 	} else {
-		fmt.Printf("  %s %s\n", keyStyle.Render("Network:"), "lan")
+		fmt.Printf("  %s %s\n", keyStyle.Render(netapi.LabelNetwork), netapi.NetworkLAN)
 	}
 
-	// Product-facing access mode (TUI parses these labels).
+	// Product-facing access mode (TUI parses these labels via netapi constants).
 	// Trusted certs → full voice mic in any browser.
 	// Self-signed → page works after a warning; some mobile browsers block mic.
 	if creds.ExternalTLS {
-		fmt.Printf("  %s %s\n", keyStyle.Render("Client access:"), "full")
+		fmt.Printf("  %s %s\n", keyStyle.Render(netapi.LabelClientAccess), netapi.AccessFull)
 		fmt.Println(dimStyle.Render("  Any device on this network can use text and the microphone."))
 	} else {
-		fmt.Printf("  %s %s\n", failStyle.Render("Client access:"), "limited")
+		fmt.Printf("  %s %s\n", failStyle.Render(netapi.LabelClientAccess), netapi.AccessLimited)
 		if serveTailscale || servePublicHost != "" {
-			fmt.Printf("  %s %s\n", keyStyle.Render("Client setup:"), tailscaleHTTPSCertsURL)
+			fmt.Printf("  %s %s\n", keyStyle.Render(netapi.LabelClientSetup), netapi.ClientSetupURL)
 			fmt.Println(dimStyle.Render("  Works now: most desktop browsers (accept one warning) + text on any device."))
 			fmt.Println(dimStyle.Render("  Full mic on every browser: Client setup → HTTPS Certificates → restart."))
 		} else {
@@ -438,7 +434,7 @@ func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config
 
 	if creds.Pairing != nil {
 		fmt.Printf("  %s %s  (expires %s)\n",
-			keyStyle.Render("Pairing code:"),
+			keyStyle.Render(netapi.LabelPairingCode),
 			creds.Pairing.Code,
 			creds.Pairing.ExpiresAt.Format("15:04:05"))
 		fmt.Println(dimStyle.Render("  On the device: open link → enter code → Pair → Start → Hold to Talk"))
