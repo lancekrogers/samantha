@@ -266,7 +266,7 @@ ask what titles you own.
 
 1. Install Calibre (macOS: `brew install --cask calibre`, or the installer from
    calibre-ebook.com). Open Calibre once so it creates your library.
-2. Enable the integration: `samantha config calibre_enabled true`  
+2. Enable the integration: `samantha config calibre_enabled true`
    (or open **Library** in the TUI and press **e**).
 3. Samantha finds `calibredb` on `PATH`, or in the macOS app bundle
    (`/Applications/calibre.app/Contents/MacOS/`), or `/opt/calibre` on Linux.

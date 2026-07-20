@@ -251,7 +251,9 @@ func (m libraryModel) Update(msg tea.Msg) (libraryModel, tea.Cmd) {
 func (m libraryModel) handleOnboardingKey(key string) (libraryModel, tea.Cmd) {
 	switch key {
 	case "e":
-		return m.setEnabled(true)
+		// Toggle: footer says "e enable" when off and "e disable" when on
+		// (including enabled-but-missing-binary onboarding).
+		return m.setEnabled(!m.enabled())
 	case "r":
 		return m, m.runProbe()
 	case "esc":

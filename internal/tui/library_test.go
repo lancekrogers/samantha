@@ -86,6 +86,35 @@ func TestLibraryOnboardingWhenBinaryMissing(t *testing.T) {
 	if !strings.Contains(view, "not found") || !strings.Contains(view, "Install Calibre") {
 		t.Fatalf("view:\n%s", view)
 	}
+	if !strings.Contains(view, "e disable") {
+		t.Fatalf("footer should offer disable when enabled:\n%s", view)
+	}
+}
+
+func TestLibraryOnboardingEDisablesWhenEnabledButMissingBinary(t *testing.T) {
+	cfg := &config.Config{CalibreEnabled: true}
+	m := newLibrary(cfg)
+	m.probed = true
+	m.binaryErr = calibre.ErrCalibreNotFound
+	var saved *bool
+	m.persistCalibre = func(enabled bool) error {
+		saved = &enabled
+		return nil
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	if saved == nil || *saved {
+		t.Fatalf("e should disable when enabled-but-missing; saved=%v", saved)
+	}
+	if cfg.CalibreEnabled {
+		t.Fatal("cfg should be disabled after e")
+	}
+	if !m.needsOnboarding() {
+		t.Fatal("still onboarding after disable")
+	}
+	view := m.View()
+	if !strings.Contains(view, "e enable") {
+		t.Fatalf("footer should offer enable when off:\n%s", view)
+	}
 }
 
 func TestLibraryOpenDetailAndBack(t *testing.T) {
