@@ -181,8 +181,13 @@ enter INSERT, `h`/`j`/`k`/`l` and `w`/`b` to move, `x`/`D`/`dd` to delete,
 INSERT to NORMAL.
 
 Microphone and speaker devices can be selected from the **Input** and
-**Output** sections in TUI Settings. An empty config value follows the current
-operating-system default.
+**Output** sections in TUI Settings. The **TTS** section selects the active
+text-to-speech provider and shows its configured model context. Kokoro exposes
+the static voice picker; Qwen uses its model-native default voice and currently
+shows no browsable voices. Provider changes are persisted and take effect after
+restarting the conversation. The launcher and conversation header show the
+active TTS provider/model badge. An empty device config value follows the
+current operating-system default.
 
 ### Batch narration (audiobooks)
 

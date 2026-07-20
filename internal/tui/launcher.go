@@ -103,7 +103,7 @@ func newLauncher(cfg *config.Config, providers []discovery.ProviderInfo, saved .
 			action: actionAudiobook,
 		},
 		launcherItem{
-			label: "Settings", hint: "Brain, voice, devices", glyph: "⚙",
+			label: "Settings", hint: "Brain, TTS, voice, devices", glyph: "⚙",
 			action: actionSettings,
 		},
 		launcherItem{
@@ -192,6 +192,8 @@ func (m launcherModel) fullView(width int) string {
 		chipStyle.Render("brain "+brainStatus),
 		" ",
 		chipMutedStyle.Render("model "+m.activeModel()),
+		" ",
+		chipMutedStyle.Render(ttsBadgeLabel(m.cfg)),
 		" ",
 		chipMutedStyle.Render("voice "+m.cfg.TTSVoice),
 	)
