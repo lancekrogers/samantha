@@ -50,6 +50,23 @@ func TestLauncherDisplaysConfiguredBrainModel(t *testing.T) {
 	}
 }
 
+func TestLauncherDisplaysConfiguredTTSProviderAndModel(t *testing.T) {
+	m := newLauncher(&config.Config{
+		BrainProvider: "claude",
+		TTSProvider:   "qwen3-tts",
+		QwenTTSModel:  "/opt/qwen/models/1.7b",
+		TTSVoice:      "af_heart",
+	}, nil)
+	m.width, m.height = 100, 24
+	view := strings.ToLower(stripANSI(m.View()))
+	if !strings.Contains(view, "tts qwen3-tts") || !strings.Contains(view, "1.7b") {
+		t.Fatalf("launcher missing TTS provider/model badge:\n%s", view)
+	}
+	if !strings.Contains(view, "voice model-native") || strings.Contains(view, "voice af_heart") {
+		t.Fatalf("launcher should identify Qwen's model-native voice:\n%s", view)
+	}
+}
+
 func TestLauncherDefaultsToContinueWhenSessionExists(t *testing.T) {
 	saved := []session.Session{{ID: "session-123", Summary: "Fix the TUI", UpdatedAt: time.Now()}}
 	m := newLauncher(&config.Config{}, nil, saved)

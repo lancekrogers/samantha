@@ -21,6 +21,7 @@ type settingsSection int
 const (
 	sectionProvider settingsSection = iota
 	sectionModel
+	sectionTTS
 	sectionVoice
 	sectionInput
 	sectionOutput
@@ -39,6 +40,7 @@ type settingsModel struct {
 	// Derived lists for current section.
 	providerItems  []string
 	modelItems     []string
+	ttsItems       []ttsSettingItem
 	voiceItems     []tts.Voice
 	inputItems     []string
 	outputItems    []string
@@ -53,6 +55,7 @@ type settingsModel struct {
 	newPreviewPlayer func() audio.Engine
 	ensureTTSAssets  func(context.Context, *config.Config) error
 	newTTSProvider   func(*config.Config) (tts.Provider, func(), error)
+	saveConfig       func(string, any) error
 	message          string
 }
 
@@ -68,9 +71,11 @@ func newSettings(cfg *config.Config, providers []discovery.ProviderInfo) setting
 			return config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedTTS: true}, nil)
 		},
 		newTTSProvider: tts.NewProvider,
+		saveConfig:     config.SetAndSave,
 	}
 	m.buildProviderItems()
 	m.buildModelItems()
+	m.buildTTSItems()
 	m.buildVoiceItems()
 	m.inputItems = []string{""}
 	m.outputItems = []string{""}
@@ -122,6 +127,21 @@ func (m *settingsModel) buildModelItems() {
 	}
 }
 
+type ttsSettingItem struct {
+	provider string
+	detail   string
+}
+
+func (m *settingsModel) buildTTSItems() {
+	m.ttsItems = nil
+	for _, spec := range tts.Providers() {
+		m.ttsItems = append(m.ttsItems, ttsSettingItem{
+			provider: spec.Name,
+			detail:   ttsProviderDetail(spec, m.cfg),
+		})
+	}
+}
+
 func (m *settingsModel) buildVoiceItems() {
 	m.voiceItems = nil
 	voices, err := tts.StaticVoices(m.cfg.TTSProvider, "", "")
@@ -154,7 +174,7 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "tab", "right", "l":
-			m.section = (m.section + 1) % 5
+			m.section = (m.section + 1) % 6
 			m.cursor = 0
 			m.offset = 0
 			m.message = ""
@@ -281,6 +301,8 @@ func (m *settingsModel) currentListLen() int {
 		return len(m.providerItems)
 	case sectionModel:
 		return len(m.modelItems)
+	case sectionTTS:
+		return len(m.ttsItems)
 	case sectionVoice:
 		return len(m.voiceItems)
 	case sectionInput:
@@ -326,6 +348,22 @@ func (m *settingsModel) selectCurrent() {
 				*field = model
 			}
 			m.message = fmt.Sprintf("Model set to %s", model)
+		}
+	case sectionTTS:
+		if m.cursor < len(m.ttsItems) {
+			provider := m.ttsItems[m.cursor].provider
+			saveConfig := m.saveConfig
+			if saveConfig == nil {
+				saveConfig = config.SetAndSave
+			}
+			if err := saveConfig("tts_provider", provider); err != nil {
+				m.message = fmt.Sprintf("Failed to save TTS provider: %v", err)
+				return
+			}
+			m.cfg.TTSProvider = provider
+			m.buildTTSItems()
+			m.buildVoiceItems()
+			m.message = fmt.Sprintf("TTS provider set to %s; restart to apply", provider)
 		}
 	case sectionVoice:
 		if m.cursor < len(m.voiceItems) {
@@ -443,7 +481,7 @@ func (m settingsModel) View() string {
 	b.WriteString(headerStyle.Render("  Settings"))
 	b.WriteString("\n")
 
-	tabs := []string{"Provider", "Model", "Voice", "Input", "Output"}
+	tabs := []string{"Brain", "Brain model", "TTS", "Voice", "Input", "Output"}
 	var tabLine strings.Builder
 	for i, tab := range tabs {
 		style := dimStyle
@@ -484,6 +522,16 @@ func (m settingsModel) View() string {
 				active = " ✓"
 			}
 			m.renderItem(&b, i, item+active)
+		}
+
+	case sectionTTS:
+		activeProvider := activeTTSProvider(m.cfg)
+		for i, item := range m.ttsItems {
+			active := ""
+			if item.provider == activeProvider {
+				active = " ✓"
+			}
+			m.renderItem(&b, i, item.provider+" — "+item.detail+active)
 		}
 
 	case sectionVoice:

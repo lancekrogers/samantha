@@ -81,6 +81,8 @@ type App struct {
 func NewApp(cfg *config.Config) App {
 	providers := discovery.DiscoverProviders(cfg)
 	savedSessions := resumableSessions(session.List())
+	conversation := newConversation(cfg.AgentName)
+	conversation.cfg = cfg
 
 	return App{
 		screen:       screenLauncher,
@@ -88,7 +90,7 @@ func NewApp(cfg *config.Config) App {
 		providers:    providers,
 		launcher:     newLauncher(cfg, providers, savedSessions),
 		settings:     newSettings(cfg, providers),
-		conversation: newConversation(cfg.AgentName),
+		conversation: conversation,
 		sessions:     newSessions(savedSessions),
 		audiobook:    newAudiobook(cfg),
 		pickBook:     newPickBook(cfg),
