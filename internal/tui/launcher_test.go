@@ -62,6 +62,9 @@ func TestLauncherDisplaysConfiguredTTSProviderAndModel(t *testing.T) {
 	if !strings.Contains(view, "tts qwen3-tts") || !strings.Contains(view, "1.7b") {
 		t.Fatalf("launcher missing TTS provider/model badge:\n%s", view)
 	}
+	if !strings.Contains(view, "voice model-native") || strings.Contains(view, "voice af_heart") {
+		t.Fatalf("launcher should identify Qwen's model-native voice:\n%s", view)
+	}
 }
 
 func TestLauncherDefaultsToContinueWhenSessionExists(t *testing.T) {

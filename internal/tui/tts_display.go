@@ -70,7 +70,11 @@ func ttsProviderDetail(spec tts.ProviderSpec, cfg *config.Config) string {
 	case "kokoro":
 		return "managed model · static voices"
 	case "qwen3-tts":
-		return "model " + ttsModelLabelForProvider("qwen3-tts", cfg) + " · " + ttsBinaryLabel(cfg)
+		model := ttsModelLabelForProvider("qwen3-tts", cfg)
+		if model == "model unset" {
+			model = "unset"
+		}
+		return "model " + model + " · " + ttsBinaryLabel(cfg)
 	default:
 		return spec.Description
 	}
