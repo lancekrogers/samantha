@@ -18,6 +18,9 @@ import (
 
 // maybeRouteAfterRecord applies post-meeting routing for the CLI record path.
 // --no-route wins; --route <id> forces a destination; otherwise mode from config.
+//
+// Human status lines never go to stdout when opts.JSON is set — machine-readable
+// mode must keep stdout as pure JSON (summary / utterance stream only).
 func maybeRouteAfterRecord(cmd *cobra.Command, cfg *config.Config, summary meetinglog.Summary, opts meetingOptions) error {
 	if opts.NoRoute {
 		return nil
@@ -26,7 +29,7 @@ func maybeRouteAfterRecord(cmd *cobra.Command, cfg *config.Config, summary meeti
 	router := meeting.NewDefaultRouter(routeCfg)
 
 	if opts.RouteTo != "" {
-		return routeAndPrint(cmd, router, summary, routeCfg.Body, opts.RouteTo)
+		return routeAndPrint(cmd, router, summary, routeCfg.Body, opts.RouteTo, opts.JSON)
 	}
 
 	switch routeCfg.Mode {
@@ -37,7 +40,7 @@ func maybeRouteAfterRecord(cmd *cobra.Command, cfg *config.Config, summary meeti
 			fmt.Fprintln(cmd.ErrOrStderr(), "meeting route: mode=auto but no default destination configured")
 			return nil
 		}
-		return routeAndPrint(cmd, router, summary, routeCfg.Body, routeCfg.Default)
+		return routeAndPrint(cmd, router, summary, routeCfg.Body, routeCfg.Default, opts.JSON)
 	default: // ask
 		if opts.JSON || opts.NoTUI || !isatty.IsTerminal(os.Stdout.Fd()) || !isatty.IsTerminal(os.Stdin.Fd()) {
 			// Non-interactive: skip silently (use --route or meeting route later).
@@ -56,17 +59,24 @@ func maybeRouteAfterRecord(cmd *cobra.Command, cfg *config.Config, summary meeti
 			fmt.Fprintln(cmd.OutOrStdout(), meeting.BannerLine(meeting.Receipt{Outcome: meeting.OutcomeSkipped}))
 			return nil
 		}
-		return routeAndPrint(cmd, router, summary, routeCfg.Body, id)
+		return routeAndPrint(cmd, router, summary, routeCfg.Body, id, false)
 	}
 }
 
-func routeAndPrint(cmd *cobra.Command, router *meeting.Router, summary meetinglog.Summary, body, destID string) error {
+// routeAndPrint renders and routes a meeting, then prints a human status line.
+// When jsonOut is true the banner goes to stderr so stdout stays machine-readable.
+func routeAndPrint(cmd *cobra.Command, router *meeting.Router, summary meetinglog.Summary, body, destID string, jsonOut bool) error {
 	note, err := meeting.Render(summary, body)
 	if err != nil {
 		return fmt.Errorf("render meeting note: %w", err)
 	}
 	receipt, err := router.RouteByID(context.Background(), note, destID)
-	fmt.Fprintln(cmd.OutOrStdout(), meeting.BannerLine(receipt))
+	status := meeting.BannerLine(receipt)
+	if jsonOut {
+		fmt.Fprintln(cmd.ErrOrStderr(), status)
+	} else {
+		fmt.Fprintln(cmd.OutOrStdout(), status)
+	}
 	if err != nil {
 		// Lossless: original files remain; surface the error but don't fail the record command hard.
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", err)
@@ -184,12 +194,12 @@ Examples:
 					}
 				}
 			}
-			return routeAndPrint(cmd, router, summary, routeCfg.Body, destID)
+			return routeAndPrint(cmd, router, summary, routeCfg.Body, destID, jsonOut)
 		},
 	}
 	cmd.Flags().StringVar(&to, "to", "", "Destination id from meeting.route.destinations")
 	cmd.Flags().StringVar(&body, "body", "", "Override body scope: notes | full")
 	cmd.Flags().BoolVar(&noTUI, "no-tui", false, "Non-interactive (requires --to or meeting.route.default)")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Non-interactive (requires --to or meeting.route.default)")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Non-interactive; keep human status on stderr (requires --to or meeting.route.default)")
 	return cmd
 }

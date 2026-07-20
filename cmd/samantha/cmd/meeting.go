@@ -107,7 +107,7 @@ Examples:
 	f.StringVar(&opts.OutDir, "out-dir", "", "Directory for the log file (default: "+config.MeetingsDir()+")")
 	f.StringVar(&opts.STTProvider, "stt-provider", "", "One-shot STT provider override for this recording")
 	f.BoolVar(&opts.NoTUI, "no-tui", false, "Skip interactive description prompt and full-screen recorder TUI")
-	f.BoolVar(&opts.JSON, "json", false, "Emit one JSON line per utterance plus a final JSON summary on stdout")
+	f.BoolVar(&opts.JSON, "json", false, "Emit one JSON line per utterance plus a final JSON summary on stdout (routing status goes to stderr)")
 	f.StringArrayVar(&opts.StopPhrases, "stop-phrase", nil, "Additional spoken phrase that stops the recording (repeatable)")
 	f.StringVar(&opts.RouteTo, "route", "", "Route notes to this destination id after recording")
 	f.BoolVar(&opts.NoRoute, "no-route", false, "Skip post-meeting routing prompt/auto-route")
