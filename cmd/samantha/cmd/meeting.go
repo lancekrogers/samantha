@@ -23,6 +23,8 @@ type meetingOptions struct {
 	NoTUI       bool
 	JSON        bool
 	StopPhrases []string
+	RouteTo     string // --route <destination-id>
+	NoRoute     bool   // --no-route
 }
 
 // newMeetingCmd builds the `samantha meeting` command group.
@@ -32,6 +34,7 @@ func newMeetingCmd() *cobra.Command {
 		Short: "Record meeting transcripts (STT only, no assistant)",
 	}
 	cmd.AddCommand(newMeetingRecordCmd())
+	cmd.AddCommand(newMeetingRouteCmd())
 	return cmd
 }
 
@@ -60,6 +63,10 @@ from the start of the meeting.
 
 --no-tui and --json keep plain line-oriented sinks (still dual-write log+jsonl).
 
+After recording, notes can be routed to a configured destination (campaign intent,
+filesystem path, or Apple Notes). Defaults live under meeting.route in config;
+--route / --no-route override for one shot. Use samantha meeting route later if skipped.
+
 Stop with Ctrl+C / Ctrl+Q or by saying one of the stop phrases ("stop recording",
 "end meeting", "stop listening" — exact full utterance after normalization, not
 substring; --stop-phrase adds more). Matching stop phrases end the session and
@@ -73,7 +80,9 @@ Examples:
   samantha meeting record
   samantha meeting record --description "Weekly planning sync"
   samantha meeting record --description "Standup" --out-dir ~/notes/meetings --json
-  samantha meeting record --description "CI log" --no-tui`,
+  samantha meeting record --description "CI log" --no-tui
+  samantha meeting record --description "Sync" --route docs --no-tui
+  samantha meeting record --no-route`,
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -100,6 +109,8 @@ Examples:
 	f.BoolVar(&opts.NoTUI, "no-tui", false, "Skip interactive description prompt and full-screen recorder TUI")
 	f.BoolVar(&opts.JSON, "json", false, "Emit one JSON line per utterance plus a final JSON summary on stdout")
 	f.StringArrayVar(&opts.StopPhrases, "stop-phrase", nil, "Additional spoken phrase that stops the recording (repeatable)")
+	f.StringVar(&opts.RouteTo, "route", "", "Route notes to this destination id after recording")
+	f.BoolVar(&opts.NoRoute, "no-route", false, "Skip post-meeting routing prompt/auto-route")
 	return cmd
 }
 

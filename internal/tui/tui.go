@@ -11,6 +11,8 @@ import (
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/discovery"
+	"github.com/lancekrogers/samantha/internal/meetinglog"
+	"github.com/lancekrogers/samantha/internal/meetingroute"
 	"github.com/lancekrogers/samantha/internal/session"
 )
 
@@ -23,6 +25,7 @@ const (
 	screenSessions
 	screenMeetingSetup
 	screenMeeting
+	screenMeetingRoute
 	screenAudiobook
 	screenPickBook
 	screenRemote
@@ -42,6 +45,7 @@ type App struct {
 	sessions     sessionsModel
 	meetingSetup meetingSetupModel
 	meeting      meetingModel
+	meetingRoute meetingRouteModel
 	audiobook    audiobookModel
 	pickBook     pickBookModel
 	remote       remoteModel
@@ -237,10 +241,23 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 
 	case meetingDoneMsg:
-		closeErr := a.stopMeetingRuntime()
-		a.screen = screenLauncher
+		summary, closeErr := a.stopMeetingRuntimeWithSummary()
 		if err := errors.Join(msg.Err, closeErr); err != nil {
+			a.screen = screenLauncher
 			a.launcher = a.launcher.withBanner(fmt.Sprintf("Meeting ended with error: %v", err), true)
+			return a, nil
+		}
+		// Post-meeting routing: ask / auto / off.
+		if cmd := a.beginMeetingRoute(summary); cmd != nil {
+			return a, cmd
+		}
+		a.screen = screenLauncher
+		return a, nil
+
+	case meetingRouteResultMsg:
+		a.screen = screenLauncher
+		if msg.Banner != "" {
+			a.launcher = a.launcher.withBanner(msg.Banner, msg.IsErr)
 		}
 		return a, nil
 
@@ -334,6 +351,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var m tea.Model
 		m, cmd = a.meeting.Update(msg)
 		a.meeting = m.(meetingModel)
+	case screenMeetingRoute:
+		a.meetingRoute, cmd = a.meetingRoute.Update(msg)
 	case screenAudiobook:
 		a.audiobook, cmd = a.audiobook.Update(msg)
 	case screenPickBook:
@@ -359,6 +378,8 @@ func (a App) View() string {
 		return a.meetingSetup.View()
 	case screenMeeting:
 		return a.meeting.View()
+	case screenMeetingRoute:
+		return a.meetingRoute.View()
 	case screenAudiobook:
 		return a.audiobook.View()
 	case screenPickBook:
@@ -375,15 +396,24 @@ func (a App) View() string {
 // surface a silent trailer/session_end write problem (files may already hold
 // synced events). Idempotent when no runtime is active.
 func (a *App) stopMeetingRuntime() error {
+	_, err := a.stopMeetingRuntimeWithSummary()
+	return err
+}
+
+// stopMeetingRuntimeWithSummary is stopMeetingRuntime that also returns the Close Summary.
+func (a *App) stopMeetingRuntimeWithSummary() (meetinglog.Summary, error) {
 	if a.meetingRT == nil {
-		return nil
+		return meetinglog.Summary{}, nil
 	}
 	if a.meeting.opts.Cancel != nil {
 		a.meeting.opts.Cancel()
 	}
+	var summary meetinglog.Summary
 	var closeErr error
 	if a.meetingRT.Writer != nil {
-		if _, err := a.meetingRT.Writer.Close(); err != nil {
+		s, err := a.meetingRT.Writer.Close()
+		summary = s
+		if err != nil {
 			closeErr = fmt.Errorf("close meeting log: %w", err)
 		}
 	}
@@ -391,7 +421,55 @@ func (a *App) stopMeetingRuntime() error {
 		a.meetingRT.Cleanup()
 	}
 	a.meetingRT = nil
-	return closeErr
+	return summary, closeErr
+}
+
+// beginMeetingRoute opens the post-meeting picker (ask), auto-routes, or no-ops (off).
+// Returns a tea.Cmd when auto-routing asynchronously; otherwise mutates screen and returns nil.
+// Uses the live a.cfg (settings already mutate it via SetAndSave) so tests stay isolated
+// from the developer's on-disk config.yaml.
+func (a *App) beginMeetingRoute(summary meetinglog.Summary) tea.Cmd {
+	if summary.File == "" && summary.JSONLFile == "" {
+		return nil
+	}
+	cfg := a.cfg
+	if cfg == nil {
+		return nil
+	}
+	routeCfg := meetingroute.FromConfig(cfg)
+	switch routeCfg.Mode {
+	case meetingroute.ModeOff:
+		return nil
+	case meetingroute.ModeAuto:
+		if routeCfg.Default == "" {
+			a.launcher = a.launcher.withBanner("Meeting route: mode=auto but no default destination", true)
+			return nil
+		}
+		body := routeCfg.Body
+		destID := routeCfg.Default
+		rcfg := routeCfg
+		return func() tea.Msg {
+			note, err := meetingroute.Render(summary, body)
+			if err != nil {
+				return meetingRouteResultMsg{Banner: "Meeting route failed (notes kept local): " + err.Error(), IsErr: true}
+			}
+			router := meetingroute.NewDefaultRouter(rcfg)
+			receipt, err := router.RouteByID(context.Background(), note, destID)
+			return meetingRouteResultMsg{Banner: meetingroute.BannerLine(receipt), IsErr: err != nil}
+		}
+	default: // ask
+		router := meetingroute.NewDefaultRouter(routeCfg)
+		dests := router.AvailableDestinations()
+		if len(dests) == 0 {
+			// Nothing to pick — stay on launcher without blocking.
+			return nil
+		}
+		a.meetingRoute = newMeetingRoute(summary, routeCfg, dests)
+		a.meetingRoute.width = a.width
+		a.meetingRoute.height = a.height
+		a.screen = screenMeetingRoute
+		return nil
+	}
 }
 
 // Run starts the TUI as one continuous program: launcher, settings, and the

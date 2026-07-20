@@ -120,7 +120,19 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 		fmt.Fprintf(out, "  Notes:       %d\n", summary.Notes)
 		fmt.Fprintf(out, "  Bookmarks:   %d\n", summary.Bookmarks)
 	}
-	return errors.Join(loopErr, closeErr, outputErr)
+
+	// Post-meeting routing (additive; never deletes local .log/.jsonl).
+	var routeErr error
+	if closeErr == nil {
+		// Prefer the already-loaded cfg copy over a second Load when possible.
+		routeCfg, loadErr := config.Load()
+		if loadErr != nil {
+			routeErr = loadErr
+		} else {
+			routeErr = maybeRouteAfterRecord(cmd, routeCfg, summary, opts)
+		}
+	}
+	return errors.Join(loopErr, closeErr, outputErr, routeErr)
 }
 
 // useMeetingRecordTUI is true for an interactive terminal session that should
