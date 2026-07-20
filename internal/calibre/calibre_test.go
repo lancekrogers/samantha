@@ -231,6 +231,67 @@ func TestSearchEmptyQuery(t *testing.T) {
 	}
 }
 
+func TestListBrowsesWithoutSearch(t *testing.T) {
+	var gotArgs []string
+	c := Client{
+		LookPath: func(string) (string, error) { return "/bin/calibredb", nil },
+		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			gotArgs = append([]string{}, args...)
+			return []byte(sampleListJSON), nil
+		},
+		LibraryPath: "/Users/me/Calibre Library",
+	}
+	books, err := c.List(context.Background(), 50)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(books) != 2 {
+		t.Fatalf("len(books)=%d", len(books))
+	}
+	joined := strings.Join(gotArgs, " ")
+	if strings.Contains(joined, "--search") {
+		t.Fatalf("list should omit --search: %v", gotArgs)
+	}
+	if !strings.Contains(joined, "--sort-by title") {
+		t.Fatalf("list should sort by title: %v", gotArgs)
+	}
+	if !strings.Contains(joined, "--limit 50") {
+		t.Fatalf("list missing limit: %v", gotArgs)
+	}
+	if !strings.Contains(joined, "--with-library /Users/me/Calibre Library") {
+		t.Fatalf("list missing library: %v", gotArgs)
+	}
+}
+
+func TestListContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c := Client{
+		LookPath: func(string) (string, error) { return "calibredb", nil },
+		Run: func(context.Context, string, ...string) ([]byte, error) {
+			t.Fatal("Run should not be called")
+			return nil, nil
+		},
+	}
+	_, err := c.List(ctx, 10)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestPlainCommentsStripsHTML(t *testing.T) {
+	got := PlainComments("<div>A <b>bold</b> blurb.</div>")
+	if got != "A bold blurb." {
+		t.Fatalf("got %q", got)
+	}
+	if PlainComments("  ") != "" {
+		t.Fatal("empty")
+	}
+	if PlainComments("plain text") != "plain text" {
+		t.Fatal("plain")
+	}
+}
+
 func TestMetadata(t *testing.T) {
 	c := Client{
 		LookPath: func(string) (string, error) { return "calibredb", nil },

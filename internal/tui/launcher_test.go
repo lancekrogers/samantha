@@ -85,6 +85,29 @@ func TestLauncherOffersRemoteAndOpensItsScreen(t *testing.T) {
 	t.Fatal("launcher has no Remote action")
 }
 
+func TestLauncherOffersLibrary(t *testing.T) {
+	m := newLauncher(&config.Config{}, nil)
+	for i, item := range m.items {
+		if item.action != actionLibrary {
+			continue
+		}
+		if item.label != "Library" {
+			t.Fatalf("library label = %q", item.label)
+		}
+		m.cursor = i
+		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if cmd == nil {
+			t.Fatal("library action returned no command")
+		}
+		msg, ok := cmd().(switchScreenMsg)
+		if !ok || screen(msg) != screenLibrary {
+			t.Fatalf("library launcher message = %#v", msg)
+		}
+		return
+	}
+	t.Fatal("launcher has no Library action")
+}
+
 func TestLauncherOffersMeeting(t *testing.T) {
 	m := newLauncher(&config.Config{}, nil)
 	for i, item := range m.items {

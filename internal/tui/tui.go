@@ -25,6 +25,7 @@ const (
 	screenMeeting
 	screenAudiobook
 	screenPickBook
+	screenLibrary
 	screenRemote
 )
 
@@ -44,6 +45,7 @@ type App struct {
 	meeting      meetingModel
 	audiobook    audiobookModel
 	pickBook     pickBookModel
+	library      libraryModel
 	remote       remoteModel
 
 	// Conversation runtime wiring, set by Run before the program starts.
@@ -90,6 +92,7 @@ func NewApp(cfg *config.Config) App {
 		sessions:     newSessions(savedSessions),
 		audiobook:    newAudiobook(cfg),
 		pickBook:     newPickBook(cfg),
+		library:      newLibrary(cfg),
 	}
 }
 
@@ -144,6 +147,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.sessions, _ = a.sessions.Update(msg)
 		a.meetingSetup, _ = a.meetingSetup.Update(msg)
 		a.pickBook, _ = a.pickBook.Update(msg)
+		a.library, _ = a.library.Update(msg)
 		a.remote, _ = a.remote.Update(msg)
 		if a.screen != screenConversation {
 			a.conversation, _ = a.conversation.Update(msg)
@@ -197,6 +201,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case screenPickBook:
 			a.pickBook = newPickBook(a.cfg)
 			a.pickBook.width, a.pickBook.height = a.width, a.height
+		case screenLibrary:
+			a.library = newLibrary(a.cfg)
+			a.library.width, a.library.height = a.width, a.height
+			return a, a.library.InitCmd()
 		case screenRemote:
 			a.remote = newRemote(a.runCtx, nil)
 			a.remote.width, a.remote.height = a.width, a.height
@@ -245,6 +253,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case bookPickedMsg:
+		a.audiobook.input = msg.path
+		a.audiobook.errText = ""
+		a.audiobook.message = "Filled input from Calibre library"
+		a.audiobook.command = ""
+		a.screen = screenAudiobook
+		return a, nil
+
+	case libraryAudiobookMsg:
+		// Preserve a clean audiobook form, then fill the path from the library.
+		a.audiobook = newAudiobook(a.cfg)
 		a.audiobook.input = msg.path
 		a.audiobook.errText = ""
 		a.audiobook.message = "Filled input from Calibre library"
@@ -338,6 +356,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.audiobook, cmd = a.audiobook.Update(msg)
 	case screenPickBook:
 		a.pickBook, cmd = a.pickBook.Update(msg)
+	case screenLibrary:
+		a.library, cmd = a.library.Update(msg)
 	case screenRemote:
 		a.remote, cmd = a.remote.Update(msg)
 	}
@@ -363,6 +383,8 @@ func (a App) View() string {
 		return a.audiobook.View()
 	case screenPickBook:
 		return a.pickBook.View()
+	case screenLibrary:
+		return a.library.View()
 	case screenRemote:
 		return a.remote.View()
 	default:
