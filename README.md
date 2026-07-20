@@ -144,7 +144,9 @@ samantha models clean --unused --yes    # Delete model assets not required now
 samantha prompts list                   # List embedded and user prompt documents
 samantha prompts show persona           # Show an assembled prompt document
 samantha render notes.txt --out a.wav   # Batch-render a document to audio
+samantha library list                  # Browse Calibre library (opt-in)
 samantha library search "cryptography" # Search Calibre library (opt-in)
+samantha library show 42               # Show one book's metadata
 samantha serve --tailscale              # Remote voice for Tailscale clients
 samantha serve --revoke-tokens          # Rotate serve bearer token
 ```
@@ -247,13 +249,18 @@ samantha audiobook create book.epub --out-dir out/book
 samantha audiobook create book.epub --out-dir out/book --audio-format m4b --resume --json
 # From Calibre library (requires calibre_enabled=true and Calibre installed):
 samantha config calibre_enabled true
+samantha library list
 samantha library search "cryptography"
+samantha library show 42
 samantha audiobook create --from-library "Crypto 101" --out-dir out/crypto
 ```
 
-In the TUI **Create audiobook** screen, toggle **Calibre library** on (saved to
-config) and use **Pick from library** to search and fill the input path
-(EPUB/PDF only for v1).
+In the TUI, open **Library** from the launcher to browse the catalog, search,
+and view book details (title, authors, tags, formats, description). From a book
+press **enter** or **a** to send an EPUB/PDF path into **Create audiobook**.
+The audiobook screen still has **Pick from library** for search-only pick
+during audiobook setup. Toggle **Calibre library** on (saved to config) when
+needed; v1 supports EPUB/PDF only.
 
 ### Narrate pipeline (prompt-controlled)
 
@@ -321,7 +328,7 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `ollama_model` | empty | `OLLAMA_MODEL` | Ollama model name |
 | `ollama_host` | `http://localhost:11434` | `OLLAMA_HOST` | Ollama server URL |
 | `voice_tools_enabled` | `false` (auto-`true` for Ollama when unset) | `VOICE_TOOLS_ENABLED` | Enable local tool calls (`list_files` / `read_file` / `write_file` / `run_command` for Ollama). Ollama enables this automatically unless you set the key or env explicitly to `false`. Remote `samantha serve` still uses `remote_tools_enabled` (default off). |
-| `calibre_enabled` | `false` | `CALIBRE_ENABLED` | Opt in to Calibre library search, TUI picker, and `--from-library` |
+| `calibre_enabled` | `false` | `CALIBRE_ENABLED` | Opt in to Calibre library browse/search, TUI Library + picker, and `--from-library` |
 | `calibre_library_path` | empty | `CALIBRE_LIBRARY_PATH` | Calibre library path (empty uses Calibre's default library) |
 | `calibredb_binary` | empty | `CALIBREDB_BINARY` | `calibredb` path; empty uses PATH then macOS app bundle / `/opt/calibre` |
 | `calibre_convert_binary` | empty | `CALIBRE_CONVERT_BINARY` | `ebook-convert` path (reserved; v1 does not convert MOBI/AZW3) |

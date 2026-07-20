@@ -64,6 +64,19 @@ demo-meeting: build
         vhs demos/meeting.tape
     ls -lh demos/meeting.gif
 
+# Calibre Library browser/viewer (browse → detail → search → audiobook).
+# Uses demos/fixtures/fake-calibredb so recording does not need a real library.
+demo-library: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    chmod +x demos/fixtures/fake-calibredb
+    env -u NO_COLOR -u CLICOLOR \
+        CLICOLOR_FORCE=1 FORCE_COLOR=1 \
+        TERM=xterm-256color COLORTERM=truecolor \
+        vhs demos/library.tape
+    just _optimize-demo-gif demos/library.gif
+    ls -lh demos/library.gif
+
 [private]
 _optimize-demo-gif path:
     #!/usr/bin/env bash

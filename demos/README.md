@@ -55,3 +55,21 @@ plus `SAMANTHA_COLOR_PROFILE=ansi` so the termcast theme paints bright cyan/ambe
 ```bash
 just demo-meeting
 ```
+
+## library.gif — Calibre Library browser / viewer
+
+Full Bubble Tea app with a deterministic fake `calibredb` (no real Calibre
+install or library required for recording):
+
+1. **Launcher** — select **Library**  
+2. **Browse** — title-ordered catalog loads on open  
+3. **Detail** — metadata + description for one book  
+4. **Search** — `/` filter (`go`)  
+5. **Audiobook** — `a` fills Create audiobook with an EPUB/PDF path  
+
+Fixture: `demos/fixtures/fake-calibredb` (selected via `calibredb_binary` in a
+disposable `$HOME` config). Color: `env -u NO_COLOR` + `SAMANTHA_COLOR_PROFILE=ansi`.
+
+```bash
+just demo-library
+```

@@ -21,6 +21,7 @@ const (
 	actionSessions
 	actionMeeting
 	actionRemote
+	actionLibrary
 	actionAudiobook
 	actionSettings
 	actionQuit
@@ -99,6 +100,10 @@ func newLauncher(cfg *config.Config, providers []discovery.ProviderInfo, saved .
 			action: actionRemote,
 		},
 		launcherItem{
+			label: "Library", hint: "Browse Calibre · view book details", glyph: "▤",
+			action: actionLibrary,
+		},
+		launcherItem{
 			label: "Create audiobook", hint: "Render long-form narration", glyph: "♪",
 			action: actionAudiobook,
 		},
@@ -142,6 +147,8 @@ func (m launcherModel) Update(msg tea.Msg) (launcherModel, tea.Cmd) {
 				return m, func() tea.Msg { return switchScreenMsg(screenMeetingSetup) }
 			case actionRemote:
 				return m, func() tea.Msg { return switchScreenMsg(screenRemote) }
+			case actionLibrary:
+				return m, func() tea.Msg { return switchScreenMsg(screenLibrary) }
 			case actionAudiobook:
 				return m, func() tea.Msg { return switchScreenMsg(screenAudiobook) }
 			case actionSettings:
