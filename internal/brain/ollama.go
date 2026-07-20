@@ -85,9 +85,10 @@ func NewOllama(cfg *config.Config) (*OllamaBrain, error) {
 
 // loadSkillsCatalog returns the Agent Skills catalog when skills_enabled is
 // true; otherwise an empty catalog. Discovery follows the cross-client
-// .agents/skills convention (project then user) plus the configured Samantha
-// skills_dir. .claude/skills is intentionally not scanned — Claude Code owns
-// that path. Missing dirs yield empty contributions, not errors.
+// .agents/skills convention (project, nearest workspace ancestor, then user)
+// and then checks the configured Samantha skills_dir. .claude/skills is
+// intentionally not scanned — Claude Code owns that path. Missing dirs yield
+// empty contributions, not errors.
 func loadSkillsCatalog(ctx context.Context, cfg *config.Config, workDir string) ([]skills.Skill, error) {
 	if cfg == nil || !cfg.SkillsEnabled {
 		return nil, nil

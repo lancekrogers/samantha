@@ -190,6 +190,36 @@ func TestLoadSkillsCatalogProjectOverridesSystem(t *testing.T) {
 	}
 }
 
+func TestLoadSkillsCatalogIncludesAncestorAgentSkills(t *testing.T) {
+	fakeHome := t.TempDir()
+	prev := skills.SetUserHomeDirForTest(func() (string, error) { return fakeHome, nil })
+	t.Cleanup(prev)
+
+	campaignRoot := t.TempDir()
+	workDir := filepath.Join(campaignRoot, "projects", "samantha")
+	workspaceSkills := filepath.Join(campaignRoot, ".agents", "skills", "workspace-context")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(workspaceSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceSkills, "SKILL.md"), []byte("---\nname: workspace-context\ndescription: explains the workspace\n---\nUse the workspace skills when answering questions.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadSkillsCatalog(context.Background(), &config.Config{
+		SkillsEnabled: true,
+		SkillsDir:     filepath.Join(campaignRoot, "missing-config-skills"),
+	}, workDir)
+	if err != nil {
+		t.Fatalf("Catalog: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "workspace-context" {
+		t.Fatalf("got %#v, want workspace-context skill", got)
+	}
+}
+
 func TestLoadSkillsCatalogIgnoresClaudeSkills(t *testing.T) {
 	fakeHome := t.TempDir()
 	prev := skills.SetUserHomeDirForTest(func() (string, error) { return fakeHome, nil })

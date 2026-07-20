@@ -390,8 +390,8 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `agent_name` | `Samantha` | | Display name |
 | `persona` | `samantha` | `PERSONA` | Prompt document name for the interactive persona |
 | `prompts_dir` | empty | `PROMPTS_DIR` | Prompt document directory; defaults to `~/.obey/agents/voice/samantha/prompts` when unset |
-| `skills_enabled` | `false` (auto-`true` for local Ollama when unset) | `SKILLS_ENABLED` | Enable Agent Skills (`SKILL.md`) for the Ollama provider. Ollama enables discovery automatically unless you set the key or env explicitly to `false`. Discovers project/user skill frontmatter into the system prompt; not a pre-activation sandbox. Claude/Grok already discover skills via their CLIs. |
-| `skills_dir` | empty | `SKILLS_DIR` | Extra Samantha skills root (after project/user harness dirs); defaults to `~/.obey/agents/voice/samantha/skills` when unset. |
+| `skills_enabled` | `false` (auto-`true` for local Ollama when unset) | `SKILLS_ENABLED` | Enable Agent Skills (`SKILL.md`) for the Ollama provider. Ollama enables discovery automatically unless you set the key or env explicitly to `false`. Discovers project/workspace/user skill frontmatter into the system prompt; not a pre-activation sandbox. Claude/Grok already discover skills via their CLIs. |
+| `skills_dir` | empty | `SKILLS_DIR` | Extra Samantha skills root (after project/workspace/user harness dirs); defaults to `~/.obey/agents/voice/samantha/skills` when unset. |
 | `models_dir` | `~/.cache/samantha/models` | `MODELS_DIR` | Model download directory |
 | `language` | `en-US` | | Recognition language |
 | `max_history` | `10` | | Saved conversation history length |
@@ -404,11 +404,12 @@ With `skills_enabled=true` (the default for local Ollama unless explicitly
 disabled), the Ollama provider discovers Agent Skills via the
 cross-client **`.agents/skills`** convention
 ([agentskills.io](https://agentskills.io/client-implementation/adding-skills-support))
-— **project then user** — plus Samantha's own skills root:
+— **project/workspace then user** — plus Samantha's own skills root:
 
 1. `<cwd>/.agents/skills/*/SKILL.md` — project skills (shared with Codex, VS Code, camp, …)
-2. `~/.agents/skills/*/SKILL.md` — user skills
-3. `skills_dir` (default `~/.obey/agents/voice/samantha/skills`) — Samantha-only
+2. `<nearest ancestor>/.agents/skills/*/SKILL.md` — workspace/project-root skills
+3. `~/.agents/skills/*/SKILL.md` — user skills
+4. `skills_dir` (default `~/.obey/agents/voice/samantha/skills`) — Samantha-only
 
 Ollama does **not** scan `.claude/skills`; the Claude Code provider owns that
 path, and dual-scanning would duplicate skills when both trees are projected.
@@ -440,6 +441,9 @@ effect when the conversation runtime is re-entered or restarted.
 ```text
 # project (cwd where samantha was started)
 ./.agents/skills/hello/SKILL.md
+
+# workspace/project root (nearest ancestor)
+<workspace>/.agents/skills/campaign-context/SKILL.md
 
 # user
 ~/.agents/skills/hello/SKILL.md
