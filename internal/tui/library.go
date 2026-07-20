@@ -45,6 +45,12 @@ type libraryAudiobookMsg struct {
 	path string
 }
 
+// libraryProbeMsg reports whether calibredb is resolvable on this machine.
+type libraryProbeMsg struct {
+	path string
+	err  error
+}
+
 type libraryModel struct {
 	cfg       *config.Config
 	client    calibre.Client
@@ -64,6 +70,14 @@ type libraryModel struct {
 	detail    calibre.Book
 	detailOK  bool
 	detailErr string
+
+	// Probe results for onboarding (filled async).
+	probed     bool
+	binaryPath string
+	binaryErr  error
+
+	// persistCalibre saves calibre_enabled. Injectable for tests.
+	persistCalibre func(enabled bool) error
 }
 
 func newLibrary(cfg *config.Config) libraryModel {
@@ -72,6 +86,9 @@ func newLibrary(cfg *config.Config) libraryModel {
 		editing: false,
 		focus:   libFocusList,
 		pane:    libPaneBrowse,
+		persistCalibre: func(enabled bool) error {
+			return config.SetAndSave("calibre_enabled", enabled)
+		},
 	}
 	if cfg != nil {
 		m.client = calibre.NewClientFromConfig(
@@ -89,12 +106,25 @@ func (m libraryModel) enabled() bool {
 	return m.cfg != nil && m.cfg.CalibreEnabled
 }
 
-// InitCmd returns the initial browse load when Calibre is enabled.
-func (m libraryModel) InitCmd() tea.Cmd {
+// needsOnboarding is true when the catalog cannot be used yet (off or no binary).
+func (m libraryModel) needsOnboarding() bool {
 	if !m.enabled() {
-		return nil
+		return true
 	}
-	return m.runBrowse()
+	// Enabled but probe finished and binary missing.
+	if m.probed && m.binaryErr != nil {
+		return true
+	}
+	return false
+}
+
+// InitCmd probes calibredb and, when enabled, starts a catalog browse.
+func (m libraryModel) InitCmd() tea.Cmd {
+	probe := m.runProbe()
+	if !m.enabled() {
+		return probe
+	}
+	return tea.Batch(probe, m.runBrowse())
 }
 
 func (m libraryModel) Update(msg tea.Msg) (libraryModel, tea.Cmd) {
@@ -144,10 +174,18 @@ func (m libraryModel) Update(msg tea.Msg) (libraryModel, tea.Cmd) {
 		m.detailOK = true
 		m.detailErr = ""
 		m.pane = libPaneDetail
+	case libraryProbeMsg:
+		m.probed = true
+		m.binaryPath = msg.path
+		m.binaryErr = msg.err
 	case tea.KeyMsg:
 		key := msg.String()
 		if m.pane == libPaneDetail {
 			return m.handleDetailKey(key)
+		}
+		// Onboarding keys work even when the catalog is off.
+		if m.needsOnboarding() {
+			return m.handleOnboardingKey(key)
 		}
 		if m.editing && m.focus == libFocusQuery {
 			return m.handleQueryEdit(key)
@@ -190,6 +228,9 @@ func (m libraryModel) Update(msg tea.Msg) (libraryModel, tea.Cmd) {
 			if m.focus == libFocusList && len(m.books) > 0 {
 				return m.sendToAudiobook(m.books[m.cursor])
 			}
+		case "e":
+			// Allow turning the integration off from the live browser.
+			return m.setEnabled(false)
 		case "r":
 			// Reload browse or re-run search.
 			return m, m.runQuery()
@@ -205,6 +246,66 @@ func (m libraryModel) Update(msg tea.Msg) (libraryModel, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m libraryModel) handleOnboardingKey(key string) (libraryModel, tea.Cmd) {
+	switch key {
+	case "e":
+		return m.setEnabled(true)
+	case "r":
+		return m, m.runProbe()
+	case "esc":
+		return m, func() tea.Msg { return switchScreenMsg(screenLauncher) }
+	case "q":
+		return m, func() tea.Msg { return quitMsg{} }
+	}
+	return m, nil
+}
+
+func (m libraryModel) setEnabled(on bool) (libraryModel, tea.Cmd) {
+	if m.cfg == nil {
+		m.errText = "no config available"
+		return m, nil
+	}
+	save := m.persistCalibre
+	if save == nil {
+		save = func(enabled bool) error {
+			return config.SetAndSave("calibre_enabled", enabled)
+		}
+	}
+	if err := save(on); err != nil {
+		m.errText = fmt.Sprintf("Failed to save calibre_enabled: %v", err)
+		return m, nil
+	}
+	m.cfg.CalibreEnabled = on
+	m.errText = ""
+	if on {
+		m.message = "Calibre library enabled"
+		// Rebuild client in case binary path config changed externally.
+		m.client = calibre.NewClientFromConfig(
+			m.cfg.CalibreEnabled,
+			m.cfg.CalibreLibraryPath,
+			m.cfg.CalibredbBinary,
+			m.cfg.CalibreConvertBinary,
+			m.cfg.CalibrePreferFormat,
+		)
+		return m, tea.Batch(m.runProbe(), m.runBrowse())
+	}
+	m.message = "Calibre library disabled"
+	m.books = nil
+	return m, m.runProbe()
+}
+
+func (m *libraryModel) runProbe() tea.Cmd {
+	cfg := m.cfg
+	return func() tea.Msg {
+		name := "calibredb"
+		if cfg != nil && strings.TrimSpace(cfg.CalibredbBinary) != "" {
+			name = strings.TrimSpace(cfg.CalibredbBinary)
+		}
+		p, err := calibre.BundleLookPath(name)
+		return libraryProbeMsg{path: p, err: err}
+	}
 }
 
 func (m libraryModel) handleDetailKey(key string) (libraryModel, tea.Cmd) {
@@ -351,10 +452,121 @@ func (m libraryModel) visibleRows() int {
 }
 
 func (m libraryModel) View() string {
+	if m.needsOnboarding() {
+		return m.onboardingView()
+	}
 	if m.pane == libPaneDetail {
 		return m.detailView()
 	}
 	return m.browseView()
+}
+
+func (m libraryModel) onboardingView() string {
+	var b strings.Builder
+	width := m.width
+	if width <= 0 {
+		width = 80
+	}
+	b.WriteString(ansi.Truncate(titleStyle.Render("  Library"), width, "…"))
+	b.WriteString("\n")
+	b.WriteString(ansi.Truncate(subtitleStyle.Render("  Optional ebook catalog via Calibre"), width, "…"))
+	b.WriteString("\n\n")
+
+	// What is Calibre?
+	b.WriteString(ansi.Truncate(selectedStyle.Render("  What is Calibre?"), width, "…"))
+	b.WriteString("\n")
+	for _, line := range wrapWords(
+		"Calibre is free software that organizes ebooks on your computer "+
+			"(EPUB, PDF, MOBI, and more) — a personal library app. Samantha can "+
+			"browse that catalog so you can pick a book for audiobook creation "+
+			"or ask about titles you own. You do not need Calibre for voice chat.",
+		max(width-4, 40),
+	) {
+		b.WriteString(ansi.Truncate(dimStyle.Render("  "+line), width, "…"))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+
+	// Status
+	b.WriteString(ansi.Truncate(selectedStyle.Render("  Status"), width, "…"))
+	b.WriteString("\n")
+	if m.enabled() {
+		b.WriteString(ansi.Truncate("  Integration   on", width, "…"))
+	} else {
+		b.WriteString(ansi.Truncate("  Integration   off  (press e to enable)", width, "…"))
+	}
+	b.WriteString("\n")
+	if !m.probed {
+		b.WriteString(ansi.Truncate(dimStyle.Render("  calibredb     checking…"), width, "…"))
+	} else if m.binaryErr != nil {
+		b.WriteString(ansi.Truncate(errorStyle.Render("  calibredb     not found"), width, "…"))
+	} else {
+		b.WriteString(ansi.Truncate(statusStyle.Render("  calibredb     "+m.binaryPath), width, "…"))
+	}
+	b.WriteString("\n")
+	if m.cfg != nil && strings.TrimSpace(m.cfg.CalibreLibraryPath) != "" {
+		b.WriteString(ansi.Truncate(dimStyle.Render("  library path  "+m.cfg.CalibreLibraryPath), width, "…"))
+	} else {
+		b.WriteString(ansi.Truncate(dimStyle.Render("  library path  Calibre default (empty calibre_library_path)"), width, "…"))
+	}
+	b.WriteString("\n\n")
+
+	// Next steps
+	b.WriteString(ansi.Truncate(selectedStyle.Render("  Get started"), width, "…"))
+	b.WriteString("\n")
+	steps := []string{
+		"1. Install Calibre: brew install --cask calibre  (macOS) or https://calibre-ebook.com",
+		"2. Open Calibre once so it creates your library folder",
+		"3. Press e here to enable  (or: samantha config calibre_enabled true)",
+	}
+	if m.binaryErr == nil && m.probed && !m.enabled() {
+		steps = []string{
+			"Calibre tools were found on this machine.",
+			"Press e to enable the library integration and start browsing.",
+			"CLI equivalent: samantha config calibre_enabled true",
+		}
+	}
+	if m.enabled() && m.binaryErr != nil {
+		steps = []string{
+			"Integration is on, but calibredb was not found.",
+			"Install Calibre, or set calibredb_binary to the full path.",
+			"macOS app: /Applications/calibre.app/Contents/MacOS/calibredb",
+			"Linux package: often /opt/calibre/calibredb  ·  Windows: add to PATH",
+		}
+	}
+	for _, s := range steps {
+		for _, line := range wrapWords(s, max(width-4, 40)) {
+			b.WriteString(ansi.Truncate(dimStyle.Render("  "+line), width, "…"))
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString(ansi.Truncate(dimStyle.Render(
+		"  Non-default library?  samantha config calibre_library_path /path/to/library",
+	), width, "…"))
+	b.WriteString("\n")
+	b.WriteString(ansi.Truncate(dimStyle.Render(
+		"  Doctor check:         samantha doctor   (calibre-binary is Warn, never fatal)",
+	), width, "…"))
+	b.WriteString("\n")
+
+	if m.errText != "" {
+		b.WriteString("\n")
+		b.WriteString(errorStyle.Render("  " + m.errText))
+		b.WriteString("\n")
+	} else if m.message != "" {
+		b.WriteString("\n")
+		b.WriteString(statusStyle.Render("  " + m.message))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+	footer := "  e enable · r recheck · esc back"
+	if m.enabled() {
+		footer = "  e disable · r recheck · esc back"
+	}
+	b.WriteString(dimStyle.Render(ansi.Truncate(footer, width, "…")))
+	return b.String()
 }
 
 func (m libraryModel) browseView() string {
@@ -367,13 +579,6 @@ func (m libraryModel) browseView() string {
 	b.WriteString("\n")
 	b.WriteString(ansi.Truncate(subtitleStyle.Render("  Browse · search · view details · send to audiobook"), width, "…"))
 	b.WriteString("\n\n")
-
-	if !m.enabled() {
-		b.WriteString(errorStyle.Render("  Calibre is off — enable with: samantha config calibre_enabled true"))
-		b.WriteString("\n\n")
-		b.WriteString(dimStyle.Render(ansi.Truncate("  esc back", width, "…")))
-		return b.String()
-	}
 
 	qLabel := "Query"
 	qVal := m.query
@@ -432,7 +637,7 @@ func (m libraryModel) browseView() string {
 
 	b.WriteString("\n")
 	b.WriteString(dimStyle.Render(ansi.Truncate(
-		"  enter view · / search · a audiobook · r reload · ↑/↓ list · esc back",
+		"  enter view · / search · a audiobook · e disable · r reload · ↑/↓ · esc back",
 		width, "…",
 	)))
 	return b.String()

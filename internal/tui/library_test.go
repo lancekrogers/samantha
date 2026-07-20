@@ -35,14 +35,56 @@ func TestLibraryBrowseFoldsResults(t *testing.T) {
 	}
 }
 
-func TestLibraryDisabledView(t *testing.T) {
+func TestLibraryDisabledOnboardingExplainsCalibre(t *testing.T) {
 	m := newLibrary(&config.Config{CalibreEnabled: false})
 	view := m.View()
-	if !strings.Contains(view, "Calibre is off") {
-		t.Fatalf("view:\n%s", view)
+	for _, want := range []string{"What is Calibre?", "free software", "ebook", "press e"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("onboarding missing %q:\n%s", want, view)
+		}
 	}
-	if cmd := m.InitCmd(); cmd != nil {
-		t.Fatal("InitCmd should be nil when disabled")
+	// Disabled still probes for calibredb so we can say "found" vs "install".
+	if cmd := m.InitCmd(); cmd == nil {
+		t.Fatal("InitCmd should probe even when disabled")
+	}
+}
+
+func TestLibraryEnableFromOnboarding(t *testing.T) {
+	cfg := &config.Config{CalibreEnabled: false}
+	m := newLibrary(cfg)
+	var saved *bool
+	m.persistCalibre = func(enabled bool) error {
+		saved = &enabled
+		return nil
+	}
+	// Pretend calibredb is present so enabling leaves onboarding.
+	m.probed = true
+	m.binaryPath = "/Applications/calibre.app/Contents/MacOS/calibredb"
+	m, cmd := m.setEnabled(true)
+	if saved == nil || !*saved {
+		t.Fatalf("persist got %v", saved)
+	}
+	if !cfg.CalibreEnabled {
+		t.Fatal("cfg not enabled")
+	}
+	if m.needsOnboarding() {
+		t.Fatal("should leave onboarding when binary is known present")
+	}
+	if cmd == nil {
+		t.Fatal("expected probe+browse after enable")
+	}
+}
+
+func TestLibraryOnboardingWhenBinaryMissing(t *testing.T) {
+	m := newLibrary(&config.Config{CalibreEnabled: true})
+	m.probed = true
+	m.binaryErr = calibre.ErrCalibreNotFound
+	if !m.needsOnboarding() {
+		t.Fatal("enabled without binary should show onboarding")
+	}
+	view := m.View()
+	if !strings.Contains(view, "not found") || !strings.Contains(view, "Install Calibre") {
+		t.Fatalf("view:\n%s", view)
 	}
 }
 
@@ -193,9 +235,7 @@ func TestLibrarySearchError(t *testing.T) {
 func TestLibrarySwitchFromAppLoadsBrowse(t *testing.T) {
 	app := NewApp(&config.Config{CalibreEnabled: true, TTSVoice: "af_heart"})
 	app.width, app.height = 80, 24
-	// Inject a client that would be used after switch recreates the model —
-	// switchScreen rebuilds library from config; InitCmd runs when enabled.
-	// We only assert the switch returns a non-nil init cmd when enabled.
+	// switchScreen rebuilds library from config; InitCmd probes + browses when enabled.
 	model, cmd := app.Update(switchScreenMsg(screenLibrary))
 	a, ok := model.(App)
 	if !ok {
@@ -205,7 +245,19 @@ func TestLibrarySwitchFromAppLoadsBrowse(t *testing.T) {
 		t.Fatalf("screen = %v", a.screen)
 	}
 	if cmd == nil {
-		t.Fatal("expected InitCmd browse on library switch")
+		t.Fatal("expected InitCmd (probe + browse) on library switch")
+	}
+}
+
+func TestLibraryProbeMsgUpdatesStatus(t *testing.T) {
+	m := newLibrary(&config.Config{CalibreEnabled: false})
+	m, _ = m.Update(libraryProbeMsg{path: "/opt/calibre/calibredb"})
+	if !m.probed || m.binaryPath == "" || m.binaryErr != nil {
+		t.Fatalf("probe fold failed: %+v", m)
+	}
+	view := m.View()
+	if !strings.Contains(view, "/opt/calibre/calibredb") {
+		t.Fatalf("view missing binary path:\n%s", view)
 	}
 }
 
