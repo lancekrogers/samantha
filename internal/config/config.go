@@ -94,6 +94,39 @@ type Config struct {
 	MaxHistory      int    `mapstructure:"max_history"`
 	ListenTimeout   int    `mapstructure:"listen_timeout"`
 	PhraseTimeLimit int    `mapstructure:"phrase_time_limit"`
+
+	// Meeting notes routing (post-record export to campaign/file/Apple Notes).
+	Meeting MeetingConfig `mapstructure:"meeting"`
+}
+
+// MeetingConfig holds meeting storage + routing preferences.
+type MeetingConfig struct {
+	// Dir overrides the default meetings directory when non-empty.
+	Dir   string             `mapstructure:"dir"`
+	Route MeetingRouteConfig `mapstructure:"route"`
+}
+
+// MeetingRouteConfig controls post-meeting note routing.
+type MeetingRouteConfig struct {
+	// Mode is ask | auto | off (default ask).
+	Mode string `mapstructure:"mode"`
+	// Default is the destination ID used by auto and preselected by ask.
+	Default string `mapstructure:"default"`
+	// Body is notes | full (default notes).
+	Body string `mapstructure:"body"`
+	// Destinations are named route targets (manage in YAML for v1).
+	Destinations []MeetingDestinationConfig `mapstructure:"destinations"`
+}
+
+// MeetingDestinationConfig is one named export target.
+type MeetingDestinationConfig struct {
+	ID       string   `mapstructure:"id"`
+	Type     string   `mapstructure:"type"` // campaign | file | apple-notes
+	Campaign string   `mapstructure:"campaign"`
+	Capture  string   `mapstructure:"capture"` // intent | note
+	Tags     []string `mapstructure:"tags"`
+	Path     string   `mapstructure:"path"`
+	Folder   string   `mapstructure:"folder"`
 }
 
 var (
@@ -167,6 +200,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("max_history", 10)
 	v.SetDefault("listen_timeout", 10)
 	v.SetDefault("phrase_time_limit", 30)
+
+	// Meeting notes routing defaults.
+	v.SetDefault("meeting.dir", "")
+	v.SetDefault("meeting.route.mode", "ask")
+	v.SetDefault("meeting.route.default", "")
+	v.SetDefault("meeting.route.body", "notes")
+	v.SetDefault("meeting.route.destinations", []any{})
 }
 
 // Load reads configuration from disk and environment.
@@ -378,8 +418,35 @@ func SessionsDir() string {
 }
 
 // MeetingsDir returns the meeting transcripts directory.
+// Honors meeting.dir when set; otherwise ~/.obey/agents/voice/samantha/meetings.
 func MeetingsDir() string {
+	mu.RLock()
+	defer mu.RUnlock()
+	if d := strings.TrimSpace(v.GetString("meeting.dir")); d != "" {
+		return expandHomePath(d)
+	}
 	return filepath.Join(configDir, "meetings")
+}
+
+// MeetingsDirFrom returns the meetings directory for an already-loaded Config
+// without reading the global viper state (useful for tests and one-shot routes).
+func MeetingsDirFrom(cfg *Config) string {
+	if cfg != nil {
+		if d := strings.TrimSpace(cfg.Meeting.Dir); d != "" {
+			return expandHomePath(d)
+		}
+	}
+	return filepath.Join(configDir, "meetings")
+}
+
+func expandHomePath(path string) string {
+	if path == "~" {
+		return homeDir()
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(homeDir(), path[2:])
+	}
+	return path
 }
 
 // ConfigDir returns the config directory path.

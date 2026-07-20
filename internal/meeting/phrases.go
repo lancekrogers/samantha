@@ -1,5 +1,3 @@
-// Package meeting holds small shared helpers for the meeting-record feature
-// (CLI + TUI) so stop-phrase semantics cannot drift between paths.
 package meeting
 
 import "strings"
