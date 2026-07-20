@@ -15,7 +15,7 @@ func (m settingsModel) View() string {
 	b.WriteString(headerStyle.Render("  Settings"))
 	b.WriteString("\n")
 
-	tabs := []string{"Brain", "Brain model", "TTS", "Voice", "Input", "Output", "Meeting"}
+	tabs := []string{"Brain", "Brain model", "Tools", "TTS", "Voice", "Input", "Output", "Meeting"}
 	var tabLine strings.Builder
 	for i, tab := range tabs {
 		style := dimStyle
@@ -56,6 +56,12 @@ func (m settingsModel) View() string {
 				active = " ✓"
 			}
 			m.renderItem(&b, i, item+active)
+		}
+
+	case sectionTools:
+		start, end := m.visibleRange(len(m.toolItems))
+		for i := start; i < end; i++ {
+			m.renderItem(&b, i, m.toolItems[i])
 		}
 
 	case sectionTTS:

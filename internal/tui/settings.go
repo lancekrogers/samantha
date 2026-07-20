@@ -18,6 +18,7 @@ type settingsSection int
 const (
 	sectionProvider settingsSection = iota
 	sectionModel
+	sectionTools
 	sectionTTS
 	sectionVoice
 	sectionInput
@@ -39,6 +40,7 @@ type settingsModel struct {
 	// Derived lists for current section.
 	providerItems  []string
 	modelItems     []string
+	toolItems      []string
 	ttsItems       []ttsSettingItem
 	voiceItems     []tts.Voice
 	inputItems     []string
@@ -74,6 +76,7 @@ func newSettings(cfg *config.Config, providers []discovery.ProviderInfo) setting
 	}
 	m.buildProviderItems()
 	m.buildModelItems()
+	m.buildToolItems()
 	m.buildTTSItems()
 	m.buildVoiceItems()
 	m.inputItems = []string{""}
@@ -124,6 +127,20 @@ func (m *settingsModel) buildModelItems() {
 	if len(m.modelItems) == 0 {
 		m.modelItems = []string{"default"}
 	}
+}
+
+func (m *settingsModel) buildToolItems() {
+	m.toolItems = []string{
+		fmt.Sprintf("Local tools — %s", enabledLabel(m.cfg.VoiceToolsEnabled)),
+		fmt.Sprintf("Agent Skills — %s", enabledLabel(m.cfg.SkillsEnabled)),
+	}
+}
+
+func enabledLabel(enabled bool) string {
+	if enabled {
+		return "ON ✓"
+	}
+	return "OFF"
 }
 
 type ttsSettingItem struct {
@@ -273,6 +290,8 @@ func (m *settingsModel) currentListLen() int {
 		return len(m.providerItems)
 	case sectionModel:
 		return len(m.modelItems)
+	case sectionTools:
+		return len(m.toolItems)
 	case sectionTTS:
 		return len(m.ttsItems)
 	case sectionVoice:
@@ -323,6 +342,33 @@ func (m *settingsModel) selectCurrent() {
 			}
 			m.message = fmt.Sprintf("Model set to %s", model)
 		}
+	case sectionTools:
+		if m.cursor >= len(m.toolItems) {
+			return
+		}
+		key := "voice_tools_enabled"
+		value := !m.cfg.VoiceToolsEnabled
+		label := "Local tools"
+		if m.cursor == 1 {
+			key = "skills_enabled"
+			value = !m.cfg.SkillsEnabled
+			label = "Agent Skills"
+		}
+		saveConfig := m.saveConfig
+		if saveConfig == nil {
+			saveConfig = config.SetAndSave
+		}
+		if err := saveConfig(key, value); err != nil {
+			m.message = fmt.Sprintf("Failed to save %s: %v", label, err)
+			return
+		}
+		if key == "voice_tools_enabled" {
+			m.cfg.VoiceToolsEnabled = value
+		} else {
+			m.cfg.SkillsEnabled = value
+		}
+		m.buildToolItems()
+		m.message = fmt.Sprintf("%s %s; restart or re-enter conversation to apply", label, enabledLabel(value))
 	case sectionTTS:
 		if m.cursor < len(m.ttsItems) {
 			provider := m.ttsItems[m.cursor].provider

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ollama/ollama/api"
 
@@ -251,7 +252,20 @@ func TestReadSkillTool(t *testing.T) {
 	}
 }
 
-func TestToolSessionHintsAllowedToolsKeepsCLI(t *testing.T) {
+func TestToolRunCommandUsesConfiguredTimeout(t *testing.T) {
+	start := time.Now()
+	result := toolRunCommandWithTimeout(context.Background(), t.TempDir(), map[string]any{
+		"command": "sleep 1",
+	}, 10*time.Millisecond)
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("timed out command took %v, want under 500ms", elapsed)
+	}
+	if !strings.Contains(result, "exit error") {
+		t.Fatalf("timed out command result = %q, want exit error", result)
+	}
+}
+
+func TestToolSessionEnforcesAllowedToolsAfterActivation(t *testing.T) {
 	t.Parallel()
 
 	catalog := []skills.Skill{
@@ -271,30 +285,34 @@ func TestToolSessionHintsAllowedToolsKeepsCLI(t *testing.T) {
 		t.Fatalf("pre-activation tools incomplete: %#v", toolNames(before))
 	}
 
-	// Activate via read_skill — body + soft hint.
+	// Activate via read_skill — body + enforceable policy.
 	got := sess.execute(context.Background(), "/work", skillCall("restricted"))
 	if !strings.Contains(got, "prefer read_file") {
 		t.Fatalf("activation body missing: %q", got)
 	}
-	if !strings.Contains(got, "skill hint: allowed-tools") {
-		t.Fatalf("activation should soft-hint allow-list: %q", got)
+	if !strings.Contains(got, "skill policy: only these tools") {
+		t.Fatalf("activation should report enforced allow-list: %q", got)
 	}
-	if strings.Contains(got, "other tools are denied") {
-		t.Fatalf("must not claim tools are denied: %q", got)
+	if strings.Contains(got, "skill hint") {
+		t.Fatalf("activation should not describe an enforced policy as a hint: %q", got)
 	}
 	if sess.active == nil || sess.active.Name != "restricted" {
 		t.Fatal("expected active skill after read_skill")
 	}
 
-	// After activation: FULL CLI still offered (skills + tools, not tools-from-skills).
+	// After activation: only the normalized allow-list remains available.
 	after := sess.tools()
-	for _, name := range []string{"list_files", "read_file", "write_file", "run_command", "read_skill"} {
-		if !hasTool(after, name) {
-			t.Fatalf("after skill load, missing CLI/tool %s: %#v", name, toolNames(after))
+	if !hasTool(after, "read_file") {
+		t.Fatalf("after skill load, read_file missing: %#v", toolNames(after))
+	}
+	for _, name := range []string{"list_files", "write_file", "run_command", "read_skill"} {
+		if hasTool(after, name) {
+			t.Fatalf("after skill load, disallowed tool %s still offered: %#v", name, toolNames(after))
 		}
 	}
 
-	// write_file still executes (workdir write), not blocked by allow-list.
+	// Runtime enforcement still applies even if a model sends a stale or
+	// deliberately disallowed call that is no longer in the advertised schema.
 	dir := t.TempDir()
 	write := sess.execute(context.Background(), dir, api.ToolCall{
 		Function: api.ToolCallFunction{
@@ -302,11 +320,11 @@ func TestToolSessionHintsAllowedToolsKeepsCLI(t *testing.T) {
 			Arguments: mustArgs(map[string]any{"path": "out.txt", "content": "ok"}),
 		},
 	})
-	if strings.Contains(write, "not allowed") {
-		t.Fatalf("write_file must not be sandbox-denied: %q", write)
+	if !strings.Contains(write, "not allowed") {
+		t.Fatalf("write_file should be rejected by allow-list: %q", write)
 	}
-	if !strings.Contains(write, "wrote") {
-		t.Fatalf("write_file should succeed: %q", write)
+	if _, err := os.Stat(filepath.Join(dir, "out.txt")); !os.IsNotExist(err) {
+		t.Fatalf("disallowed write_file created a file: %v", err)
 	}
 }
 

@@ -244,6 +244,64 @@ func TestOllamaRespectsExplicitVoiceToolsFalse(t *testing.T) {
 	}
 }
 
+func TestOllamaDefaultsSkillsOnWhenUnset(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("brain_provider: ollama\nollama_model: llama3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := configFile
+	configFile = path
+	defer func() { configFile = orig }()
+	t.Setenv("SKILLS_ENABLED", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !cfg.SkillsEnabled {
+		t.Fatal("ollama without explicit skills_enabled must default skills on")
+	}
+}
+
+func TestOllamaRespectsExplicitSkillsFalse(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("brain_provider: ollama\nskills_enabled: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := configFile
+	configFile = path
+	defer func() { configFile = orig }()
+	t.Setenv("SKILLS_ENABLED", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.SkillsEnabled {
+		t.Fatal("explicit skills_enabled: false must win")
+	}
+}
+
+func TestToolCommandTimeoutEnvOverride(t *testing.T) {
+	orig := configFile
+	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")
+	defer func() { configFile = orig }()
+
+	setDefaults(v)
+	t.Setenv("TOOL_COMMAND_TIMEOUT", "90")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.ToolCommandTimeout != 90 {
+		t.Fatalf("ToolCommandTimeout = %d, want 90 from env", cfg.ToolCommandTimeout)
+	}
+}
+
 func TestPromptConfigEnvOverrides(t *testing.T) {
 	orig := configFile
 	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")

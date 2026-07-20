@@ -21,30 +21,41 @@ const maxToolIterations = 10
 // skillBodyMaxBytes caps read_skill output (same budget as read_file).
 const skillBodyMaxBytes = 32 * 1024
 
+// defaultToolCommandTimeout bounds one shell command when no provider config
+// is available (for example, in a direct unit-test tool session).
+const defaultToolCommandTimeout = 30 * time.Second
+
 // toolSession tracks catalog + active skill for progressive disclosure during
 // a single Think* turn.
 //
-// Product model: skills (playbooks) stack on top of CLI tools (capability).
-// allowed-tools from SKILL.md is author *hint* only — it is surfaced when a
-// skill loads, but does not strip or deny list_files/read_file/write_file/
-// run_command. Real safety stays at voice_tools_enabled / remote_tools_enabled.
+// Product model: skills (playbooks) select a tool allow-list after activation;
+// the global voice_tools_enabled / remote_tools_enabled gates still control
+// whether any tool can be called at all.
 type toolSession struct {
 	catalog []skills.Skill
-	// active is set after a successful read_skill (for hints / future policy).
+	// active is set after a successful read_skill and controls the next
+	// request's tool schemas and runtime allow-list.
 	active *skills.Skill
+	// commandTimeout bounds each run_command call in this session.
+	commandTimeout time.Duration
 	// Optional UI hooks (from StreamOptions).
 	onStart func(name, summary string)
 	onEnd   func(name, preview string)
 }
 
 // tools returns the full tool definitions for the next model request.
-// CLI tools stay available for the whole turn, including after skill load.
+// Before a skill is activated, the model may choose from the base tools and
+// read_skill. Once a skill declares allowed-tools, only that allow-list is
+// advertised for subsequent requests.
 func (s *toolSession) tools() api.Tools {
-	return voiceAssistantTools(s.catalog)
+	if s.active == nil || len(s.active.AllowedTools) == 0 {
+		return voiceAssistantTools(s.catalog)
+	}
+	return filterTools(voiceAssistantTools(s.catalog), s.active.AllowedTools)
 }
 
 // execute runs a tool call. Successful read_skill activates the skill and
-// may append an allowed-tools hint; CLI tools remain fully available.
+// applies its allow-list to subsequent tool calls.
 // onEnd always runs (via defer) so a slow or failed tool cannot leave the TUI
 // stuck on "🔧 tool..." without a finish event.
 func (s *toolSession) execute(ctx context.Context, workDir string, call api.ToolCall) (result string) {
@@ -61,7 +72,10 @@ func (s *toolSession) execute(ctx context.Context, workDir string, call api.Tool
 	if name == "read_skill" {
 		return s.executeReadSkill(call)
 	}
-	return executeTool(ctx, workDir, call, s.catalog)
+	if s.active != nil && !skills.ToolAllowed(name, s.active.AllowedTools) {
+		return fmt.Sprintf("error: tool %q is not allowed by active skill %q", name, s.active.Name)
+	}
+	return executeToolWithTimeout(ctx, workDir, call, s.catalog, s.commandTimeout)
 }
 
 // toolArgSummary is a short, non-sensitive description of tool arguments.
@@ -121,9 +135,8 @@ func (s *toolSession) executeReadSkill(call api.ToolCall) string {
 		}
 		msg := fmt.Sprintf("Skill %q (directory: %s)\n\n%s", sk.Name, sk.Dir, body)
 		if len(sk.AllowedTools) > 0 {
-			// Hint only — CLI tools are not restricted by this list.
 			msg += fmt.Sprintf(
-				"\n\n[skill hint: allowed-tools suggests %s — CLI tools remain available; this is not a hard sandbox]",
+				"\n\n[skill policy: only these tools are available for this skill: %s]",
 				strings.Join(sk.AllowedTools, " "),
 			)
 		}
@@ -224,7 +237,7 @@ func voiceAssistantTools(catalog []skills.Skill) api.Tools {
 			Type: "function",
 			Function: api.ToolFunction{
 				Name:        "read_skill",
-				Description: "Load the full instructions for a named Agent Skill. Call this when a skill from the Available skills list is relevant, then follow its body. Bundled scripts live under the skill directory returned with the body. CLI tools (list_files, read_file, write_file, run_command) stay available after loading. Optional allowed-tools in the skill is a hint only, not a sandbox.",
+				Description: "Load the full instructions for a named Agent Skill. Call this when a skill from the Available skills list is relevant, then follow its body. Bundled scripts live under the skill directory returned with the body. If the skill declares allowed-tools, only those tools remain available after loading.",
 				Parameters: api.ToolFunctionParameters{
 					Type:     "object",
 					Required: []string{"name"},
@@ -243,8 +256,12 @@ func voiceAssistantTools(catalog []skills.Skill) api.Tools {
 
 // executeTool runs a tool call and returns the result as a string.
 // catalog is used by read_skill; other tools ignore it.
-// Prefer toolSession.execute so skill activation (and hints) are tracked.
+// Prefer toolSession.execute so skill activation and policy are tracked.
 func executeTool(ctx context.Context, workDir string, call api.ToolCall, catalog []skills.Skill) string {
+	return executeToolWithTimeout(ctx, workDir, call, catalog, 0)
+}
+
+func executeToolWithTimeout(ctx context.Context, workDir string, call api.ToolCall, catalog []skills.Skill, commandTimeout time.Duration) string {
 	args := call.Function.Arguments.ToMap()
 
 	switch call.Function.Name {
@@ -255,7 +272,7 @@ func executeTool(ctx context.Context, workDir string, call api.ToolCall, catalog
 	case "write_file":
 		return toolWriteFile(workDir, args)
 	case "run_command":
-		return toolRunCommand(ctx, workDir, args)
+		return toolRunCommandWithTimeout(ctx, workDir, args, commandTimeout)
 	case "read_skill":
 		// Without a session, activation is not tracked (tests / legacy).
 		return toolReadSkill(catalog, args)
@@ -355,12 +372,19 @@ func toolWriteFile(workDir string, args map[string]any) string {
 }
 
 func toolRunCommand(ctx context.Context, workDir string, args map[string]any) string {
+	return toolRunCommandWithTimeout(ctx, workDir, args, 0)
+}
+
+func toolRunCommandWithTimeout(ctx context.Context, workDir string, args map[string]any, timeout time.Duration) string {
 	command, _ := args["command"].(string)
 	if command == "" {
 		return "error: command is required"
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	if timeout <= 0 {
+		timeout = defaultToolCommandTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
@@ -384,4 +408,14 @@ func toolRunCommand(ctx context.Context, workDir string, args map[string]any) st
 		"command": command,
 	})
 	return string(resp)
+}
+
+func filterTools(tools api.Tools, allowed []string) api.Tools {
+	filtered := make(api.Tools, 0, len(tools))
+	for _, tool := range tools {
+		if skills.ToolAllowed(tool.Function.Name, allowed) {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
 }

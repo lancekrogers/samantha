@@ -60,6 +60,9 @@ type Config struct {
 	OllamaModel       string `mapstructure:"ollama_model"`
 	OllamaHost        string `mapstructure:"ollama_host"`
 	VoiceToolsEnabled bool   `mapstructure:"voice_tools_enabled"`
+	// ToolCommandTimeout bounds one local run_command invocation in seconds.
+	// The brain turn timeout remains the outer bound for a complete turn.
+	ToolCommandTimeout int `mapstructure:"tool_command_timeout"`
 	// RemoteToolsEnabled gates tool calls for turns triggered over the
 	// network (samantha serve). Deliberately separate from
 	// voice_tools_enabled: remote turns default-deny tools regardless of
@@ -84,8 +87,8 @@ type Config struct {
 	Persona    string `mapstructure:"persona"`
 	PromptsDir string `mapstructure:"prompts_dir"`
 
-	// Skills (Agent Skills / SKILL.md). Opt-in; Ollama loads the catalog when
-	// SkillsEnabled is true. See internal/skills.
+	// Skills (Agent Skills / SKILL.md). Ollama loads the catalog by default when
+	// SkillsEnabled is not explicitly disabled. See internal/skills.
 	SkillsEnabled bool   `mapstructure:"skills_enabled"`
 	SkillsDir     string `mapstructure:"skills_dir"`
 
@@ -180,6 +183,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ollama_model", "")
 	v.SetDefault("ollama_host", "http://localhost:11434")
 	v.SetDefault("voice_tools_enabled", false)
+	v.SetDefault("tool_command_timeout", 30)
 	v.SetDefault("remote_tools_enabled", false)
 
 	// Calibre is opt-in. Empty binaries are resolved by bundle-aware LookPath.
@@ -241,6 +245,7 @@ func Load() (*Config, error) {
 		"ollama_model":            "OLLAMA_MODEL",
 		"ollama_host":             "OLLAMA_HOST",
 		"voice_tools_enabled":     "VOICE_TOOLS_ENABLED",
+		"tool_command_timeout":    "TOOL_COMMAND_TIMEOUT",
 		"persona":                 "PERSONA",
 		"prompts_dir":             "PROMPTS_DIR",
 		"skills_enabled":          "SKILLS_ENABLED",
@@ -272,27 +277,30 @@ func Load() (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
-	applyOllamaToolsDefault(&cfg, v)
+	applyOllamaDefaults(&cfg, v)
 	return &cfg, nil
 }
 
-// applyOllamaToolsDefault enables local tool calling for Ollama when the user
-// has not explicitly set voice_tools_enabled in the config file or
-// VOICE_TOOLS_ENABLED env. Ollama's tools (list/read/write/run_command) are
-// the only path to file I/O for local models; leaving them off by default
-// made tool-capable models look broken. Remote serve remains default-deny via
-// remote_tools_enabled. An explicit voice_tools_enabled: false still wins.
-func applyOllamaToolsDefault(cfg *Config, v *viper.Viper) {
+// applyOllamaDefaults enables local Ollama capabilities when the user has not
+// explicitly configured them. An explicit false still wins, and remote serve
+// remains default-deny via remote_tools_enabled.
+func applyOllamaDefaults(cfg *Config, v *viper.Viper) {
 	if !strings.EqualFold(strings.TrimSpace(cfg.BrainProvider), "ollama") {
 		return
 	}
-	if os.Getenv("VOICE_TOOLS_ENABLED") != "" {
-		return
+
+	if os.Getenv("VOICE_TOOLS_ENABLED") == "" && !v.InConfig("voice_tools_enabled") {
+		// Ollama's tools (list/read/write/run_command) are the only path to
+		// file I/O for local models; leaving them off makes tool-capable models
+		// look broken.
+		cfg.VoiceToolsEnabled = true
 	}
-	if v.InConfig("voice_tools_enabled") {
-		return
+
+	if os.Getenv("SKILLS_ENABLED") == "" && !v.InConfig("skills_enabled") {
+		// Skills are instruction catalogs, not additional capabilities. Tool
+		// access is still controlled independently by voice_tools_enabled.
+		cfg.SkillsEnabled = true
 	}
-	cfg.VoiceToolsEnabled = true
 }
 
 // Get returns a config value by key.
