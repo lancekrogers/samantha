@@ -322,14 +322,10 @@ func (m *settingsModel) selectCurrent() {
 			// failed save doesn't leave the running session on a provider
 			// that was never persisted.
 			name := m.providers[m.cursor].Name
-			if err := config.SetAndSave("brain_provider", name); err != nil {
+			if err := config.SetAndSaveBrainProvider(m.cfg, name); err != nil {
 				m.message = fmt.Sprintf("Failed to save provider: %v", err)
 				return
 			}
-			m.cfg.BrainProvider = name
-			// Match Load(): Ollama auto-enables tools/skills when keys are unset
-			// so the Tools tab matches the next conversation runtime.
-			config.ApplyOllamaDefaults(m.cfg)
 			m.buildModelItems()
 			m.buildToolItems()
 			m.message = fmt.Sprintf("Provider set to %s", name)

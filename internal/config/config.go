@@ -321,6 +321,40 @@ func ApplyOllamaDefaults(cfg *Config) {
 	applyOllamaDefaults(cfg, v)
 }
 
+// SetAndSaveBrainProvider changes the brain provider and persists any
+// provider defaults that were applied to cfg. This keeps the next Load in
+// sync with the live TUI state when switching to Ollama: Viper defaults are
+// written to config.yaml by WriteConfigAs, so auto-enabled capabilities must
+// be set before saving. Explicit config and environment values still win.
+func SetAndSaveBrainProvider(cfg *Config, provider string) error {
+	if cfg == nil {
+		return fmt.Errorf("config must not be nil")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	next := *cfg
+	next.BrainProvider = provider
+	applyOllamaDefaults(&next, v)
+
+	v.Set("brain_provider", provider)
+	if strings.EqualFold(strings.TrimSpace(provider), "ollama") {
+		if os.Getenv("VOICE_TOOLS_ENABLED") == "" && !v.InConfig("voice_tools_enabled") {
+			v.Set("voice_tools_enabled", true)
+		}
+		if os.Getenv("SKILLS_ENABLED") == "" && !v.InConfig("skills_enabled") {
+			v.Set("skills_enabled", true)
+		}
+	}
+
+	if err := save(); err != nil {
+		return err
+	}
+	*cfg = next
+	return nil
+}
+
 // ClampToolCommandTimeout bounds tool_command_timeout to 1–120 seconds.
 // Zero/negative becomes the default 30.
 func ClampToolCommandTimeout(seconds int) int {
