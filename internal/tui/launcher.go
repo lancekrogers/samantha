@@ -21,6 +21,7 @@ const (
 	actionSessions
 	actionMeeting
 	actionRemote
+	actionLibrary
 	actionAudiobook
 	actionSettings
 	actionQuit
@@ -99,11 +100,15 @@ func newLauncher(cfg *config.Config, providers []discovery.ProviderInfo, saved .
 			action: actionRemote,
 		},
 		launcherItem{
+			label: "Library", hint: "Optional ebook catalog (Calibre) · browse & audiobooks", glyph: "▤",
+			action: actionLibrary,
+		},
+		launcherItem{
 			label: "Create audiobook", hint: "Render long-form narration", glyph: "♪",
 			action: actionAudiobook,
 		},
 		launcherItem{
-			label: "Settings", hint: "Brain, voice, devices", glyph: "⚙",
+			label: "Settings", hint: "Brain, TTS, voice, devices", glyph: "⚙",
 			action: actionSettings,
 		},
 		launcherItem{
@@ -142,6 +147,8 @@ func (m launcherModel) Update(msg tea.Msg) (launcherModel, tea.Cmd) {
 				return m, func() tea.Msg { return switchScreenMsg(screenMeetingSetup) }
 			case actionRemote:
 				return m, func() tea.Msg { return switchScreenMsg(screenRemote) }
+			case actionLibrary:
+				return m, func() tea.Msg { return switchScreenMsg(screenLibrary) }
 			case actionAudiobook:
 				return m, func() tea.Msg { return switchScreenMsg(screenAudiobook) }
 			case actionSettings:
@@ -188,12 +195,18 @@ func (m launcherModel) fullView(width int) string {
 			brainStatus += " !"
 		}
 	}
+	voiceLabel := "voice model-native"
+	if activeTTSProvider(m.cfg) == "kokoro" {
+		voiceLabel = "voice " + m.cfg.TTSVoice
+	}
 	chips := lipgloss.JoinHorizontal(lipgloss.Center,
 		chipStyle.Render("brain "+brainStatus),
 		" ",
 		chipMutedStyle.Render("model "+m.activeModel()),
 		" ",
-		chipMutedStyle.Render("voice "+m.cfg.TTSVoice),
+		chipMutedStyle.Render(ttsBadgeLabel(m.cfg)),
+		" ",
+		chipMutedStyle.Render(voiceLabel),
 	)
 	b.WriteString(ansi.Truncate(chips, width, "…"))
 	b.WriteString("\n\n")

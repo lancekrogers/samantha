@@ -211,17 +211,21 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 	}
 	if p, err := lookPath(calibreBin); err != nil {
 		diags = append(diags, Diagnostic{
-			Name:        "calibre-binary",
-			Severity:    SeverityWarn,
-			Detail:      "calibredb not found (optional; needed for library search / --from-library)",
-			Remediation: "install Calibre (e.g. brew install --cask calibre), add its MacOS folder to PATH, or set calibredb_binary",
+			Name:     "calibre-binary",
+			Severity: SeverityWarn,
+			Detail:   "calibredb not found (optional ebook catalog; Library TUI / library CLI / --from-library)",
+			Remediation: "Calibre is free library software for ebooks (https://calibre-ebook.com). " +
+				"Install it (macOS: brew install --cask calibre), open it once to create a library, " +
+				"then: samantha config calibre_enabled true. " +
+				"If calibredb is still missing, set calibredb_binary to the full path " +
+				"(macOS app: /Applications/calibre.app/Contents/MacOS/calibredb).",
 		})
 	} else {
 		detail := p
 		if cfg.CalibreEnabled {
 			detail = p + " (calibre_enabled=true)"
 		} else {
-			detail = p + " (calibre_enabled=false; set calibre_enabled=true to use)"
+			detail = p + " (found; enable with: samantha config calibre_enabled true — or press e in Library)"
 		}
 		diags = append(diags, Diagnostic{Name: "calibre-binary", Severity: SeverityOK, Detail: detail})
 	}

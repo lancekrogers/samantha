@@ -1,8 +1,9 @@
 // Package calibre resolves books from a Calibre library via calibredb.
 //
 // The client is opt-in (gated by calibre_enabled config) and injectable for
-// tests: no real Calibre binary is required in CI. EPUB/PDF only for v1;
-// MOBI/AZW3-only books return ErrNoSupportedFormat.
+// tests: no real Calibre binary is required in CI. Supports browse (List),
+// search, metadata, and path resolution. EPUB/PDF only for v1 audiobook
+// paths; MOBI/AZW3-only books return ErrNoSupportedFormat.
 package calibre
 
 import (
@@ -182,6 +183,18 @@ func (c Client) resolveBinary(ctx context.Context) (string, error) {
 	return p, nil
 }
 
+// List browses the library without a search filter (catalog order by title).
+// limit <= 0 defaults to 50. Use Search for filtered queries.
+func (c Client) List(ctx context.Context, limit int) ([]Book, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	return c.list(ctx, "", limit, "title")
+}
+
 // Search runs calibredb list --for-machine for query and returns parsed books.
 // limit <= 0 defaults to 20.
 func (c Client) Search(ctx context.Context, query string, limit int) ([]Book, error) {
@@ -195,6 +208,12 @@ func (c Client) Search(ctx context.Context, query string, limit int) ([]Book, er
 	if limit <= 0 {
 		limit = 20
 	}
+	return c.list(ctx, query, limit, "")
+}
+
+// list runs calibredb list --for-machine. Empty query omits --search (browse).
+// sortBy, when non-empty, is passed as --sort-by (e.g. "title").
+func (c Client) list(ctx context.Context, query string, limit int, sortBy string) ([]Book, error) {
 	ctx, cancel := withSearchTimeout(ctx, c.SearchTimeout)
 	defer cancel()
 
@@ -206,19 +225,27 @@ func (c Client) Search(ctx context.Context, query string, limit int) ([]Book, er
 		"list",
 		"--for-machine",
 		"--fields", "title,authors,tags,series,formats,pubdate",
-		"--search", query,
 		"--limit", fmt.Sprintf("%d", limit),
+	}
+	if q := strings.TrimSpace(query); q != "" {
+		args = append(args, "--search", q)
+	}
+	if s := strings.TrimSpace(sortBy); s != "" {
+		args = append(args, "--sort-by", s, "--ascending")
 	}
 	if lib := strings.TrimSpace(c.LibraryPath); lib != "" {
 		args = append(args, "--with-library", lib)
 	}
 	out, err := c.runner()(ctx, bin, args...)
 	if err != nil {
-		return nil, fmt.Errorf("calibre: search %q: %w", query, err)
+		if query != "" {
+			return nil, fmt.Errorf("calibre: search %q: %w", query, err)
+		}
+		return nil, fmt.Errorf("calibre: list: %w", err)
 	}
 	books, err := parseListJSON(out)
 	if err != nil {
-		return nil, fmt.Errorf("calibre: parse search results: %w", err)
+		return nil, fmt.Errorf("calibre: parse list results: %w", err)
 	}
 	return books, nil
 }
@@ -488,6 +515,33 @@ func parseStringOrList(raw json.RawMessage) []string {
 		return []string{s}
 	}
 	return nil
+}
+
+// PlainComments strips HTML tags from Calibre book comments for TUI/CLI display.
+// Calibre stores descriptions as HTML; empty input returns "".
+func PlainComments(html string) string {
+	html = strings.TrimSpace(html)
+	if html == "" {
+		return ""
+	}
+	// Cheap tag strip — good enough for terminal display of short blurbs.
+	var b strings.Builder
+	b.Grow(len(html))
+	inTag := false
+	for _, r := range html {
+		switch {
+		case r == '<':
+			inTag = true
+		case r == '>':
+			inTag = false
+		case !inTag:
+			b.WriteRune(r)
+		}
+	}
+	s := strings.TrimSpace(b.String())
+	// Collapse whitespace runs from block tags.
+	fields := strings.Fields(s)
+	return strings.Join(fields, " ")
 }
 
 func splitAndTrim(s, sep string) []string {

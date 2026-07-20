@@ -24,6 +24,34 @@ func TestLibrarySearchDisabled(t *testing.T) {
 	}
 }
 
+func TestLibraryListDisabled(t *testing.T) {
+	cmd := newLibraryCmd(func() (*config.Config, error) {
+		return &config.Config{CalibreEnabled: false}, nil
+	})
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"list"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestLibraryShowInvalidID(t *testing.T) {
+	cmd := newLibraryCmd(func() (*config.Config, error) {
+		return &config.Config{CalibreEnabled: true}, nil
+	})
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"show", "nope"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "invalid book id") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestLibrarySearchListsBooks(t *testing.T) {
 	books := []calibre.Book{
 		{ID: 1, Title: "The Go Programming Language", Authors: []string{"Donovan"}, Formats: []string{"/x/go.epub"}},
@@ -49,17 +77,41 @@ func TestFormatExts(t *testing.T) {
 	}
 }
 
-func TestLibraryCmdHasSearch(t *testing.T) {
+func TestLibraryCmdHasBrowseSurfaces(t *testing.T) {
 	cmd := newLibraryCmd(func() (*config.Config, error) {
 		return &config.Config{CalibreEnabled: true}, nil
 	})
-	var found bool
+	want := map[string]bool{"list": false, "search": false, "show": false}
 	for _, c := range cmd.Commands() {
-		if c.Name() == "search" {
-			found = true
+		if _, ok := want[c.Name()]; ok {
+			want[c.Name()] = true
 		}
 	}
-	if !found {
-		t.Fatal("search subcommand missing")
+	for name, found := range want {
+		if !found {
+			t.Fatalf("%s subcommand missing", name)
+		}
+	}
+}
+
+func TestPrintBookDetailIncludesDescription(t *testing.T) {
+	cmd := newLibraryCmd(func() (*config.Config, error) {
+		return &config.Config{CalibreEnabled: true}, nil
+	})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	printBookDetail(cmd, calibre.Book{
+		ID:       7,
+		Title:    "Crypto 101",
+		Authors:  []string{"lvh"},
+		Tags:     []string{"Security"},
+		Formats:  []string{"/lib/crypto.pdf"},
+		Comments: "<p>An introduction to cryptography.</p>",
+	})
+	s := buf.String()
+	for _, want := range []string{"Crypto 101", "lvh", "Security", "pdf", "introduction to cryptography"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("detail missing %q:\n%s", want, s)
+		}
 	}
 }
