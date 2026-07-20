@@ -35,6 +35,9 @@ func TestTTSDisplayIdentifiesQwenModelAndBinary(t *testing.T) {
 	}
 
 	kokoroCfg := &config.Config{TTSProvider: "kokoro"}
+	if got := ttsModelLabelForProvider("qwen3-tts", kokoroCfg); got != "unset" {
+		t.Fatalf("unselected Qwen model label = %q, want unset", got)
+	}
 	if detail := ttsProviderDetail(tts.ProviderSpec{Name: "qwen3-tts"}, kokoroCfg); !strings.Contains(detail, "model unset") || strings.Contains(detail, "model model unset") {
 		t.Fatalf("unselected Qwen provider detail = %q, want sensible unset model copy", detail)
 	}

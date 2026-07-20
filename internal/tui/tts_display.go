@@ -33,11 +33,11 @@ func ttsModelLabelForProvider(provider string, cfg *config.Config) string {
 		return "managed"
 	case "qwen3-tts":
 		if cfg == nil {
-			return "model unset"
+			return "unset"
 		}
 		model := strings.TrimSpace(cfg.QwenTTSModel)
 		if model == "" {
-			return "model unset"
+			return "unset"
 		}
 		return filepath.Base(filepath.Clean(model))
 	default:
@@ -70,11 +70,7 @@ func ttsProviderDetail(spec tts.ProviderSpec, cfg *config.Config) string {
 	case "kokoro":
 		return "managed model · static voices"
 	case "qwen3-tts":
-		model := ttsModelLabelForProvider("qwen3-tts", cfg)
-		if model == "model unset" {
-			model = "unset"
-		}
-		return "model " + model + " · " + ttsBinaryLabel(cfg)
+		return "model " + ttsModelLabelForProvider("qwen3-tts", cfg) + " · " + ttsBinaryLabel(cfg)
 	default:
 		return spec.Description
 	}
