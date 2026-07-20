@@ -123,6 +123,8 @@ func (m *conversationModel) handleCommandPaletteKey(msg tea.KeyMsg) (bool, tea.C
 		m.commandSelection = 0
 		m.syncComposer(previous)
 		return true, nil
+	// Enter is intentionally not handled here: handleSubmit expands the
+	// highlighted palette match via expandPaletteSelection, then runs it.
 	case "up", "shift+tab":
 		m.commandSelection = (m.commandSelection - 1 + len(matches)) % len(matches)
 		return true, nil

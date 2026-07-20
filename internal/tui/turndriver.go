@@ -237,8 +237,33 @@ func (m *conversationModel) resumeListening() tea.Cmd {
 	return nil
 }
 
+// recoverTurnState unsticks cancel/response bookkeeping after screen changes
+// drop async turn-done messages (e.g. /settings while a cancel was in flight).
+func (m *conversationModel) recoverTurnState() tea.Cmd {
+	switch m.turnState {
+	case turnVoiceCanceling, turnVoiceResponding, turnTextRunning:
+		// Drop orphaned cancel bookkeeping; a live pipeline turn may still be
+		// finishing, but the TUI must accept input again. The next resume or
+		// text submit is gated by turnIdle.
+		if m.turnCancel != nil {
+			m.turnCancel()
+			m.turnCancel = nil
+		}
+		m.pendingText = ""
+		m.turnState = turnIdle
+		if m.canCancelVoice != nil {
+			m.canCancelVoice.Store(false)
+		}
+	}
+	return nil
+}
+
 // handleSubmit routes an Enter press by turn state: idle submits, a listening
 // voice turn is canceled first (D1), anything else keeps the text in the box.
+//
+// Slash commands are local (never need the brain). They run immediately in
+// any turn state so a long STT cancel or in-flight response cannot freeze
+// /help, /settings, or unknown-command feedback.
 func (m *conversationModel) handleSubmit() tea.Cmd {
 	if m.deps.runner == nil {
 		return nil
@@ -246,6 +271,12 @@ func (m *conversationModel) handleSubmit() tea.Cmd {
 	text := strings.TrimSpace(m.input.Value())
 	if text == "" {
 		return nil
+	}
+	text = expandPaletteSelection(text, m.commandSelection)
+
+	// Local slash commands never require canceling the voice pipeline.
+	if cmd, handled := m.submitLocalSlash(text); handled {
+		return cmd
 	}
 
 	switch m.turnState {
@@ -286,6 +317,55 @@ func (m *conversationModel) handleSubmit() tea.Cmd {
 	}
 }
 
+// expandPaletteSelection replaces an incomplete slash prefix with the
+// highlighted palette match (e.g. "/sett" → "/settings") so Enter runs the
+// selected command instead of reporting "Unknown command".
+func expandPaletteSelection(text string, selection int) string {
+	matches := matchingSlashCommands(text)
+	if len(matches) == 0 {
+		return text
+	}
+	token := commandToken(text)
+	if token == "" {
+		return text
+	}
+	if _, exact := commandForToken(token); exact {
+		return text
+	}
+	selected := matches[min(selection, len(matches)-1)]
+	fields := strings.Fields(strings.TrimSpace(text))
+	if len(fields) <= 1 {
+		return selected.name
+	}
+	return selected.name + " " + strings.Join(fields[1:], " ")
+}
+
+// submitLocalSlash handles slash-command lines without touching turn state.
+// handled is true for any line that starts with "/" (including unknown names).
+func (m *conversationModel) submitLocalSlash(text string) (cmd tea.Cmd, handled bool) {
+	command, args, found, slash := parseSlashCommand(text)
+	if !slash {
+		return nil, false
+	}
+	previous := m.input.Value()
+	m.input.Reset()
+	m.editor.sync("", 0)
+	m.editor.resetUndo()
+	m.syncComposer(previous)
+
+	if !found {
+		token := commandToken(text)
+		msg := "Unknown command " + token + ". Type /help to list commands."
+		if suggestion := suggestSlashCommand(token); suggestion != "" {
+			msg = "Unknown command " + token + ". Did you mean " + suggestion + "? Type /help to list commands."
+		}
+		m.commandError(msg)
+		// Leave voice/response turns alone — do not cancel or redispatch.
+		return nil, true
+	}
+	return m.executeSlashCommand(command, args), true
+}
+
 // isNonChatSubmit reports slash commands and built-in control phrases that
 // must not leave a user bubble in the transcript.
 func isNonChatSubmit(text string) bool {
@@ -298,13 +378,16 @@ func isNonChatSubmit(text string) bool {
 
 // submitText applies the command policy to typed input — commands never reach
 // the brain, matching app.Run's text loop — then dispatches a text turn.
+// Slash commands are normally handled earlier by submitLocalSlash; this path
+// remains for the cancel-drain pendingText route.
 func (m *conversationModel) submitText(text string) tea.Cmd {
-	if command, args, found, slash := parseSlashCommand(text); slash {
-		if !found {
-			m.commandError("Unknown command " + commandToken(text) + ". Type /help to list commands.")
-			return m.resumeListening()
+	if cmd, handled := m.submitLocalSlash(text); handled {
+		// If a slash was queued behind a voice cancel, restore listening when
+		// the command itself does not navigate away or redispatch.
+		if cmd != nil {
+			return cmd
 		}
-		return m.executeSlashCommand(command, args)
+		return m.resumeListening()
 	}
 
 	cmd := app.NormalizeCommand(text)
