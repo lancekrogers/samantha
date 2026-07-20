@@ -261,6 +261,55 @@ func TestLibrarySearchError(t *testing.T) {
 	}
 }
 
+func TestLibraryIgnoresStaleResults(t *testing.T) {
+	m := newLibrary(&config.Config{CalibreEnabled: true})
+	m.query = "first"
+	_ = m.runQuery()
+	firstID := m.requestID
+	m.query = "second"
+	_ = m.runQuery()
+	secondID := m.requestID
+	if firstID == secondID {
+		t.Fatal("requests should have distinct IDs")
+	}
+
+	m, _ = m.Update(libraryResultsMsg{
+		requestID: firstID,
+		books:     []calibre.Book{{ID: 1, Title: "stale"}},
+	})
+	if len(m.books) != 0 {
+		t.Fatalf("stale result applied: %+v", m.books)
+	}
+
+	m, _ = m.Update(libraryResultsMsg{
+		requestID: secondID,
+		books:     []calibre.Book{{ID: 2, Title: "current"}},
+	})
+	if len(m.books) != 1 || m.books[0].ID != 2 {
+		t.Fatalf("current result missing: %+v", m.books)
+	}
+}
+
+func TestLibraryIgnoresDetailAfterBack(t *testing.T) {
+	m := newLibrary(&config.Config{CalibreEnabled: true})
+	m.books = []calibre.Book{{ID: 5, Title: "AI"}}
+	m.focus = libFocusList
+	var cmd tea.Cmd
+	m, cmd = m.openDetail()
+	detailID := m.requestID
+	if cmd == nil {
+		t.Fatal("expected metadata command")
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = m.Update(libraryDetailMsg{
+		requestID: detailID,
+		book:      calibre.Book{ID: 5, Title: "AI", Comments: "stale detail"},
+	})
+	if m.pane != libPaneBrowse || m.detailOK {
+		t.Fatalf("stale detail reopened pane: pane=%d detailOK=%v", m.pane, m.detailOK)
+	}
+}
+
 func TestLibrarySwitchFromAppLoadsBrowse(t *testing.T) {
 	app := NewApp(&config.Config{CalibreEnabled: true, TTSVoice: "af_heart"})
 	app.width, app.height = 80, 24
