@@ -100,6 +100,10 @@ type Config struct {
 
 	// Meeting notes routing (post-record export to campaign/file/Apple Notes).
 	Meeting MeetingConfig `mapstructure:"meeting"`
+
+	// Speaker analysis (optional; diarization + embeddings via sherpa).
+	// Nested under "speaker" — see internal/speaker.Config.
+	Speaker SpeakerConfig `mapstructure:"speaker"`
 }
 
 // MeetingConfig holds meeting storage + routing preferences.
@@ -130,6 +134,38 @@ type MeetingDestinationConfig struct {
 	Tags     []string `mapstructure:"tags"`
 	Path     string   `mapstructure:"path"`
 	Folder   string   `mapstructure:"folder"`
+}
+
+// SpeakerConfig mirrors speaker.Config for viper unmarshal (keeps config package
+// free of importing speaker for package cycles).
+type SpeakerConfig struct {
+	Enabled       bool                 `mapstructure:"enabled"`
+	Threshold     float32              `mapstructure:"threshold"`
+	EnrollmentDir string               `mapstructure:"enrollment_dir"`
+	Live          SpeakerLiveConfig    `mapstructure:"live"`
+	Meeting       SpeakerMeetingConfig `mapstructure:"meeting"`
+	Models        SpeakerModelsConfig  `mapstructure:"models"`
+}
+
+// SpeakerLiveConfig is the async conversation speaker path.
+type SpeakerLiveConfig struct {
+	Enabled   bool    `mapstructure:"enabled"`
+	Mode      string  `mapstructure:"mode"`
+	Threshold float32 `mapstructure:"threshold"`
+	WindowMS  int     `mapstructure:"window_ms"`
+}
+
+// SpeakerMeetingConfig is offline meeting diarization (not notes routing).
+type SpeakerMeetingConfig struct {
+	Enabled     bool `mapstructure:"enabled"`
+	RecordAudio bool `mapstructure:"record_audio"`
+	NumSpeakers int  `mapstructure:"num_speakers"`
+}
+
+// SpeakerModelsConfig holds optional model paths under models_dir.
+type SpeakerModelsConfig struct {
+	Embedding    string `mapstructure:"embedding"`
+	Segmentation string `mapstructure:"segmentation"`
 }
 
 var (
@@ -211,6 +247,20 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("meeting.route.default", "")
 	v.SetDefault("meeting.route.body", "notes")
 	v.SetDefault("meeting.route.destinations", []any{})
+
+	// Speaker analysis off by default.
+	v.SetDefault("speaker.enabled", false)
+	v.SetDefault("speaker.threshold", 0.6)
+	v.SetDefault("speaker.enrollment_dir", "")
+	v.SetDefault("speaker.live.enabled", false)
+	v.SetDefault("speaker.live.mode", "indicator")
+	v.SetDefault("speaker.live.threshold", 0.0) // 0 → inherit speaker.threshold
+	v.SetDefault("speaker.live.window_ms", 1500)
+	v.SetDefault("speaker.meeting.enabled", false)
+	v.SetDefault("speaker.meeting.record_audio", false)
+	v.SetDefault("speaker.meeting.num_speakers", 0)
+	v.SetDefault("speaker.models.embedding", "")
+	v.SetDefault("speaker.models.segmentation", "")
 }
 
 // Load reads configuration from disk and environment.
