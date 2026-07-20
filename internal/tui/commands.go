@@ -104,6 +104,45 @@ func matchingSlashCommands(value string) []slashCommand {
 	return matches
 }
 
+// suggestSlashCommand returns a close match for an unknown token (prefix on
+// names/aliases), or "" when nothing is close enough to suggest.
+func suggestSlashCommand(token string) string {
+	token = strings.ToLower(strings.TrimSpace(token))
+	if token == "" || !strings.HasPrefix(token, "/") {
+		return ""
+	}
+	// Prefer longest shared prefix among command names and aliases.
+	best, bestLen := "", 0
+	consider := func(candidate string) {
+		n := sharedPrefixLen(token, candidate)
+		// Require a meaningful stem (e.g. "/se" → "/settings", not "/" alone).
+		if n >= 3 && n > bestLen {
+			best, bestLen = candidate, n
+		}
+	}
+	for _, command := range slashCommands {
+		consider(command.name)
+		for _, alias := range command.aliases {
+			// Suggest the canonical name when an alias is the closer match.
+			n := sharedPrefixLen(token, alias)
+			if n >= 3 && n > bestLen {
+				best, bestLen = command.name, n
+			}
+		}
+	}
+	return best
+}
+
+func sharedPrefixLen(a, b string) int {
+	n := min(len(a), len(b))
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	return n
+}
+
 func (m *conversationModel) executeSlashCommand(command slashCommand, args []string) tea.Cmd {
 	if command.id != commandHelp && command.id != commandVim && len(args) > 0 {
 		m.commandError(fmt.Sprintf("%s does not take arguments", command.name))

@@ -294,6 +294,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.screen = target
 		resumeVoice := target == screenConversation && a.settingsResumeVoice
 		a.settingsResumeVoice = false
+		// Unstick cancel/response state if turn-done msgs were dropped while
+		// Settings was active (conversation is not the focused screen).
+		a.conversation.recoverTurnState()
 		if resumeVoice {
 			return a, a.conversation.setInputMuted(false)
 		}
@@ -348,6 +351,44 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.remote.stop()
 		a.quitting = true
 		return a, tea.Quit
+	}
+
+	// Conversation owns background voice/text turns. Deliver their async
+	// completions even when the user is on Settings (or another screen) so
+	// turnState cannot wedge on turnVoiceCanceling forever after /settings.
+	if a.screen != screenConversation {
+		switch msg.(type) {
+		case voiceTurnDoneMsg, textTurnDoneMsg, voiceRetryMsg, busEventMsg:
+			var convCmd tea.Cmd
+			a.conversation, convCmd = a.conversation.Update(msg)
+			// Still deliver the message to the active screen below; batch cmds.
+			var cmd tea.Cmd
+			switch a.screen {
+			case screenLauncher:
+				a.launcher, cmd = a.launcher.Update(msg)
+			case screenSettings:
+				a.settings, cmd = a.settings.Update(msg)
+			case screenSessions:
+				a.sessions, cmd = a.sessions.Update(msg)
+			case screenMeetingSetup:
+				a.meetingSetup, cmd = a.meetingSetup.Update(msg)
+			case screenMeeting:
+				var m tea.Model
+				m, cmd = a.meeting.Update(msg)
+				a.meeting = m.(meetingModel)
+			case screenMeetingRoute:
+				a.meetingRoute, cmd = a.meetingRoute.Update(msg)
+			case screenAudiobook:
+				a.audiobook, cmd = a.audiobook.Update(msg)
+			case screenPickBook:
+				a.pickBook, cmd = a.pickBook.Update(msg)
+			case screenLibrary:
+				a.library, cmd = a.library.Update(msg)
+			case screenRemote:
+				a.remote, cmd = a.remote.Update(msg)
+			}
+			return a, tea.Batch(convCmd, cmd)
+		}
 	}
 
 	// Delegate to active screen.
