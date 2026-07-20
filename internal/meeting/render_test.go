@@ -1,4 +1,4 @@
-package meetingroute
+package meeting
 
 import (
 	"os"

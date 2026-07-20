@@ -1,4 +1,4 @@
-package meetingroute
+package meeting
 
 import (
 	"fmt"
@@ -75,7 +75,7 @@ func ResolveMeetingFile(meetingsDir, path string) (jsonlPath string, err error) 
 	path = expandHome(path)
 	st, err := os.Stat(path)
 	if err != nil {
-		return "", fmt.Errorf("meetingroute: meeting file: %w", err)
+		return "", fmt.Errorf("meeting: meeting file: %w", err)
 	}
 	if st.IsDir() {
 		return mostRecentJSONL(path)
@@ -86,7 +86,7 @@ func ResolveMeetingFile(meetingsDir, path string) (jsonlPath string, err error) 
 	case ".log":
 		j := strings.TrimSuffix(path, filepath.Ext(path)) + ".jsonl"
 		if _, err := os.Stat(j); err != nil {
-			return "", fmt.Errorf("meetingroute: sibling jsonl missing for %s: %w", path, err)
+			return "", fmt.Errorf("meeting: sibling jsonl missing for %s: %w", path, err)
 		}
 		return j, nil
 	default:
@@ -94,14 +94,14 @@ func ResolveMeetingFile(meetingsDir, path string) (jsonlPath string, err error) 
 		if _, err := os.Stat(path + ".jsonl"); err == nil {
 			return path + ".jsonl", nil
 		}
-		return "", fmt.Errorf("meetingroute: expected .log or .jsonl, got %s", path)
+		return "", fmt.Errorf("meeting: expected .log or .jsonl, got %s", path)
 	}
 }
 
 func mostRecentJSONL(dir string) (string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return "", fmt.Errorf("meetingroute: list meetings dir: %w", err)
+		return "", fmt.Errorf("meeting: list meetings dir: %w", err)
 	}
 	type hit struct {
 		path string
@@ -123,7 +123,7 @@ func mostRecentJSONL(dir string) (string, error) {
 		hits = append(hits, hit{path: filepath.Join(dir, name), mod: info.ModTime()})
 	}
 	if len(hits) == 0 {
-		return "", fmt.Errorf("meetingroute: no meeting .jsonl files in %s", dir)
+		return "", fmt.Errorf("meeting: no meeting .jsonl files in %s", dir)
 	}
 	sort.Slice(hits, func(i, j int) bool { return hits[i].mod.After(hits[j].mod) })
 	return hits[0].path, nil

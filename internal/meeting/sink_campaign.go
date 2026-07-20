@@ -1,4 +1,4 @@
-package meetingroute
+package meeting
 
 import (
 	"context"
@@ -20,11 +20,11 @@ func (s CampaignSink) Route(ctx context.Context, note RenderedNote) (Receipt, er
 		return Receipt{}, err
 	}
 	if s.Run == nil {
-		return Receipt{}, fmt.Errorf("meetingroute: campaign sink requires a Runner")
+		return Receipt{}, fmt.Errorf("meeting: campaign sink requires a Runner")
 	}
 	campaign := strings.TrimSpace(s.Dest.Campaign)
 	if campaign == "" {
-		return Receipt{}, fmt.Errorf("meetingroute: campaign destination %q missing campaign name", s.Dest.ID)
+		return Receipt{}, fmt.Errorf("meeting: campaign destination %q missing campaign name", s.Dest.ID)
 	}
 	campBin := "camp"
 	if s.LookPath != nil {
@@ -36,16 +36,16 @@ func (s CampaignSink) Route(ctx context.Context, note RenderedNote) (Receipt, er
 	// Write body to a temp file so we don't depend on shell stdin quirks.
 	tmp, err := os.CreateTemp("", "samantha-meeting-*.md")
 	if err != nil {
-		return Receipt{}, fmt.Errorf("meetingroute: temp body: %w", err)
+		return Receipt{}, fmt.Errorf("meeting: temp body: %w", err)
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
 	if _, err := tmp.WriteString(note.Body); err != nil {
 		_ = tmp.Close()
-		return Receipt{}, fmt.Errorf("meetingroute: write temp body: %w", err)
+		return Receipt{}, fmt.Errorf("meeting: write temp body: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return Receipt{}, fmt.Errorf("meetingroute: close temp body: %w", err)
+		return Receipt{}, fmt.Errorf("meeting: close temp body: %w", err)
 	}
 
 	title := note.Title
@@ -71,9 +71,9 @@ func (s CampaignSink) Route(ctx context.Context, note RenderedNote) (Receipt, er
 	if err != nil {
 		detail := strings.TrimSpace(string(out))
 		if detail != "" {
-			return Receipt{}, fmt.Errorf("meetingroute: camp idea add: %w (%s)", err, detail)
+			return Receipt{}, fmt.Errorf("meeting: camp idea add: %w (%s)", err, detail)
 		}
-		return Receipt{}, fmt.Errorf("meetingroute: camp idea add: %w", err)
+		return Receipt{}, fmt.Errorf("meeting: camp idea add: %w", err)
 	}
 	detail := strings.TrimSpace(string(out))
 	if detail == "" {

@@ -1,4 +1,4 @@
-package meetingroute
+package meeting
 
 import "github.com/lancekrogers/samantha/internal/config"
 

@@ -1,8 +1,11 @@
-// Package meetingroute routes finished meeting notes to configured destinations.
+// Package meeting is the domain package for meeting recording helpers and
+// post-meeting note routing.
 //
+// Stop phrases are shared by CLI and TUI so match semantics cannot drift.
 // Routing is additive and lossless: the original .log/.jsonl pair always stays
-// in the meetings directory. A failed or skipped route never deletes local data.
-package meetingroute
+// in the meetings directory; a failed or skipped route never deletes local data.
+// Dual-file writers live in package meetinglog.
+package meeting
 
 import (
 	"context"

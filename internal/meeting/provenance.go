@@ -1,4 +1,4 @@
-package meetingroute
+package meeting
 
 import (
 	"encoding/json"
@@ -34,15 +34,15 @@ func AppendRoutedEvent(jsonlPath string, receipt Receipt) error {
 	}
 	data, err := json.Marshal(e)
 	if err != nil {
-		return fmt.Errorf("meetingroute: marshal routed event: %w", err)
+		return fmt.Errorf("meeting: marshal routed event: %w", err)
 	}
 	f, err := os.OpenFile(jsonlPath, os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		return fmt.Errorf("meetingroute: open jsonl for routed event: %w", err)
+		return fmt.Errorf("meeting: open jsonl for routed event: %w", err)
 	}
 	defer f.Close()
 	if _, err := f.Write(append(data, '\n')); err != nil {
-		return fmt.Errorf("meetingroute: write routed event: %w", err)
+		return fmt.Errorf("meeting: write routed event: %w", err)
 	}
 	return f.Sync()
 }

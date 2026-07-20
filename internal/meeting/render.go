@@ -1,4 +1,4 @@
-package meetingroute
+package meeting
 
 import (
 	"bufio"
@@ -28,11 +28,11 @@ func Render(summary meetinglog.Summary, body string) (RenderedNote, error) {
 // ReadEvents parses a meeting JSONL file into events (skips blank lines).
 func ReadEvents(jsonlPath string) ([]meetinglog.Event, error) {
 	if strings.TrimSpace(jsonlPath) == "" {
-		return nil, fmt.Errorf("meetingroute: empty jsonl path")
+		return nil, fmt.Errorf("meeting: empty jsonl path")
 	}
 	f, err := os.Open(jsonlPath)
 	if err != nil {
-		return nil, fmt.Errorf("meetingroute: open jsonl: %w", err)
+		return nil, fmt.Errorf("meeting: open jsonl: %w", err)
 	}
 	defer f.Close()
 
@@ -49,12 +49,12 @@ func ReadEvents(jsonlPath string) ([]meetinglog.Event, error) {
 		}
 		var e meetinglog.Event
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			return nil, fmt.Errorf("meetingroute: jsonl line %d: %w", lineNo, err)
+			return nil, fmt.Errorf("meeting: jsonl line %d: %w", lineNo, err)
 		}
 		events = append(events, e)
 	}
 	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("meetingroute: read jsonl: %w", err)
+		return nil, fmt.Errorf("meeting: read jsonl: %w", err)
 	}
 	return events, nil
 }

@@ -12,8 +12,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/meeting"
 	"github.com/lancekrogers/samantha/internal/meetinglog"
-	"github.com/lancekrogers/samantha/internal/meetingroute"
 )
 
 // maybeRouteAfterRecord applies post-meeting routing for the CLI record path.
@@ -22,17 +22,17 @@ func maybeRouteAfterRecord(cmd *cobra.Command, cfg *config.Config, summary meeti
 	if opts.NoRoute {
 		return nil
 	}
-	routeCfg := meetingroute.FromConfig(cfg)
-	router := meetingroute.NewDefaultRouter(routeCfg)
+	routeCfg := meeting.FromConfig(cfg)
+	router := meeting.NewDefaultRouter(routeCfg)
 
 	if opts.RouteTo != "" {
 		return routeAndPrint(cmd, router, summary, routeCfg.Body, opts.RouteTo)
 	}
 
 	switch routeCfg.Mode {
-	case meetingroute.ModeOff:
+	case meeting.ModeOff:
 		return nil
-	case meetingroute.ModeAuto:
+	case meeting.ModeAuto:
 		if routeCfg.Default == "" {
 			fmt.Fprintln(cmd.ErrOrStderr(), "meeting route: mode=auto but no default destination configured")
 			return nil
@@ -53,20 +53,20 @@ func maybeRouteAfterRecord(cmd *cobra.Command, cfg *config.Config, summary meeti
 			return err
 		}
 		if skipped {
-			fmt.Fprintln(cmd.OutOrStdout(), meetingroute.BannerLine(meetingroute.Receipt{Outcome: meetingroute.OutcomeSkipped}))
+			fmt.Fprintln(cmd.OutOrStdout(), meeting.BannerLine(meeting.Receipt{Outcome: meeting.OutcomeSkipped}))
 			return nil
 		}
 		return routeAndPrint(cmd, router, summary, routeCfg.Body, id)
 	}
 }
 
-func routeAndPrint(cmd *cobra.Command, router *meetingroute.Router, summary meetinglog.Summary, body, destID string) error {
-	note, err := meetingroute.Render(summary, body)
+func routeAndPrint(cmd *cobra.Command, router *meeting.Router, summary meetinglog.Summary, body, destID string) error {
+	note, err := meeting.Render(summary, body)
 	if err != nil {
 		return fmt.Errorf("render meeting note: %w", err)
 	}
 	receipt, err := router.RouteByID(context.Background(), note, destID)
-	fmt.Fprintln(cmd.OutOrStdout(), meetingroute.BannerLine(receipt))
+	fmt.Fprintln(cmd.OutOrStdout(), meeting.BannerLine(receipt))
 	if err != nil {
 		// Lossless: original files remain; surface the error but don't fail the record command hard.
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", err)
@@ -75,7 +75,7 @@ func routeAndPrint(cmd *cobra.Command, router *meetingroute.Router, summary meet
 	return nil
 }
 
-func promptRouteDestination(cmd *cobra.Command, dests []meetingroute.Destination, defaultID string) (id string, skipped bool, err error) {
+func promptRouteDestination(cmd *cobra.Command, dests []meeting.Destination, defaultID string) (id string, skipped bool, err error) {
 	out := cmd.OutOrStdout()
 	fmt.Fprintln(out, "Route meeting notes?")
 	// Preselect default if present.
@@ -117,9 +117,9 @@ func promptRouteDestination(cmd *cobra.Command, dests []meetingroute.Destination
 
 func newMeetingRouteCmd() *cobra.Command {
 	var (
-		to     string
-		body   string
-		noTUI  bool
+		to      string
+		body    string
+		noTUI   bool
 		jsonOut bool
 	)
 	cmd := &cobra.Command{
@@ -142,7 +142,7 @@ Examples:
 			if err != nil {
 				return err
 			}
-			routeCfg := meetingroute.FromConfig(cfg)
+			routeCfg := meeting.FromConfig(cfg)
 			if body != "" {
 				routeCfg.Body = body
 			}
@@ -151,15 +151,15 @@ Examples:
 			if len(args) == 1 {
 				fileArg = args[0]
 			}
-			jsonl, err := meetingroute.ResolveMeetingFile(meetingsDir, fileArg)
+			jsonl, err := meeting.ResolveMeetingFile(meetingsDir, fileArg)
 			if err != nil {
 				return err
 			}
-			summary, err := meetingroute.LoadSummaryFromJSONL(jsonl)
+			summary, err := meeting.LoadSummaryFromJSONL(jsonl)
 			if err != nil {
 				return err
 			}
-			router := meetingroute.NewDefaultRouter(routeCfg)
+			router := meeting.NewDefaultRouter(routeCfg)
 
 			destID := strings.TrimSpace(to)
 			if destID == "" {
@@ -179,7 +179,7 @@ Examples:
 						return err
 					}
 					if skipped {
-						fmt.Fprintln(cmd.OutOrStdout(), meetingroute.BannerLine(meetingroute.Receipt{Outcome: meetingroute.OutcomeSkipped}))
+						fmt.Fprintln(cmd.OutOrStdout(), meeting.BannerLine(meeting.Receipt{Outcome: meeting.OutcomeSkipped}))
 						return nil
 					}
 				}

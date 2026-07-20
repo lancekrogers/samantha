@@ -1,4 +1,4 @@
-package meetingroute
+package meeting
 
 import (
 	"context"
@@ -20,16 +20,16 @@ func (s FileSink) Route(ctx context.Context, note RenderedNote) (Receipt, error)
 	}
 	dir := expandHome(strings.TrimSpace(s.Dest.Path))
 	if dir == "" {
-		return Receipt{}, fmt.Errorf("meetingroute: file destination %q has empty path", s.Dest.ID)
+		return Receipt{}, fmt.Errorf("meeting: file destination %q has empty path", s.Dest.ID)
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return Receipt{}, fmt.Errorf("meetingroute: create dest dir: %w", err)
+		return Receipt{}, fmt.Errorf("meeting: create dest dir: %w", err)
 	}
 	name := exportFilename(note)
 	path := filepath.Join(dir, name)
 	// 0o600: meeting notes may contain private speech.
 	if err := os.WriteFile(path, []byte(note.Body), 0o600); err != nil {
-		return Receipt{}, fmt.Errorf("meetingroute: write note: %w", err)
+		return Receipt{}, fmt.Errorf("meeting: write note: %w", err)
 	}
 	return Receipt{
 		DestinationID: s.Dest.ID,

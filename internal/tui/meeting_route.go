@@ -8,15 +8,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	ansi "github.com/charmbracelet/x/ansi"
 
+	"github.com/lancekrogers/samantha/internal/meeting"
 	"github.com/lancekrogers/samantha/internal/meetinglog"
-	"github.com/lancekrogers/samantha/internal/meetingroute"
 )
 
 // meetingRouteModel is the post-meeting destination picker.
 type meetingRouteModel struct {
 	summary meetinglog.Summary
-	cfg     meetingroute.Config
-	dests   []meetingroute.Destination
+	cfg     meeting.Config
+	dests   []meeting.Destination
 	cursor  int
 	width   int
 	height  int
@@ -31,7 +31,7 @@ type meetingRouteResultMsg struct {
 	IsErr  bool
 }
 
-func newMeetingRoute(summary meetinglog.Summary, cfg meetingroute.Config, dests []meetingroute.Destination) meetingRouteModel {
+func newMeetingRoute(summary meetinglog.Summary, cfg meeting.Config, dests []meeting.Destination) meetingRouteModel {
 	cursor := 0 // 0 = keep local
 	// Preselect default destination if present (cursor 1..n maps to dests[0..]).
 	if cfg.Default != "" {
@@ -75,14 +75,14 @@ func (m meetingRouteModel) Update(msg tea.Msg) (meetingRouteModel, tea.Cmd) {
 		case "esc", "q", "0":
 			return m, func() tea.Msg {
 				return meetingRouteResultMsg{
-					Banner: meetingroute.BannerLine(meetingroute.Receipt{Outcome: meetingroute.OutcomeSkipped}),
+					Banner: meeting.BannerLine(meeting.Receipt{Outcome: meeting.OutcomeSkipped}),
 				}
 			}
 		case "enter":
 			if m.cursor == 0 {
 				return m, func() tea.Msg {
 					return meetingRouteResultMsg{
-						Banner: meetingroute.BannerLine(meetingroute.Receipt{Outcome: meetingroute.OutcomeSkipped}),
+						Banner: meeting.BannerLine(meeting.Receipt{Outcome: meeting.OutcomeSkipped}),
 					}
 				}
 			}
@@ -93,13 +93,13 @@ func (m meetingRouteModel) Update(msg tea.Msg) (meetingRouteModel, tea.Cmd) {
 			body := m.cfg.Body
 			cfg := m.cfg
 			return m, func() tea.Msg {
-				note, err := meetingroute.Render(summary, body)
+				note, err := meeting.Render(summary, body)
 				if err != nil {
 					return meetingRouteResultMsg{Banner: "Meeting route failed (notes kept local): " + err.Error(), IsErr: true}
 				}
-				router := meetingroute.NewDefaultRouter(cfg)
+				router := meeting.NewDefaultRouter(cfg)
 				receipt, err := router.RouteMeeting(context.Background(), note, dest)
-				line := meetingroute.BannerLine(receipt)
+				line := meeting.BannerLine(receipt)
 				if err != nil {
 					return meetingRouteResultMsg{Banner: line, IsErr: true}
 				}

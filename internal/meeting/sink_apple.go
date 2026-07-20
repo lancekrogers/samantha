@@ -1,4 +1,4 @@
-package meetingroute
+package meeting
 
 import (
 	"context"
@@ -20,7 +20,7 @@ func (s AppleNotesSink) Route(ctx context.Context, note RenderedNote) (Receipt, 
 		return Receipt{}, err
 	}
 	if s.Run == nil {
-		return Receipt{}, fmt.Errorf("meetingroute: apple-notes sink requires a Runner")
+		return Receipt{}, fmt.Errorf("meeting: apple-notes sink requires a Runner")
 	}
 	osa := "osascript"
 	if s.LookPath != nil {
@@ -63,9 +63,9 @@ end tell`,
 	if err != nil {
 		detail := strings.TrimSpace(string(out))
 		if detail != "" {
-			return Receipt{}, fmt.Errorf("meetingroute: apple notes: %w (%s)", err, detail)
+			return Receipt{}, fmt.Errorf("meeting: apple notes: %w (%s)", err, detail)
 		}
-		return Receipt{}, fmt.Errorf("meetingroute: apple notes: %w", err)
+		return Receipt{}, fmt.Errorf("meeting: apple notes: %w", err)
 	}
 	detail := "Apple Notes"
 	if folder != "" {

@@ -1,4 +1,4 @@
-package meetingroute
+package meeting
 
 import (
 	"context"
@@ -91,7 +91,7 @@ func (r *Router) RouteByID(ctx context.Context, note RenderedNote, destID string
 			Outcome:       OutcomeFailed,
 			Detail:        fmt.Sprintf("unknown destination %q", destID),
 			At:            r.now(),
-		}, fmt.Errorf("meetingroute: unknown destination %q", destID)
+		}, fmt.Errorf("meeting: unknown destination %q", destID)
 	}
 	return r.RouteMeeting(ctx, note, dest)
 }
@@ -135,16 +135,16 @@ func (r *Router) sinkFor(dest Destination) (Sink, error) {
 		return FileSink{Dest: dest}, nil
 	case TypeCampaign:
 		if !r.campAvailable() {
-			return nil, fmt.Errorf("meetingroute: camp not found on PATH")
+			return nil, fmt.Errorf("meeting: camp not found on PATH")
 		}
 		return CampaignSink{Dest: dest, Run: r.Run, LookPath: r.LookPath}, nil
 	case TypeAppleNotes:
 		if r.goos() != "darwin" {
-			return nil, fmt.Errorf("meetingroute: apple-notes only supported on macOS (delegated on iOS)")
+			return nil, fmt.Errorf("meeting: apple-notes only supported on macOS (delegated on iOS)")
 		}
 		return AppleNotesSink{Dest: dest, Run: r.Run, LookPath: r.LookPath}, nil
 	default:
-		return nil, fmt.Errorf("meetingroute: unknown destination type %q", dest.Type)
+		return nil, fmt.Errorf("meeting: unknown destination type %q", dest.Type)
 	}
 }
 

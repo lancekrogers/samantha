@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/lancekrogers/samantha/internal/meeting"
 	"github.com/lancekrogers/samantha/internal/meetinglog"
-	"github.com/lancekrogers/samantha/internal/meetingroute"
 )
 
 // stopMeetingRuntime cancels the listen loop, writes the dual-log trailer, and
@@ -55,11 +55,11 @@ func (a *App) beginMeetingRoute(summary meetinglog.Summary) tea.Cmd {
 	if cfg == nil {
 		return nil
 	}
-	routeCfg := meetingroute.FromConfig(cfg)
+	routeCfg := meeting.FromConfig(cfg)
 	switch routeCfg.Mode {
-	case meetingroute.ModeOff:
+	case meeting.ModeOff:
 		return nil
-	case meetingroute.ModeAuto:
+	case meeting.ModeAuto:
 		if routeCfg.Default == "" {
 			a.launcher = a.launcher.withBanner("Meeting route: mode=auto but no default destination", true)
 			return nil
@@ -68,16 +68,16 @@ func (a *App) beginMeetingRoute(summary meetinglog.Summary) tea.Cmd {
 		destID := routeCfg.Default
 		rcfg := routeCfg
 		return func() tea.Msg {
-			note, err := meetingroute.Render(summary, body)
+			note, err := meeting.Render(summary, body)
 			if err != nil {
 				return meetingRouteResultMsg{Banner: "Meeting route failed (notes kept local): " + err.Error(), IsErr: true}
 			}
-			router := meetingroute.NewDefaultRouter(rcfg)
+			router := meeting.NewDefaultRouter(rcfg)
 			receipt, err := router.RouteByID(context.Background(), note, destID)
-			return meetingRouteResultMsg{Banner: meetingroute.BannerLine(receipt), IsErr: err != nil}
+			return meetingRouteResultMsg{Banner: meeting.BannerLine(receipt), IsErr: err != nil}
 		}
 	default: // ask
-		router := meetingroute.NewDefaultRouter(routeCfg)
+		router := meeting.NewDefaultRouter(routeCfg)
 		dests := router.AvailableDestinations()
 		if len(dests) == 0 {
 			// Nothing to pick — stay on launcher without blocking.
