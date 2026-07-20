@@ -4,14 +4,14 @@
 // Stop phrases are shared by CLI and TUI so match semantics cannot drift.
 // Routing is additive and lossless: the original .log/.jsonl pair always stays
 // in the meetings directory; a failed or skipped route never deletes local data.
-// Dual-file writers live in package meetinglog.
+// Dual-file writers live in package meeting/log (import as meetinglog).
 package meeting
 
 import (
 	"context"
 	"time"
 
-	"github.com/lancekrogers/samantha/internal/meetinglog"
+	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 )
 
 // Destination types supported in v1.

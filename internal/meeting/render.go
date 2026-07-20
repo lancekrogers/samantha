@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lancekrogers/samantha/internal/meetinglog"
+	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 )
 
 // Render builds a markdown document from a Summary + JSONL event stream.

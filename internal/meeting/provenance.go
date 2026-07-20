@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lancekrogers/samantha/internal/meetinglog"
+	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 )
 
 // TypeRouted is the additive JSONL event written after a successful route.

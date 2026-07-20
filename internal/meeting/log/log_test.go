@@ -1,4 +1,4 @@
-package meetinglog
+package log
 
 import (
 	"bufio"

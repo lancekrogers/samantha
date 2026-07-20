@@ -9,7 +9,7 @@ import (
 	ansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/lancekrogers/samantha/internal/meeting"
-	"github.com/lancekrogers/samantha/internal/meetinglog"
+	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 )
 
 // meetingRouteModel is the post-meeting destination picker.

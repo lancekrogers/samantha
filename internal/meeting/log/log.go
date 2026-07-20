@@ -1,14 +1,15 @@
-// Package meetinglog records a meeting as a human-readable .log plus a
-// structured .jsonl event stream. Both files are synced after every event so
-// a crash never loses what was already captured.
+// Package log records a meeting as a human-readable .log plus a structured
+// .jsonl event stream. Both files are synced after every event so a crash
+// never loses what was already captured.
 //
-// JSONL event types:
+// Import as:
 //
-//	session_start, utterance, note, bookmark, error, session_end
+//	import meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 //
+// JSONL event types: session_start, utterance, note, bookmark, error, session_end, routed.
 // Notes and bookmarks carry offset_ms from session start so they can be
 // aligned with the transcript later (Plaude-style important moments).
-package meetinglog
+package log
 
 import (
 	"encoding/json"

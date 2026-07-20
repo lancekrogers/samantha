@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lancekrogers/samantha/internal/meetinglog"
+	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 )
 
 // LoadSummaryFromJSONL rebuilds a Summary from a finished meeting's JSONL
