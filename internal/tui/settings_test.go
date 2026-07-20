@@ -123,7 +123,11 @@ func TestSettingsTabCycleIncludesTools(t *testing.T) {
 }
 
 func TestSettingsToolsTogglePersistsAndRefreshes(t *testing.T) {
-	cfg := &config.Config{VoiceToolsEnabled: true, SkillsEnabled: true}
+	cfg := &config.Config{
+		BrainProvider:     "ollama",
+		VoiceToolsEnabled: true,
+		SkillsEnabled:     true,
+	}
 	m := newSettings(cfg, nil)
 	m.section = sectionTools
 	var savedKey string
@@ -154,6 +158,20 @@ func TestSettingsToolsTogglePersistsAndRefreshes(t *testing.T) {
 	}
 	if !strings.Contains(m.toolItems[1], "OFF") {
 		t.Fatalf("skills row = %q, want OFF", m.toolItems[1])
+	}
+}
+
+func TestSettingsToolsSkillsRowOllamaOnly(t *testing.T) {
+	cfg := &config.Config{BrainProvider: "claude", SkillsEnabled: false}
+	m := newSettings(cfg, nil)
+	if !strings.Contains(m.toolItems[1], "n/a") {
+		t.Fatalf("non-Ollama skills row = %q, want n/a", m.toolItems[1])
+	}
+	m.section = sectionTools
+	m.cursor = 1
+	m.selectCurrent()
+	if !strings.Contains(m.message, "Ollama") {
+		t.Fatalf("message = %q, want Ollama-only guidance", m.message)
 	}
 }
 

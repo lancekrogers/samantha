@@ -119,7 +119,7 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 		// Per-turn tool session: tracks active skill for progressive disclosure.
 		sess := &toolSession{
 			catalog:        o.skills,
-			commandTimeout: time.Duration(o.cfg.ToolCommandTimeout) * time.Second,
+			commandTimeout: time.Duration(config.ClampToolCommandTimeout(o.cfg.ToolCommandTimeout)) * time.Second,
 			onStart:        opts.OnToolStart,
 			onEnd:          opts.OnToolEnd,
 		}
@@ -229,7 +229,7 @@ func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOp
 
 	sess := &toolSession{
 		catalog:        o.skills,
-		commandTimeout: time.Duration(o.cfg.ToolCommandTimeout) * time.Second,
+		commandTimeout: time.Duration(config.ClampToolCommandTimeout(o.cfg.ToolCommandTimeout)) * time.Second,
 		onStart:        opts.OnToolStart,
 		onEnd:          opts.OnToolEnd,
 	}

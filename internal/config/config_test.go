@@ -302,6 +302,44 @@ func TestToolCommandTimeoutEnvOverride(t *testing.T) {
 	}
 }
 
+func TestClampToolCommandTimeout(t *testing.T) {
+	tests := []struct {
+		in, want int
+	}{
+		{0, 30},
+		{-1, 30},
+		{1, 1},
+		{30, 30},
+		{120, 120},
+		{121, 120},
+		{86400, 120},
+	}
+	for _, tt := range tests {
+		if got := ClampToolCommandTimeout(tt.in); got != tt.want {
+			t.Fatalf("ClampToolCommandTimeout(%d) = %d, want %d", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestApplyOllamaDefaultsAfterProviderSwitch(t *testing.T) {
+	orig := configFile
+	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")
+	defer func() { configFile = orig }()
+	setDefaults(v)
+	// No explicit tools/skills keys in config file.
+	cfg := &Config{BrainProvider: "claude"}
+	ApplyOllamaDefaults(cfg)
+	if cfg.VoiceToolsEnabled || cfg.SkillsEnabled {
+		t.Fatal("claude provider must not auto-enable tools/skills")
+	}
+	cfg.BrainProvider = "ollama"
+	ApplyOllamaDefaults(cfg)
+	if !cfg.VoiceToolsEnabled || !cfg.SkillsEnabled {
+		t.Fatalf("ollama unset keys should auto-enable tools/skills, got tools=%v skills=%v",
+			cfg.VoiceToolsEnabled, cfg.SkillsEnabled)
+	}
+}
+
 func TestPromptConfigEnvOverrides(t *testing.T) {
 	orig := configFile
 	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")

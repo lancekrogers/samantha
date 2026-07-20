@@ -46,7 +46,8 @@ type toolSession struct {
 // tools returns the full tool definitions for the next model request.
 // Before a skill is activated, the model may choose from the base tools and
 // read_skill. Once a skill declares allowed-tools, only that allow-list is
-// advertised for subsequent requests.
+// advertised for subsequent requests (including read_skill — skill switching
+// is not an escape hatch).
 func (s *toolSession) tools() api.Tools {
 	if s.active == nil || len(s.active.AllowedTools) == 0 {
 		return voiceAssistantTools(s.catalog)
@@ -69,11 +70,13 @@ func (s *toolSession) execute(ctx context.Context, workDir string, call api.Tool
 			s.onEnd(name, toolResultPreview(result))
 		}
 	}()
+	// Enforce allow-list for every tool name, including read_skill, so a
+	// restricted skill cannot be escaped by inventing another read_skill call.
+	if s.active != nil && len(s.active.AllowedTools) > 0 && !skills.ToolAllowed(name, s.active.AllowedTools) {
+		return fmt.Sprintf("error: tool %q is not allowed by active skill %q", name, s.active.Name)
+	}
 	if name == "read_skill" {
 		return s.executeReadSkill(call)
-	}
-	if s.active != nil && !skills.ToolAllowed(name, s.active.AllowedTools) {
-		return fmt.Sprintf("error: tool %q is not allowed by active skill %q", name, s.active.Name)
 	}
 	return executeToolWithTimeout(ctx, workDir, call, s.catalog, s.commandTimeout)
 }
@@ -127,6 +130,16 @@ func (s *toolSession) executeReadSkill(call api.ToolCall) string {
 		sk := &s.catalog[i]
 		if sk.Name != name {
 			continue
+		}
+		// Reject activation when allowed-tools is non-empty but maps to no
+		// Samantha tools — otherwise the turn is soft-bricked with zero tools.
+		if len(sk.AllowedTools) > 0 {
+			if len(filterTools(voiceAssistantTools(s.catalog), sk.AllowedTools)) == 0 {
+				return fmt.Sprintf(
+					"error: skill %q allowed-tools %v match no Samantha tools; not activated",
+					sk.Name, sk.AllowedTools,
+				)
+			}
 		}
 		s.active = sk
 		body := sk.Body
@@ -381,9 +394,7 @@ func toolRunCommandWithTimeout(ctx context.Context, workDir string, args map[str
 		return "error: command is required"
 	}
 
-	if timeout <= 0 {
-		timeout = defaultToolCommandTimeout
-	}
+	timeout = clampCommandTimeout(timeout)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -418,4 +429,18 @@ func filterTools(tools api.Tools, allowed []string) api.Tools {
 		}
 	}
 	return filtered
+}
+
+// clampCommandTimeout caps one run_command at 120s. Zero/negative fall back to
+// the default 30s. Sub-second values are allowed (tests / callers with short
+// bounds); user config is clamped to whole seconds in config.ClampToolCommandTimeout.
+func clampCommandTimeout(timeout time.Duration) time.Duration {
+	const maxTimeout = 120 * time.Second
+	if timeout <= 0 {
+		return defaultToolCommandTimeout
+	}
+	if timeout > maxTimeout {
+		return maxTimeout
+	}
+	return timeout
 }

@@ -278,12 +278,17 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 	applyOllamaDefaults(&cfg, v)
+	cfg.ToolCommandTimeout = ClampToolCommandTimeout(cfg.ToolCommandTimeout)
 	return &cfg, nil
 }
 
 // applyOllamaDefaults enables local Ollama capabilities when the user has not
 // explicitly configured them. An explicit false still wins, and remote serve
 // remains default-deny via remote_tools_enabled.
+//
+// Skills auto-on discovers project/user SKILL.md into the Ollama system prompt
+// when tools are also available; allowed-tools only constrain tools *after*
+// activation. Pre-activation base tools remain full when voice_tools_enabled.
 func applyOllamaDefaults(cfg *Config, v *viper.Viper) {
 	if !strings.EqualFold(strings.TrimSpace(cfg.BrainProvider), "ollama") {
 		return
@@ -297,10 +302,43 @@ func applyOllamaDefaults(cfg *Config, v *viper.Viper) {
 	}
 
 	if os.Getenv("SKILLS_ENABLED") == "" && !v.InConfig("skills_enabled") {
-		// Skills are instruction catalogs, not additional capabilities. Tool
-		// access is still controlled independently by voice_tools_enabled.
+		// Skills are instruction catalogs loaded into the prompt. Tool power is
+		// still gated by voice_tools_enabled; allow-lists apply only after
+		// read_skill activation.
 		cfg.SkillsEnabled = true
 	}
+}
+
+// ApplyOllamaDefaults re-applies Ollama auto-enable rules to cfg using the
+// live viper state (explicit config/env still win). Call after switching
+// brain_provider so Settings display matches the next conversation Load().
+func ApplyOllamaDefaults(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	mu.RLock()
+	defer mu.RUnlock()
+	applyOllamaDefaults(cfg, v)
+}
+
+// ClampToolCommandTimeout bounds tool_command_timeout to 1–120 seconds.
+// Zero/negative becomes the default 30.
+func ClampToolCommandTimeout(seconds int) int {
+	const (
+		def = 30
+		min = 1
+		max = 120
+	)
+	if seconds <= 0 {
+		return def
+	}
+	if seconds < min {
+		return min
+	}
+	if seconds > max {
+		return max
+	}
+	return seconds
 }
 
 // Get returns a config value by key.

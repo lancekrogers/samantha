@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -132,7 +133,14 @@ func (m *settingsModel) buildModelItems() {
 func (m *settingsModel) buildToolItems() {
 	m.toolItems = []string{
 		fmt.Sprintf("Local tools — %s", enabledLabel(m.cfg.VoiceToolsEnabled)),
-		fmt.Sprintf("Agent Skills — %s", enabledLabel(m.cfg.SkillsEnabled)),
+	}
+	// Agent Skills discovery via SKILL.md is Ollama-only; Claude/Grok use CLIs.
+	if strings.EqualFold(m.cfg.BrainProvider, "ollama") {
+		m.toolItems = append(m.toolItems,
+			fmt.Sprintf("Agent Skills (Ollama) — %s", enabledLabel(m.cfg.SkillsEnabled)),
+		)
+	} else {
+		m.toolItems = append(m.toolItems, "Agent Skills — n/a (Ollama only)")
 	}
 }
 
@@ -319,7 +327,11 @@ func (m *settingsModel) selectCurrent() {
 				return
 			}
 			m.cfg.BrainProvider = name
+			// Match Load(): Ollama auto-enables tools/skills when keys are unset
+			// so the Tools tab matches the next conversation runtime.
+			config.ApplyOllamaDefaults(m.cfg)
 			m.buildModelItems()
+			m.buildToolItems()
 			m.message = fmt.Sprintf("Provider set to %s", name)
 		}
 	case sectionModel:
@@ -350,6 +362,10 @@ func (m *settingsModel) selectCurrent() {
 		value := !m.cfg.VoiceToolsEnabled
 		label := "Local tools"
 		if m.cursor == 1 {
+			if !strings.EqualFold(m.cfg.BrainProvider, "ollama") {
+				m.message = "Agent Skills apply only when brain provider is Ollama"
+				return
+			}
 			key = "skills_enabled"
 			value = !m.cfg.SkillsEnabled
 			label = "Agent Skills"

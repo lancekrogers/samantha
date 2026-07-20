@@ -326,6 +326,63 @@ func TestToolSessionEnforcesAllowedToolsAfterActivation(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "out.txt")); !os.IsNotExist(err) {
 		t.Fatalf("disallowed write_file created a file: %v", err)
 	}
+
+	run := sess.execute(context.Background(), dir, api.ToolCall{
+		Function: api.ToolCallFunction{
+			Name:      "run_command",
+			Arguments: mustArgs(map[string]any{"command": "echo pwned"}),
+		},
+	})
+	if !strings.Contains(run, "not allowed") {
+		t.Fatalf("run_command should be rejected by allow-list: %q", run)
+	}
+}
+
+func TestToolSessionRejectsSkillWithUnmappedAllowedTools(t *testing.T) {
+	t.Parallel()
+	catalog := []skills.Skill{{
+		Name:         "webonly",
+		Description:  "bad allow-list",
+		Body:         "body",
+		Dir:          "/s",
+		AllowedTools: []string{"WebSearch", "Browser"},
+	}}
+	sess := &toolSession{catalog: catalog}
+	got := sess.execute(context.Background(), "/work", skillCall("webonly"))
+	if !strings.Contains(got, "match no Samantha tools") {
+		t.Fatalf("activation = %q, want unmapped allow-list error", got)
+	}
+	if sess.active != nil {
+		t.Fatal("skill with unmapped allowed-tools must not activate")
+	}
+}
+
+func TestToolSessionReadSkillEscapeBlocked(t *testing.T) {
+	t.Parallel()
+	catalog := []skills.Skill{
+		{
+			Name:         "restricted",
+			Description:  "read only",
+			Body:         "use Read",
+			Dir:          "/skills/restricted",
+			AllowedTools: []string{"Read"},
+		},
+		{
+			Name:        "open",
+			Description: "full tools",
+			Body:        "go",
+			Dir:         "/skills/open",
+		},
+	}
+	sess := &toolSession{catalog: catalog}
+	_ = sess.execute(context.Background(), "/work", skillCall("restricted"))
+	got := sess.execute(context.Background(), "/work", skillCall("open"))
+	if !strings.Contains(got, "not allowed") {
+		t.Fatalf("skill switch via read_skill = %q, want not allowed", got)
+	}
+	if sess.active.Name != "restricted" {
+		t.Fatalf("active = %q, want restricted", sess.active.Name)
+	}
 }
 
 func TestToolSessionUnrestrictedWhenNoAllowedTools(t *testing.T) {

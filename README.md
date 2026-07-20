@@ -390,7 +390,8 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `agent_name` | `Samantha` | | Display name |
 | `persona` | `samantha` | `PERSONA` | Prompt document name for the interactive persona |
 | `prompts_dir` | empty | `PROMPTS_DIR` | Prompt document directory; defaults to `~/.obey/agents/voice/samantha/prompts` when unset |
-| `skills_enabled` | `false` (auto-`true` for local Ollama when unset) | `SKILLS_ENABLED` | Enable Agent Skills (`SKILL.md`) for the Ollama provider. Ollama enables discovery automatically unless you set the key or env explicitly to `false`. It advertises skill name+description in the system prompt and offers a `read_skill` tool to load full instructions on demand. Claude/Grok already discover skills via their CLIs. |
+| `skills_enabled` | `false` (auto-`true` for local Ollama when unset) | `SKILLS_ENABLED` | Enable Agent Skills (`SKILL.md`) for the Ollama provider. Ollama enables discovery automatically unless you set the key or env explicitly to `false`. Discovers project/user skill frontmatter into the system prompt; not a pre-activation sandbox. Claude/Grok already discover skills via their CLIs. |
+| `tool_command_timeout` | `30` (clamped 1–120) | `TOOL_COMMAND_TIMEOUT` | Seconds for one local `run_command`; the brain turn timeout remains the outer bound. |
 | `skills_dir` | empty | `SKILLS_DIR` | Extra Samantha skills root (after project/user harness dirs); defaults to `~/.obey/agents/voice/samantha/skills` when unset. |
 | `models_dir` | `~/.cache/samantha/models` | `MODELS_DIR` | Model download directory |
 | `language` | `en-US` | | Recognition language |
@@ -419,18 +420,23 @@ to load full instructions on demand (progressive disclosure).
 Optional frontmatter `allowed-tools` (Agent Skills experimental field) is
 enforced after a skill is loaded. Before activation, the base tools remain
 available so the model can discover and load the relevant skill. After
-activation, only the listed tools are advertised and runtime calls outside the
-list are rejected. Tokens use common aliases (`Read` → `read_file`, `Bash` /
-`Bash(…)` → `run_command`). The global safety gates still apply:
-`voice_tools_enabled` / `remote_tools_enabled` must allow tools before any
-skill policy can grant a call.
+activation, **only the listed tools are advertised and every call outside the
+list is rejected — including `read_skill`**, so a restricted skill cannot be
+escaped by loading another. Tokens use common aliases (`Read` → `read_file`,
+`Bash` / `Bash(…)` → `run_command`). If `allowed-tools` maps to no Samantha
+tools, activation fails with an error instead of soft-bricking the turn.
+The global safety gates still apply: `voice_tools_enabled` /
+`remote_tools_enabled` must allow tools before any skill policy can grant a call.
+
+Allow-lists are **not** a pre-activation sandbox: until `read_skill` succeeds,
+full base tools apply whenever tools are enabled.
 
 Claude and Grok pick up skills via their own CLIs. Remote `samantha serve` still
 gates all tools (including `read_skill`) behind `remote_tools_enabled`.
 
-The TUI Settings screen exposes these local controls under **Tools**. Changes
-are persisted immediately and take effect when the conversation runtime is
-re-entered or restarted.
+The TUI Settings screen exposes local tools under **Tools**, and Agent Skills
+when the brain provider is Ollama. Changes are persisted immediately and take
+effect when the conversation runtime is re-entered or restarted.
 
 ```text
 # project (cwd where samantha was started)
