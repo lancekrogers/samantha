@@ -255,12 +255,38 @@ samantha library show 42
 samantha audiobook create --from-library "Crypto 101" --out-dir out/crypto
 ```
 
+### Calibre library (optional)
+
+[Calibre](https://calibre-ebook.com) is free software that organizes ebooks on
+your computer (EPUB, PDF, MOBI, …). You do **not** need it for voice chat.
+Samantha can browse a Calibre library so you can pick books for audiobooks or
+ask what titles you own.
+
+**Typical setup (most users):**
+
+1. Install Calibre (macOS: `brew install --cask calibre`, or the installer from
+   calibre-ebook.com). Open Calibre once so it creates your library.
+2. Enable the integration: `samantha config calibre_enabled true`
+   (or open **Library** in the TUI and press **e**).
+3. Samantha finds `calibredb` on `PATH`, or in the macOS app bundle
+   (`/Applications/calibre.app/Contents/MacOS/`), or `/opt/calibre` on Linux.
+   Your default Calibre library is used when `calibre_library_path` is empty.
+
+**If something is non-default:**
+
+| Situation | Config |
+|-----------|--------|
+| Library not at Calibre’s default path | `calibre_library_path` |
+| `calibredb` not found automatically | `calibredb_binary` (full path) |
+| Prefer PDF over EPUB when both exist | `calibre_prefer_format pdf` |
+
+`samantha doctor` reports `calibre-binary` as a **Warn** when missing (never a
+hard failure). Voice and other features keep working.
+
 In the TUI, open **Library** from the launcher to browse the catalog, search,
-and view book details (title, authors, tags, formats, description). From a book
-press **enter** or **a** to send an EPUB/PDF path into **Create audiobook**.
-The audiobook screen still has **Pick from library** for search-only pick
-during audiobook setup. Toggle **Calibre library** on (saved to config) when
-needed; v1 supports EPUB/PDF only.
+and view book details. From a book press **enter** or **a** to send an EPUB/PDF
+path into **Create audiobook**. The audiobook screen still has **Pick from
+library** for search-only pick during audiobook setup. v1 supports EPUB/PDF only.
 
 ### Narrate pipeline (prompt-controlled)
 

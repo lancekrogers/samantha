@@ -100,7 +100,7 @@ func newLauncher(cfg *config.Config, providers []discovery.ProviderInfo, saved .
 			action: actionRemote,
 		},
 		launcherItem{
-			label: "Library", hint: "Browse Calibre · view book details", glyph: "▤",
+			label: "Library", hint: "Optional ebook catalog (Calibre) · browse & audiobooks", glyph: "▤",
 			action: actionLibrary,
 		},
 		launcherItem{
