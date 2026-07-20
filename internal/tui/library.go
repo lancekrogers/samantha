@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -29,15 +30,17 @@ const (
 
 // libraryResultsMsg folds an async browse/search into the model.
 type libraryResultsMsg struct {
-	books   []calibre.Book
-	err     error
-	browsed bool // true when this was an unfiltered List
+	requestID uint64
+	books     []calibre.Book
+	err       error
+	browsed   bool // true when this was an unfiltered List
 }
 
 // libraryDetailMsg folds async Metadata into the detail pane.
 type libraryDetailMsg struct {
-	book calibre.Book
-	err  error
+	requestID uint64
+	book      calibre.Book
+	err       error
 }
 
 // libraryAudiobookMsg jumps to Create audiobook with a resolved input path.
@@ -64,6 +67,13 @@ type libraryModel struct {
 	detail    calibre.Book
 	detailOK  bool
 	detailErr string
+	requestID uint64
+}
+
+var libraryRequestSequence atomic.Uint64
+
+func nextLibraryRequestID() uint64 {
+	return libraryRequestSequence.Add(1)
 }
 
 func newLibrary(cfg *config.Config) libraryModel {
@@ -90,7 +100,7 @@ func (m libraryModel) enabled() bool {
 }
 
 // InitCmd returns the initial browse load when Calibre is enabled.
-func (m libraryModel) InitCmd() tea.Cmd {
+func (m *libraryModel) InitCmd() tea.Cmd {
 	if !m.enabled() {
 		return nil
 	}
@@ -103,6 +113,9 @@ func (m libraryModel) Update(msg tea.Msg) (libraryModel, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.ensureVisible()
 	case libraryResultsMsg:
+		if msg.requestID != m.requestID {
+			return m, nil
+		}
 		m.loading = false
 		if msg.err != nil {
 			m.errText = msg.err.Error()
@@ -133,6 +146,9 @@ func (m libraryModel) Update(msg tea.Msg) (libraryModel, tea.Cmd) {
 		}
 		m.ensureVisible()
 	case libraryDetailMsg:
+		if msg.requestID != m.requestID {
+			return m, nil
+		}
 		m.loading = false
 		if msg.err != nil {
 			m.detailErr = msg.err.Error()
@@ -210,6 +226,7 @@ func (m libraryModel) Update(msg tea.Msg) (libraryModel, tea.Cmd) {
 func (m libraryModel) handleDetailKey(key string) (libraryModel, tea.Cmd) {
 	switch key {
 	case "esc", "backspace":
+		m.requestID = nextLibraryRequestID()
 		m.pane = libPaneBrowse
 		m.detailOK = false
 		m.detailErr = ""
@@ -268,11 +285,13 @@ func (m *libraryModel) runBrowse() tea.Cmd {
 	m.errText = ""
 	m.message = "Loading library…"
 	client := m.client
+	requestID := nextLibraryRequestID()
+	m.requestID = requestID
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		books, err := client.List(ctx, 100)
-		return libraryResultsMsg{books: books, err: err, browsed: true}
+		return libraryResultsMsg{requestID: requestID, books: books, err: err, browsed: true}
 	}
 }
 
@@ -289,11 +308,13 @@ func (m *libraryModel) runQuery() tea.Cmd {
 	m.errText = ""
 	m.message = "Searching…"
 	client := m.client
+	requestID := nextLibraryRequestID()
+	m.requestID = requestID
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		books, err := client.Search(ctx, q, 100)
-		return libraryResultsMsg{books: books, err: err, browsed: false}
+		return libraryResultsMsg{requestID: requestID, books: books, err: err, browsed: false}
 	}
 }
 
@@ -310,11 +331,13 @@ func (m libraryModel) openDetail() (libraryModel, tea.Cmd) {
 	m.loading = true
 	client := m.client
 	id := book.ID
+	requestID := nextLibraryRequestID()
+	m.requestID = requestID
 	return m, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		full, err := client.Metadata(ctx, id)
-		return libraryDetailMsg{book: full, err: err}
+		return libraryDetailMsg{requestID: requestID, book: full, err: err}
 	}
 }
 
