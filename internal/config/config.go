@@ -60,6 +60,9 @@ type Config struct {
 	OllamaModel       string `mapstructure:"ollama_model"`
 	OllamaHost        string `mapstructure:"ollama_host"`
 	VoiceToolsEnabled bool   `mapstructure:"voice_tools_enabled"`
+	// ToolCommandTimeout bounds one local run_command invocation in seconds.
+	// The brain turn timeout remains the outer bound for a complete turn.
+	ToolCommandTimeout int `mapstructure:"tool_command_timeout"`
 	// RemoteToolsEnabled gates tool calls for turns triggered over the
 	// network (samantha serve). Deliberately separate from
 	// voice_tools_enabled: remote turns default-deny tools regardless of
@@ -84,8 +87,8 @@ type Config struct {
 	Persona    string `mapstructure:"persona"`
 	PromptsDir string `mapstructure:"prompts_dir"`
 
-	// Skills (Agent Skills / SKILL.md). Opt-in; Ollama loads the catalog when
-	// SkillsEnabled is true. See internal/skills.
+	// Skills (Agent Skills / SKILL.md). Ollama loads the catalog by default when
+	// SkillsEnabled is not explicitly disabled. See internal/skills.
 	SkillsEnabled bool   `mapstructure:"skills_enabled"`
 	SkillsDir     string `mapstructure:"skills_dir"`
 
@@ -180,6 +183,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ollama_model", "")
 	v.SetDefault("ollama_host", "http://localhost:11434")
 	v.SetDefault("voice_tools_enabled", false)
+	v.SetDefault("tool_command_timeout", 30)
 	v.SetDefault("remote_tools_enabled", false)
 
 	// Calibre is opt-in. Empty binaries are resolved by bundle-aware LookPath.
@@ -241,6 +245,7 @@ func Load() (*Config, error) {
 		"ollama_model":            "OLLAMA_MODEL",
 		"ollama_host":             "OLLAMA_HOST",
 		"voice_tools_enabled":     "VOICE_TOOLS_ENABLED",
+		"tool_command_timeout":    "TOOL_COMMAND_TIMEOUT",
 		"persona":                 "PERSONA",
 		"prompts_dir":             "PROMPTS_DIR",
 		"skills_enabled":          "SKILLS_ENABLED",
@@ -272,27 +277,102 @@ func Load() (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
-	applyOllamaToolsDefault(&cfg, v)
+	applyOllamaDefaults(&cfg, v)
+	cfg.ToolCommandTimeout = ClampToolCommandTimeout(cfg.ToolCommandTimeout)
 	return &cfg, nil
 }
 
-// applyOllamaToolsDefault enables local tool calling for Ollama when the user
-// has not explicitly set voice_tools_enabled in the config file or
-// VOICE_TOOLS_ENABLED env. Ollama's tools (list/read/write/run_command) are
-// the only path to file I/O for local models; leaving them off by default
-// made tool-capable models look broken. Remote serve remains default-deny via
-// remote_tools_enabled. An explicit voice_tools_enabled: false still wins.
-func applyOllamaToolsDefault(cfg *Config, v *viper.Viper) {
+// applyOllamaDefaults enables local Ollama capabilities when the user has not
+// explicitly configured them. An explicit false still wins, and remote serve
+// remains default-deny via remote_tools_enabled.
+//
+// Skills auto-on discovers project/user SKILL.md into the Ollama system prompt
+// when tools are also available; allowed-tools only constrain tools *after*
+// activation. Pre-activation base tools remain full when voice_tools_enabled.
+func applyOllamaDefaults(cfg *Config, v *viper.Viper) {
 	if !strings.EqualFold(strings.TrimSpace(cfg.BrainProvider), "ollama") {
 		return
 	}
-	if os.Getenv("VOICE_TOOLS_ENABLED") != "" {
+
+	if os.Getenv("VOICE_TOOLS_ENABLED") == "" && !v.InConfig("voice_tools_enabled") {
+		// Ollama's tools (list/read/write/run_command) are the only path to
+		// file I/O for local models; leaving them off makes tool-capable models
+		// look broken.
+		cfg.VoiceToolsEnabled = true
+	}
+
+	if os.Getenv("SKILLS_ENABLED") == "" && !v.InConfig("skills_enabled") {
+		// Skills are instruction catalogs loaded into the prompt. Tool power is
+		// still gated by voice_tools_enabled; allow-lists apply only after
+		// read_skill activation.
+		cfg.SkillsEnabled = true
+	}
+}
+
+// ApplyOllamaDefaults re-applies Ollama auto-enable rules to cfg using the
+// live viper state (explicit config/env still win). Call after switching
+// brain_provider so Settings display matches the next conversation Load().
+func ApplyOllamaDefaults(cfg *Config) {
+	if cfg == nil {
 		return
 	}
-	if v.InConfig("voice_tools_enabled") {
-		return
+	mu.RLock()
+	defer mu.RUnlock()
+	applyOllamaDefaults(cfg, v)
+}
+
+// SetAndSaveBrainProvider changes the brain provider and persists any
+// provider defaults that were applied to cfg. This keeps the next Load in
+// sync with the live TUI state when switching to Ollama: Viper defaults are
+// written to config.yaml by WriteConfigAs, so auto-enabled capabilities must
+// be set before saving. Explicit config and environment values still win.
+func SetAndSaveBrainProvider(cfg *Config, provider string) error {
+	if cfg == nil {
+		return fmt.Errorf("config must not be nil")
 	}
-	cfg.VoiceToolsEnabled = true
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	next := *cfg
+	next.BrainProvider = provider
+	applyOllamaDefaults(&next, v)
+
+	v.Set("brain_provider", provider)
+	if strings.EqualFold(strings.TrimSpace(provider), "ollama") {
+		if os.Getenv("VOICE_TOOLS_ENABLED") == "" && !v.InConfig("voice_tools_enabled") {
+			v.Set("voice_tools_enabled", true)
+		}
+		if os.Getenv("SKILLS_ENABLED") == "" && !v.InConfig("skills_enabled") {
+			v.Set("skills_enabled", true)
+		}
+	}
+
+	if err := save(); err != nil {
+		return err
+	}
+	*cfg = next
+	return nil
+}
+
+// ClampToolCommandTimeout bounds tool_command_timeout to 1–120 seconds.
+// Zero/negative becomes the default 30.
+func ClampToolCommandTimeout(seconds int) int {
+	const (
+		def = 30
+		min = 1
+		max = 120
+	)
+	if seconds <= 0 {
+		return def
+	}
+	if seconds < min {
+		return min
+	}
+	if seconds > max {
+		return max
+	}
+	return seconds
 }
 
 // Get returns a config value by key.

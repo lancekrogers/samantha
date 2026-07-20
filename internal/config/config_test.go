@@ -244,6 +244,174 @@ func TestOllamaRespectsExplicitVoiceToolsFalse(t *testing.T) {
 	}
 }
 
+func TestOllamaDefaultsSkillsOnWhenUnset(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("brain_provider: ollama\nollama_model: llama3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := configFile
+	configFile = path
+	defer func() { configFile = orig }()
+	t.Setenv("SKILLS_ENABLED", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !cfg.SkillsEnabled {
+		t.Fatal("ollama without explicit skills_enabled must default skills on")
+	}
+}
+
+func TestOllamaRespectsExplicitSkillsFalse(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("brain_provider: ollama\nskills_enabled: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := configFile
+	configFile = path
+	defer func() { configFile = orig }()
+	t.Setenv("SKILLS_ENABLED", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.SkillsEnabled {
+		t.Fatal("explicit skills_enabled: false must win")
+	}
+}
+
+func TestToolCommandTimeoutEnvOverride(t *testing.T) {
+	orig := configFile
+	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")
+	defer func() { configFile = orig }()
+
+	setDefaults(v)
+	t.Setenv("TOOL_COMMAND_TIMEOUT", "90")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.ToolCommandTimeout != 90 {
+		t.Fatalf("ToolCommandTimeout = %d, want 90 from env", cfg.ToolCommandTimeout)
+	}
+}
+
+func TestClampToolCommandTimeout(t *testing.T) {
+	tests := []struct {
+		in, want int
+	}{
+		{0, 30},
+		{-1, 30},
+		{1, 1},
+		{30, 30},
+		{120, 120},
+		{121, 120},
+		{86400, 120},
+	}
+	for _, tt := range tests {
+		if got := ClampToolCommandTimeout(tt.in); got != tt.want {
+			t.Fatalf("ClampToolCommandTimeout(%d) = %d, want %d", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestApplyOllamaDefaultsAfterProviderSwitch(t *testing.T) {
+	orig := configFile
+	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")
+	defer func() { configFile = orig }()
+	setDefaults(v)
+	// No explicit tools/skills keys in config file.
+	cfg := &Config{BrainProvider: "claude"}
+	ApplyOllamaDefaults(cfg)
+	if cfg.VoiceToolsEnabled || cfg.SkillsEnabled {
+		t.Fatal("claude provider must not auto-enable tools/skills")
+	}
+	cfg.BrainProvider = "ollama"
+	ApplyOllamaDefaults(cfg)
+	if !cfg.VoiceToolsEnabled || !cfg.SkillsEnabled {
+		t.Fatalf("ollama unset keys should auto-enable tools/skills, got tools=%v skills=%v",
+			cfg.VoiceToolsEnabled, cfg.SkillsEnabled)
+	}
+}
+
+func TestSetAndSaveBrainProviderPersistsOllamaDefaults(t *testing.T) {
+	t.Setenv("VOICE_TOOLS_ENABLED", "")
+	t.Setenv("SKILLS_ENABLED", "")
+
+	dir := t.TempDir()
+	origDir, origFile := configDir, configFile
+	configDir = dir
+	configFile = filepath.Join(dir, "config.yaml")
+	defer func() {
+		configDir, configFile = origDir, origFile
+	}()
+	resetViper(t)
+
+	cfg := &Config{BrainProvider: "claude"}
+	if err := SetAndSaveBrainProvider(cfg, "ollama"); err != nil {
+		t.Fatalf("SetAndSaveBrainProvider() error: %v", err)
+	}
+	if !cfg.VoiceToolsEnabled || !cfg.SkillsEnabled {
+		t.Fatalf("live config should enable Ollama capabilities, got tools=%v skills=%v",
+			cfg.VoiceToolsEnabled, cfg.SkillsEnabled)
+	}
+
+	// Recreate Viper to model the next process startup rather than relying on
+	// the values still held by the current process.
+	v = viper.New()
+	setDefaults(v)
+	reloaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load() after provider switch: %v", err)
+	}
+	if !reloaded.VoiceToolsEnabled || !reloaded.SkillsEnabled {
+		t.Fatalf("reloaded config should keep Ollama capabilities enabled, got tools=%v skills=%v",
+			reloaded.VoiceToolsEnabled, reloaded.SkillsEnabled)
+	}
+}
+
+func TestSetAndSaveBrainProviderPreservesExplicitOllamaDisables(t *testing.T) {
+	t.Setenv("VOICE_TOOLS_ENABLED", "")
+	t.Setenv("SKILLS_ENABLED", "")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("brain_provider: claude\nvoice_tools_enabled: false\nskills_enabled: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	origDir, origFile := configDir, configFile
+	configDir, configFile = dir, path
+	defer func() {
+		configDir, configFile = origDir, origFile
+	}()
+	resetViper(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("initial Load(): %v", err)
+	}
+	if err := SetAndSaveBrainProvider(cfg, "ollama"); err != nil {
+		t.Fatalf("SetAndSaveBrainProvider() error: %v", err)
+	}
+
+	v = viper.New()
+	setDefaults(v)
+	reloaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load() after explicit disables: %v", err)
+	}
+	if reloaded.VoiceToolsEnabled || reloaded.SkillsEnabled {
+		t.Fatalf("explicit Ollama disables must remain false, got tools=%v skills=%v",
+			reloaded.VoiceToolsEnabled, reloaded.SkillsEnabled)
+	}
+}
+
 func TestPromptConfigEnvOverrides(t *testing.T) {
 	orig := configFile
 	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")

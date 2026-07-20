@@ -114,11 +114,64 @@ func TestSettingsTTSSectionShowsActiveProviderAndModel(t *testing.T) {
 	}
 }
 
-func TestSettingsTabCycleIncludesTTS(t *testing.T) {
+func TestSettingsTabCycleIncludesTools(t *testing.T) {
 	m := settingsModel{cfg: &config.Config{}, section: sectionModel}
 	m, _ = updateSettingsWithKey(t, m, "tab")
-	if m.section != sectionTTS {
-		t.Fatalf("section after Model + Tab = %d, want TTS section %d", m.section, sectionTTS)
+	if m.section != sectionTools {
+		t.Fatalf("section after Model + Tab = %d, want Tools section %d", m.section, sectionTools)
+	}
+}
+
+func TestSettingsToolsTogglePersistsAndRefreshes(t *testing.T) {
+	cfg := &config.Config{
+		BrainProvider:     "ollama",
+		VoiceToolsEnabled: true,
+		SkillsEnabled:     true,
+	}
+	m := newSettings(cfg, nil)
+	m.section = sectionTools
+	var savedKey string
+	var savedValue any
+	m.saveConfig = func(key string, value any) error {
+		savedKey, savedValue = key, value
+		return nil
+	}
+
+	m.selectCurrent()
+	if savedKey != "voice_tools_enabled" || savedValue != false {
+		t.Fatalf("saved local tools config = %q/%v, want voice_tools_enabled/false", savedKey, savedValue)
+	}
+	if cfg.VoiceToolsEnabled {
+		t.Fatalf("VoiceToolsEnabled = true, want false")
+	}
+	if !strings.Contains(m.toolItems[0], "OFF") {
+		t.Fatalf("local tools row = %q, want OFF", m.toolItems[0])
+	}
+
+	m.cursor = 1
+	m.selectCurrent()
+	if savedKey != "skills_enabled" || savedValue != false {
+		t.Fatalf("saved skills config = %q/%v, want skills_enabled/false", savedKey, savedValue)
+	}
+	if cfg.SkillsEnabled {
+		t.Fatalf("SkillsEnabled = true, want false")
+	}
+	if !strings.Contains(m.toolItems[1], "OFF") {
+		t.Fatalf("skills row = %q, want OFF", m.toolItems[1])
+	}
+}
+
+func TestSettingsToolsSkillsRowOllamaOnly(t *testing.T) {
+	cfg := &config.Config{BrainProvider: "claude", SkillsEnabled: false}
+	m := newSettings(cfg, nil)
+	if !strings.Contains(m.toolItems[1], "n/a") {
+		t.Fatalf("non-Ollama skills row = %q, want n/a", m.toolItems[1])
+	}
+	m.section = sectionTools
+	m.cursor = 1
+	m.selectCurrent()
+	if !strings.Contains(m.message, "Ollama") {
+		t.Fatalf("message = %q, want Ollama-only guidance", m.message)
 	}
 }
 
