@@ -14,6 +14,7 @@ import (
 	ansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/lancekrogers/samantha/internal/brain"
+	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/tui/anim"
 )
@@ -36,6 +37,7 @@ type voiceTickMsg time.Time
 // bus wiring are layered on by later slices.
 type conversationModel struct {
 	agentName string
+	cfg       *config.Config
 
 	width  int
 	height int
@@ -814,7 +816,11 @@ func (m conversationModel) View() string {
 	w := max(m.width, 1)
 
 	// Clean header: name, tabs, compact EQ chip.
-	left := headerStyle.Render(m.agentName) + "  " + m.renderTabs()
+	left := headerStyle.Render(m.agentName)
+	if badge := ttsBadgeLabel(m.cfg); badge != "" {
+		left += "  " + chipMutedStyle.Render(badge)
+	}
+	left += "  " + m.renderTabs()
 	if m.sessionID != "" {
 		left += "  " + dimStyle.Render(shortSessionID(m.sessionID))
 	}

@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# Deterministic calibredb stub for VHS demos (no real Calibre required).
+# Supports: list --for-machine (browse + --search), list --fields all (metadata).
+set -euo pipefail
+
+books_dir="${SAMANTHA_DEMO_BOOKS:-/tmp/samantha-vhs/books}"
+mkdir -p "$books_dir"
+# Touch format files so BestFormatPath succeeds when the demo sends to audiobook.
+: >"$books_dir/go.epub"
+: >"$books_dir/ddia.epub"
+: >"$books_dir/crypto.pdf"
+: >"$books_dir/ai.pdf"
+
+# Parse argv (calibredb list --for-machine --fields … [--search Q] --limit N …)
+search=""
+fields="title,authors,tags,series,formats,pubdate"
+i=1
+while [[ $i -le $# ]]; do
+  arg="${!i}"
+  case "$arg" in
+    --search)
+      i=$((i + 1))
+      search="${!i:-}"
+      ;;
+    --fields)
+      i=$((i + 1))
+      fields="${!i:-}"
+      ;;
+    list|fts_search|show_metadata) ;;
+  esac
+  i=$((i + 1))
+done
+
+emit_browse() {
+  cat <<EOF
+[
+  {
+    "id": 1,
+    "title": "The Go Programming Language",
+    "authors": "Alan A. A. Donovan, Brian W. Kernighan",
+    "tags": ["Programming", "Go"],
+    "series": "",
+    "formats": ["$books_dir/go.epub"],
+    "pubdate": "2015-10-26T00:00:00+00:00",
+    "comments": "<p>The authoritative guide to Go, from the language's creators and maintainers.</p>"
+  },
+  {
+    "id": 2,
+    "title": "Designing Data-Intensive Applications",
+    "authors": "Martin Kleppmann",
+    "tags": ["Distributed Systems", "Data"],
+    "series": "",
+    "formats": ["$books_dir/ddia.epub"],
+    "pubdate": "2017-03-16T00:00:00+00:00",
+    "comments": "<p>A guide to the ideas behind reliable, scalable, and maintainable systems.</p>"
+  },
+  {
+    "id": 3,
+    "title": "Crypto 101",
+    "authors": "lvh",
+    "tags": ["Security", "Cryptography"],
+    "series": "",
+    "formats": ["$books_dir/crypto.pdf"],
+    "pubdate": "2013-01-01T00:00:00+00:00",
+    "comments": "<p>An introduction to cryptography for programmers.</p>"
+  },
+  {
+    "id": 5,
+    "title": "Artificial Intelligence A Modern Approach",
+    "authors": "Stuart Russell, Peter Norvig",
+    "tags": ["AI", "Computing"],
+    "series": "",
+    "formats": ["$books_dir/ai.pdf"],
+    "pubdate": "2010-06-16T00:00:00+00:00",
+    "comments": "<p>The classic AI textbook covering search, knowledge, learning, and agents.</p>"
+  }
+]
+EOF
+}
+
+# Filter by simple substring match on title/authors/tags (case-insensitive).
+# Also supports id:N for Metadata().
+emit_filtered() {
+  local q="$1"
+  q="$(printf '%s' "$q" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$q" == id:* ]]; then
+    local id="${q#id:}"
+    emit_browse | python3 -c "
+import json,sys
+id_=int(sys.argv[1])
+books=json.load(sys.stdin)
+out=[b for b in books if b.get('id')==id_]
+json.dump(out, sys.stdout)
+" "$id"
+    return
+  fi
+  emit_browse | python3 -c "
+import json,sys
+q=sys.argv[1]
+books=json.load(sys.stdin)
+def hay(b):
+    parts=[str(b.get('title','')), str(b.get('authors','')), ' '.join(b.get('tags') or [])]
+    return ' '.join(parts).lower()
+out=[b for b in books if q in hay(b)]
+json.dump(out, sys.stdout)
+" "$q"
+}
+
+if [[ "$search" == "" ]]; then
+  emit_browse
+else
+  emit_filtered "$search"
+fi

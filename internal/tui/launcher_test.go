@@ -50,6 +50,23 @@ func TestLauncherDisplaysConfiguredBrainModel(t *testing.T) {
 	}
 }
 
+func TestLauncherDisplaysConfiguredTTSProviderAndModel(t *testing.T) {
+	m := newLauncher(&config.Config{
+		BrainProvider: "claude",
+		TTSProvider:   "qwen3-tts",
+		QwenTTSModel:  "/opt/qwen/models/1.7b",
+		TTSVoice:      "af_heart",
+	}, nil)
+	m.width, m.height = 100, 24
+	view := strings.ToLower(stripANSI(m.View()))
+	if !strings.Contains(view, "tts qwen3-tts") || !strings.Contains(view, "1.7b") {
+		t.Fatalf("launcher missing TTS provider/model badge:\n%s", view)
+	}
+	if !strings.Contains(view, "voice model-native") || strings.Contains(view, "voice af_heart") {
+		t.Fatalf("launcher should identify Qwen's model-native voice:\n%s", view)
+	}
+}
+
 func TestLauncherDefaultsToContinueWhenSessionExists(t *testing.T) {
 	saved := []session.Session{{ID: "session-123", Summary: "Fix the TUI", UpdatedAt: time.Now()}}
 	m := newLauncher(&config.Config{}, nil, saved)
@@ -83,6 +100,29 @@ func TestLauncherOffersRemoteAndOpensItsScreen(t *testing.T) {
 		return
 	}
 	t.Fatal("launcher has no Remote action")
+}
+
+func TestLauncherOffersLibrary(t *testing.T) {
+	m := newLauncher(&config.Config{}, nil)
+	for i, item := range m.items {
+		if item.action != actionLibrary {
+			continue
+		}
+		if item.label != "Library" {
+			t.Fatalf("library label = %q", item.label)
+		}
+		m.cursor = i
+		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if cmd == nil {
+			t.Fatal("library action returned no command")
+		}
+		msg, ok := cmd().(switchScreenMsg)
+		if !ok || screen(msg) != screenLibrary {
+			t.Fatalf("library launcher message = %#v", msg)
+		}
+		return
+	}
+	t.Fatal("launcher has no Library action")
 }
 
 func TestLauncherOffersMeeting(t *testing.T) {

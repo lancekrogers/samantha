@@ -4,15 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/discovery"
-	"github.com/lancekrogers/samantha/internal/meetinglog"
-	"github.com/lancekrogers/samantha/internal/meetingroute"
 	"github.com/lancekrogers/samantha/internal/session"
 )
 
@@ -28,6 +24,7 @@ const (
 	screenMeetingRoute
 	screenAudiobook
 	screenPickBook
+	screenLibrary
 	screenRemote
 )
 
@@ -48,6 +45,7 @@ type App struct {
 	meetingRoute meetingRouteModel
 	audiobook    audiobookModel
 	pickBook     pickBookModel
+	library      libraryModel
 	remote       remoteModel
 
 	// Conversation runtime wiring, set by Run before the program starts.
@@ -83,6 +81,8 @@ type App struct {
 func NewApp(cfg *config.Config) App {
 	providers := discovery.DiscoverProviders(cfg)
 	savedSessions := resumableSessions(session.List())
+	conversation := newConversation(cfg.AgentName)
+	conversation.cfg = cfg
 
 	return App{
 		screen:       screenLauncher,
@@ -90,10 +90,11 @@ func NewApp(cfg *config.Config) App {
 		providers:    providers,
 		launcher:     newLauncher(cfg, providers, savedSessions),
 		settings:     newSettings(cfg, providers),
-		conversation: newConversation(cfg.AgentName),
+		conversation: conversation,
 		sessions:     newSessions(savedSessions),
 		audiobook:    newAudiobook(cfg),
 		pickBook:     newPickBook(cfg),
+		library:      newLibrary(cfg),
 	}
 }
 
@@ -148,6 +149,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.sessions, _ = a.sessions.Update(msg)
 		a.meetingSetup, _ = a.meetingSetup.Update(msg)
 		a.pickBook, _ = a.pickBook.Update(msg)
+		a.library, _ = a.library.Update(msg)
 		a.remote, _ = a.remote.Update(msg)
 		if a.screen != screenConversation {
 			a.conversation, _ = a.conversation.Update(msg)
@@ -201,6 +203,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case screenPickBook:
 			a.pickBook = newPickBook(a.cfg)
 			a.pickBook.width, a.pickBook.height = a.width, a.height
+		case screenLibrary:
+			a.library = newLibrary(a.cfg)
+			a.library.width, a.library.height = a.width, a.height
+			return a, a.library.InitCmd()
 		case screenRemote:
 			a.remote = newRemote(a.runCtx, nil)
 			a.remote.width, a.remote.height = a.width, a.height
@@ -262,6 +268,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case bookPickedMsg:
+		a.audiobook.input = msg.path
+		a.audiobook.errText = ""
+		a.audiobook.message = "Filled input from Calibre library"
+		a.audiobook.command = ""
+		a.screen = screenAudiobook
+		return a, nil
+
+	case libraryAudiobookMsg:
+		// Preserve a clean audiobook form, then fill the path from the library.
+		a.audiobook = newAudiobook(a.cfg)
 		a.audiobook.input = msg.path
 		a.audiobook.errText = ""
 		a.audiobook.message = "Filled input from Calibre library"
@@ -357,6 +373,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.audiobook, cmd = a.audiobook.Update(msg)
 	case screenPickBook:
 		a.pickBook, cmd = a.pickBook.Update(msg)
+	case screenLibrary:
+		a.library, cmd = a.library.Update(msg)
 	case screenRemote:
 		a.remote, cmd = a.remote.Update(msg)
 	}
@@ -384,6 +402,8 @@ func (a App) View() string {
 		return a.audiobook.View()
 	case screenPickBook:
 		return a.pickBook.View()
+	case screenLibrary:
+		return a.library.View()
 	case screenRemote:
 		return a.remote.View()
 	default:
@@ -391,176 +411,3 @@ func (a App) View() string {
 	}
 }
 
-// stopMeetingRuntime cancels the listen loop, writes the dual-log trailer, and
-// releases STT resources. Returns any Writer.Close failure so callers can
-// surface a silent trailer/session_end write problem (files may already hold
-// synced events). Idempotent when no runtime is active.
-func (a *App) stopMeetingRuntime() error {
-	_, err := a.stopMeetingRuntimeWithSummary()
-	return err
-}
-
-// stopMeetingRuntimeWithSummary is stopMeetingRuntime that also returns the Close Summary.
-func (a *App) stopMeetingRuntimeWithSummary() (meetinglog.Summary, error) {
-	if a.meetingRT == nil {
-		return meetinglog.Summary{}, nil
-	}
-	if a.meeting.opts.Cancel != nil {
-		a.meeting.opts.Cancel()
-	}
-	var summary meetinglog.Summary
-	var closeErr error
-	if a.meetingRT.Writer != nil {
-		s, err := a.meetingRT.Writer.Close()
-		summary = s
-		if err != nil {
-			closeErr = fmt.Errorf("close meeting log: %w", err)
-		}
-	}
-	if a.meetingRT.Cleanup != nil {
-		a.meetingRT.Cleanup()
-	}
-	a.meetingRT = nil
-	return summary, closeErr
-}
-
-// beginMeetingRoute opens the post-meeting picker (ask), auto-routes, or no-ops (off).
-// Returns a tea.Cmd when auto-routing asynchronously; otherwise mutates screen and returns nil.
-// Uses the live a.cfg (settings already mutate it via SetAndSave) so tests stay isolated
-// from the developer's on-disk config.yaml.
-func (a *App) beginMeetingRoute(summary meetinglog.Summary) tea.Cmd {
-	if summary.File == "" && summary.JSONLFile == "" {
-		return nil
-	}
-	cfg := a.cfg
-	if cfg == nil {
-		return nil
-	}
-	routeCfg := meetingroute.FromConfig(cfg)
-	switch routeCfg.Mode {
-	case meetingroute.ModeOff:
-		return nil
-	case meetingroute.ModeAuto:
-		if routeCfg.Default == "" {
-			a.launcher = a.launcher.withBanner("Meeting route: mode=auto but no default destination", true)
-			return nil
-		}
-		body := routeCfg.Body
-		destID := routeCfg.Default
-		rcfg := routeCfg
-		return func() tea.Msg {
-			note, err := meetingroute.Render(summary, body)
-			if err != nil {
-				return meetingRouteResultMsg{Banner: "Meeting route failed (notes kept local): " + err.Error(), IsErr: true}
-			}
-			router := meetingroute.NewDefaultRouter(rcfg)
-			receipt, err := router.RouteByID(context.Background(), note, destID)
-			return meetingRouteResultMsg{Banner: meetingroute.BannerLine(receipt), IsErr: err != nil}
-		}
-	default: // ask
-		router := meetingroute.NewDefaultRouter(routeCfg)
-		dests := router.AvailableDestinations()
-		if len(dests) == 0 {
-			// Nothing to pick — stay on launcher without blocking.
-			return nil
-		}
-		a.meetingRoute = newMeetingRoute(summary, routeCfg, dests)
-		a.meetingRoute.width = a.width
-		a.meetingRoute.height = a.height
-		a.screen = screenMeetingRoute
-		return nil
-	}
-}
-
-// Run starts the TUI as one continuous program: launcher, settings, and the
-// live conversation all run inside it. The pipeline is built lazily on
-// entering the conversation screen (D2) and torn down here after the program
-// exits.
-func Run(cfg *config.Config, build RuntimeBuilder) error {
-	return RunWithMeeting(cfg, build, nil)
-}
-
-// RunWithMeeting is Run plus an optional MeetingBuilder for the launcher
-// "Record meeting" entry.
-func RunWithMeeting(cfg *config.Config, build RuntimeBuilder, meeting MeetingBuilder) error {
-	return run(cfg, build, meeting, false)
-}
-
-// RunConversation starts the TUI directly in the conversation screen —
-// resume/continue land in the live conversation, not the launcher.
-func RunConversation(cfg *config.Config, build RuntimeBuilder) error {
-	return run(cfg, build, nil, true)
-}
-
-func run(cfg *config.Config, build RuntimeBuilder, meeting MeetingBuilder, startInConversation bool) error {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	app := NewApp(cfg)
-	app.builder = build
-	app.meetingBuilder = meeting
-	app.startInConversation = startInConversation
-	app.runCtx = ctx
-	app.wg = &sync.WaitGroup{}
-	app.progress = newEventBridge(16)
-	app.slot = &runtimeSlot{}
-
-	// Native libraries write directly to file descriptor 2, bypassing Bubble
-	// Tea and corrupting the terminal surface. Keep those diagnostics in a log;
-	// debug-audio runs colocate it with the capture bundle.
-	//
-	// Trade-off: restoreDiagnostics only runs via this goroutine's defers, so
-	// an unrecovered panic on a different goroutine (a pipeline or TTS worker,
-	// for instance) still crashes with fd 2 pointed at the log file — its
-	// stack trace lands in native-diagnostics.log instead of the terminal.
-	diagnosticsDir := filepath.Join(config.ConfigDir(), "logs")
-	if debugDir := audio.DebugAudioDir(); debugDir != "" {
-		diagnosticsDir = debugDir
-	}
-	restoreDiagnostics, err := redirectNativeDiagnostics(filepath.Join(diagnosticsDir, "native-diagnostics.log"))
-	if err != nil {
-		return fmt.Errorf("redirect native diagnostics: %w", err)
-	}
-	defer func() { _ = restoreDiagnostics() }()
-
-	// Force dark + truecolor before Bubble Tea can issue OSC queries that
-	// hang or mis-detect on bare PTYs (VHS/ttyd). Same pattern as festival.
-	forceTUIColorProfile()
-
-	// Do not enable Bubble Tea mouse reporting here. Claiming the mouse makes
-	// terminals send clicks and drags to Samantha instead of allowing native
-	// text selection, copy, and link activation.
-	p := tea.NewProgram(app, tea.WithAltScreen())
-	m, runErr := p.Run()
-	final, _ := m.(App)
-	if final.remote.server != nil {
-		final.remote.stopAndWait(remoteStopTimeout)
-	} else {
-		app.remote.stopAndWait(remoteStopTimeout)
-	}
-
-	// Stop the in-flight turn, drain it, then tear the pipeline down — the
-	// same order app.Run's defer chain guarantees on the non-TTY path.
-	cancel()
-	waitTimeout(app.wg, drainTimeout)
-
-	// Prefer the slot: it still holds a runtime if build finished after quit
-	// and the ready message never reached Update. final.runtime is only set
-	// when Update applied runtimeReadyMsg.
-	if final.slot != nil {
-		final.slot.cleanup()
-	} else if app.slot != nil {
-		app.slot.cleanup()
-	}
-
-	// Meeting recorder may still be open if the program quit mid-session
-	// without a meetingDoneMsg (e.g. outer Quit). Idempotent when already closed.
-	if err := final.stopMeetingRuntime(); err != nil {
-		final.fatalErr = errors.Join(final.fatalErr, err)
-	}
-
-	if runErr != nil {
-		return fmt.Errorf("TUI error: %w", runErr)
-	}
-	return final.fatalErr
-}

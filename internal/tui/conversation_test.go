@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/tui/anim"
 )
@@ -26,6 +27,16 @@ func TestConversationViewBeforeResize(t *testing.T) {
 	m := newConversation("Samantha")
 	if m.View() == "" {
 		t.Fatal("View must render a placeholder before the first WindowSizeMsg")
+	}
+}
+
+func TestConversationDisplaysConfiguredTTSProviderAndModel(t *testing.T) {
+	m := sizedConversation(t, 120, 24)
+	m.cfg = &config.Config{TTSProvider: "qwen3-tts", QwenTTSModel: "/opt/qwen/models/1.7b"}
+
+	view := strings.ToLower(stripANSI(m.View()))
+	if !strings.Contains(view, "tts qwen3-tts") || !strings.Contains(view, "1.7b") {
+		t.Fatalf("conversation header missing TTS provider/model badge:\n%s", view)
 	}
 }
 

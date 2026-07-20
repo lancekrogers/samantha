@@ -97,6 +97,59 @@ func TestSettingsShowsEntireListWhenItFits(t *testing.T) {
 	}
 }
 
+func TestSettingsTTSSectionShowsActiveProviderAndModel(t *testing.T) {
+	m := newSettings(&config.Config{
+		TTSProvider:   "qwen3-tts",
+		QwenTTSModel:  "/opt/qwen/models/1.7b",
+		QwenTTSBinary: "/opt/qwen/bin/qwen3-tts-cli",
+	}, nil)
+	m.section = sectionTTS
+	m.width, m.height = 100, 20
+
+	view := stripANSI(m.View())
+	for _, want := range []string{"TTS", "kokoro", "managed model", "qwen3-tts", "model 1.7b", "qwen3-tts-cli", "✓"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("TTS settings missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestSettingsTabCycleIncludesTTS(t *testing.T) {
+	m := settingsModel{cfg: &config.Config{}, section: sectionModel}
+	m, _ = updateSettingsWithKey(t, m, "tab")
+	if m.section != sectionTTS {
+		t.Fatalf("section after Model + Tab = %d, want TTS section %d", m.section, sectionTTS)
+	}
+}
+
+func TestSettingsSelectTTSProviderPersistsAndRefreshesVoices(t *testing.T) {
+	cfg := &config.Config{TTSProvider: "kokoro"}
+	m := newSettings(cfg, nil)
+	m.section = sectionTTS
+	m.cursor = 1 // qwen3-tts
+	var savedKey string
+	var savedValue any
+	m.saveConfig = func(key string, value any) error {
+		savedKey, savedValue = key, value
+		return nil
+	}
+
+	m.selectCurrent()
+
+	if savedKey != "tts_provider" || savedValue != "qwen3-tts" {
+		t.Fatalf("saved TTS config = %q/%v, want tts_provider/qwen3-tts", savedKey, savedValue)
+	}
+	if cfg.TTSProvider != "qwen3-tts" {
+		t.Fatalf("config TTS provider = %q, want qwen3-tts", cfg.TTSProvider)
+	}
+	if len(m.voiceItems) != 0 {
+		t.Fatalf("Qwen voice items = %d, want no static voices", len(m.voiceItems))
+	}
+	if !strings.Contains(m.message, "restart") {
+		t.Fatalf("selection message = %q, want restart guidance", m.message)
+	}
+}
+
 func TestVoicePreviewDoneGatingSameVoice(t *testing.T) {
 	m := settingsModel{previewing: "af_heart", previewID: 2, message: "playing"}
 
