@@ -13,13 +13,11 @@ func AnonymousLabel(n int) string {
 	return fmt.Sprintf("%s%d", LabelSpeakerPrefix, n)
 }
 
-// NormalizeLabel trims and lowercases enrolled names; empty becomes unknown.
-func NormalizeLabel(label string) string {
-	s := strings.TrimSpace(strings.ToLower(label))
-	if s == "" {
-		return LabelUnknown
-	}
-	return s
+// LabelsEqual compares labels case-insensitively for identity checks.
+// Observation.Label should keep enrollment/stable id casing; do not use this
+// to rewrite stored labels.
+func LabelsEqual(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }
 
 // IsUnknown reports whether label is empty or the unknown sentinel.
@@ -28,13 +26,13 @@ func IsUnknown(label string) bool {
 	return s == "" || s == LabelUnknown
 }
 
-// ApplyThreshold returns LabelUnknown when conf < threshold, otherwise label.
-// Empty label always becomes unknown.
+// ApplyThreshold returns LabelUnknown when conf < threshold or label is empty.
+// On pass-through it preserves the candidate label casing (stable id).
 func ApplyThreshold(label string, conf, threshold float32) string {
 	if IsUnknown(label) || conf < threshold {
 		return LabelUnknown
 	}
-	return NormalizeLabel(label)
+	return strings.TrimSpace(label)
 }
 
 // MapDiarizationID maps a raw engine speaker index (often 0-based) to speaker-N.

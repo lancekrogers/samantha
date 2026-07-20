@@ -3,6 +3,8 @@ package speaker
 import "github.com/lancekrogers/samantha/internal/config"
 
 // FromAppConfig maps config.Speaker into speaker.Config.
+// Kept here for a single mapping site; config mirrors fields to avoid
+// config→speaker imports. Tests cover default round-trip.
 func FromAppConfig(cfg *config.Config) Config {
 	if cfg == nil {
 		return Config{}.Normalize()

@@ -4,20 +4,26 @@
 // The package is designed so a disabled or missing engine never blocks capture,
 // STT, TTS, or meeting recording. Production engines (sherpa-onnx) plug in
 // behind Engine; tests use FakeEngine.
+//
+// Wire format: Observation.StartMS/EndMS are milliseconds from session start
+// (not time.Duration nanoseconds). Label is a stable profile id or speaker-N;
+// display casing is the caller's responsibility.
 package speaker
 
-import (
-	"time"
-)
+import "time"
 
 // State describes how trustworthy a label is.
 type State string
 
 const (
+	// StateProvisional is a best-effort interim label that may change.
 	StateProvisional State = "provisional"
-	StateStable      State = "stable"
-	StateRevised     State = "revised"
-	StateRejected    State = "rejected"
+	// StateStable is a final label from a successful engine path.
+	StateStable State = "stable"
+	// StateRevised replaces a prior provisional/stable observation.
+	StateRevised State = "revised"
+	// StateRejected means no usable analysis (disabled, no audio, closed).
+	StateRejected State = "rejected"
 )
 
 // Source identifies where the audio came from.
@@ -50,21 +56,24 @@ const (
 
 // Observation is one labeled audio span (the reusable data product).
 type Observation struct {
-	SegmentID  string        `json:"segment_id,omitempty"`
-	Start      time.Duration `json:"start"`
-	End        time.Duration `json:"end"`
-	Label      string        `json:"label"` // profile id | speaker-N | unknown
-	Confidence float32       `json:"confidence"`
-	State      State         `json:"state"`
-	Source     Source        `json:"source,omitempty"`
-	ModelRev   string        `json:"model_revision,omitempty"`
-	EnrollRev  string        `json:"enrollment_revision,omitempty"`
+	SegmentID  string  `json:"segment_id,omitempty"`
+	StartMS    int64   `json:"start_ms"` // ms from session/recording start
+	EndMS      int64   `json:"end_ms"`
+	Label      string  `json:"label"` // stable profile id | speaker-N | unknown
+	Confidence float32 `json:"confidence"`
+	State      State   `json:"state"`
+	Source     Source  `json:"source,omitempty"`
+	ModelRev   string  `json:"model_revision,omitempty"`
+	EnrollRev  string  `json:"enrollment_revision,omitempty"`
 }
 
-// Event is a streaming notification for live adapters.
+// Event is a streaming notification for live/meeting adapters.
+// For EventTimelineFinalized, Observation may be a summary row and Timeline
+// holds the full result when non-nil.
 type Event struct {
 	Kind        EventKind   `json:"kind"`
 	Observation Observation `json:"observation"`
+	Timeline    *Timeline   `json:"timeline,omitempty"`
 }
 
 // Timeline is a finalized (or partial) ordered set of observations.
@@ -73,10 +82,15 @@ type Timeline struct {
 	FinalizedAt  time.Time     `json:"finalized_at,omitempty"`
 }
 
-// Duration returns End-Start for an observation (clamped at zero).
-func (o Observation) Duration() time.Duration {
-	if o.End <= o.Start {
+// DurationMS returns EndMS-StartMS for an observation (clamped at zero).
+func (o Observation) DurationMS() int64 {
+	if o.EndMS <= o.StartMS {
 		return 0
 	}
-	return o.End - o.Start
+	return o.EndMS - o.StartMS
+}
+
+// MS converts a duration to whole milliseconds.
+func MS(d time.Duration) int64 {
+	return d.Milliseconds()
 }

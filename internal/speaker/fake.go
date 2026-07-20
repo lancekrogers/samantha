@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 )
 
 // FakeEngine is a deterministic Engine for tests (no native models).
+// It is safe for concurrent use (extra vs production contract) so race tests
+// of the Analyzer do not need a single-threaded fake.
 type FakeEngine struct {
 	mu sync.Mutex
 
@@ -15,14 +16,17 @@ type FakeEngine struct {
 	EmbedDim int
 	// NextEmbed is returned by Embed when non-nil; otherwise a zero vector.
 	NextEmbed []float32
-	// Identities maps a simple hash of first sample to a label.
-	// If empty, Identify always returns unknown.
+	// Identities maps a simple hash of first embedding dim to a label.
+	// Confidence is always 0.95 for hits and 0.1 for misses (raw scores;
+	// Analyzer applies threshold).
 	Identities map[string]string
 	// Diarization is returned by Diarize when non-nil.
 	Diarization Timeline
 	// FailEmbed / FailDiarize inject errors.
 	FailEmbed   error
 	FailDiarize error
+	// SlowDiarize blocks Diarize until the channel receives or context cancels.
+	SlowDiarize <-chan struct{}
 	Closed      bool
 }
 
@@ -57,7 +61,8 @@ func (f *FakeEngine) Embed(ctx context.Context, samples []float32) ([]float32, e
 	return out, nil
 }
 
-func (f *FakeEngine) Identify(ctx context.Context, embedding []float32, threshold float32) (string, float32, error) {
+// Identify returns the best candidate and raw score — no threshold filtering.
+func (f *FakeEngine) Identify(ctx context.Context, embedding []float32) (string, float32, error) {
 	if err := ctx.Err(); err != nil {
 		return "", 0, err
 	}
@@ -66,7 +71,6 @@ func (f *FakeEngine) Identify(ctx context.Context, embedding []float32, threshol
 	if f.Closed {
 		return "", 0, fmt.Errorf("speaker: fake engine closed")
 	}
-	_ = threshold
 	if len(embedding) == 0 || f.Identities == nil {
 		return LabelUnknown, 0, nil
 	}
@@ -78,16 +82,26 @@ func (f *FakeEngine) Identify(ctx context.Context, embedding []float32, threshol
 }
 
 func (f *FakeEngine) Verify(ctx context.Context, name string, embedding []float32, threshold float32) (bool, error) {
-	label, conf, err := f.Identify(ctx, embedding, threshold)
+	label, conf, err := f.Identify(ctx, embedding)
 	if err != nil {
 		return false, err
 	}
-	return NormalizeLabel(label) == NormalizeLabel(name) && conf >= threshold, nil
+	if LabelsEqual(label, name) && conf >= threshold {
+		return true, nil
+	}
+	return false, nil
 }
 
 func (f *FakeEngine) Diarize(ctx context.Context, samples []float32, numSpeakers int) (Timeline, error) {
 	if err := ctx.Err(); err != nil {
 		return Timeline{}, err
+	}
+	if f.SlowDiarize != nil {
+		select {
+		case <-ctx.Done():
+			return Timeline{}, ctx.Err()
+		case <-f.SlowDiarize:
+		}
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -100,7 +114,6 @@ func (f *FakeEngine) Diarize(ctx context.Context, samples []float32, numSpeakers
 	if f.Diarization.Observations != nil {
 		return f.Diarization, nil
 	}
-	// Default: split buffer into up to 2 equal spans.
 	n := numSpeakers
 	if n <= 0 {
 		n = 2
@@ -111,20 +124,19 @@ func (f *FakeEngine) Diarize(ctx context.Context, samples []float32, numSpeakers
 	if len(samples) == 0 {
 		return Timeline{}, nil
 	}
-	// Pretend 16 kHz: duration from sample count.
-	total := time.Duration(float64(len(samples)) / 16000.0 * float64(time.Second))
+	totalMS := int64(float64(len(samples)) / 16000.0 * 1000.0)
 	var obs []Observation
-	span := total / time.Duration(n)
+	span := totalMS / int64(n)
 	for i := 0; i < n; i++ {
-		start := time.Duration(i) * span
+		start := int64(i) * span
 		end := start + span
 		if i == n-1 {
-			end = total
+			end = totalMS
 		}
 		obs = append(obs, Observation{
 			SegmentID:  fmt.Sprintf("seg-%d", i),
-			Start:      start,
-			End:        end,
+			StartMS:    start,
+			EndMS:      end,
 			Label:      MapDiarizationID(i),
 			Confidence: 0.9,
 			State:      StateStable,
