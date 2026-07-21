@@ -82,11 +82,25 @@ func TestPickBookMOBIOnlyShowsError(t *testing.T) {
 	}
 	m.focus = pickFocusList
 	m, cmd := m.selectBook()
-	if cmd != nil {
-		t.Fatal("should not emit pick for MOBI-only")
+	if cmd == nil {
+		t.Fatal("selection should resolve asynchronously")
 	}
-	if m.errText == "" || !strings.Contains(m.errText, "supported format") {
-		t.Fatalf("errText = %q", m.errText)
+	msg, ok := cmd().(bookPickedMsg)
+	if !ok || msg.err == nil || !strings.Contains(msg.err.Error(), "supported format") {
+		t.Fatalf("msg = %#v", msg)
+	}
+}
+
+func TestPickBookConversionErrorReturnsToPicker(t *testing.T) {
+	app := NewApp(&config.Config{CalibreEnabled: true, TTSVoice: "af_heart"})
+	app.screen = screenPickBook
+	model, _ := app.Update(bookPickedMsg{err: errors.New("converter failed")})
+	a, ok := model.(App)
+	if !ok {
+		t.Fatalf("model type %T", model)
+	}
+	if a.screen != screenPickBook || a.pickBook.searching || a.pickBook.errText != "converter failed" {
+		t.Fatalf("picker state = screen %v searching=%v err=%q", a.screen, a.pickBook.searching, a.pickBook.errText)
 	}
 }
 

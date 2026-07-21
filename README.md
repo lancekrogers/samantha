@@ -291,9 +291,12 @@ ask what titles you own.
 hard failure). Voice and other features keep working.
 
 In the TUI, open **Library** from the launcher to browse the catalog, search,
-and view book details. From a book press **enter** or **a** to send an EPUB/PDF
-path into **Create audiobook**. The audiobook screen still has **Pick from
-library** for search-only pick during audiobook setup. v1 supports EPUB/PDF only.
+and view book details. From a book press **enter** or **a** to send an
+EPUB/PDF path into **Create audiobook**; MOBI/AZW-family books are converted
+to a cached EPUB with Calibre's `ebook-convert`. The audiobook screen's **Pick
+from library** opens with a browsable catalog, and `/` switches to search.
+Direct audiobook rendering still consumes EPUB/PDF after any library
+conversion.
 
 ### Narrate pipeline (prompt-controlled)
 
@@ -366,8 +369,8 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `calibre_enabled` | `false` | `CALIBRE_ENABLED` | Opt in to Calibre library browse/search, TUI Library + picker, and `--from-library` |
 | `calibre_library_path` | empty | `CALIBRE_LIBRARY_PATH` | Calibre library path (empty uses Calibre's default library) |
 | `calibredb_binary` | empty | `CALIBREDB_BINARY` | `calibredb` path; empty uses PATH then macOS app bundle / `/opt/calibre` |
-| `calibre_convert_binary` | empty | `CALIBRE_CONVERT_BINARY` | `ebook-convert` path (reserved; v1 does not convert MOBI/AZW3) |
-| `calibre_prefer_format` | `epub` | `CALIBRE_PREFER_FORMAT` | Preferred book format when resolving (`epub` then `pdf`) |
+| `calibre_convert_binary` | empty | `CALIBRE_CONVERT_BINARY` | `ebook-convert` path used to convert MOBI/AZW-family books to EPUB |
+| `calibre_prefer_format` | `epub` | `CALIBRE_PREFER_FORMAT` | Preferred book format when resolving (`epub`, `pdf`, then convertible MOBI/AZW-family formats) |
 | `tts_provider` | `kokoro` | `TTS_PROVIDER` | TTS backend |
 | `tts_voice` | `af_heart` | `TTS_VOICE` | Kokoro voice name |
 | `speech_speed` | `0.95` | | Playback speed |

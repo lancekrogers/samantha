@@ -26,7 +26,8 @@ var (
 	// ErrCalibreNotFound means calibredb could not be located on PATH or in
 	// known application-bundle locations.
 	ErrCalibreNotFound = errors.New("calibre: calibredb not found")
-	// ErrNoSupportedFormat means the book has no EPUB or PDF format (v1).
+	// ErrNoSupportedFormat means the book has no directly usable or convertible
+	// audiobook source format.
 	ErrNoSupportedFormat = errors.New("calibre: no supported format (need epub, pdf, or a convertible mobi/azw3)")
 	// ErrConverterNotFound means ebook-convert could not be located when a
 	// source format needs conversion.
@@ -52,7 +53,7 @@ type Book struct {
 	Authors  []string `json:"authors"`
 	Series   string   `json:"series"`
 	Tags     []string `json:"tags"`
-	Formats  []string `json:"formats"` // absolute file paths
+	Formats  []string `json:"formats"` // usually absolute paths; server output may use names
 	PubDate  string   `json:"pubdate"`
 	Comments string   `json:"comments,omitempty"`
 }
@@ -328,6 +329,14 @@ func (c Client) BestFormatPathContext(ctx context.Context, b Book) (path, format
 		if p, ok := byExt[want]; ok {
 			if want == "epub" || want == "pdf" {
 				listedSupported = true
+				if isBareFormatEntry(p) {
+					exported, exportErr := c.exportFormat(ctx, b, want)
+					if exportErr == nil {
+						return exported, want, nil
+					}
+					conversionErr = exportErr
+					continue
+				}
 				if st, statErr := os.Stat(p); statErr == nil && !st.IsDir() {
 					return p, want, nil
 				}
@@ -335,6 +344,14 @@ func (c Client) BestFormatPathContext(ctx context.Context, b Book) (path, format
 			}
 			if !isConvertibleFormat(want) {
 				continue
+			}
+			if isBareFormatEntry(p) {
+				exported, exportErr := c.exportFormat(ctx, b, want)
+				if exportErr != nil {
+					conversionErr = exportErr
+					continue
+				}
+				p = exported
 			}
 			if st, statErr := os.Stat(p); statErr != nil || st.IsDir() {
 				continue
@@ -353,6 +370,77 @@ func (c Client) BestFormatPathContext(ctx context.Context, b Book) (path, format
 		return "", "", fmt.Errorf("%w: book %d %q lists an EPUB/PDF path that is unavailable", ErrFormatMissing, b.ID, b.Title)
 	}
 	return "", "", fmt.Errorf("%w: book %d %q has %v", ErrNoSupportedFormat, b.ID, b.Title, formatList(b.Formats))
+}
+
+// exportFormat resolves a bare format name returned by a Calibre server by
+// exporting that format into Samantha's cache. Local Calibre libraries usually
+// return absolute paths and do not need this fallback.
+func (c Client) exportFormat(ctx context.Context, b Book, format string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if b.ID <= 0 {
+		return "", fmt.Errorf("%w: invalid book id %d", ErrConversionFailed, b.ID)
+	}
+	cacheDir, err := c.conversionCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("%w: prepare cache: %v", ErrConversionFailed, err)
+	}
+	key := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("export\x00%s\x00%d\x00%s", c.LibraryPath, b.ID, format))))
+	final := filepath.Join(cacheDir, key+"."+format)
+	if cached, ok := usableFile(final); ok {
+		return cached, nil
+	}
+
+	bin, err := c.resolveBinary(ctx)
+	if err != nil {
+		return "", err
+	}
+	tmpDir, err := os.MkdirTemp(cacheDir, ".export-")
+	if err != nil {
+		return "", fmt.Errorf("%w: create temporary directory: %v", ErrConversionFailed, err)
+	}
+	defer os.RemoveAll(tmpDir)
+	args := []string{
+		"export", fmt.Sprintf("%d", b.ID),
+		"--to-dir", tmpDir,
+		"--formats", strings.ToUpper(format),
+		"--single-dir",
+		"--dont-asciiize",
+		"--dont-save-cover",
+		"--dont-save-extra-files",
+		"--dont-update-metadata",
+		"--dont-write-opf",
+	}
+	if lib := strings.TrimSpace(c.LibraryPath); lib != "" {
+		args = append(args, "--with-library", lib)
+	}
+	if _, err := c.runner()(ctx, bin, args...); err != nil {
+		return "", fmt.Errorf("%w: export book %d as %s: %v", ErrConversionFailed, b.ID, format, err)
+	}
+	var exported string
+	if err := filepath.Walk(tmpDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() || formatName(path) != format {
+			return nil
+		}
+		exported = path
+		return filepath.SkipDir
+	}); err != nil {
+		return "", fmt.Errorf("%w: inspect exported book: %v", ErrConversionFailed, err)
+	}
+	if exported == "" {
+		return "", fmt.Errorf("%w: export did not create a %s file", ErrConversionFailed, format)
+	}
+	if err := os.Rename(exported, final); err != nil {
+		if cached, ok := usableFile(final); ok {
+			return cached, nil
+		}
+		return "", fmt.Errorf("%w: store exported book: %v", ErrConversionFailed, err)
+	}
+	return final, nil
 }
 
 // convertToEPUB converts a source format into a cache entry. The source file
@@ -579,6 +667,10 @@ func formatName(value string) string {
 		return value
 	}
 	return ""
+}
+
+func isBareFormatEntry(value string) bool {
+	return !strings.ContainsAny(strings.TrimSpace(value), `/\\`) && filepath.Ext(strings.TrimSpace(value)) == ""
 }
 
 func isKnownFormat(format string) bool {

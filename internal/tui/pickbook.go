@@ -30,6 +30,7 @@ type calibreResultsMsg struct {
 // bookPickedMsg carries a resolved audiobook input path back to the audiobook form.
 type bookPickedMsg struct {
 	path string
+	err  error
 }
 
 type pickBookModel struct {
@@ -221,12 +222,16 @@ func (m pickBookModel) selectBook() (pickBookModel, tea.Cmd) {
 		return m, nil
 	}
 	b := m.books[m.cursor]
-	path, _, err := m.client.BestFormatPath(b)
-	if err != nil {
-		m.errText = err.Error()
-		return m, nil
+	client := m.client
+	m.searching = true
+	m.errText = ""
+	m.message = "Preparing audiobook input…"
+	return m, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		path, _, err := client.BestFormatPathContext(ctx, b)
+		return bookPickedMsg{path: path, err: err}
 	}
-	return m, func() tea.Msg { return bookPickedMsg{path: path} }
 }
 
 func (m *pickBookModel) ensureVisible() {

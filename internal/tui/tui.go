@@ -269,6 +269,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case bookPickedMsg:
+		if msg.err != nil {
+			a.pickBook.searching = false
+			a.pickBook.errText = msg.err.Error()
+			a.pickBook.message = ""
+			return a, nil
+		}
+		a.pickBook.searching = false
 		a.audiobook.input = msg.path
 		a.audiobook.errText = ""
 		a.audiobook.message = "Filled input from Calibre library"

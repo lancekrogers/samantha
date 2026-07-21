@@ -126,13 +126,14 @@ func resolveFromLibraryFlag(cmd *cobra.Command, loadConfig configLoader, opts *r
 	return nil
 }
 
-// resolveLibraryBook resolves a Calibre query to an absolute EPUB/PDF path.
+// resolveLibraryBook resolves a Calibre query to an audiobook-ready EPUB/PDF
+// path, converting a MOBI/AZW-family source when necessary.
 func resolveLibraryBook(ctx context.Context, client calibre.Client, query string) (path string, format render.Format, err error) {
 	book, err := client.Resolve(ctx, query)
 	if err != nil {
 		return "", "", err
 	}
-	p, fmtName, err := client.BestFormatPath(book)
+	p, fmtName, err := client.BestFormatPathContext(ctx, book)
 	if err != nil {
 		return "", "", err
 	}

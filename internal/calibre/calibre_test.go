@@ -218,6 +218,45 @@ func TestFormatNameRecognizesBareFormatNames(t *testing.T) {
 	}
 }
 
+func TestBestFormatPathExportsBareEPUBFormatName(t *testing.T) {
+	cacheDir := t.TempDir()
+	var exportArgs []string
+	c := Client{
+		LookPath: func(name string) (string, error) { return name, nil },
+		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name != "calibredb" || len(args) < 4 || args[0] != "export" {
+				t.Fatalf("unexpected Calibre call: %q %v", name, args)
+			}
+			exportArgs = append([]string(nil), args...)
+			toDir := ""
+			for i := range args[:len(args)-1] {
+				if args[i] == "--to-dir" {
+					toDir = args[i+1]
+				}
+			}
+			if toDir == "" {
+				t.Fatal("export missing --to-dir")
+			}
+			if err := os.WriteFile(filepath.Join(toDir, "remote-book.epub"), []byte("epub"), 0o600); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		},
+		CacheDir: cacheDir,
+	}
+	b := Book{ID: 161, Title: "The Chapter", Formats: []string{"MOBI", "EPUB"}}
+	path, format, err := c.BestFormatPath(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if format != "epub" || filepath.Ext(path) != ".epub" {
+		t.Fatalf("got path=%q format=%q", path, format)
+	}
+	if len(exportArgs) == 0 || exportArgs[1] != "161" {
+		t.Fatalf("export args = %v", exportArgs)
+	}
+}
+
 func TestResolveSingle(t *testing.T) {
 	c := Client{
 		LookPath: func(string) (string, error) { return "calibredb", nil },
