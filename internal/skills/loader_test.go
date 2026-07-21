@@ -275,6 +275,48 @@ func TestDefaultSearchPaths(t *testing.T) {
 	}
 }
 
+func TestDefaultSearchPathsIncludesAncestorAgentSkills(t *testing.T) {
+	// Not parallel: overrides package userHomeDir.
+	home := t.TempDir()
+	restore := SetUserHomeDirForTest(func() (string, error) { return home, nil })
+	t.Cleanup(restore)
+
+	campaignRoot := t.TempDir()
+	workDir := filepath.Join(campaignRoot, "projects", "samantha")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(campaignRoot, ".agents", "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	configured := filepath.Join(campaignRoot, "configured-skills")
+	got := DefaultSearchPaths(workDir, configured)
+	want := []string{
+		filepath.Join(workDir, ".agents", "skills"),
+		filepath.Join(campaignRoot, ".agents", "skills"),
+		filepath.Join(home, ".agents", "skills"),
+		configured,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("DefaultSearchPaths = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("paths[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	if gotAncestor := ancestorAgentSkillsDir(workDir); gotAncestor != filepath.Join(campaignRoot, ".agents", "skills") {
+		t.Fatalf("ancestorAgentSkillsDir = %q, want %q", gotAncestor, filepath.Join(campaignRoot, ".agents", "skills"))
+	}
+}
+
+func TestAncestorAgentSkillsDirReturnsEmptyOutsideWorkspace(t *testing.T) {
+	if got := ancestorAgentSkillsDir(t.TempDir()); got != "" {
+		t.Fatalf("ancestorAgentSkillsDir outside workspace = %q, want empty", got)
+	}
+}
+
 func writeSkill(t *testing.T, dir, name, desc, body string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {

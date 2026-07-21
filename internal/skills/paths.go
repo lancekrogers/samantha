@@ -29,8 +29,9 @@ func SetUserHomeDirForTest(fn func() (string, error)) (restore func()) {
 // (https://agentskills.io/client-implementation/adding-skills-support):
 //
 //  1. <workDir>/.agents/skills — project skills (Codex, VS Code, camp, …)
-//  2. ~/.agents/skills         — user skills shared across tools
-//  3. configuredDir            — Samantha skills_dir (or its default under config)
+//  2. nearest ancestor .agents/skills — workspace/project-root skills
+//  3. ~/.agents/skills         — user skills shared across tools
+//  4. configuredDir            — Samantha skills_dir (or its default under config)
 //
 // Ollama does not scan .claude/skills: that is Claude Code's native path and
 // is handled by the Claude provider harness. Scanning both would duplicate
@@ -56,10 +57,43 @@ func DefaultSearchPaths(workDir, configuredDir string) []string {
 
 	if strings.TrimSpace(workDir) != "" {
 		add(filepath.Join(workDir, ".agents", "skills"))
+		if ancestor := ancestorAgentSkillsDir(workDir); ancestor != "" {
+			add(ancestor)
+		}
 	}
 	if home, err := userHomeDir(); err == nil {
 		add(filepath.Join(home, ".agents", "skills"))
 	}
 	add(configuredDir)
 	return paths
+}
+
+// ancestorAgentSkillsDir returns the nearest existing .agents/skills directory
+// above workDir. The current directory is handled separately by
+// DefaultSearchPaths so project-local skills keep precedence.
+func ancestorAgentSkillsDir(workDir string) string {
+	workDir = strings.TrimSpace(workDir)
+	if workDir == "" {
+		return ""
+	}
+
+	resolved, err := filepath.Abs(workDir)
+	if err != nil {
+		return ""
+	}
+	if info, err := os.Stat(resolved); err == nil && !info.IsDir() {
+		resolved = filepath.Dir(resolved)
+	}
+
+	for {
+		parent := filepath.Dir(resolved)
+		if parent == resolved {
+			return ""
+		}
+		candidate := filepath.Join(parent, ".agents", "skills")
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+		resolved = parent
+	}
 }
