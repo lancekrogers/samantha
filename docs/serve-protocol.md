@@ -66,8 +66,10 @@ Requires for `--tailscale`: Tailscale CLI logged in and MagicDNS on.
 | `?token=` query | **Only** `GET /v1/stream` (browser WebSocket cannot set headers) |
 | Pairing code | `POST /v1/pair` (public, rate-limited) |
 
-Token file: `~/.obey/agents/voice/samantha/serve/token` (0600).  
-Revoke: `samantha serve --revoke-tokens`.
+Primary token file: `~/.obey/agents/voice/samantha/serve/token` (0600).  
+Per-device tokens (D2): `…/serve/tokens/<id>.json` (0600 each).  
+Revoke all: `samantha serve --revoke-tokens` (primary + all devices).  
+Revoke one device: `DELETE /v1/devices/{id}`.
 
 ### Pairing
 
@@ -78,16 +80,53 @@ Revoke: `samantha serve --revoke-tokens`.
 POST /v1/pair
 Content-Type: application/json
 
-{"code":"482193"}
+{"code":"482193","device_name":"Lance’s iPhone"}
 ```
 
-3. Response:
+`device_name` is optional. When present, serve mints a **per-device** token
+(PROTOCOL_DELTAS D2). When omitted, the **primary** shared token is returned
+(back-compat for older clients / Mac supervisor).
+
+3. Response (device pair):
+
+```json
+{"token":"<hex>","fingerprint":"<sha256 of leaf cert DER>",
+ "device_id":"<id>","device_name":"Lance’s iPhone"}
+```
+
+Response (legacy / no device_name):
 
 ```json
 {"token":"<hex>","fingerprint":"<sha256 of leaf cert DER>"}
 ```
 
 Store token (Keychain / localStorage). Pin `fingerprint` for TOFU if desired.
+
+### Devices (D2)
+
+```http
+GET /v1/devices
+Authorization: Bearer <any-valid-token>
+```
+
+```json
+{"devices":[
+  {"id":"…","device_name":"Lance’s iPhone",
+   "created_at":"…","last_seen":"…"}
+]}
+```
+
+```http
+DELETE /v1/devices/{id}
+Authorization: Bearer <any-valid-token>
+```
+
+```json
+{"deleted":"<id>"}
+```
+
+Deleting a device invalidates that bearer only and closes its WebSocket
+streams. Other devices and the primary token remain active.
 
 ## REST
 
@@ -96,7 +135,9 @@ Store token (Keychain / localStorage). Pin `fingerprint` for TOFU if desired.
 | `GET` | `/v1/status` | yes | `turn_active`, `providers`, `uptime_seconds`, `fingerprint` |
 | `GET` | `/v1/sessions` | yes | Session summaries |
 | `POST` | `/v1/sessions/{id}/resume` | yes | Load history into the live pipeline |
-| `POST` | `/v1/pair` | no | Exchange pairing code for token |
+| `POST` | `/v1/pair` | no | Exchange pairing code for token (optional `device_name`) |
+| `GET` | `/v1/devices` | yes | List paired devices (D2) |
+| `DELETE` | `/v1/devices/{id}` | yes | Revoke one device token + streams (D2) |
 
 ## WebSocket `/v1/stream`
 
