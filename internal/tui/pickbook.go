@@ -29,9 +29,19 @@ type calibreResultsMsg struct {
 
 // bookPickedMsg carries a resolved audiobook input path back to the audiobook form.
 type bookPickedMsg struct {
-	path string
-	err  error
+	path      string
+	err       error
+	requestID uint64
 }
+
+// pickLoadPhase separates search vs prepare so the status line is accurate.
+type pickLoadPhase int
+
+const (
+	pickIdle pickLoadPhase = iota
+	pickSearching
+	pickPreparing
+)
 
 type pickBookModel struct {
 	cfg       *config.Config
@@ -45,7 +55,9 @@ type pickBookModel struct {
 	books     []calibre.Book
 	cursor    int
 	offset    int
-	searching bool
+	loadPhase pickLoadPhase
+	// requestID tags async selectBook work; stale results are ignored.
+	requestID uint64
 	errText   string
 	message   string
 }
@@ -67,13 +79,17 @@ func newPickBook(cfg *config.Config) pickBookModel {
 	return m
 }
 
+func (m pickBookModel) busy() bool {
+	return m.loadPhase != pickIdle
+}
+
 func (m pickBookModel) Update(msg tea.Msg) (pickBookModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.ensureVisible()
 	case calibreResultsMsg:
-		m.searching = false
+		m.loadPhase = pickIdle
 		if msg.err != nil {
 			m.errText = msg.err.Error()
 			m.books = nil
@@ -106,6 +122,17 @@ func (m pickBookModel) Update(msg tea.Msg) (pickBookModel, tea.Cmd) {
 		key := msg.String()
 		if m.editing && m.focus == pickFocusQuery {
 			return m.handleQueryEdit(key)
+		}
+		// Block concurrent selects / searches while work is in flight.
+		if m.busy() {
+			switch key {
+			case "esc":
+				return m, func() tea.Msg { return switchScreenMsg(screenAudiobook) }
+			case "q":
+				return m, func() tea.Msg { return quitMsg{} }
+			default:
+				return m, nil
+			}
 		}
 		switch key {
 		case "up", "k":
@@ -188,7 +215,7 @@ func (m *pickBookModel) runSearch() tea.Cmd {
 	if q == "" {
 		return m.runBrowse()
 	}
-	m.searching = true
+	m.loadPhase = pickSearching
 	m.errText = ""
 	m.message = "Searching…"
 	client := m.client
@@ -205,7 +232,7 @@ func (m *pickBookModel) runBrowse() tea.Cmd {
 		m.errText = "Calibre is off — enable with: samantha config calibre_enabled true"
 		return nil
 	}
-	m.searching = true
+	m.loadPhase = pickSearching
 	m.errText = ""
 	m.message = "Loading library…"
 	client := m.client
@@ -221,16 +248,21 @@ func (m pickBookModel) selectBook() (pickBookModel, tea.Cmd) {
 	if m.cursor < 0 || m.cursor >= len(m.books) {
 		return m, nil
 	}
+	if m.loadPhase == pickPreparing {
+		return m, nil
+	}
 	b := m.books[m.cursor]
 	client := m.client
-	m.searching = true
+	m.requestID++
+	reqID := m.requestID
+	m.loadPhase = pickPreparing
 	m.errText = ""
 	m.message = "Preparing audiobook input…"
 	return m, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 		path, _, err := client.BestFormatPathContext(ctx, b)
-		return bookPickedMsg{path: path, err: err}
+		return bookPickedMsg{path: path, err: err, requestID: reqID}
 	}
 }
 
@@ -277,13 +309,25 @@ func (m pickBookModel) View() string {
 	}
 	b.WriteString("  " + qCursor + qStyle.Render(fmt.Sprintf("%-8s %s", qLabel, qVal)) + "\n")
 
-	if m.searching {
-		b.WriteString(dimStyle.Render("  Searching…"))
+	switch m.loadPhase {
+	case pickSearching:
+		status := m.message
+		if status == "" {
+			status = "Searching…"
+		}
+		b.WriteString(dimStyle.Render("  " + status))
+		b.WriteString("\n")
+	case pickPreparing:
+		status := m.message
+		if status == "" {
+			status = "Preparing audiobook input…"
+		}
+		b.WriteString(dimStyle.Render("  " + status))
 		b.WriteString("\n")
 	}
 
 	if len(m.books) == 0 {
-		if !m.searching && m.message != "" && m.errText == "" {
+		if m.loadPhase == pickIdle && m.message != "" && m.errText == "" {
 			b.WriteString(dimStyle.Render("  " + m.message))
 			b.WriteString("\n")
 		}
@@ -312,7 +356,7 @@ func (m pickBookModel) View() string {
 		b.WriteString("\n")
 		b.WriteString(errorStyle.Render("  " + m.errText))
 		b.WriteString("\n")
-	} else if m.message != "" && !m.searching && len(m.books) > 0 {
+	} else if m.message != "" && m.loadPhase == pickIdle && len(m.books) > 0 {
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("  " + m.message))
 		b.WriteString("\n")

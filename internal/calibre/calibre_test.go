@@ -257,6 +257,69 @@ func TestBestFormatPathExportsBareEPUBFormatName(t *testing.T) {
 	}
 }
 
+func TestBestFormatPathExportsBareMOBIThenConverts(t *testing.T) {
+	cacheDir := t.TempDir()
+	var steps []string
+	c := Client{
+		LookPath: func(name string) (string, error) { return name, nil },
+		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			steps = append(steps, name)
+			switch name {
+			case "calibredb":
+				if len(args) == 0 || args[0] != "export" {
+					t.Fatalf("unexpected calibredb args: %v", args)
+				}
+				toDir := ""
+				for i := range args[:len(args)-1] {
+					if args[i] == "--to-dir" {
+						toDir = args[i+1]
+					}
+				}
+				if err := os.WriteFile(filepath.Join(toDir, "remote.mobi"), []byte("mobi-bytes"), 0o600); err != nil {
+					return nil, err
+				}
+				return nil, nil
+			case "ebook-convert":
+				if len(args) < 2 {
+					t.Fatalf("convert args: %v", args)
+				}
+				if err := os.WriteFile(args[1], []byte("epub-from-mobi"), 0o600); err != nil {
+					return nil, err
+				}
+				return nil, nil
+			default:
+				t.Fatalf("unexpected binary %q", name)
+				return nil, nil
+			}
+		},
+		CacheDir: cacheDir,
+	}
+	b := Book{ID: 99, Title: "Mobi Only", Formats: []string{"MOBI"}}
+	path, format, err := c.BestFormatPath(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if format != "epub" || filepath.Ext(path) != ".epub" {
+		t.Fatalf("got path=%q format=%q", path, format)
+	}
+	if len(steps) < 2 || steps[0] != "calibredb" || steps[1] != "ebook-convert" {
+		t.Fatalf("steps = %v, want export then convert", steps)
+	}
+	// Second resolve must still succeed (provisional export age hit may skip
+	// re-export; convert keys include abs path so a re-convert is acceptable).
+	path2, format2, err := c.BestFormatPath(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if format2 != "epub" || filepath.Ext(path2) != ".epub" {
+		t.Fatalf("second resolve path=%q format=%q", path2, format2)
+	}
+	if _, err := os.Stat(path2); err != nil {
+		t.Fatal(err)
+	}
+	_ = path
+}
+
 func TestResolveSingle(t *testing.T) {
 	c := Client{
 		LookPath: func(string) (string, error) { return "calibredb", nil },

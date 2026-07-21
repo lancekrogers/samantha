@@ -269,13 +269,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case bookPickedMsg:
+		// Ignore stale async resolves (user re-selected or left the screen).
+		if msg.requestID != a.pickBook.requestID {
+			return a, nil
+		}
+		if a.screen != screenPickBook {
+			a.pickBook.loadPhase = pickIdle
+			return a, nil
+		}
 		if msg.err != nil {
-			a.pickBook.searching = false
+			a.pickBook.loadPhase = pickIdle
 			a.pickBook.errText = msg.err.Error()
 			a.pickBook.message = ""
 			return a, nil
 		}
-		a.pickBook.searching = false
+		a.pickBook.loadPhase = pickIdle
 		a.audiobook.input = msg.path
 		a.audiobook.errText = ""
 		a.audiobook.message = "Filled input from Calibre library"
