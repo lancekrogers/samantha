@@ -179,7 +179,7 @@ func TestSynthIdentityIncludesQwenVoiceControlsAndReferenceContent(t *testing.T)
 	})
 	for _, want := range []string{
 		"mode=customvoice", "voice=vivian", "language=English",
-		"instruction-sha256=", "reference-audio-sha256=", "reference-text-sha256=",
+		"instruction-sha256=", "reference-audio-sha256=", "reference-text-sha256=", "consent=true",
 	} {
 		if !strings.Contains(base, want) {
 			t.Errorf("identity = %q, want %q", base, want)
@@ -187,18 +187,31 @@ func TestSynthIdentityIncludesQwenVoiceControlsAndReferenceContent(t *testing.T)
 	}
 
 	changed := []struct {
-		name string
-		cfg  config.Config
+		name   string
+		mutate func(*config.Config)
 	}{
-		{"mode", config.Config{TTSProvider: "qwen3-tts", QwenTTSModel: "/models/qwen-a", QwenTTSBinary: "/bin/qwen3-tts-cli", QwenTTSMode: "voicedesign"}},
-		{"voice", config.Config{TTSProvider: "qwen3-tts", QwenTTSModel: "/models/qwen-a", QwenTTSBinary: "/bin/qwen3-tts-cli", QwenTTSVoice: "serena"}},
-		{"language", config.Config{TTSProvider: "qwen3-tts", QwenTTSModel: "/models/qwen-a", QwenTTSBinary: "/bin/qwen3-tts-cli", QwenTTSLanguage: "Chinese"}},
-		{"instruction", config.Config{TTSProvider: "qwen3-tts", QwenTTSModel: "/models/qwen-a", QwenTTSBinary: "/bin/qwen3-tts-cli", QwenTTSInstruction: "bright and warm"}},
-		{"reference text", config.Config{TTSProvider: "qwen3-tts", QwenTTSModel: "/models/qwen-a", QwenTTSBinary: "/bin/qwen3-tts-cli", QwenTTSReferenceText: "different transcript"}},
-		{"consent", config.Config{TTSProvider: "qwen3-tts", QwenTTSModel: "/models/qwen-a", QwenTTSBinary: "/bin/qwen3-tts-cli", QwenTTSConsent: true}},
+		{"mode", func(cfg *config.Config) { cfg.QwenTTSMode = "voicedesign" }},
+		{"voice", func(cfg *config.Config) { cfg.QwenTTSVoice = "serena" }},
+		{"language", func(cfg *config.Config) { cfg.QwenTTSLanguage = "Chinese" }},
+		{"instruction", func(cfg *config.Config) { cfg.QwenTTSInstruction = "bright and warm" }},
+		{"reference text", func(cfg *config.Config) { cfg.QwenTTSReferenceText = "different transcript" }},
+		{"consent", func(cfg *config.Config) { cfg.QwenTTSConsent = false }},
 	}
 	for _, tc := range changed {
-		if got := synthIdentityFor(&tc.cfg); got == base {
+		mutated := config.Config{
+			TTSProvider:           "qwen3-tts",
+			QwenTTSModel:          "/models/qwen-a",
+			QwenTTSBinary:         "/bin/qwen3-tts-cli",
+			QwenTTSMode:           "customvoice",
+			QwenTTSVoice:          "vivian",
+			QwenTTSLanguage:       "English",
+			QwenTTSInstruction:    "calm and precise",
+			QwenTTSReferenceAudio: ref,
+			QwenTTSReferenceText:  "reference transcript",
+			QwenTTSConsent:        true,
+		}
+		tc.mutate(&mutated)
+		if got := synthIdentityFor(&mutated); got == base {
 			t.Errorf("changing Qwen %s must change identity", tc.name)
 		}
 	}

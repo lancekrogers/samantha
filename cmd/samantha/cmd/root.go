@@ -21,6 +21,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/pipeline"
 	"github.com/lancekrogers/samantha/internal/prompts"
 	"github.com/lancekrogers/samantha/internal/session"
+	"github.com/lancekrogers/samantha/internal/speaker"
 	"github.com/lancekrogers/samantha/internal/stt"
 	"github.com/lancekrogers/samantha/internal/tts"
 	appTUI "github.com/lancekrogers/samantha/internal/tui"
@@ -176,6 +177,7 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 		} else {
 			p.Brain.LoadHistory(sess.Turns)
 		}
+		liveSpeaker := speaker.NewLiveAdapter(ctx, nil, 4)
 
 		p.OnTurn = func() {
 			if err := sess.Save(p.Brain.History()); err != nil {
@@ -191,7 +193,9 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 			SessionID:    sess.ID,
 			InputDevice:  cfg.InputDevice,
 			OutputDevice: cfg.OutputDevice,
+			LiveSpeaker:  liveSpeaker,
 			Cleanup: func() {
+				_ = liveSpeaker.Close()
 				if err := sess.Save(p.Brain.History()); err != nil {
 					fmt.Fprintf(os.Stderr, "  warning: failed to save session %s: %v\n", sess.ID, err)
 				}

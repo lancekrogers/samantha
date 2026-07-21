@@ -264,6 +264,9 @@ func newRenderSynth(ctx context.Context, opts *render.Options) (render.Synthesiz
 		cfg.SpeechSpeed = 0
 		opts.Voice = ""
 		opts.Speed = 0
+		if err := config.ValidateQwenTTSConfig(cfg); err != nil {
+			return nil, nil, fmt.Errorf("render: qwen3-tts configuration: %w", err)
+		}
 	}
 	populateTTSMetadata(opts, cfg)
 	if err := config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
@@ -363,6 +366,7 @@ func synthIdentityFor(cfg *config.Config) string {
 		if referenceText := strings.TrimSpace(cfg.QwenTTSReferenceText); referenceText != "" {
 			id += "/reference-text-sha256=" + stringIdentityHash(referenceText)
 		}
+		id += "/consent=" + strconv.FormatBool(cfg.QwenTTSConsent)
 		return id
 	}
 	if cfg.TTSVoice != "" {

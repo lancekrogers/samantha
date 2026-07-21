@@ -105,14 +105,15 @@ func NewLiveAdapter(ctx context.Context, analyzer LiveAnalyzer, capacity int) *L
 
 func (a *LiveAdapter) Events() <-chan Event { return a.events }
 
-// Submit copies samples and returns immediately. ErrLiveDropped is
+// Submit copies samples and returns immediately. It checks the cheap disabled
+// and queue-full paths before copying PCM so unavailable/overloaded adapters
+// do not allocate a frame that will never be analyzed. ErrLiveDropped is
 // informational: callers may ignore it to keep the response path clean.
 func (a *LiveAdapter) Submit(ctx context.Context, segment Segment) error {
 	started := time.Now()
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	segment.Samples = append([]float32(nil), segment.Samples...)
 	a.mu.Lock()
 	defer func() {
 		a.mu.Unlock()
@@ -126,6 +127,11 @@ func (a *LiveAdapter) Submit(ctx context.Context, segment Segment) error {
 	if !a.enabled {
 		return ErrLiveDisabled
 	}
+	if len(a.frames) >= cap(a.frames) {
+		a.dropped.Add(1)
+		a.status = LiveDegraded
+		return ErrLiveDropped
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -133,14 +139,9 @@ func (a *LiveAdapter) Submit(ctx context.Context, segment Segment) error {
 		return ErrLiveClosed
 	default:
 	}
-	select {
-	case a.frames <- liveFrame{segment: segment}:
-		return nil
-	default:
-		a.dropped.Add(1)
-		a.status = LiveDegraded
-		return ErrLiveDropped
-	}
+	segment.Samples = append([]float32(nil), segment.Samples...)
+	a.frames <- liveFrame{segment: segment}
+	return nil
 }
 
 func (a *LiveAdapter) run() {

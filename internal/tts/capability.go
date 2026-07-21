@@ -126,7 +126,8 @@ func (e *ProviderError) Unwrap() []error {
 	case ProviderErrorWorker:
 		causes = append(causes, ErrWorkerFailure)
 	case ProviderErrorCanceled:
-		causes = append(causes, ErrWorkerFailure)
+		// Preserve the cancellation cause without classifying cancellation as a
+		// retryable native-worker fault.
 	case ProviderErrorMalformed:
 		causes = append(causes, ErrMalformedOutput)
 	}

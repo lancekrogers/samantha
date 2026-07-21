@@ -188,3 +188,13 @@ func TestValidateRequestRejectsUnsupportedCombinations(t *testing.T) {
 		})
 	}
 }
+
+func TestProviderErrorCancellationDoesNotUnwrapAsWorkerFailure(t *testing.T) {
+	err := &ProviderError{Provider: "qwen3-tts", Kind: ProviderErrorCanceled, Err: context.Canceled}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatal("canceled provider error must preserve context.Canceled")
+	}
+	if errors.Is(err, ErrWorkerFailure) {
+		t.Fatal("canceled provider error must not match ErrWorkerFailure")
+	}
+}

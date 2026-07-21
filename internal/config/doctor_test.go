@@ -131,6 +131,9 @@ func TestDiagnoseQwenNativeWorker(t *testing.T) {
 			t.Errorf("%s = %+v, want ok", name, diags[name])
 		}
 	}
+	if diags["qwen3-tts-voice-controls"].Severity != SeverityOK {
+		t.Errorf("baseline qwen voice controls = %+v, want ok", diags["qwen3-tts-voice-controls"])
+	}
 	if HasErrors([]Diagnostic{diags["tts-provider"], diags["qwen3-tts-binary"], diags["qwen3-tts-model"]}) {
 		t.Fatalf("healthy qwen setup reported errors: %+v", diags)
 	}
@@ -152,6 +155,19 @@ func TestDiagnoseQwenNativeWorker(t *testing.T) {
 	diags = diagByName(Diagnose(cfg, t.TempDir(), okLookPath))
 	if diags["qwen3-tts-model"].Severity != SeverityError {
 		t.Errorf("non-directory qwen model = %+v, want error", diags["qwen3-tts-model"])
+	}
+}
+
+func TestDiagnoseQwenUnsupportedVoiceControls(t *testing.T) {
+	cfg := &Config{
+		STTProvider:  "sherpa",
+		TTSProvider:  "qwen3-tts",
+		QwenTTSMode:  "voicedesign",
+		QwenTTSModel: t.TempDir(),
+	}
+	d := diagByName(Diagnose(cfg, t.TempDir(), okLookPath))["qwen3-tts-voice-controls"]
+	if d.Severity != SeverityError || !strings.Contains(d.Detail, "clear unsupported settings") || d.Remediation == "" {
+		t.Fatalf("unsupported qwen controls diagnostic = %+v, want actionable error", d)
 	}
 }
 

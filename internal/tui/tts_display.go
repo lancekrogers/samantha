@@ -113,7 +113,7 @@ func ttsVoiceSelectionStatus(cfg *config.Config) string {
 		if cfg == nil || strings.TrimSpace(cfg.QwenTTSModel) == "" {
 			return "Qwen voice modes unavailable: set qwen_tts_model and run samantha doctor"
 		}
-		return "Qwen voices are model-native and not verified by this worker; configure qwen_tts_mode/voice. VoiceDesign needs an instruction; approved_clone needs reference audio, transcript, and consent."
+		return "Qwen voice controls are not verified by this worker; leave qwen_tts_mode/voice/language/instruction/reference settings empty and use the model-native default."
 	}
 	return "No browsable voices for the active TTS provider."
 }

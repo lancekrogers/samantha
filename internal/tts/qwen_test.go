@@ -93,6 +93,9 @@ func TestNewQwen3TTSValidation(t *testing.T) {
 	if !filepath.IsAbs(q.binary) {
 		t.Fatalf("resolved binary = %q, want absolute path", q.binary)
 	}
+	if _, err := NewQwen3TTS(&config.Config{QwenTTSBinary: executable, QwenTTSModel: t.TempDir(), QwenTTSMode: "voicedesign"}); err == nil || !strings.Contains(err.Error(), "clear unsupported settings") {
+		t.Fatalf("unsupported Qwen config error = %v, want actionable construction error", err)
+	}
 }
 
 func TestQwenSynthesizeRequestRunsNativeWorkerAndStreamsWAV(t *testing.T) {
@@ -257,8 +260,8 @@ func TestQwenSynthesizeRequestValidatesReferenceBeforeWorker(t *testing.T) {
 		ReferenceAudio:      filepath.Join(t.TempDir(), "missing.wav"),
 		ReferenceTranscript: "hello",
 	})
-	if err == nil || !IsProviderErrorKind(err, ProviderErrorInput) || !strings.Contains(err.Error(), "reference audio is unavailable") {
-		t.Fatalf("invalid reference error = %v, want actionable input error", err)
+	if err == nil || !IsProviderErrorKind(err, ProviderErrorInput) || !strings.Contains(err.Error(), "voice mode") {
+		t.Fatalf("unsupported reference mode error = %v, want actionable input error before reference decode", err)
 	}
 	if len(gotArgs) != 0 {
 		t.Fatalf("worker args = %v, want no worker launch for invalid reference", gotArgs)
@@ -269,8 +272,8 @@ func TestQwenSynthesizeRequestValidatesReferenceBeforeWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = q.SynthesizeRequest(context.Background(), SynthesisRequest{Text: "hello", ReferenceAudio: ref})
-	if err == nil || !strings.Contains(err.Error(), "reference transcript is required") {
-		t.Fatalf("missing transcript error = %v, want transcript validation", err)
+	if err == nil || !strings.Contains(err.Error(), "reference voice") {
+		t.Fatalf("unsupported reference error = %v, want early unsupported-control rejection", err)
 	}
 }
 

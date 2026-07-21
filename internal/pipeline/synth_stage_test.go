@@ -27,7 +27,11 @@ type failedStreamTTS struct{}
 
 func (failedStreamTTS) Synthesize(ctx context.Context, text string) (*audio.PCMStream, error) {
 	stream := audio.NewPCMStream(ctx)
-	stream.CloseWithError(errors.New("native worker failed before audio was ready"))
+	stream.CloseWithError(&tts.ProviderError{
+		Provider: "qwen3-tts",
+		Kind:     tts.ProviderErrorWorker,
+		Err:      errors.New("native worker failed before audio was ready"),
+	})
 	return stream, nil
 }
 func (failedStreamTTS) Available() bool                              { return true }
@@ -42,7 +46,7 @@ func TestSynthesizeWithFallbackRetriesSynchronousProviderFailure(t *testing.T) {
 		}
 	})
 	fallback := &fakeTTS{}
-	p := &Pipeline{TTS: &errTTS{err: errors.New("qwen unavailable")}, TTSFallback: fallback, Events: bus}
+	p := &Pipeline{TTS: &errTTS{err: &tts.ProviderError{Provider: "qwen3-tts", Kind: tts.ProviderErrorUnavailable, Err: errors.New("qwen unavailable")}}, TTSFallback: fallback, Events: bus}
 
 	stream, usedFallback, err := p.synthesizeWithFallback(context.Background(), "hello")
 	if err != nil || !usedFallback {
@@ -58,6 +62,20 @@ func TestSynthesizeWithFallbackRetriesSynchronousProviderFailure(t *testing.T) {
 	}
 	if fallbackEvent.Stage != "tts-fallback" || !strings.Contains(fallbackEvent.Message, "qwen unavailable") {
 		t.Fatalf("fallback event = %+v, want observable primary failure", fallbackEvent)
+	}
+}
+
+func TestSynthesizeWithFallbackDoesNotRetryPermanentInputFailure(t *testing.T) {
+	fallback := &fakeTTS{}
+	primaryErr := &tts.ProviderError{Provider: "qwen3-tts", Kind: tts.ProviderErrorInput, Err: tts.ErrUnsupportedFeature}
+	p := &Pipeline{TTS: &errTTS{err: primaryErr}, TTSFallback: fallback, Events: events.NewBus()}
+
+	stream, usedFallback, err := p.synthesizeWithFallback(context.Background(), "hello")
+	if stream != nil || usedFallback || !errors.Is(err, tts.ErrUnsupportedFeature) {
+		t.Fatalf("synthesizeWithFallback() = stream=%v fallback=%v err=%v, want permanent input error without fallback", stream != nil, usedFallback, err)
+	}
+	if calls := fallback.CallTimes(); len(calls) != 0 {
+		t.Fatalf("fallback calls = %d, want none for permanent input failure", len(calls))
 	}
 }
 

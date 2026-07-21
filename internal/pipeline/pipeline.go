@@ -732,7 +732,7 @@ func (p *Pipeline) synthesizeWithFallback(ctx context.Context, text string) (*au
 	if err == nil {
 		return stream, false, nil
 	}
-	if !p.canUseFallback(ctx) {
+	if !p.canUseFallback(ctx) || !shouldFallback(err) {
 		return nil, false, err
 	}
 	p.emit(events.Error{Stage: "tts-fallback", Message: fmt.Sprintf("primary TTS failed; retrying with Kokoro: %v", err)})
@@ -747,7 +747,7 @@ func (p *Pipeline) synthesizeWithFallback(ctx context.Context, text string) (*au
 // primary stream. This covers file-oriented native workers whose failure is
 // reported when the stream becomes ready.
 func (p *Pipeline) playFallback(ctx context.Context, text string, primaryErr error) (*audio.Playback, bool, error) {
-	if !p.canUseFallback(ctx) {
+	if !p.canUseFallback(ctx) || !shouldFallback(primaryErr) {
 		return nil, false, primaryErr
 	}
 	p.emit(events.Error{Stage: "tts-fallback", Message: fmt.Sprintf("primary playback TTS failed; retrying with Kokoro: %v", primaryErr)})
@@ -757,6 +757,19 @@ func (p *Pipeline) playFallback(ctx context.Context, text string, primaryErr err
 	}
 	playback, err := p.Player.PlayStream(ctx, stream)
 	return playback, true, err
+}
+
+// shouldFallback limits Kokoro recovery to provider failures that may be
+// transient or caused by an unusable worker output. Permanent request/config
+// errors must reach the user instead of being silently converted into a
+// different voice policy.
+func shouldFallback(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	return tts.IsProviderErrorKind(err, tts.ProviderErrorUnavailable) ||
+		tts.IsProviderErrorKind(err, tts.ProviderErrorWorker) ||
+		tts.IsProviderErrorKind(err, tts.ProviderErrorMalformed)
 }
 
 func (p *Pipeline) canUseFallback(ctx context.Context) bool {

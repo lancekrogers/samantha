@@ -258,7 +258,7 @@ func TestSettingsQwenVoiceSectionExplainsUnavailableModes(t *testing.T) {
 	m.width, m.height = 100, 20
 
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "not verified") || !strings.Contains(view, "approved_clone") {
+	if !strings.Contains(view, "not verified") || !strings.Contains(view, "model-native default") || !strings.Contains(view, "leave") {
 		t.Fatalf("Qwen voice section = %q, want actionable capability explanation", view)
 	}
 }

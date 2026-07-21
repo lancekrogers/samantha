@@ -70,6 +70,9 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 	if cfg == nil {
 		return nil, errors.New("qwen3-tts: nil config")
 	}
+	if err := config.ValidateQwenTTSConfig(cfg); err != nil {
+		return nil, fmt.Errorf("qwen3-tts: %w", err)
+	}
 
 	binary := strings.TrimSpace(cfg.QwenTTSBinary)
 	if binary == "" {
@@ -155,12 +158,6 @@ func (q *Qwen3TTS) SynthesizeRequest(ctx context.Context, req SynthesisRequest) 
 	if strings.TrimSpace(req.Text) == "" {
 		return SynthesisResult{}, &ProviderError{Provider: qwen3TTSProviderName, Operation: "synthesize", Kind: ProviderErrorInput, Err: errors.New("text is empty")}
 	}
-	if err := validateQwenReference(req); err != nil {
-		return SynthesisResult{}, err
-	}
-	if req.Mode == VoiceModeApprovedClone && !q.consent {
-		return SynthesisResult{}, &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate request", Kind: ProviderErrorInput, Err: errors.New("explicit consent is required for approved voice cloning")}
-	}
 	if req.SampleRate != 0 && req.SampleRate != qwen3TTSSampleRate {
 		return SynthesisResult{}, qwenUnsupported("sample rate", fmt.Sprintf("cannot resample to %d Hz (native rate %d Hz)", req.SampleRate, qwen3TTSSampleRate))
 	}
@@ -181,6 +178,12 @@ func (q *Qwen3TTS) SynthesizeRequest(ctx context.Context, req SynthesisRequest) 
 	}
 	if strings.TrimSpace(req.ReferenceAudio) != "" || strings.TrimSpace(req.ReferenceTranscript) != "" {
 		return SynthesisResult{}, qwenUnsupported("reference voice", "reference-audio cloning is not exposed by the native CLI")
+	}
+	if err := validateQwenReference(req); err != nil {
+		return SynthesisResult{}, err
+	}
+	if req.Mode == VoiceModeApprovedClone && !q.consent {
+		return SynthesisResult{}, &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate request", Kind: ProviderErrorInput, Err: errors.New("explicit consent is required for approved voice cloning")}
 	}
 
 	voice := req.Voice
