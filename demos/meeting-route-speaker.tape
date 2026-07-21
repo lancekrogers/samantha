@@ -1,4 +1,4 @@
-# Meeting route picker + Speaker settings (PR UX flow).
+# Meeting route picker + diarization under Meeting (PR UX flow).
 #
 # Full-color VHS contract:
 #   - env -u NO_COLOR at the just recipe
@@ -100,14 +100,10 @@ Sleep 700ms
 Enter
 Sleep 1800ms
 
-# Tab to Speaker
-Right
-Sleep 1400ms
-
-# Enable speaker analysis
+# On Meeting tab: enable speaker diarization (first row)
 Enter
 Sleep 900ms
-# Enable meeting diarization
+# Record audio for analysis
 Down
 Sleep 400ms
 Enter

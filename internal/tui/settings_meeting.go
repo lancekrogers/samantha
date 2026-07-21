@@ -12,7 +12,9 @@ import (
 
 // Meeting settings row indices — keep in lockstep with meetingItems().
 const (
-	meetingRowMode = iota
+	meetingRowDiarization = iota
+	meetingRowRecordAudio
+	meetingRowMode
 	meetingRowDefault
 	meetingRowBody
 	meetingRowConfigured
@@ -21,7 +23,8 @@ const (
 	meetingRowCount
 )
 
-// meetingItems lists Meeting Notes settings rows (mode, default, body, discovery).
+// meetingItems lists Meeting settings: speaker diarization + notes routing.
+// Live conversation speaker analysis is controlled in chat via /speakers, not here.
 func (m settingsModel) meetingItems() []string {
 	mode := m.cfg.Meeting.Route.Mode
 	if mode == "" {
@@ -45,7 +48,12 @@ func (m settingsModel) meetingItems() []string {
 	} else {
 		availLabel = fmt.Sprintf("%d available", nAvail)
 	}
+	// Effective meeting diarization needs master speaker.enabled + meeting flag.
+	diarizationOn := m.cfg.Speaker.Enabled && m.cfg.Speaker.Meeting.Enabled
+	recordAudioOn := m.cfg.Speaker.Meeting.RecordAudio
 	return []string{
+		fmt.Sprintf("Speaker diarization — %s", enabledLabel(diarizationOn)),
+		fmt.Sprintf("Record audio for analysis — %s", enabledLabel(recordAudioOn)),
 		fmt.Sprintf("Route mode: %s", mode),
 		fmt.Sprintf("Default destination: %s", def),
 		fmt.Sprintf("Body scope: %s", body),
@@ -56,7 +64,43 @@ func (m settingsModel) meetingItems() []string {
 }
 
 func (m *settingsModel) selectMeetingItem() {
+	saveConfig := m.saveConfig
+	if saveConfig == nil {
+		saveConfig = config.SetAndSave
+	}
 	switch m.cursor {
+	case meetingRowDiarization:
+		// Toggle effective meeting diarization: turns master + meeting on together,
+		// or meeting off (master left as-is for live /speakers path).
+		next := !(m.cfg.Speaker.Enabled && m.cfg.Speaker.Meeting.Enabled)
+		if next {
+			if err := saveConfig("speaker.enabled", true); err != nil {
+				m.message = fmt.Sprintf("Failed to save speaker.enabled: %v", err)
+				return
+			}
+			m.cfg.Speaker.Enabled = true
+			if err := saveConfig("speaker.meeting.enabled", true); err != nil {
+				m.message = fmt.Sprintf("Failed to save speaker.meeting.enabled: %v", err)
+				return
+			}
+			m.cfg.Speaker.Meeting.Enabled = true
+			m.message = "Speaker diarization ON (meeting notes)"
+			return
+		}
+		if err := saveConfig("speaker.meeting.enabled", false); err != nil {
+			m.message = fmt.Sprintf("Failed to save speaker.meeting.enabled: %v", err)
+			return
+		}
+		m.cfg.Speaker.Meeting.Enabled = false
+		m.message = "Speaker diarization OFF (live /speakers unchanged)"
+	case meetingRowRecordAudio:
+		next := !m.cfg.Speaker.Meeting.RecordAudio
+		if err := saveConfig("speaker.meeting.record_audio", next); err != nil {
+			m.message = fmt.Sprintf("Failed to save speaker.meeting.record_audio: %v", err)
+			return
+		}
+		m.cfg.Speaker.Meeting.RecordAudio = next
+		m.message = fmt.Sprintf("Record audio for analysis %s", enabledLabel(next))
 	case meetingRowMode: // cycle route mode: ask → auto → off → ask
 		cur := m.cfg.Meeting.Route.Mode
 		if cur == "" {

@@ -221,10 +221,11 @@ func TestStartMeetingMsgStoresRoutePlan(t *testing.T) {
 	}
 }
 
-func TestSettingsSpeakerToggle(t *testing.T) {
+func TestSettingsMeetingDiarizationToggle(t *testing.T) {
 	cfg := &config.Config{}
 	m := newSettings(cfg, nil)
-	m.section = sectionSpeaker
+	m.section = sectionMeeting
+	m.cursor = meetingRowDiarization
 	var saved map[string]any
 	m.saveConfig = func(key string, value any) error {
 		if saved == nil {
@@ -234,16 +235,18 @@ func TestSettingsSpeakerToggle(t *testing.T) {
 		return nil
 	}
 	m.selectCurrent()
-	if saved["speaker.enabled"] != true || !cfg.Speaker.Enabled {
-		t.Fatalf("master enable failed: saved=%v cfg=%+v", saved, cfg.Speaker)
+	if saved["speaker.enabled"] != true || saved["speaker.meeting.enabled"] != true {
+		t.Fatalf("diarization enable saved=%v", saved)
 	}
-	m.cursor = 1
-	m.selectCurrent()
-	if saved["speaker.meeting.enabled"] != true || !cfg.Speaker.Meeting.Enabled {
-		t.Fatalf("meeting enable failed: saved=%v", saved)
+	if !cfg.Speaker.Enabled || !cfg.Speaker.Meeting.Enabled {
+		t.Fatalf("cfg speaker = %+v", cfg.Speaker)
 	}
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "Speaker analysis") || !strings.Contains(view, "Meeting diarization") {
-		t.Fatalf("speaker settings view:\n%s", view)
+	if !strings.Contains(view, "Speaker diarization") || !strings.Contains(view, "Route mode") {
+		t.Fatalf("meeting settings view missing diarization/routing:\n%s", view)
+	}
+	// Live controls stay out of Settings (conversation /speakers).
+	if strings.Contains(view, "Live conversation") || strings.Contains(view, "Live mode") {
+		t.Fatalf("live speaker rows should not be under Meeting:\n%s", view)
 	}
 }
