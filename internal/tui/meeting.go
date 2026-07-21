@@ -178,7 +178,10 @@ func (m *meetingModel) startLoop() tea.Cmd {
 			OnPartial: func(text string) { trySendMeeting(ch, meetingPartialMsg(text)) },
 		}
 		capture, provider := opts.Capture, opts.Provider
-		if demoMeetingEnabled() {
+		switch {
+		case demoMeetingSpeakersEnabled():
+			capture, provider = demoMeetingSpeakerDeps()
+		case demoMeetingEnabled():
 			capture, provider = demoMeetingDeps()
 		}
 		err := listen.LoopWithHooks(opts.Ctx, capture, provider, sink, hooks)
@@ -186,7 +189,7 @@ func (m *meetingModel) startLoop() tea.Cmd {
 		sendMeeting(ch, meetingLoopDoneMsg{err: err})
 	}()
 
-	return waitMeetingCh(ch)
+	return tea.Batch(waitMeetingCh(ch), demoMeetingSpeakerStatusCmds())
 }
 
 func (m meetingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -225,6 +228,11 @@ func (m meetingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusErr = true
 		m.status = "Failed to save note/bookmark"
 		m.appendLine(errorStyle.Render(fmt.Sprintf("  write error: %v", msg.err)))
+		return m, nil
+
+	case meetingSpeakerStatusMsg:
+		m.opts.SpeakerStatus = msg.status
+		m.opts.SpeakerError = msg.detail
 		return m, nil
 
 	case tea.KeyMsg:

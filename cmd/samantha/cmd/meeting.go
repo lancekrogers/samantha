@@ -35,6 +35,7 @@ func newMeetingCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newMeetingRecordCmd())
 	cmd.AddCommand(newMeetingRouteCmd())
+	cmd.AddCommand(newMeetingAnalyzeCmd())
 	return cmd
 }
 

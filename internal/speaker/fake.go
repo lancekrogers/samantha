@@ -118,8 +118,10 @@ func (f *FakeEngine) Diarize(ctx context.Context, samples []float32, numSpeakers
 	if n <= 0 {
 		n = 2
 	}
-	if n > 2 {
-		n = 2
+	// Cap only extreme values so integration tests can request 3–4 speakers
+	// without allocating huge timelines.
+	if n > 8 {
+		n = 8
 	}
 	if len(samples) == 0 {
 		return Timeline{}, nil
