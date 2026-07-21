@@ -108,15 +108,38 @@ fetch-meeting-fixture:
     ./scripts/fetch-meeting-fixture.sh
 
 # Diarization integration against real multi-voice meeting audio.
-# Requires: just fetch-meeting-fixture
+#
+# 1. Ensures the YouTube meeting fixture (auto-fetch if missing)
+# 2. Runs tests/speakerflow
+# 3. Refreshes demos/meeting-speakers.gif when `vhs` is installed
+#    (skip with SPEAKERFLOW_SKIP_VHS=1)
+#
+# Also available as: just test speakerflow  (and as part of just test full)
 speakerflow:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [[ ! -f tests/fixtures/meetings/product-marketing-meeting-90s.wav ]]; then
-        echo "fixture missing — run: just fetch-meeting-fixture" >&2
+    fixture="tests/fixtures/meetings/product-marketing-meeting-90s.wav"
+    if [[ ! -f "$fixture" ]]; then
+        echo "fixture missing — fetching via just fetch-meeting-fixture…"
+        just fetch-meeting-fixture
+    fi
+    if [[ ! -f "$fixture" ]]; then
+        echo "fixture still missing after fetch: $fixture" >&2
         exit 1
     fi
+    echo "==> speakerflow: integration tests"
     go test -tags=integration -count=1 -timeout 3m -v ./tests/speakerflow/...
+    if [[ "${SPEAKERFLOW_SKIP_VHS:-}" == "1" ]]; then
+        echo "==> speakerflow: skipping VHS (SPEAKERFLOW_SKIP_VHS=1)"
+        exit 0
+    fi
+    if ! command -v vhs >/dev/null 2>&1; then
+        echo "==> speakerflow: vhs not installed — skip meeting-speakers.gif refresh"
+        echo "    install vhs to auto-update demos/meeting-speakers.gif"
+        exit 0
+    fi
+    echo "==> speakerflow: refreshing demos/meeting-speakers.gif"
+    just demo-meeting-speakers
 
 [private]
 _optimize-demo-gif path:
@@ -158,12 +181,12 @@ run *ARGS: build
 talk: build
     ./{{bin_dir}}/{{binary_name}}
 
-# Full pipeline (clean, build, test, integration)
+# Full pipeline: clean, build, then the complete test suite
+# (unit + Docker integration + voiceflow + speakerflow/VHS + audio-crackle).
 all:
     just clean
     just build
-    just test unit
-    just test integration
+    just test full
 
 # Clean build artifacts
 clean:

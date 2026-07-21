@@ -5,9 +5,17 @@ BUILDTOOL := "go run ./internal/buildutil"
 default:
     @just --list --unsorted --justfile {{source_file()}}
 
-# Run unit then integration tests (requires Docker)
+# Unit + Docker integration only (CI-friendly core).
+# Prefer `just test full` for the complete local suite.
 [no-cd]
 all: unit integration
+
+# Full local suite: unit, Docker integration, voiceflow, speaker diarization
+# (fixture + optional VHS), and audio crackle. Requires Docker for integration.
+[no-cd]
+full: unit integration voiceflow speakerflow audio-crackle
+    @echo ""
+    @echo "✓ just test full complete (unit + integration + voiceflow + speakerflow + audio-crackle)"
 
 # Run unit tests only with dashboard
 [no-cd]
@@ -36,14 +44,17 @@ integration-verbose:
     go test -v -tags=integration ./tests/integration/... -timeout 5m 2>&1
 
 # Run fixture-audio voice flow tests (tagged integration, no Docker).
-# Advisory until PR #27's interrupt-controller changes land.
 [no-cd]
 voiceflow:
     #!/usr/bin/env bash
     set -euo pipefail
-    if ! go test -race -tags integration ./tests/voiceflow/...; then
-        echo "::warning::voiceflow suite failed (advisory until PR #27 merges)"
-    fi
+    go test -race -tags integration ./tests/voiceflow/... -count=1 -timeout 5m
+
+# Multi-voice meeting diarization (real YouTube fixture + optional VHS GIF).
+# Delegates to the root recipe so fixture fetch / demo stay in one place.
+[no-cd]
+speakerflow:
+    just speakerflow
 
 # Software crackle + playback layout regression suite (no hardware).
 # Pins Studio Display mono-client crackle class: stereo upmix, expand, and
