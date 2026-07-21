@@ -44,7 +44,8 @@ func (a *App) stopMeetingRuntimeWithSummary() (meetinglog.Summary, error) {
 }
 
 // beginMeetingRoute opens the post-meeting picker (ask), auto-routes, or no-ops (off).
-// Returns a tea.Cmd when auto-routing asynchronously; otherwise mutates screen and returns nil.
+// Returns a tea.Cmd when discovery or routing runs asynchronously; otherwise mutates
+// screen/banner and returns nil.
 // Uses the live a.cfg (settings already mutate it via SetAndSave) so tests stay isolated
 // from the developer's on-disk config.yaml.
 //
@@ -92,44 +93,93 @@ func (a *App) beginMeetingRoute(summary meetinglog.Summary) tea.Cmd {
 	case meeting.ModeOff:
 		return nil
 	case meeting.ModeAuto:
-		if routeCfg.Default == "" {
-			a.launcher = a.launcher.withBanner("Meeting route: mode=auto but no default destination", true)
-			return nil
-		}
-		body := routeCfg.Body
-		destID := routeCfg.Default
-		rcfg := routeCfg
-		return func() tea.Msg {
-			note, err := meeting.Render(summary, body)
-			if err != nil {
-				return meetingRouteResultMsg{Banner: "Meeting route failed (notes kept local): " + err.Error(), IsErr: true}
-			}
-			router := meeting.NewDefaultRouter(rcfg)
-			receipt, err := router.RouteByID(context.Background(), note, destID)
-			return meetingRouteResultMsg{Banner: meeting.BannerLine(receipt), IsErr: err != nil}
-		}
+		return a.autoRouteMeeting(summary, routeCfg)
 	default: // ask
 		return a.openMeetingRoutePicker(summary, routeCfg)
 	}
 }
 
-// openMeetingRoutePicker discovers destinations (config + camp list) and shows
-// the post-meeting chooser. No-ops when nothing is available.
+// openMeetingRoutePicker returns a tea.Cmd that discovers destinations off the
+// Update goroutine, then delivers meetingRouteReadyMsg to open the picker.
 func (a *App) openMeetingRoutePicker(summary meetinglog.Summary, routeCfg meeting.Config) tea.Cmd {
-	router := meeting.NewDefaultRouter(routeCfg)
-	ctx, cancel := context.WithTimeout(context.Background(), meeting.DiscoverTimeout)
-	defer cancel()
-	dests := router.DiscoverDestinations(ctx)
-	if len(dests) == 0 {
-		return nil
+	a.launcher = a.launcher.withBanner("Discovering destinations…", false)
+	a.screen = screenLauncher
+	return func() tea.Msg {
+		router := meeting.NewDefaultRouter(routeCfg)
+		ctx, cancel := context.WithTimeout(context.Background(), meeting.DiscoverTimeout)
+		defer cancel()
+		dests, err := router.DiscoverDestinations(ctx)
+		return meetingRouteReadyMsg{
+			summary:  summary,
+			routeCfg: routeCfg,
+			dests:    dests,
+			err:      err,
+		}
 	}
-	// Ensure discovered dests are routable via RouteByID if needed later.
-	for _, d := range dests {
+}
+
+// meetingRouteReadyMsg is the async result of post-meeting destination discovery.
+type meetingRouteReadyMsg struct {
+	summary  meetinglog.Summary
+	routeCfg meeting.Config
+	dests    []meeting.Destination
+	err      error
+}
+
+// applyMeetingRouteReady opens the picker or falls back to the launcher.
+func (a *App) applyMeetingRouteReady(msg meetingRouteReadyMsg) {
+	if len(msg.dests) == 0 {
+		banner := "Meeting notes kept local only (no destinations available)"
+		if msg.err != nil {
+			banner = "Meeting notes kept local only (destination discovery failed)"
+		}
+		a.launcher = a.launcher.withBanner(banner, msg.err != nil)
+		a.screen = screenLauncher
+		return
+	}
+	routeCfg := msg.routeCfg
+	for _, d := range msg.dests {
 		routeCfg = meeting.WithDestination(routeCfg, d)
 	}
-	a.meetingRoute = newMeetingRoute(summary, routeCfg, dests)
+	a.meetingRoute = newMeetingRoute(msg.summary, routeCfg, msg.dests)
 	a.meetingRoute.width = a.width
 	a.meetingRoute.height = a.height
 	a.screen = screenMeetingRoute
-	return nil
+}
+
+// autoRouteMeeting discovers destinations (so camp: defaults resolve) then routes.
+func (a *App) autoRouteMeeting(summary meetinglog.Summary, routeCfg meeting.Config) tea.Cmd {
+	if routeCfg.Default == "" {
+		a.launcher = a.launcher.withBanner("Meeting route: mode=auto but no default destination", true)
+		return nil
+	}
+	a.launcher = a.launcher.withBanner("Routing meeting notes…", false)
+	a.screen = screenLauncher
+	body := routeCfg.Body
+	destID := routeCfg.Default
+	rcfg := routeCfg
+	return func() tea.Msg {
+		router := meeting.NewDefaultRouter(rcfg)
+		ctx, cancel := context.WithTimeout(context.Background(), meeting.DiscoverTimeout)
+		defer cancel()
+		dests, _ := router.DiscoverDestinations(ctx)
+		for _, d := range dests {
+			rcfg = meeting.WithDestination(rcfg, d)
+		}
+		dest, ok := meeting.ResolveDestination(rcfg, destID, dests)
+		if !ok {
+			return meetingRouteResultMsg{
+				Banner: fmt.Sprintf("Meeting route failed (notes kept local): unknown destination %q", destID),
+				IsErr:  true,
+			}
+		}
+		rcfg = meeting.WithDestination(rcfg, dest)
+		note, err := meeting.Render(summary, body)
+		if err != nil {
+			return meetingRouteResultMsg{Banner: "Meeting route failed (notes kept local): " + err.Error(), IsErr: true}
+		}
+		router = meeting.NewDefaultRouter(rcfg)
+		receipt, err := router.RouteMeeting(context.Background(), note, dest)
+		return meetingRouteResultMsg{Banner: meeting.BannerLine(receipt), IsErr: err != nil}
+	}
 }

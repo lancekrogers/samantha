@@ -122,7 +122,10 @@ func TestDiscoverDestinationsMergesCampList(t *testing.T) {
 			return []byte(`[{"name":"My_Tools"},{"name":"obey-campaign"}]`), nil
 		},
 	}
-	got := r.DiscoverDestinations(context.Background())
+	got, err := r.DiscoverDestinations(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 3 {
 		t.Fatalf("dests = %+v, want file + 2 campaigns", got)
 	}
@@ -147,9 +150,26 @@ func TestDiscoverDestinationsSoftFailsCampList(t *testing.T) {
 			return nil, errors.New("registry locked")
 		},
 	}
-	got := r.DiscoverDestinations(context.Background())
+	got, err := r.DiscoverDestinations(context.Background())
+	if err == nil {
+		t.Fatal("expected camp list error")
+	}
 	if len(got) != 1 || got[0].ID != "docs" {
 		t.Fatalf("got = %+v, want only configured file dest", got)
+	}
+}
+
+func TestResolveDestination(t *testing.T) {
+	cfg := Config{Destinations: []Destination{{ID: "docs", Type: TypeFile, Path: "/a"}}}
+	discovered := []Destination{{ID: "camp:X", Type: TypeCampaign, Campaign: "X"}}
+	if _, ok := ResolveDestination(cfg, "docs", discovered); !ok {
+		t.Fatal("configured id not found")
+	}
+	if d, ok := ResolveDestination(cfg, "camp:X", discovered); !ok || d.Campaign != "X" {
+		t.Fatalf("discovered id: %+v ok=%v", d, ok)
+	}
+	if _, ok := ResolveDestination(cfg, "missing", discovered); ok {
+		t.Fatal("want miss")
 	}
 }
 

@@ -78,7 +78,7 @@ func newMeetingSetup(cfg *config.Config) meetingSetupModel {
 }
 
 func (m meetingSetupModel) loadDestinations() tea.Cmd {
-	m.loading = true
+	// Callers set m.loading / m.loadSeq before invoking; do not assign on a value copy.
 	seq := m.loadSeq
 	cfg := m.cfg
 	return func() tea.Msg {
@@ -86,8 +86,8 @@ func (m meetingSetupModel) loadDestinations() tea.Cmd {
 		router := meeting.NewDefaultRouter(routeCfg)
 		ctx, cancel := context.WithTimeout(context.Background(), meeting.DiscoverTimeout)
 		defer cancel()
-		dests := router.DiscoverDestinations(ctx)
-		return meetingDestsMsg{seq: seq, dests: dests}
+		dests, err := router.DiscoverDestinations(ctx)
+		return meetingDestsMsg{seq: seq, dests: dests, err: err}
 	}
 }
 
@@ -102,13 +102,13 @@ func (m meetingSetupModel) Update(msg tea.Msg) (meetingSetupModel, tea.Cmd) {
 			return m, nil
 		}
 		m.loading = false
-		if msg.err != nil {
-			m.err = msg.err.Error()
-			m.dests = nil
-			return m, nil
-		}
-		m.err = ""
+		// Soft-fail: still show configured dests when camp list errors.
 		m.dests = msg.dests
+		if msg.err != nil {
+			m.err = "camp list: " + msg.err.Error()
+		} else {
+			m.err = ""
+		}
 		// Prefer configured default when present (cursor 2+ maps to dests).
 		m.cursor = 1 // default "ask when ends"
 		if m.cfg != nil {
@@ -132,24 +132,71 @@ func (m meetingSetupModel) Update(msg tea.Msg) (meetingSetupModel, tea.Cmd) {
 		case "esc":
 			return m, func() tea.Msg { return switchScreenMsg(screenLauncher) }
 		case "enter":
-			desc := strings.TrimSpace(m.input.Value())
-			if desc == "" {
-				desc = "meeting"
-			}
-			// Advance to route step; kick discovery.
-			m.step = meetingSetupRoute
-			m.err = ""
-			m.loading = true
-			m.loadSeq++
-			m.cursor = 1
-			cmd := m.loadDestinations()
-			return m, cmd
+			return m.afterTitleConfirm()
 		}
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
 	}
 	return m, nil
+}
+
+// afterTitleConfirm applies meeting.route.mode: off skips routing, auto with a
+// known default starts immediately, ask (default) opens the destination step.
+func (m meetingSetupModel) afterTitleConfirm() (meetingSetupModel, tea.Cmd) {
+	desc := strings.TrimSpace(m.input.Value())
+	if desc == "" {
+		desc = "meeting"
+	}
+	mode := meeting.ModeAsk
+	if m.cfg != nil && m.cfg.Meeting.Route.Mode != "" {
+		mode = m.cfg.Meeting.Route.Mode
+	}
+	switch mode {
+	case meeting.ModeOff:
+		return m, func() tea.Msg {
+			return startMeetingMsg{Description: desc, RoutePlan: routePlanLocal}
+		}
+	case meeting.ModeAuto:
+		if m.cfg != nil {
+			def := strings.TrimSpace(m.cfg.Meeting.Route.Default)
+			if def != "" {
+				// Prefer a full Destination from configured YAML when present.
+				for _, d := range m.cfg.Meeting.Route.Destinations {
+					if d.ID == def {
+						return m, func() tea.Msg {
+							return startMeetingMsg{
+								Description: desc,
+								RoutePlan:   routePlanDest,
+								Destination: meeting.Destination{
+									ID:       d.ID,
+									Type:     d.Type,
+									Campaign: d.Campaign,
+									Capture:  d.Capture,
+									Tags:     d.Tags,
+									Path:     d.Path,
+									Folder:   d.Folder,
+								},
+							}
+						}
+					}
+				}
+				// Default id without a destinations entry: still try auto at end
+				// via empty plan + mode=auto (async discover in beginMeetingRoute).
+				return m, func() tea.Msg {
+					return startMeetingMsg{Description: desc, RoutePlan: ""}
+				}
+			}
+		}
+		// auto without default → fall through to picker so the user can choose.
+	}
+	// ask (or auto without default): title → route step.
+	m.step = meetingSetupRoute
+	m.err = ""
+	m.loading = true
+	m.loadSeq++
+	m.cursor = 1
+	return m, m.loadDestinations()
 }
 
 func (m meetingSetupModel) updateRouteKey(key string) (meetingSetupModel, tea.Cmd) {

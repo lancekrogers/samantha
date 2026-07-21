@@ -10,11 +10,14 @@ const DiscoverTimeout = 3 * time.Second
 
 // DiscoverDestinations returns configured destinations that are available on
 // this machine, plus campaigns from `camp list --json` when camp is installed.
-// Camp list failures are soft: configured destinations still return.
-func (r *Router) DiscoverDestinations(ctx context.Context) []Destination {
+//
+// Camp list failures are soft for the destination set (configured base still
+// returns) but the error is non-nil so UIs can surface "camp list failed".
+// When camp is not on PATH, err is nil (nothing to discover).
+func (r *Router) DiscoverDestinations(ctx context.Context) ([]Destination, error) {
 	base := r.AvailableDestinations()
 	if r.Run == nil || !r.campAvailable() {
-		return base
+		return base, nil
 	}
 	dctx := ctx
 	var cancel context.CancelFunc
@@ -23,8 +26,11 @@ func (r *Router) DiscoverDestinations(ctx context.Context) []Destination {
 		defer cancel()
 	}
 	camps, err := ListCampaigns(dctx, r.Run, r.LookPath)
-	if err != nil || len(camps) == 0 {
-		return base
+	if err != nil {
+		return base, err
+	}
+	if len(camps) == 0 {
+		return base, nil
 	}
 	discovered := DestinationsFromCampaigns(camps)
 	// Only keep discovered entries that pass availability (camp on PATH, etc.).
@@ -34,7 +40,7 @@ func (r *Router) DiscoverDestinations(ctx context.Context) []Destination {
 			available = append(available, d)
 		}
 	}
-	return MergeDestinations(base, available)
+	return MergeDestinations(base, available), nil
 }
 
 // WithDestination ensures dest is present in cfg.Destinations (by id) so
@@ -49,4 +55,20 @@ func WithDestination(cfg Config, dest Destination) Config {
 	}
 	cfg.Destinations = append(cfg.Destinations, dest)
 	return cfg
+}
+
+// ResolveDestination finds destID in cfg, then among discovered (if provided).
+func ResolveDestination(cfg Config, destID string, discovered []Destination) (Destination, bool) {
+	if destID == "" {
+		return Destination{}, false
+	}
+	if d, ok := cfg.DestinationByID(destID); ok {
+		return d, true
+	}
+	for _, d := range discovered {
+		if d.ID == destID {
+			return d, true
+		}
+	}
+	return Destination{}, false
 }

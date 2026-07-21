@@ -235,7 +235,7 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 				m.cursor++
 			}
 		case "enter":
-			if m.section == sectionMeeting && m.cursor == 5 {
+			if m.section == sectionMeeting && m.cursor == meetingRowRefresh {
 				m.selectMeetingItem()
 				return m, m.loadRouteDestinations()
 			}
@@ -281,14 +281,14 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 			break
 		}
 		m.routeDestsLoading = false
+		// Soft-fail: still show configured (+ any) dests when camp list errors.
+		m.routeDests = msg.dests
 		if msg.err != nil {
 			m.routeDestsErr = msg.err.Error()
-			m.routeDests = nil
-			m.message = "Destination discovery failed: " + msg.err.Error()
+			m.message = fmt.Sprintf("Found %d destination(s); camp list error: %v", len(msg.dests), msg.err)
 			break
 		}
 		m.routeDestsErr = ""
-		m.routeDests = msg.dests
 		m.message = fmt.Sprintf("Found %d route destination(s)", len(msg.dests))
 	}
 

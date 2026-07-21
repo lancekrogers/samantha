@@ -274,8 +274,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		// Post-meeting routing: ask / auto / off / start-picker plan.
-		// beginMeetingRoute may switch to screenMeetingRoute (nil cmd) or
-		// return an async route cmd — do not clobber either.
+		// beginMeetingRoute may switch screens (nil cmd) or return an async
+		// discovery/route cmd — do not clobber either.
 		prevScreen := a.screen
 		if cmd := a.beginMeetingRoute(summary); cmd != nil {
 			return a, cmd
@@ -284,6 +284,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.screen = screenLauncher
+		return a, nil
+
+	case meetingRouteReadyMsg:
+		a.applyMeetingRouteReady(msg)
 		return a, nil
 
 	case meetingRouteResultMsg:

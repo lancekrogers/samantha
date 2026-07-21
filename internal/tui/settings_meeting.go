@@ -10,6 +10,17 @@ import (
 	"github.com/lancekrogers/samantha/internal/meeting"
 )
 
+// Meeting settings row indices — keep in lockstep with meetingItems().
+const (
+	meetingRowMode = iota
+	meetingRowDefault
+	meetingRowBody
+	meetingRowConfigured
+	meetingRowPicker
+	meetingRowRefresh
+	meetingRowCount
+)
+
 // meetingItems lists Meeting Notes settings rows (mode, default, body, discovery).
 func (m settingsModel) meetingItems() []string {
 	mode := m.cfg.Meeting.Route.Mode
@@ -46,7 +57,7 @@ func (m settingsModel) meetingItems() []string {
 
 func (m *settingsModel) selectMeetingItem() {
 	switch m.cursor {
-	case 0: // cycle route mode: ask → auto → off → ask
+	case meetingRowMode: // cycle route mode: ask → auto → off → ask
 		cur := m.cfg.Meeting.Route.Mode
 		if cur == "" {
 			cur = "ask"
@@ -61,49 +72,9 @@ func (m *settingsModel) selectMeetingItem() {
 		}
 		m.cfg.Meeting.Route.Mode = next
 		m.message = fmt.Sprintf("Meeting route mode: %s", next)
-	case 1: // cycle default among configured + discovered ids + empty
-		ids := []string{""}
-		seen := map[string]struct{}{"": {}}
-		for _, d := range m.cfg.Meeting.Route.Destinations {
-			if d.ID == "" {
-				continue
-			}
-			if _, ok := seen[d.ID]; ok {
-				continue
-			}
-			seen[d.ID] = struct{}{}
-			ids = append(ids, d.ID)
-		}
-		for _, d := range m.routeDests {
-			if d.ID == "" {
-				continue
-			}
-			if _, ok := seen[d.ID]; ok {
-				continue
-			}
-			seen[d.ID] = struct{}{}
-			ids = append(ids, d.ID)
-		}
-		cur := m.cfg.Meeting.Route.Default
-		idx := 0
-		for i, id := range ids {
-			if id == cur {
-				idx = i
-				break
-			}
-		}
-		next := ids[(idx+1)%len(ids)]
-		if err := config.SetAndSave("meeting.route.default", next); err != nil {
-			m.message = fmt.Sprintf("Failed to save default destination: %v", err)
-			return
-		}
-		m.cfg.Meeting.Route.Default = next
-		label := next
-		if label == "" {
-			label = "(none)"
-		}
-		m.message = fmt.Sprintf("Default destination: %s", label)
-	case 2: // cycle body: notes ↔ full
+	case meetingRowDefault:
+		m.cycleDefaultDestination()
+	case meetingRowBody: // cycle body: notes ↔ full
 		cur := m.cfg.Meeting.Route.Body
 		if cur == "" {
 			cur = "notes"
@@ -118,9 +89,9 @@ func (m *settingsModel) selectMeetingItem() {
 		}
 		m.cfg.Meeting.Route.Body = next
 		m.message = fmt.Sprintf("Meeting body scope: %s", next)
-	case 3:
+	case meetingRowConfigured:
 		m.message = "Configured destinations live in " + config.ConfigFile() + " (meeting.route.destinations)"
-	case 4:
+	case meetingRowPicker:
 		if m.routeDestsLoading {
 			m.message = "Still discovering destinations…"
 			return
@@ -144,9 +115,95 @@ func (m *settingsModel) selectMeetingItem() {
 			more = fmt.Sprintf(" (+%d more)", len(m.routeDests)-n)
 		}
 		m.message = fmt.Sprintf("%d destination(s): %v%s — choose when starting a meeting", len(m.routeDests), parts, more)
-	case 5:
+	case meetingRowRefresh:
 		m.message = "Refreshing destinations…"
 	}
+}
+
+// cycleDefaultDestination walks empty + configured + discovered IDs. When the
+// chosen ID is discovered-only, it is also persisted into
+// meeting.route.destinations so mode=auto / RouteByID can resolve it.
+func (m *settingsModel) cycleDefaultDestination() {
+	type choice struct {
+		id   string
+		dest *meeting.Destination // non-nil when we may need to persist
+	}
+	choices := []choice{{id: ""}}
+	seen := map[string]struct{}{"": {}}
+	for _, d := range m.cfg.Meeting.Route.Destinations {
+		if d.ID == "" {
+			continue
+		}
+		if _, ok := seen[d.ID]; ok {
+			continue
+		}
+		seen[d.ID] = struct{}{}
+		choices = append(choices, choice{id: d.ID})
+	}
+	for i := range m.routeDests {
+		d := m.routeDests[i]
+		if d.ID == "" {
+			continue
+		}
+		if _, ok := seen[d.ID]; ok {
+			continue
+		}
+		seen[d.ID] = struct{}{}
+		dd := d
+		choices = append(choices, choice{id: d.ID, dest: &dd})
+	}
+	cur := m.cfg.Meeting.Route.Default
+	idx := 0
+	for i, c := range choices {
+		if c.id == cur {
+			idx = i
+			break
+		}
+	}
+	next := choices[(idx+1)%len(choices)]
+
+	// Persist discovered destinations before setting them as default.
+	if next.dest != nil {
+		if err := m.ensureDestinationConfigured(*next.dest); err != nil {
+			m.message = fmt.Sprintf("Failed to save destination: %v", err)
+			return
+		}
+	}
+	if err := config.SetAndSave("meeting.route.default", next.id); err != nil {
+		m.message = fmt.Sprintf("Failed to save default destination: %v", err)
+		return
+	}
+	m.cfg.Meeting.Route.Default = next.id
+	label := next.id
+	if label == "" {
+		label = "(none)"
+	}
+	m.message = fmt.Sprintf("Default destination: %s", label)
+}
+
+// ensureDestinationConfigured appends dest to meeting.route.destinations when
+// missing so auto/RouteByID can resolve camp-discovered IDs after restart.
+func (m *settingsModel) ensureDestinationConfigured(dest meeting.Destination) error {
+	for _, d := range m.cfg.Meeting.Route.Destinations {
+		if d.ID == dest.ID {
+			return nil
+		}
+	}
+	entry := config.MeetingDestinationConfig{
+		ID:       dest.ID,
+		Type:     dest.Type,
+		Campaign: dest.Campaign,
+		Capture:  dest.Capture,
+		Tags:     dest.Tags,
+		Path:     dest.Path,
+		Folder:   dest.Folder,
+	}
+	next := append(append([]config.MeetingDestinationConfig{}, m.cfg.Meeting.Route.Destinations...), entry)
+	if err := config.SetAndSave("meeting.route.destinations", next); err != nil {
+		return err
+	}
+	m.cfg.Meeting.Route.Destinations = next
+	return nil
 }
 
 // loadRouteDestinations probes camp list + config for the Meeting settings tab.
@@ -161,8 +218,8 @@ func (m *settingsModel) loadRouteDestinations() tea.Cmd {
 		router := meeting.NewDefaultRouter(routeCfg)
 		ctx, cancel := context.WithTimeout(context.Background(), meeting.DiscoverTimeout)
 		defer cancel()
-		dests := router.DiscoverDestinations(ctx)
-		return meetingRouteDestsMsg{seq: seq, dests: dests}
+		dests, err := router.DiscoverDestinations(ctx)
+		return meetingRouteDestsMsg{seq: seq, dests: dests, err: err}
 	}
 }
 

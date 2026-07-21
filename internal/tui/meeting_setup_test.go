@@ -32,6 +32,38 @@ func TestMeetingSetupAdvancesToRouteStep(t *testing.T) {
 	}
 }
 
+func TestMeetingSetupModeOffSkipsRouteStep(t *testing.T) {
+	m := newMeetingSetup(&config.Config{
+		Meeting: config.MeetingConfig{Route: config.MeetingRouteConfig{Mode: "off"}},
+	})
+	m.input.SetValue("Local only")
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	msg := cmd().(startMeetingMsg)
+	if msg.RoutePlan != routePlanLocal {
+		t.Fatalf("plan = %q, want local", msg.RoutePlan)
+	}
+}
+
+func TestMeetingSetupModeAutoWithConfiguredDefault(t *testing.T) {
+	m := newMeetingSetup(&config.Config{
+		Meeting: config.MeetingConfig{
+			Route: config.MeetingRouteConfig{
+				Mode:    "auto",
+				Default: "docs",
+				Destinations: []config.MeetingDestinationConfig{
+					{ID: "docs", Type: "file", Path: "/tmp/docs"},
+				},
+			},
+		},
+	})
+	m.input.SetValue("Auto meet")
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	msg := cmd().(startMeetingMsg)
+	if msg.RoutePlan != routePlanDest || msg.Destination.ID != "docs" {
+		t.Fatalf("msg = %+v", msg)
+	}
+}
+
 func TestMeetingSetupRoutePickLocal(t *testing.T) {
 	m := newMeetingSetup(&config.Config{})
 	m.step = meetingSetupRoute
@@ -127,6 +159,50 @@ func TestBeginMeetingRouteDestPlanReturnsCmd(t *testing.T) {
 	cmd := app.beginMeetingRoute(meetinglog.Summary{File: "/tmp/a.log", JSONLFile: "/tmp/a.jsonl"})
 	if cmd == nil {
 		t.Fatal("dest plan should return async route cmd")
+	}
+}
+
+func TestOpenMeetingRoutePickerIsAsync(t *testing.T) {
+	app := App{
+		cfg:      &config.Config{},
+		launcher: newLauncher(&config.Config{}, nil, nil),
+		width:    80,
+		height:   24,
+	}
+	cmd := app.openMeetingRoutePicker(
+		meetinglog.Summary{File: "/tmp/a.log", JSONLFile: "/tmp/a.jsonl"},
+		meeting.Config{Mode: meeting.ModeAsk},
+	)
+	if cmd == nil {
+		t.Fatal("picker must return a discovery cmd (not block Update)")
+	}
+	if !strings.Contains(app.launcher.banner, "Discovering") {
+		t.Fatalf("banner = %q", app.launcher.banner)
+	}
+	// Simulate empty discovery result.
+	app.applyMeetingRouteReady(meetingRouteReadyMsg{
+		summary: meetinglog.Summary{File: "/tmp/a.log"},
+		dests:   nil,
+	})
+	if app.screen == screenMeetingRoute {
+		t.Fatal("empty dests must not open picker")
+	}
+}
+
+func TestApplyMeetingRouteReadyOpensPicker(t *testing.T) {
+	app := App{width: 80, height: 24, launcher: newLauncher(&config.Config{}, nil, nil)}
+	app.applyMeetingRouteReady(meetingRouteReadyMsg{
+		summary:  meetinglog.Summary{File: "/tmp/a.log", JSONLFile: "/tmp/a.jsonl"},
+		routeCfg: meeting.Config{Mode: meeting.ModeAsk, Body: meeting.BodyNotes},
+		dests: []meeting.Destination{
+			{ID: "camp:My_Tools", Type: meeting.TypeCampaign, Campaign: "My_Tools"},
+		},
+	})
+	if app.screen != screenMeetingRoute {
+		t.Fatalf("screen = %v, want meeting route", app.screen)
+	}
+	if len(app.meetingRoute.dests) != 1 {
+		t.Fatalf("dests = %+v", app.meetingRoute.dests)
 	}
 }
 

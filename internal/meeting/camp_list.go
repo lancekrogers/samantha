@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"unicode"
 )
 
 // Campaign is one entry from `camp list --json` (registry campaign).
@@ -158,22 +157,4 @@ func DestinationLabel(d Destination) string {
 		}
 		return d.Type
 	}
-}
-
-// SanitizeDestinationID makes a filesystem/config-safe id fragment (unused for
-// camp: names but kept for future file-path derived ids).
-func SanitizeDestinationID(s string) string {
-	var b strings.Builder
-	for _, r := range strings.ToLower(strings.TrimSpace(s)) {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
-			continue
-		}
-		if r == '-' || r == '_' {
-			b.WriteRune(r)
-			continue
-		}
-		b.WriteByte('-')
-	}
-	return strings.Trim(b.String(), "-")
 }
