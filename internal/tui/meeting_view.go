@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	ansi "github.com/charmbracelet/x/ansi"
 
+	"github.com/lancekrogers/samantha/internal/meeting"
 	"github.com/lancekrogers/samantha/internal/tui/anim"
 )
 
@@ -82,6 +83,7 @@ func (m meetingModel) View() string {
 		paths = m.opts.Writer.Path() + "  +  " + m.opts.Writer.JSONLPath()
 	}
 	pathLine := dimStyle.Render(ansi.Truncate("  "+paths, w, "…"))
+	speakerLine := dimStyle.Render(ansi.Truncate("  "+meetingSpeakerStatus(m.opts.SpeakerStatus, m.opts.SpeakerError), w, "…"))
 	rule := lipgloss.NewStyle().Foreground(m.meterBorderColor()).Render(strings.Repeat("─", w))
 
 	stage := anim.Stage(m.voiceMode, m.voiceFrame, m.inputLevel, w, m.status, styles, m.reducedMotion)
@@ -119,13 +121,27 @@ func (m meetingModel) View() string {
 	}
 	footer = dimStyle.Render(ansi.Truncate(footer, w, "…"))
 
-	return header + "\n" + pathLine + "\n" + rule + "\n" +
+	return header + "\n" + pathLine + "\n" + speakerLine + "\n" + rule + "\n" +
 		stage + partial +
 		m.viewport.View() + "\n" +
 		rule + "\n" +
 		actionBar + "\n" +
 		noteBox + "\n" +
 		footer
+}
+
+func meetingSpeakerStatus(status meeting.AnalysisStatus, detail string) string {
+	if status == "" {
+		status = meeting.AnalysisDisabled
+	}
+	line := "Speaker analysis: " + string(status)
+	if detail != "" {
+		line += " — " + detail
+	}
+	if status == meeting.AnalysisDisabled {
+		line += " (recording unaffected)"
+	}
+	return line
 }
 
 func (m meetingModel) meterBorderColor() lipgloss.Color {
