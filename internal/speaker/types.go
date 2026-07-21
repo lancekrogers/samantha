@@ -22,6 +22,8 @@ const (
 	StateStable State = "stable"
 	// StateRevised replaces a prior provisional/stable observation.
 	StateRevised State = "revised"
+	// StateOverlap marks an observation that overlaps another speaker span.
+	StateOverlap State = "overlap"
 	// StateRejected means no usable analysis (disabled, no audio, closed).
 	StateRejected State = "rejected"
 )
@@ -65,6 +67,7 @@ type Observation struct {
 	Source     Source  `json:"source,omitempty"`
 	ModelRev   string  `json:"model_revision,omitempty"`
 	EnrollRev  string  `json:"enrollment_revision,omitempty"`
+	Revision   uint64  `json:"revision,omitempty"`
 }
 
 // Event is a streaming notification for live/meeting adapters.
@@ -74,6 +77,8 @@ type Event struct {
 	Kind        EventKind   `json:"kind"`
 	Observation Observation `json:"observation"`
 	Timeline    *Timeline   `json:"timeline,omitempty"`
+	SessionID   string      `json:"session_id,omitempty"`
+	Sequence    uint64      `json:"sequence,omitempty"`
 }
 
 // Timeline is a finalized (or partial) ordered set of observations.
@@ -93,4 +98,49 @@ func (o Observation) DurationMS() int64 {
 // MS converts a duration to whole milliseconds.
 func MS(d time.Duration) int64 {
 	return d.Milliseconds()
+}
+
+// Clone returns an owned copy suitable for passing across an event boundary.
+func (t Timeline) Clone() Timeline {
+	out := t
+	out.Observations = append([]Observation(nil), t.Observations...)
+	return out
+}
+
+// Merge applies a late result to a timeline. A revised observation replaces
+// the matching segment; otherwise the newest higher revision wins.
+func (t *Timeline) Merge(obs Observation) {
+	if t == nil {
+		return
+	}
+	for i := range t.Observations {
+		if obs.SegmentID == "" || t.Observations[i].SegmentID != obs.SegmentID {
+			continue
+		}
+		if obs.State == StateRevised || obs.Revision >= t.Observations[i].Revision {
+			t.Observations[i] = obs
+		}
+		t.sort()
+		return
+	}
+	t.Observations = append(t.Observations, obs)
+	t.sort()
+}
+
+func (t *Timeline) sort() {
+	for i := 1; i < len(t.Observations); i++ {
+		for j := i; j > 0 && observationBefore(t.Observations[j], t.Observations[j-1]); j-- {
+			t.Observations[j], t.Observations[j-1] = t.Observations[j-1], t.Observations[j]
+		}
+	}
+}
+
+func observationBefore(a, b Observation) bool {
+	if a.StartMS != b.StartMS {
+		return a.StartMS < b.StartMS
+	}
+	if a.EndMS != b.EndMS {
+		return a.EndMS < b.EndMS
+	}
+	return a.SegmentID < b.SegmentID
 }

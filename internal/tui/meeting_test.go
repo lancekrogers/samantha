@@ -44,10 +44,19 @@ func sizedMeeting(t *testing.T, w, h int) meetingModel {
 func TestMeetingViewShowsDescriptionAndEQ(t *testing.T) {
 	m := sizedMeeting(t, 80, 24)
 	view := m.View()
-	for _, want := range []string{"Meeting", "Standup", "listening", "Ctrl+B", "Enter"} {
+	for _, want := range []string{"Meeting", "Standup", "listening", "Speaker analysis: disabled", "Ctrl+B", "Enter"} {
 		if !strings.Contains(strings.ToLower(view), strings.ToLower(want)) {
 			t.Errorf("view missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestMeetingSpeakerStatusExplainsStates(t *testing.T) {
+	if got := meetingSpeakerStatus("", ""); !strings.Contains(got, "disabled") || !strings.Contains(got, "unaffected") {
+		t.Fatalf("default speaker status = %q", got)
+	}
+	if got := meetingSpeakerStatus("error", "engine unavailable"); !strings.Contains(got, "error") || !strings.Contains(got, "engine unavailable") {
+		t.Fatalf("error speaker status = %q", got)
 	}
 }
 

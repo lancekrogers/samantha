@@ -134,6 +134,7 @@ func RenderText(ctx context.Context, opts Options, text string, synth Synthesize
 		SampleRate:   sampleRate,
 		Segments:     manifestSegs,
 	}
+	manifest.applyTTSMetadata(opts)
 	return Result{
 		Output:     opts.Out,
 		Segments:   len(manifestSegs),
@@ -176,6 +177,7 @@ func skippedTextResult(opts Options, prevM RenderManifest) Result {
 		SampleRate:   prevM.SampleRate,
 		Segments:     segs,
 	}
+	manifest.applyTTSMetadata(opts)
 	return Result{
 		Output:     opts.Out,
 		Segments:   len(segs),

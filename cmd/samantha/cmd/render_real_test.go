@@ -160,6 +160,102 @@ func TestSynthIdentityIncludesQwenModelAndBinary(t *testing.T) {
 	}
 }
 
+func TestSynthIdentityIncludesQwenVoiceControlsAndReferenceContent(t *testing.T) {
+	ref := filepath.Join(t.TempDir(), "reference.wav")
+	if err := os.WriteFile(ref, []byte("reference-a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := synthIdentityFor(&config.Config{
+		TTSProvider:           "qwen3-tts",
+		QwenTTSModel:          "/models/qwen-a",
+		QwenTTSBinary:         "/bin/qwen3-tts-cli",
+		QwenTTSMode:           "customvoice",
+		QwenTTSVoice:          "vivian",
+		QwenTTSLanguage:       "English",
+		QwenTTSInstruction:    "calm and precise",
+		QwenTTSReferenceAudio: ref,
+		QwenTTSReferenceText:  "reference transcript",
+		QwenTTSConsent:        true,
+	})
+	for _, want := range []string{
+		"mode=customvoice", "voice=vivian", "language=English",
+		"instruction-sha256=", "reference-audio-sha256=", "reference-text-sha256=", "consent=true",
+	} {
+		if !strings.Contains(base, want) {
+			t.Errorf("identity = %q, want %q", base, want)
+		}
+	}
+
+	changed := []struct {
+		name   string
+		mutate func(*config.Config)
+	}{
+		{"mode", func(cfg *config.Config) { cfg.QwenTTSMode = "voicedesign" }},
+		{"voice", func(cfg *config.Config) { cfg.QwenTTSVoice = "serena" }},
+		{"language", func(cfg *config.Config) { cfg.QwenTTSLanguage = "Chinese" }},
+		{"instruction", func(cfg *config.Config) { cfg.QwenTTSInstruction = "bright and warm" }},
+		{"reference text", func(cfg *config.Config) { cfg.QwenTTSReferenceText = "different transcript" }},
+		{"consent", func(cfg *config.Config) { cfg.QwenTTSConsent = false }},
+	}
+	for _, tc := range changed {
+		mutated := config.Config{
+			TTSProvider:           "qwen3-tts",
+			QwenTTSModel:          "/models/qwen-a",
+			QwenTTSBinary:         "/bin/qwen3-tts-cli",
+			QwenTTSMode:           "customvoice",
+			QwenTTSVoice:          "vivian",
+			QwenTTSLanguage:       "English",
+			QwenTTSInstruction:    "calm and precise",
+			QwenTTSReferenceAudio: ref,
+			QwenTTSReferenceText:  "reference transcript",
+			QwenTTSConsent:        true,
+		}
+		tc.mutate(&mutated)
+		if got := synthIdentityFor(&mutated); got == base {
+			t.Errorf("changing Qwen %s must change identity", tc.name)
+		}
+	}
+
+	if err := os.WriteFile(ref, []byte("reference-b"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	refConfig := &config.Config{
+		TTSProvider: "qwen3-tts", QwenTTSModel: "/models/qwen-a", QwenTTSBinary: "/bin/qwen3-tts-cli", QwenTTSReferenceAudio: ref,
+	}
+	beforeRef := synthIdentityFor(refConfig)
+	changedRef := synthIdentityFor(refConfig)
+	if changedRef != beforeRef {
+		t.Fatal("unchanged reference audio content changed identity")
+	}
+	if err := os.WriteFile(ref, []byte("reference-c"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changedRef = synthIdentityFor(refConfig)
+	if changedRef == beforeRef {
+		t.Fatal("changing reference audio content must change identity")
+	}
+}
+
+func TestPopulateTTSMetadataUsesHashesForQwenReferences(t *testing.T) {
+	ref := filepath.Join(t.TempDir(), "voice.wav")
+	if err := os.WriteFile(ref, []byte("private audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		TTSProvider: "qwen3-tts", QwenTTSModel: "/models/customvoice", QwenTTSBinary: "qwen3-tts-cli",
+		QwenTTSMode: "approved_clone", QwenTTSVoice: "speaker-a", QwenTTSLanguage: "English",
+		QwenTTSInstruction: "private instruction", QwenTTSReferenceAudio: ref, QwenTTSReferenceText: "private transcript",
+	}
+	var opts render.Options
+	populateTTSMetadata(&opts, cfg)
+	if opts.TTSProvider != "qwen3-tts" || opts.TTSMode != "approved_clone" || opts.TTSVoice != "speaker-a" {
+		t.Fatalf("metadata = %+v, want resolved Qwen fields", opts)
+	}
+	if opts.TTSInstructionSHA256 == "private instruction" || opts.TTSReferenceTranscriptSHA256 == "private transcript" || opts.TTSReferenceAudioSHA256 == "private audio" {
+		t.Fatalf("metadata leaked private reference content: %+v", opts)
+	}
+}
+
 // TestApplyVoiceOverridesRecordsEffectiveValues guards manifest auditability:
 // a config-driven render (no CLI flags) must still end up with the effective
 // voice/speed in opts, which is what manifests and resume keys record.

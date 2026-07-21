@@ -28,24 +28,36 @@ const (
 
 // Options describes one `samantha render` invocation.
 type Options struct {
-	Input           string  // positional input path or URL (empty with Stdin)
-	Stdin           bool    // read input text from stdin
-	Format          Format  // input format (auto-detected when FormatAuto)
-	Out             string  // single-file output path
-	OutDir          string  // multi-file output directory (with a manifest)
-	Voice           string  // override the configured TTS voice
-	Speed           float64 // override the configured speech speed (0 = use config)
-	Title           string  // override the document title
-	Manifest        string  // manifest output path (default: OUT_DIR/manifest.json for multi-file)
-	JSON            bool    // print a machine-readable summary
-	Resume          bool    // skip completed manifest entries with matching text hash
-	Overwrite       bool    // replace existing outputs
-	AudioFormat     string  // optional compressed output (mp3|m4b|...); WAV is always written
-	EncoderBin      string  // external encoder binary (default: ffmpeg)
-	MaxSegmentChars int     // TTS text segment cap; 0 means defaultMaxSegmentChars
-	PauseHeading    string  // pause after headings (Go duration; empty/0 = none)
-	PauseParagraph  string  // pause after paragraphs (Go duration; empty/0 = none)
-	CodeBlocks      string  // markdown code-block policy: skip|read (default skip)
+	Input  string  // positional input path or URL (empty with Stdin)
+	Stdin  bool    // read input text from stdin
+	Format Format  // input format (auto-detected when FormatAuto)
+	Out    string  // single-file output path
+	OutDir string  // multi-file output directory (with a manifest)
+	Voice  string  // override the configured TTS voice
+	Speed  float64 // override the configured speech speed (0 = use config)
+	// TTS* fields are resolved provider metadata populated by the command
+	// layer. They are written to manifests without storing private reference
+	// audio or transcript content.
+	TTSProvider                  string
+	TTSModel                     string
+	TTSWorker                    string
+	TTSMode                      string
+	TTSVoice                     string
+	TTSLanguage                  string
+	TTSInstructionSHA256         string
+	TTSReferenceAudioSHA256      string
+	TTSReferenceTranscriptSHA256 string
+	Title                        string // override the document title
+	Manifest                     string // manifest output path (default: OUT_DIR/manifest.json for multi-file)
+	JSON                         bool   // print a machine-readable summary
+	Resume                       bool   // skip completed manifest entries with matching text hash
+	Overwrite                    bool   // replace existing outputs
+	AudioFormat                  string // optional compressed output (mp3|m4b|...); WAV is always written
+	EncoderBin                   string // external encoder binary (default: ffmpeg)
+	MaxSegmentChars              int    // TTS text segment cap; 0 means defaultMaxSegmentChars
+	PauseHeading                 string // pause after headings (Go duration; empty/0 = none)
+	PauseParagraph               string // pause after paragraphs (Go duration; empty/0 = none)
+	CodeBlocks                   string // markdown code-block policy: skip|read (default skip)
 }
 
 // ManifestPath returns where the manifest should be written. Every render writes

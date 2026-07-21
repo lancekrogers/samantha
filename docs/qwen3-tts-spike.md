@@ -24,6 +24,7 @@ tts_provider: kokoro          # unchanged default
 qwen_tts_binary: qwen3-tts-cli
 qwen_tts_model: /path/to/qwen3-tts.cpp/models
 qwen_tts_timeout: 120
+voice_fallback_provider: kokoro
 ```
 
 This is intentionally a provider seam, not a complete Qwen product feature.
@@ -41,3 +42,9 @@ persistent worker, streaming-token protocol, static voice picker, or cloning
 UI. Those can be added behind the same provider boundary after the native
 worker contract and latency are validated. Voice cloning is therefore a
 follow-up integration, not a reason to replace Kokoro.
+
+When Qwen is selected, `voice_fallback_provider: kokoro` enables one bounded
+retry of a sentence when Qwen fails before playback. Startup still reports a
+missing Qwen worker/model instead of silently changing the configured provider;
+the fallback is a runtime recovery path and is observable as a `tts-fallback`
+event. Set the field empty to disable it.

@@ -35,15 +35,36 @@ type ManifestSegment struct {
 // manifest.json. It is required for multi-file renders and recommended for
 // single-file renders.
 type RenderManifest struct {
-	Schema       string            `json:"schema"`
-	CreatedAt    string            `json:"created_at,omitempty"`
-	Title        string            `json:"title,omitempty"`
-	Source       string            `json:"source"`
-	SourceFormat Format            `json:"source_format"`
-	Voice        string            `json:"voice,omitempty"`
-	SpeechSpeed  float64           `json:"speech_speed,omitempty"`
-	SampleRate   int               `json:"sample_rate"`
-	Segments     []ManifestSegment `json:"segments"`
+	Schema                       string            `json:"schema"`
+	CreatedAt                    string            `json:"created_at,omitempty"`
+	Title                        string            `json:"title,omitempty"`
+	Source                       string            `json:"source"`
+	SourceFormat                 Format            `json:"source_format"`
+	Voice                        string            `json:"voice,omitempty"`
+	SpeechSpeed                  float64           `json:"speech_speed,omitempty"`
+	TTSProvider                  string            `json:"tts_provider,omitempty"`
+	TTSModel                     string            `json:"tts_model,omitempty"`
+	TTSWorker                    string            `json:"tts_worker,omitempty"`
+	TTSMode                      string            `json:"tts_mode,omitempty"`
+	TTSVoice                     string            `json:"tts_voice,omitempty"`
+	TTSLanguage                  string            `json:"tts_language,omitempty"`
+	TTSInstructionSHA256         string            `json:"tts_instruction_sha256,omitempty"`
+	TTSReferenceAudioSHA256      string            `json:"tts_reference_audio_sha256,omitempty"`
+	TTSReferenceTranscriptSHA256 string            `json:"tts_reference_transcript_sha256,omitempty"`
+	SampleRate                   int               `json:"sample_rate"`
+	Segments                     []ManifestSegment `json:"segments"`
+}
+
+func (m *RenderManifest) applyTTSMetadata(opts Options) {
+	m.TTSProvider = opts.TTSProvider
+	m.TTSModel = opts.TTSModel
+	m.TTSWorker = opts.TTSWorker
+	m.TTSMode = opts.TTSMode
+	m.TTSVoice = opts.TTSVoice
+	m.TTSLanguage = opts.TTSLanguage
+	m.TTSInstructionSHA256 = opts.TTSInstructionSHA256
+	m.TTSReferenceAudioSHA256 = opts.TTSReferenceAudioSHA256
+	m.TTSReferenceTranscriptSHA256 = opts.TTSReferenceTranscriptSHA256
 }
 
 // Counts returns the number of complete, skipped, and failed segments.

@@ -56,6 +56,7 @@ type conversationDeps struct {
 	sessionID      string
 	inputDevice    string
 	outputDevice   string
+	liveSpeaker    LiveSpeakerController
 	ctx            context.Context // pipeline lifetime; parent of every turn ctx
 	wg             *sync.WaitGroup // tracks in-flight turns so shutdown can drain them
 }
@@ -71,6 +72,7 @@ func (m *conversationModel) startConversation(deps conversationDeps) tea.Cmd {
 	m.sessionID = deps.sessionID
 	m.inputDevice = deps.inputDevice
 	m.outputDevice = deps.outputDevice
+	m.liveSpeaker = deps.liveSpeaker
 	m.bridge = newEventBridge(0)
 	m.bridge.attach(deps.bus)
 
@@ -95,6 +97,11 @@ func (m *conversationModel) startConversation(deps conversationDeps) tea.Cmd {
 	}
 	if deps.output {
 		m.appendActivity("output", deviceLabel(deps.outputDevice), 0)
+	}
+	if deps.liveSpeaker != nil {
+		m.liveSpeakerStats = deps.liveSpeaker.Stats()
+		m.liveSpeakerStatsKnown = true
+		cmds = append(cmds, liveSpeakerStatsCmd(deps.liveSpeaker))
 	}
 	// Scripted meter for VHS/termcast demos — skips real mic/TTS turns.
 	if demoVoiceAnimEnabled() {

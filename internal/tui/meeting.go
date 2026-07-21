@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/lancekrogers/samantha/internal/listen"
+	"github.com/lancekrogers/samantha/internal/meeting"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 	"github.com/lancekrogers/samantha/internal/stt"
 	"github.com/lancekrogers/samantha/internal/tui/anim"
@@ -24,14 +25,16 @@ const (
 
 // MeetingOpts configures the interactive meeting recorder TUI.
 type MeetingOpts struct {
-	Ctx         context.Context
-	Cancel      context.CancelFunc
-	Capture     listen.Resetter
-	Provider    stt.Provider
-	Writer      *meetinglog.Writer
-	Description string
-	Path        string // .log path; JSONL is derived by the writer
-	StopPhrases map[string]bool
+	Ctx           context.Context
+	Cancel        context.CancelFunc
+	Capture       listen.Resetter
+	Provider      stt.Provider
+	Writer        *meetinglog.Writer
+	Description   string
+	Path          string // .log path; JSONL is derived by the writer
+	StopPhrases   map[string]bool
+	SpeakerStatus meeting.AnalysisStatus
+	SpeakerError  string
 	// Embedded is true when running inside the main Samantha App launcher
 	// flow. Stop returns meetingDoneMsg instead of quitting the process.
 	Embedded bool
@@ -115,10 +118,13 @@ func newEmbeddedMeeting() meetingModel {
 	ta.Focus()
 	ta.KeyMap.InsertNewline.SetEnabled(false)
 	return meetingModel{
-		note:          ta,
-		started:       time.Now(),
-		voiceMode:     anim.ModeListening,
-		status:        "Listening",
+		note:      ta,
+		started:   time.Now(),
+		voiceMode: anim.ModeListening,
+		status:    "Listening",
+		// Speaker analysis is post-capture and opt-in; recording starts safely
+		// with it disabled until a runtime provides an analyzer.
+		opts:          MeetingOpts{SpeakerStatus: meeting.AnalysisDisabled},
 		reducedMotion: anim.ReducedMotion(),
 	}
 }
@@ -140,6 +146,9 @@ func (m *meetingModel) beginRecording(opts MeetingOpts) tea.Cmd {
 	m.loopDone = false
 	m.loopErr = nil
 	m.partial = ""
+	if m.opts.SpeakerStatus == "" {
+		m.opts.SpeakerStatus = meeting.AnalysisDisabled
+	}
 	return tea.Batch(m.startLoop(), meetingTickCmd(), textarea.Blink)
 }
 

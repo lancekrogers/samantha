@@ -20,6 +20,7 @@ const (
 	qwen3TTSProviderName  = "qwen3-tts"
 	qwen3TTSSampleRate    = 24000
 	defaultQwenTTSTimeout = 120 * time.Second
+	maxQwenAudioDuration  = 2 * time.Hour
 	maxWorkerOutput       = 8 << 10
 )
 
@@ -48,11 +49,18 @@ type qwenCommand func(context.Context, string, ...string) *exec.Cmd
 // installed qwen3-tts.cpp-compatible CLI. Samantha owns the process lifetime;
 // model files and the native executable remain outside this repository.
 type Qwen3TTS struct {
-	binary  string
-	model   string
-	timeout time.Duration
-	command qwenCommand
-	alive   atomic.Bool
+	binary              string
+	model               string
+	timeout             time.Duration
+	command             qwenCommand
+	alive               atomic.Bool
+	mode                VoiceMode
+	voice               string
+	language            string
+	instruction         string
+	referenceAudio      string
+	referenceTranscript string
+	consent             bool
 }
 
 // NewQwen3TTS validates the configured native worker and model directory.
@@ -61,6 +69,9 @@ type Qwen3TTS struct {
 func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 	if cfg == nil {
 		return nil, errors.New("qwen3-tts: nil config")
+	}
+	if err := config.ValidateQwenTTSConfig(cfg); err != nil {
+		return nil, fmt.Errorf("qwen3-tts: %w", err)
 	}
 
 	binary := strings.TrimSpace(cfg.QwenTTSBinary)
@@ -95,6 +106,13 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 	}
 
 	q := newQwen3TTS(binaryPath, model, timeout, exec.CommandContext)
+	q.mode = VoiceMode(strings.TrimSpace(cfg.QwenTTSMode))
+	q.voice = strings.TrimSpace(cfg.QwenTTSVoice)
+	q.language = strings.TrimSpace(cfg.QwenTTSLanguage)
+	q.instruction = cfg.QwenTTSInstruction
+	q.referenceAudio = strings.TrimSpace(cfg.QwenTTSReferenceAudio)
+	q.referenceTranscript = cfg.QwenTTSReferenceText
+	q.consent = cfg.QwenTTSConsent
 	q.alive.Store(true)
 	return q, nil
 }
@@ -111,7 +129,15 @@ func newQwen3TTS(binary, model string, timeout time.Duration, command qwenComman
 
 // Synthesize streams synthesized PCM frames for the given text.
 func (q *Qwen3TTS) Synthesize(ctx context.Context, text string) (*audio.PCMStream, error) {
-	result, err := q.SynthesizeRequest(ctx, SynthesisRequest{Text: text})
+	result, err := q.SynthesizeRequest(ctx, SynthesisRequest{
+		Text:                text,
+		Voice:               q.voice,
+		Mode:                q.mode,
+		Language:            q.language,
+		Instruction:         q.instruction,
+		ReferenceAudio:      q.referenceAudio,
+		ReferenceTranscript: q.referenceTranscript,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -127,19 +153,37 @@ func (q *Qwen3TTS) SynthesizeRequest(ctx context.Context, req SynthesisRequest) 
 		ctx = context.Background()
 	}
 	if !q.Available() {
-		return SynthesisResult{}, errors.New("qwen3-tts: provider is closed")
+		return SynthesisResult{}, &ProviderError{Provider: qwen3TTSProviderName, Operation: "synthesize", Kind: ProviderErrorUnavailable, Err: errors.New("provider is closed")}
 	}
 	if strings.TrimSpace(req.Text) == "" {
-		return SynthesisResult{}, errors.New("qwen3-tts: text is empty")
+		return SynthesisResult{}, &ProviderError{Provider: qwen3TTSProviderName, Operation: "synthesize", Kind: ProviderErrorInput, Err: errors.New("text is empty")}
 	}
 	if req.SampleRate != 0 && req.SampleRate != qwen3TTSSampleRate {
-		return SynthesisResult{}, fmt.Errorf("qwen3-tts cannot resample to %d Hz (native rate %d Hz)", req.SampleRate, qwen3TTSSampleRate)
+		return SynthesisResult{}, qwenUnsupported("sample rate", fmt.Sprintf("cannot resample to %d Hz (native rate %d Hz)", req.SampleRate, qwen3TTSSampleRate))
 	}
 	if voice := strings.TrimSpace(req.Voice); voice != "" && !strings.EqualFold(voice, "default") {
-		return SynthesisResult{}, fmt.Errorf("qwen3-tts: voice %q is unsupported by the native CLI; use the model's default voice", req.Voice)
+		return SynthesisResult{}, qwenUnsupported("voice selection", fmt.Sprintf("voice %q is unsupported by the native CLI; use the model's default voice", req.Voice))
 	}
 	if req.Speed != 0 {
-		return SynthesisResult{}, fmt.Errorf("qwen3-tts: speech speed is unsupported by the native CLI; omit speed")
+		return SynthesisResult{}, qwenUnsupported("speech speed", "unsupported by the native CLI; omit speed")
+	}
+	if req.Mode != "" && req.Mode != VoiceModeStatic {
+		return SynthesisResult{}, qwenUnsupported("voice mode", fmt.Sprintf("mode %q is not verified by the native CLI", req.Mode))
+	}
+	if strings.TrimSpace(req.Language) != "" {
+		return SynthesisResult{}, qwenUnsupported("language", "language selection is not exposed by the native CLI")
+	}
+	if strings.TrimSpace(req.Instruction) != "" {
+		return SynthesisResult{}, qwenUnsupported("voice instruction", "voice design is not exposed by the native CLI")
+	}
+	if strings.TrimSpace(req.ReferenceAudio) != "" || strings.TrimSpace(req.ReferenceTranscript) != "" {
+		return SynthesisResult{}, qwenUnsupported("reference voice", "reference-audio cloning is not exposed by the native CLI")
+	}
+	if err := validateQwenReference(req); err != nil {
+		return SynthesisResult{}, err
+	}
+	if req.Mode == VoiceModeApprovedClone && !q.consent {
+		return SynthesisResult{}, &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate request", Kind: ProviderErrorInput, Err: errors.New("explicit consent is required for approved voice cloning")}
 	}
 
 	voice := req.Voice
@@ -153,8 +197,19 @@ func (q *Qwen3TTS) SynthesizeRequest(ctx context.Context, req SynthesisRequest) 
 		Stream:     stream,
 		SampleRate: qwen3TTSSampleRate,
 		Provider:   qwen3TTSProviderName,
+		Model:      q.model,
 		Voice:      voice,
+		Mode:       VoiceModeStatic,
 	}, nil
+}
+
+func qwenUnsupported(feature, detail string) error {
+	return &ProviderError{
+		Provider:  qwen3TTSProviderName,
+		Operation: "validate request",
+		Kind:      ProviderErrorInput,
+		Err:       &UnsupportedFeatureError{Provider: qwen3TTSProviderName, Feature: feature, Detail: detail},
+	}
 }
 
 func (q *Qwen3TTS) synthesize(ctx context.Context, req SynthesisRequest, stream *audio.PCMStream) {
@@ -169,12 +224,16 @@ func (q *Qwen3TTS) synthesize(ctx context.Context, req SynthesisRequest, stream 
 	runCtx, cancel := context.WithTimeout(ctx, q.timeout)
 	defer cancel()
 
-	args := []string{
-		"-m", q.model,
-		"-t", req.Text,
-		"-o", outputPath,
+	args, err := q.buildArgs(req, outputPath)
+	if err != nil {
+		stream.CloseWithError(err)
+		return
 	}
 	cmd := q.command(runCtx, q.binary, args...)
+	if cmd == nil {
+		stream.CloseWithError(&ProviderError{Provider: qwen3TTSProviderName, Operation: "start worker", Kind: ProviderErrorWorker, Err: errors.New("command factory returned nil")})
+		return
+	}
 	configureQwenCommand(cmd)
 	var stdout, stderr limitedBuffer
 	stdout.limit = maxWorkerOutput
@@ -184,28 +243,40 @@ func (q *Qwen3TTS) synthesize(ctx context.Context, req SynthesisRequest, stream 
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			stream.CloseWithError(ctx.Err())
+			stream.CloseWithError(&ProviderError{Provider: qwen3TTSProviderName, Operation: "cancel worker", Kind: ProviderErrorCanceled, Err: ctx.Err()})
 			return
 		}
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-			stream.CloseWithError(fmt.Errorf("qwen3-tts: worker timed out after %s", q.timeout))
+			stream.CloseWithError(&ProviderError{Provider: qwen3TTSProviderName, Operation: "run worker", Kind: ProviderErrorWorker, Err: fmt.Errorf("worker timed out after %s", q.timeout)})
 			return
 		}
-		stream.CloseWithError(fmt.Errorf("qwen3-tts: worker failed: %w%s", err, workerOutputSuffix(stderr.String(), stdout.String())))
+		stream.CloseWithError(&ProviderError{Provider: qwen3TTSProviderName, Operation: "run worker", Kind: ProviderErrorWorker, Err: fmt.Errorf("worker failed: %w%s", err, workerOutputSuffix(stderr.String(), stdout.String()))})
 		return
 	}
 	if err := runCtx.Err(); err != nil {
-		stream.CloseWithError(err)
+		kind := ProviderErrorWorker
+		if errors.Is(err, context.Canceled) {
+			kind = ProviderErrorCanceled
+		}
+		stream.CloseWithError(&ProviderError{Provider: qwen3TTSProviderName, Operation: "run worker", Kind: kind, Err: err})
 		return
 	}
 
 	samples, sampleRate, err := audio.ReadWAVFloat32(outputPath)
 	if err != nil {
-		stream.CloseWithError(fmt.Errorf("qwen3-tts: read worker WAV: %w", err))
+		stream.CloseWithError(&ProviderError{Provider: qwen3TTSProviderName, Operation: "read worker WAV", Kind: ProviderErrorMalformed, Err: err})
+		return
+	}
+	if len(samples) == 0 {
+		stream.CloseWithError(&ProviderError{Provider: qwen3TTSProviderName, Operation: "validate worker WAV", Kind: ProviderErrorMalformed, Err: errors.New("worker returned empty audio")})
 		return
 	}
 	if sampleRate != qwen3TTSSampleRate {
-		stream.CloseWithError(fmt.Errorf("qwen3-tts: worker returned %d Hz, want %d Hz", sampleRate, qwen3TTSSampleRate))
+		stream.CloseWithError(&ProviderError{Provider: qwen3TTSProviderName, Operation: "validate worker WAV", Kind: ProviderErrorMalformed, Err: fmt.Errorf("worker returned %d Hz, want %d Hz", sampleRate, qwen3TTSSampleRate)})
+		return
+	}
+	if duration := time.Duration(float64(len(samples)) / float64(sampleRate) * float64(time.Second)); duration > maxQwenAudioDuration {
+		stream.CloseWithError(&ProviderError{Provider: qwen3TTSProviderName, Operation: "validate worker WAV", Kind: ProviderErrorMalformed, Err: fmt.Errorf("worker returned %s of audio, maximum is %s", duration.Round(time.Second), maxQwenAudioDuration)})
 		return
 	}
 	if err := stream.SetSampleRate(sampleRate); err != nil {
@@ -228,6 +299,55 @@ func (q *Qwen3TTS) synthesize(ctx context.Context, req SynthesisRequest, stream 
 	stream.Close()
 }
 
+// buildArgs is the only place where provider input becomes a native worker
+// argument vector. The currently verified Samantha worker supports only the
+// baseline model/text/output contract; future probed modes must extend this
+// function with explicit flags and corresponding capability tests.
+func (q *Qwen3TTS) buildArgs(req SynthesisRequest, outputPath string) ([]string, error) {
+	if req.Mode != "" && req.Mode != VoiceModeStatic {
+		return nil, qwenUnsupported("voice mode", fmt.Sprintf("mode %q is not verified by the native CLI", req.Mode))
+	}
+	if strings.TrimSpace(req.Voice) != "" && !strings.EqualFold(req.Voice, "default") {
+		return nil, qwenUnsupported("voice selection", fmt.Sprintf("voice %q is unsupported by the native CLI", req.Voice))
+	}
+	if req.Language != "" || req.Instruction != "" || req.ReferenceAudio != "" || req.ReferenceTranscript != "" {
+		return nil, qwenUnsupported("voice controls", "the verified native CLI exposes no voice-mode flags")
+	}
+	return []string{"-m", q.model, "-t", req.Text, "-o", outputPath}, nil
+}
+
+func validateQwenReference(req SynthesisRequest) error {
+	path := strings.TrimSpace(req.ReferenceAudio)
+	if path == "" {
+		if strings.TrimSpace(req.ReferenceTranscript) != "" {
+			return &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate reference", Kind: ProviderErrorInput, Err: errors.New("reference transcript requires reference audio")}
+		}
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate reference", Kind: ProviderErrorInput, Err: fmt.Errorf("reference audio is unavailable")}
+	}
+	if !info.Mode().IsRegular() {
+		return &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate reference", Kind: ProviderErrorInput, Err: errors.New("reference audio must be a regular file")}
+	}
+	if info.Size() > 50<<20 {
+		return &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate reference", Kind: ProviderErrorInput, Err: errors.New("reference audio exceeds the 50 MiB limit")}
+	}
+	samples, rate, err := audio.ReadWAVFloat32(path)
+	if err != nil || len(samples) == 0 || rate <= 0 {
+		return &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate reference", Kind: ProviderErrorInput, Err: errors.New("reference audio must be a non-empty readable WAV")}
+	}
+	duration := time.Duration(float64(len(samples)) / float64(rate) * float64(time.Second))
+	if duration < time.Second || duration > 30*time.Second {
+		return &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate reference", Kind: ProviderErrorInput, Err: errors.New("reference audio duration must be between 1 and 30 seconds")}
+	}
+	if strings.TrimSpace(req.ReferenceTranscript) == "" {
+		return &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate reference", Kind: ProviderErrorInput, Err: errors.New("reference transcript is required")}
+	}
+	return nil
+}
+
 func workerOutputSuffix(stderr, stdout string) string {
 	if detail := strings.TrimSpace(stderr); detail != "" {
 		return ": " + detail
@@ -244,6 +364,29 @@ func (q *Qwen3TTS) Available() bool { return q.alive.Load() }
 // ListVoices returns no static list because Qwen voice capabilities depend on
 // the selected model and optional reference-audio workflow.
 func (q *Qwen3TTS) ListVoices(locale, gender string) []Voice { return nil }
+
+// Capabilities reports only the baseline native worker guarantees. Voice
+// modes are intentionally empty until a worker/model probe verifies them.
+func (q *Qwen3TTS) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{
+		Provider:               qwen3TTSProviderName,
+		Model:                  q.model,
+		ModelReady:             q.model != "" && q.Available(),
+		SampleRates:            []int{qwen3TTSSampleRate},
+		SupportsCancellation:   true,
+		SupportsReferenceAudio: false,
+		SupportsSpeed:          false,
+	}
+}
+
+func (q *Qwen3TTS) Status() ProviderStatus {
+	available := q.Available()
+	detail := "native worker and model configured"
+	if !available {
+		detail = "provider is closed"
+	}
+	return ProviderStatus{Provider: qwen3TTSProviderName, Available: available, ModelReady: q.model != "" && available, Detail: detail}
+}
 
 // Delete prevents new work. Existing workers are still bounded by their
 // request context; callers should cancel that context during shutdown.

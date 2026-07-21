@@ -131,6 +131,9 @@ func TestDiagnoseQwenNativeWorker(t *testing.T) {
 			t.Errorf("%s = %+v, want ok", name, diags[name])
 		}
 	}
+	if diags["qwen3-tts-voice-controls"].Severity != SeverityOK {
+		t.Errorf("baseline qwen voice controls = %+v, want ok", diags["qwen3-tts-voice-controls"])
+	}
 	if HasErrors([]Diagnostic{diags["tts-provider"], diags["qwen3-tts-binary"], diags["qwen3-tts-model"]}) {
 		t.Fatalf("healthy qwen setup reported errors: %+v", diags)
 	}
@@ -152,6 +155,47 @@ func TestDiagnoseQwenNativeWorker(t *testing.T) {
 	diags = diagByName(Diagnose(cfg, t.TempDir(), okLookPath))
 	if diags["qwen3-tts-model"].Severity != SeverityError {
 		t.Errorf("non-directory qwen model = %+v, want error", diags["qwen3-tts-model"])
+	}
+}
+
+func TestDiagnoseQwenUnsupportedVoiceControls(t *testing.T) {
+	cfg := &Config{
+		STTProvider:  "sherpa",
+		TTSProvider:  "qwen3-tts",
+		QwenTTSMode:  "voicedesign",
+		QwenTTSModel: t.TempDir(),
+	}
+	d := diagByName(Diagnose(cfg, t.TempDir(), okLookPath))["qwen3-tts-voice-controls"]
+	if d.Severity != SeverityError || !strings.Contains(d.Detail, "clear unsupported settings") || d.Remediation == "" {
+		t.Fatalf("unsupported qwen controls diagnostic = %+v, want actionable error", d)
+	}
+}
+
+func TestDiagnoseDefaultKokoroDoesNotRequireOptionalQwen(t *testing.T) {
+	cfg := &Config{STTProvider: "sherpa", TTSProvider: "kokoro"}
+	diags := diagByName(Diagnose(cfg, t.TempDir(), failLookPath))
+
+	if d := diags["tts-provider"]; d.Severity != SeverityOK || !strings.Contains(d.Detail, "kokoro") {
+		t.Fatalf("default TTS diagnostic = %+v, want healthy Kokoro selection", d)
+	}
+	for name := range diags {
+		if strings.HasPrefix(name, "qwen3-tts-") {
+			t.Fatalf("default Kokoro diagnosis probed optional Qwen check %q: %+v", name, diags[name])
+		}
+	}
+	if HasErrors(Diagnose(cfg, t.TempDir(), failLookPath)) {
+		t.Fatal("missing optional binaries must not prevent the default Kokoro setup")
+	}
+}
+
+func TestDiagnoseQwenMissingWorkerIncludesRemediation(t *testing.T) {
+	cfg := &Config{STTProvider: "sherpa", TTSProvider: "qwen3-tts", QwenTTSModel: t.TempDir()}
+	d := diagByName(Diagnose(cfg, t.TempDir(), failLookPath))["qwen3-tts-binary"]
+	if d.Severity != SeverityError {
+		t.Fatalf("missing Qwen worker = %+v, want error for explicitly selected provider", d)
+	}
+	if !strings.Contains(d.Detail, "not found") || !strings.Contains(d.Remediation, "qwen3-tts-cli") {
+		t.Fatalf("missing Qwen worker lacks actionable details: %+v", d)
 	}
 }
 

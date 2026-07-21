@@ -16,6 +16,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/speaker"
 	"github.com/lancekrogers/samantha/internal/tui/anim"
 )
 
@@ -83,14 +84,17 @@ type conversationModel struct {
 	// panel open/close) shrinks height without adjusting YOffset, which
 	// falsely reports "scrolled up" and freezes auto-scroll for the rest of
 	// the session.
-	followChat     bool
-	followActivity bool
-	startedAt      time.Time
-	sessionID      string
-	inputDevice    string
-	outputDevice   string
-	voiceFailures  int
-	quitting       bool
+	followChat            bool
+	followActivity        bool
+	startedAt             time.Time
+	sessionID             string
+	inputDevice           string
+	outputDevice          string
+	voiceFailures         int
+	quitting              bool
+	liveSpeaker           LiveSpeakerController
+	liveSpeakerStats      speaker.LiveStats
+	liveSpeakerStatsKnown bool
 
 	commandQuery     string
 	commandSelection int
@@ -180,6 +184,11 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 
 	case voiceRetryMsg:
 		return m, tea.Batch(m.handleVoiceRetry(), m.ensureVoiceTick())
+
+	case liveSpeakerStatsMsg:
+		m.liveSpeakerStats = msg.stats
+		m.liveSpeakerStatsKnown = true
+		return m, liveSpeakerStatsCmd(m.liveSpeaker)
 
 	case clipboardPasteMsg:
 		if msg.err != nil {
@@ -874,6 +883,10 @@ func (m conversationModel) View() string {
 		}
 	}
 	footerLeft := "  " + micChip + " " + outChip
+	if m.liveSpeakerStatsKnown {
+		label := liveSpeakerStatusLabel(m.liveSpeakerStats.Status)
+		footerLeft += " " + liveSpeakerStatusStyle(m.liveSpeakerStats.Status).Render(label)
+	}
 	activeViewport := m.activeViewport()
 	if activeViewport.TotalLineCount() > activeViewport.VisibleLineCount() {
 		footerLeft += " " + chipMutedStyle.Render(fmt.Sprintf("%d%%", int(activeViewport.ScrollPercent()*100)))

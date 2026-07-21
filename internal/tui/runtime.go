@@ -28,6 +28,7 @@ type ConversationRuntime struct {
 	SessionID    string
 	InputDevice  string
 	OutputDevice string
+	LiveSpeaker  LiveSpeakerController
 	Seed         []brain.Turn // resumed history to pre-populate the viewport
 	Cleanup      func()       // tears down pipeline resources and saves the session
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/charmbracelet/fang"
 	"github.com/mattn/go-isatty"
@@ -20,6 +21,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/pipeline"
 	"github.com/lancekrogers/samantha/internal/prompts"
 	"github.com/lancekrogers/samantha/internal/session"
+	"github.com/lancekrogers/samantha/internal/speaker"
 	"github.com/lancekrogers/samantha/internal/stt"
 	"github.com/lancekrogers/samantha/internal/tts"
 	appTUI "github.com/lancekrogers/samantha/internal/tui"
@@ -175,6 +177,7 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 		} else {
 			p.Brain.LoadHistory(sess.Turns)
 		}
+		liveSpeaker := speaker.NewLiveAdapter(ctx, nil, 4)
 
 		p.OnTurn = func() {
 			if err := sess.Save(p.Brain.History()); err != nil {
@@ -190,7 +193,9 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 			SessionID:    sess.ID,
 			InputDevice:  cfg.InputDevice,
 			OutputDevice: cfg.OutputDevice,
+			LiveSpeaker:  liveSpeaker,
 			Cleanup: func() {
+				_ = liveSpeaker.Close()
 				if err := sess.Save(p.Brain.History()); err != nil {
 					fmt.Fprintf(os.Stderr, "  warning: failed to save session %s: %v\n", sess.ID, err)
 				}
@@ -302,6 +307,21 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 			cleanups = append(cleanups, ttsCleanup)
 		}
 		p.TTS = ttsProvider
+
+		if strings.EqualFold(strings.TrimSpace(cfg.TTSFallbackProvider), "kokoro") &&
+			!strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), "kokoro") {
+			fallbackCfg := *cfg
+			fallbackCfg.TTSProvider = "kokoro"
+			fallbackProvider, fallbackCleanup, fallbackErr := tts.NewProvider(&fallbackCfg)
+			if fallbackErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: Kokoro TTS fallback unavailable: %v\n", fallbackErr)
+			} else {
+				p.TTSFallback = fallbackProvider
+				if fallbackCleanup != nil {
+					cleanups = append(cleanups, fallbackCleanup)
+				}
+			}
+		}
 	}
 
 	// Audio capture + VAD + STT (skip in text mode).

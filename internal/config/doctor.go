@@ -57,8 +57,22 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 		diags = append(diags, Diagnostic{
 			Name:     "tts-provider",
 			Severity: SeverityOK,
-			Detail:   "qwen3-tts (external native worker)",
+			Detail:   "qwen3-tts (external native worker; model-native default/static only)",
 		})
+		if err := ValidateQwenTTSConfig(cfg); err != nil {
+			diags = append(diags, Diagnostic{
+				Name:        "qwen3-tts-voice-controls",
+				Severity:    SeverityError,
+				Detail:      err.Error(),
+				Remediation: "clear the unsupported qwen_tts voice controls or use Kokoro until the native worker advertises them",
+			})
+		} else {
+			diags = append(diags, Diagnostic{
+				Name:     "qwen3-tts-voice-controls",
+				Severity: SeverityOK,
+				Detail:   "model-native default/static synthesis",
+			})
+		}
 
 		binary := strings.TrimSpace(cfg.QwenTTSBinary)
 		if binary == "" {

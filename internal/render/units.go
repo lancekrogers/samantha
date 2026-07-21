@@ -150,7 +150,7 @@ func renderUnit(ctx context.Context, opts Options, i int, u RenderUnit, synthID 
 
 // unitManifest assembles the render manifest from the per-unit segments.
 func unitManifest(opts Options, segs []ManifestSegment, sampleRate int) RenderManifest {
-	return RenderManifest{
+	manifest := RenderManifest{
 		Schema:       RenderSchema,
 		Title:        opts.Title,
 		Source:       sourceLabel(opts),
@@ -160,6 +160,8 @@ func unitManifest(opts Options, segs []ManifestSegment, sampleRate int) RenderMa
 		SampleRate:   sampleRate,
 		Segments:     segs,
 	}
+	manifest.applyTTSMetadata(opts)
+	return manifest
 }
 
 func unitID(u RenderUnit, index int) string {

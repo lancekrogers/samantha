@@ -252,6 +252,17 @@ func TestSettingsSelectTTSProviderPersistsAndRefreshesVoices(t *testing.T) {
 	}
 }
 
+func TestSettingsQwenVoiceSectionExplainsUnavailableModes(t *testing.T) {
+	m := newSettings(&config.Config{TTSProvider: "qwen3-tts", QwenTTSModel: "/models/qwen"}, nil)
+	m.section = sectionVoice
+	m.width, m.height = 100, 20
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "not verified") || !strings.Contains(view, "model-native default") || !strings.Contains(view, "leave") {
+		t.Fatalf("Qwen voice section = %q, want actionable capability explanation", view)
+	}
+}
+
 func TestVoicePreviewDoneGatingSameVoice(t *testing.T) {
 	m := settingsModel{previewing: "af_heart", previewID: 2, message: "playing"}
 
