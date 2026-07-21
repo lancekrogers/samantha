@@ -24,9 +24,11 @@ type Analyzer struct {
 	engine Engine
 
 	// stateMu protects closed and events lifecycle.
-	stateMu sync.Mutex
-	closed  bool
-	events  chan Event
+	stateMu  sync.Mutex
+	closed   bool
+	events   chan Event
+	session  uint64
+	sequence uint64
 
 	// engineMu serializes all engine calls and Close of the engine.
 	engineMu sync.Mutex
@@ -43,9 +45,10 @@ func NewAnalyzer(cfg Config, engine Engine) (*Analyzer, error) {
 		return nil, fmt.Errorf("speaker: engine required when live or meeting analysis is enabled")
 	}
 	return &Analyzer{
-		cfg:    cfg,
-		engine: engine,
-		events: make(chan Event, 64),
+		cfg:     cfg,
+		engine:  engine,
+		events:  make(chan Event, 64),
+		session: 1,
 	}, nil
 }
 
@@ -103,7 +106,7 @@ func (a *Analyzer) Finalize(ctx context.Context, samples []float32) (Timeline, e
 		summary = tl.Observations[0]
 		summary.SegmentID = fmt.Sprintf("timeline-%d", n)
 	}
-	tlCopy := tl
+	tlCopy := tl.Clone()
 	a.emit(Event{
 		Kind:        EventTimelineFinalized,
 		Observation: summary,
@@ -196,10 +199,36 @@ func (a *Analyzer) emit(ev Event) {
 	if a.closed {
 		return
 	}
+	a.sequence++
+	ev.Sequence = a.sequence
+	ev.SessionID = fmt.Sprintf("session-%d", a.session)
+	if ev.Timeline != nil {
+		copy := ev.Timeline.Clone()
+		ev.Timeline = &copy
+	}
 	select {
 	case a.events <- ev:
 	default:
 		// Drop when full; never block capture/finalize on slow listeners.
+	}
+}
+
+// Reset starts a new logical analysis session without rebuilding the native
+// engine. It drains queued events and restarts deterministic sequence numbers.
+func (a *Analyzer) Reset() error {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if a.closed {
+		return fmt.Errorf("speaker: analyzer closed")
+	}
+	a.session++
+	a.sequence = 0
+	for {
+		select {
+		case <-a.events:
+		default:
+			return nil
+		}
 	}
 }
 

@@ -139,6 +139,74 @@ func TestAnalyzerFinalizeWithFake(t *testing.T) {
 	}
 }
 
+func TestTimelineMergeReconcilesLateResults(t *testing.T) {
+	var tl Timeline
+	tl.Merge(Observation{SegmentID: "late", StartMS: 200, EndMS: 300, Label: "speaker-2", Revision: 1})
+	tl.Merge(Observation{SegmentID: "first", StartMS: 0, EndMS: 100, Label: LabelUnknown, Revision: 1})
+	tl.Merge(Observation{SegmentID: "late", StartMS: 200, EndMS: 300, Label: "speaker-1", State: StateRevised, Revision: 2})
+	if len(tl.Observations) != 2 || tl.Observations[0].SegmentID != "first" || tl.Observations[1].Label != "speaker-1" {
+		t.Fatalf("merged timeline = %+v, want ordered replacement", tl.Observations)
+	}
+	// An older late result cannot overwrite the current revision.
+	tl.Merge(Observation{SegmentID: "late", StartMS: 200, EndMS: 300, Label: "speaker-9", Revision: 1})
+	if tl.Observations[1].Label != "speaker-1" {
+		t.Fatalf("older revision overwrote current result: %+v", tl.Observations[1])
+	}
+}
+
+func TestReplaySupportsLossyDuplicateAndOutOfOrderEvents(t *testing.T) {
+	items := []ReplayItem{
+		{Event: Event{Kind: EventSpeakerUpdated, Observation: Observation{SegmentID: "second", StartMS: 200}}},
+		{Event: Event{Kind: EventSpeakerUpdated, Observation: Observation{SegmentID: "dropped", StartMS: 100}}, Drop: true},
+		{Event: Event{Kind: EventSpeakerUpdated, Observation: Observation{SegmentID: "first", StartMS: 0}}, Duplicates: 1},
+	}
+	var got []Event
+	err := (Replay{Items: items, Clock: func(context.Context, time.Duration) error { return nil }}).Run(context.Background(), func(ev Event) error {
+		got = append(got, ev)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].Observation.SegmentID != "second" || got[1].Observation.SegmentID != "first" || got[2].Observation.SegmentID != "first" {
+		t.Fatalf("replay events = %+v, want preserved order/drop/duplicate policy", got)
+	}
+}
+
+func TestAnalyzerEventSessionsAndReset(t *testing.T) {
+	a, err := NewAnalyzer(Config{Enabled: true, Meeting: MeetingConfig{Enabled: true}}, &FakeEngine{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if _, err := a.Finalize(context.Background(), make([]float32, 1600)); err != nil {
+		t.Fatal(err)
+	}
+	first := <-a.Events()
+	if first.SessionID != "session-1" || first.Sequence != 1 {
+		t.Fatalf("first event = %+v, want session-1/1", first)
+	}
+	if err := a.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Finalize(context.Background(), make([]float32, 1600)); err != nil {
+		t.Fatal(err)
+	}
+	second := <-a.Events()
+	if second.SessionID != "session-2" || second.Sequence != 1 {
+		t.Fatalf("reset event = %+v, want session-2/1", second)
+	}
+	if err := a.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Reset(); err == nil {
+		t.Fatal("reset after close should fail")
+	}
+}
+
 func TestAnalyzerFinalizeContextCancel(t *testing.T) {
 	eng := &FakeEngine{}
 	a, err := NewAnalyzer(Config{Enabled: true, Meeting: MeetingConfig{Enabled: true}}, eng)
