@@ -26,7 +26,6 @@ const (
 	sectionInput
 	sectionOutput
 	sectionMeeting
-	sectionSpeaker
 	settingsSectionCount
 )
 
@@ -217,7 +216,7 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 			if m.section > 0 {
 				m.section--
 			} else {
-				m.section = sectionSpeaker
+				m.section = sectionMeeting
 			}
 			m.cursor = 0
 			m.offset = 0
@@ -345,8 +344,6 @@ func (m *settingsModel) currentListLen() int {
 		return len(m.outputItems)
 	case sectionMeeting:
 		return len(m.meetingItems())
-	case sectionSpeaker:
-		return len(m.speakerItems())
 	}
 	return 0
 }
@@ -456,8 +453,6 @@ func (m *settingsModel) selectCurrent() {
 		}
 	case sectionMeeting:
 		m.selectMeetingItem()
-	case sectionSpeaker:
-		m.selectSpeakerItem()
 	case sectionOutput:
 		if m.cursor < len(m.outputItems) {
 			name := m.outputItems[m.cursor]
