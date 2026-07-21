@@ -30,6 +30,29 @@ func TestPickBookFoldsResults(t *testing.T) {
 	}
 }
 
+func TestPickBookBrowseCmdUsesList(t *testing.T) {
+	var gotArgs []string
+	m := newPickBook(&config.Config{CalibreEnabled: true})
+	m.client = calibre.Client{
+		LookPath: func(string) (string, error) { return "calibredb", nil },
+		Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			gotArgs = append([]string(nil), args...)
+			return []byte(`[{"id":1,"title":"Go","authors":"D","formats":["/g.epub"],"tags":[]}]`), nil
+		},
+	}
+	cmd := m.runBrowse()
+	if cmd == nil {
+		t.Fatal("expected browse cmd")
+	}
+	msg, ok := cmd().(calibreResultsMsg)
+	if !ok || msg.err != nil || !msg.browsed || len(msg.books) != 1 {
+		t.Fatalf("msg = %#v", msg)
+	}
+	if strings.Contains(strings.Join(gotArgs, " "), "--search") {
+		t.Fatalf("browse should not pass --search: %v", gotArgs)
+	}
+}
+
 func TestPickBookSelectEmitsPath(t *testing.T) {
 	m := newPickBook(&config.Config{CalibreEnabled: true, CalibrePreferFormat: "epub"})
 	path := filepath.Join(t.TempDir(), "book.epub")
@@ -180,6 +203,24 @@ func TestPickBookSearchCmdUsesClient(t *testing.T) {
 	res, ok := msg.(calibreResultsMsg)
 	if !ok || res.err != nil || len(res.books) != 1 {
 		t.Fatalf("msg = %#v", msg)
+	}
+}
+
+func TestPickBookEmptyQueryBrowses(t *testing.T) {
+	m := newPickBook(&config.Config{CalibreEnabled: true})
+	m.client = calibre.Client{
+		LookPath: func(string) (string, error) { return "calibredb", nil },
+		Run: func(context.Context, string, ...string) ([]byte, error) {
+			return []byte(`[]`), nil
+		},
+	}
+	cmd := m.runSearch()
+	if cmd == nil {
+		t.Fatal("empty query should browse")
+	}
+	msg, ok := cmd().(calibreResultsMsg)
+	if !ok || !msg.browsed {
+		t.Fatalf("msg = %#v, want browsed result", msg)
 	}
 }
 

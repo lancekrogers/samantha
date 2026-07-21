@@ -20,13 +20,14 @@ const (
 	pickFocusList
 )
 
-// calibreResultsMsg folds an async library search into the model.
+// calibreResultsMsg folds an async library browse/search into the model.
 type calibreResultsMsg struct {
-	books []calibre.Book
-	err   error
+	books   []calibre.Book
+	err     error
+	browsed bool
 }
 
-// bookPickedMsg carries a resolved EPUB/PDF path back to the audiobook form.
+// bookPickedMsg carries a resolved audiobook input path back to the audiobook form.
 type bookPickedMsg struct {
 	path string
 }
@@ -50,9 +51,8 @@ type pickBookModel struct {
 
 func newPickBook(cfg *config.Config) pickBookModel {
 	m := pickBookModel{
-		cfg:     cfg,
-		editing: true,
-		focus:   pickFocusQuery,
+		cfg:   cfg,
+		focus: pickFocusList,
 	}
 	if cfg != nil {
 		m.client = calibre.NewClientFromConfig(
@@ -85,10 +85,18 @@ func (m pickBookModel) Update(msg tea.Msg) (pickBookModel, tea.Cmd) {
 		m.cursor = 0
 		m.offset = 0
 		if len(m.books) == 0 {
-			m.message = "No books matched."
+			if msg.browsed {
+				m.message = "Library is empty (or nothing returned)."
+			} else {
+				m.message = "No books matched."
+			}
 			m.focus = pickFocusQuery
 		} else {
-			m.message = fmt.Sprintf("%d result(s)", len(m.books))
+			if msg.browsed {
+				m.message = fmt.Sprintf("%d book(s) · title order", len(m.books))
+			} else {
+				m.message = fmt.Sprintf("%d result(s)", len(m.books))
+			}
 			m.focus = pickFocusList
 			m.editing = false
 		}
@@ -114,6 +122,14 @@ func (m pickBookModel) Update(msg tea.Msg) (pickBookModel, tea.Cmd) {
 			m.focus = pickFocusQuery
 			m.editing = true
 			m.editBuf = m.query
+		case "b":
+			if m.focus == pickFocusList {
+				return m, m.runBrowse()
+			}
+		case "r":
+			if m.focus == pickFocusList {
+				return m, m.runSearch()
+			}
 		case "enter":
 			if m.focus == pickFocusQuery {
 				m.query = strings.TrimSpace(m.editBuf)
@@ -169,8 +185,7 @@ func (m pickBookModel) handleQueryEdit(key string) (pickBookModel, tea.Cmd) {
 func (m *pickBookModel) runSearch() tea.Cmd {
 	q := strings.TrimSpace(m.query)
 	if q == "" {
-		m.errText = "enter a search query"
-		return nil
+		return m.runBrowse()
 	}
 	m.searching = true
 	m.errText = ""
@@ -181,6 +196,23 @@ func (m *pickBookModel) runSearch() tea.Cmd {
 		defer cancel()
 		books, err := client.Search(ctx, q, 50)
 		return calibreResultsMsg{books: books, err: err}
+	}
+}
+
+func (m *pickBookModel) runBrowse() tea.Cmd {
+	if m.cfg == nil || !m.cfg.CalibreEnabled {
+		m.errText = "Calibre is off — enable with: samantha config calibre_enabled true"
+		return nil
+	}
+	m.searching = true
+	m.errText = ""
+	m.message = "Loading library…"
+	client := m.client
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		books, err := client.List(ctx, 100)
+		return calibreResultsMsg{books: books, err: err, browsed: true}
 	}
 }
 
@@ -224,7 +256,7 @@ func (m pickBookModel) View() string {
 	}
 	b.WriteString(ansi.Truncate(titleStyle.Render("  Pick from Calibre library"), width, "…"))
 	b.WriteString("\n")
-	b.WriteString(ansi.Truncate(subtitleStyle.Render("  Search, then select a book (EPUB/PDF)"), width, "…"))
+	b.WriteString(ansi.Truncate(subtitleStyle.Render("  Browse or search, then select a book (EPUB/PDF/MOBI)"), width, "…"))
 	b.WriteString("\n\n")
 
 	qLabel := "Query"
@@ -232,7 +264,7 @@ func (m pickBookModel) View() string {
 	if m.editing && m.focus == pickFocusQuery {
 		qVal = m.editBuf + "█"
 	} else if strings.TrimSpace(qVal) == "" {
-		qVal = "(type a search, enter to run)"
+		qVal = "(press / to search; empty query browses)"
 	}
 	qCursor, qStyle := "  ", normalStyle
 	if m.focus == pickFocusQuery {
@@ -264,7 +296,7 @@ func (m pickBookModel) View() string {
 			if authors == "" {
 				authors = "unknown"
 			}
-			line := fmt.Sprintf("%s — %s", book.Title, authors)
+			line := fmt.Sprintf("%s — %s  [%s]", book.Title, authors, formatExtList(book.Formats))
 			maxWidth := max(width-6, 1)
 			line = ansi.Truncate(line, maxWidth, "…")
 			b.WriteString("  " + cursor + style.Render(line) + "\n")
@@ -282,6 +314,6 @@ func (m pickBookModel) View() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render(ansi.Truncate("  type query • enter search/select • ↑/↓ list • / edit query • esc back", width, "…")))
+	b.WriteString(dimStyle.Render(ansi.Truncate("  enter select • / search • b browse • r reload • ↑/↓ • esc back", width, "…")))
 	return b.String()
 }

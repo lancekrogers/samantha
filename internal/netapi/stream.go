@@ -37,6 +37,10 @@ type streamConn struct {
 	kick  chan string
 	once  sync.Once
 
+	// token is the bearer that opened this stream (primary or D2 device).
+	// Used to evict only that device's sockets on DELETE /v1/devices/{id}.
+	token string
+
 	// audioStream is a per-connection preference set by the audio_output
 	// control message. atomic so the hub hot path never takes a second lock.
 	audioStream atomic.Bool
@@ -176,6 +180,25 @@ func (h *hub) evictAll(reason string) {
 	}
 }
 
+// evictToken terminates streams authenticated with the given bearer only
+// (per-device revoke). Other devices stay connected.
+func (h *hub) evictToken(token, reason string) {
+	if token == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.conns {
+		if c.token == token {
+			c.evict(reason)
+			if h.micClaimant == c && h.ingress != nil {
+				h.ingress.Finalize()
+				h.micClaimant = nil
+			}
+		}
+	}
+}
+
 // setConnAudio updates a connection's stream preference and the hub streamer
 // count. Safe to call from the control reader while the hub is live.
 func (h *hub) setConnAudio(c *streamConn, on bool) {
@@ -304,6 +327,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		out:   make(chan []byte, connQueueDepth),
 		audio: make(chan []byte, audioQueueDepth),
 		kick:  make(chan string, 1),
+		token: presentedToken(r),
 	}
 	if !s.hub.add(conn) {
 		ws.Close(websocket.StatusTryAgainLater, "too many clients")

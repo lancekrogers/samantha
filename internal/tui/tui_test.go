@@ -116,3 +116,18 @@ func TestSwitchToTailscaleStartsManagedServerScreen(t *testing.T) {
 	// Do not execute cmd: that would recursively launch the test binary's
 	// real serve command. The managed-process behavior has an injected test.
 }
+
+func TestSwitchToPickBookStartsLibraryBrowse(t *testing.T) {
+	app := App{cfg: &config.Config{CalibreEnabled: true}}
+	model, cmd := app.Update(switchScreenMsg(screenPickBook))
+	got := model.(App)
+	if got.screen != screenPickBook {
+		t.Fatalf("screen = %v, want pick book", got.screen)
+	}
+	if got.pickBook.focus != pickFocusList {
+		t.Fatalf("pick-book focus = %v, want list", got.pickBook.focus)
+	}
+	if cmd == nil {
+		t.Fatal("switching to pick book should start a browse")
+	}
+}

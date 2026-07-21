@@ -2,13 +2,14 @@
 //
 // The client is opt-in (gated by calibre_enabled config) and injectable for
 // tests: no real Calibre binary is required in CI. Supports browse (List),
-// search, metadata, and path resolution. EPUB/PDF only for v1 audiobook
-// paths; MOBI/AZW3-only books return ErrNoSupportedFormat.
+// search, metadata, path resolution, and cached conversion of MOBI/AZW-family
+// sources to EPUB for audiobook rendering.
 package calibre
 
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,7 +27,13 @@ var (
 	// known application-bundle locations.
 	ErrCalibreNotFound = errors.New("calibre: calibredb not found")
 	// ErrNoSupportedFormat means the book has no EPUB or PDF format (v1).
-	ErrNoSupportedFormat = errors.New("calibre: no supported format (need epub or pdf)")
+	ErrNoSupportedFormat = errors.New("calibre: no supported format (need epub, pdf, or a convertible mobi/azw3)")
+	// ErrConverterNotFound means ebook-convert could not be located when a
+	// source format needs conversion.
+	ErrConverterNotFound = errors.New("calibre: ebook-convert not found")
+	// ErrConversionFailed means Calibre could not create an EPUB from a source
+	// format such as MOBI or AZW3.
+	ErrConversionFailed = errors.New("calibre: format conversion failed")
 	// ErrFormatMissing means Calibre listed a supported format whose file is
 	// no longer present on disk.
 	ErrFormatMissing = errors.New("calibre: supported format file missing")
@@ -72,6 +79,9 @@ type Client struct {
 	Binary string
 	// ConvBinary is ebook-convert name/path (default "ebook-convert").
 	ConvBinary string
+	// CacheDir stores EPUBs generated from source formats. Empty uses the
+	// platform user cache directory. The directory is injectable for tests.
+	CacheDir string
 	// LibraryPath is passed as --with-library when non-empty.
 	LibraryPath string
 	// Prefer is the preferred format extension, e.g. "epub" (default "epub").
@@ -278,23 +288,32 @@ func (c Client) Resolve(ctx context.Context, query string) (Book, error) {
 	}
 }
 
-// BestFormatPath picks the preferred absolute format path for b.
-// Preference: configured Prefer (default epub), then epub, then pdf.
-// Returns ErrNoSupportedFormat when only MOBI/AZW3/etc. are present.
+// BestFormatPath picks the preferred format path for b. MOBI/AZW/AZW3/PRC
+// sources are converted to a cached EPUB through ebook-convert when no usable
+// EPUB or PDF is available.
 func (c Client) BestFormatPath(b Book) (path, format string, err error) {
+	return c.BestFormatPathContext(context.Background(), b)
+}
+
+// BestFormatPathContext is the context-aware form of BestFormatPath. It is
+// useful to callers such as the TUI, where conversion should be cancellable.
+func (c Client) BestFormatPathContext(ctx context.Context, b Book) (path, format string, err error) {
+	if err := ctx.Err(); err != nil {
+		return "", "", err
+	}
 	if len(b.Formats) == 0 {
 		return "", "", fmt.Errorf("%w: book %d %q has no formats", ErrNoSupportedFormat, b.ID, b.Title)
 	}
 	prefer := c.preferFormat()
 	order := []string{prefer}
-	for _, f := range []string{"epub", "pdf"} {
+	for _, f := range []string{"epub", "pdf", "mobi", "azw3", "azw", "prc"} {
 		if f != prefer {
 			order = append(order, f)
 		}
 	}
 	byExt := map[string]string{}
 	for _, p := range b.Formats {
-		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(p), "."))
+		ext := formatName(p)
 		if ext == "" {
 			continue
 		}
@@ -304,18 +323,131 @@ func (c Client) BestFormatPath(b Book) (path, format string, err error) {
 		}
 	}
 	listedSupported := false
+	var conversionErr error
 	for _, want := range order {
 		if p, ok := byExt[want]; ok {
-			listedSupported = true
-			if st, statErr := os.Stat(p); statErr == nil && !st.IsDir() {
-				return p, want, nil
+			if want == "epub" || want == "pdf" {
+				listedSupported = true
+				if st, statErr := os.Stat(p); statErr == nil && !st.IsDir() {
+					return p, want, nil
+				}
+				continue
 			}
+			if !isConvertibleFormat(want) {
+				continue
+			}
+			if st, statErr := os.Stat(p); statErr != nil || st.IsDir() {
+				continue
+			}
+			converted, convertErr := c.convertToEPUB(ctx, p)
+			if convertErr == nil {
+				return converted, "epub", nil
+			}
+			conversionErr = convertErr
 		}
+	}
+	if conversionErr != nil {
+		return "", "", fmt.Errorf("book %d %q: %w", b.ID, b.Title, conversionErr)
 	}
 	if listedSupported {
 		return "", "", fmt.Errorf("%w: book %d %q lists an EPUB/PDF path that is unavailable", ErrFormatMissing, b.ID, b.Title)
 	}
-	return "", "", fmt.Errorf("%w: book %d %q has %v (v1 supports epub/pdf only)", ErrNoSupportedFormat, b.ID, b.Title, formatList(b.Formats))
+	return "", "", fmt.Errorf("%w: book %d %q has %v", ErrNoSupportedFormat, b.ID, b.Title, formatList(b.Formats))
+}
+
+// convertToEPUB converts a source format into a cache entry. The source file
+// and the library are never modified. The cache key includes source metadata,
+// so replacing a MOBI file naturally produces a new EPUB.
+func (c Client) convertToEPUB(ctx context.Context, source string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	st, err := os.Stat(source)
+	if err != nil || st.IsDir() {
+		return "", fmt.Errorf("%w: source %q is unavailable", ErrConversionFailed, source)
+	}
+	converter, err := c.resolveConverter(ctx)
+	if err != nil {
+		return "", err
+	}
+	cacheDir, err := c.conversionCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("%w: prepare cache: %v", ErrConversionFailed, err)
+	}
+	absSource, err := filepath.Abs(source)
+	if err != nil {
+		absSource = source
+	}
+	key := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d", absSource, st.Size(), st.ModTime().UnixNano()))))
+	final := filepath.Join(cacheDir, key+".epub")
+	if cached, ok := usableFile(final); ok {
+		return cached, nil
+	}
+
+	tmpDir, err := os.MkdirTemp(cacheDir, ".convert-")
+	if err != nil {
+		return "", fmt.Errorf("%w: create temporary directory: %v", ErrConversionFailed, err)
+	}
+	defer os.RemoveAll(tmpDir)
+	tmpOutput := filepath.Join(tmpDir, key+".epub")
+	if _, err := c.runner()(ctx, converter, source, tmpOutput); err != nil {
+		return "", fmt.Errorf("%w: ebook-convert %q: %v", ErrConversionFailed, source, err)
+	}
+	if _, ok := usableFile(tmpOutput); !ok {
+		return "", fmt.Errorf("%w: ebook-convert did not create %q", ErrConversionFailed, tmpOutput)
+	}
+	if err := os.Rename(tmpOutput, final); err != nil {
+		// Another Samantha process may have populated the same cache key while
+		// this conversion was running. Reuse its complete result if so.
+		if cached, ok := usableFile(final); ok {
+			return cached, nil
+		}
+		return "", fmt.Errorf("%w: store cached EPUB: %v", ErrConversionFailed, err)
+	}
+	return final, nil
+}
+
+func (c Client) resolveConverter(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	name := strings.TrimSpace(c.ConvBinary)
+	if name == "" {
+		name = "ebook-convert"
+	}
+	if filepath.IsAbs(name) {
+		if st, err := os.Stat(name); err == nil && !st.IsDir() {
+			return name, nil
+		}
+	}
+	p, err := c.look()(name)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s; install Calibre or set calibre_convert_binary", ErrConverterNotFound, name)
+	}
+	return p, nil
+}
+
+func (c Client) conversionCacheDir() (string, error) {
+	dir := strings.TrimSpace(c.CacheDir)
+	if dir == "" {
+		base, err := os.UserCacheDir()
+		if err != nil {
+			return "", err
+		}
+		dir = filepath.Join(base, "samantha", "calibre")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func usableFile(path string) (string, bool) {
+	st, err := os.Stat(path)
+	if err != nil || st.IsDir() || st.Size() == 0 {
+		return "", false
+	}
+	return path, true
 }
 
 // Metadata fetches full-ish metadata for one book id via calibredb list.
@@ -420,13 +552,51 @@ func summarizeTitles(books []Book, n int) string {
 func formatList(paths []string) []string {
 	out := make([]string, 0, len(paths))
 	for _, p := range paths {
-		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(p), "."))
+		ext := formatName(p)
 		if ext == "" {
 			ext = filepath.Base(p)
 		}
 		out = append(out, ext)
 	}
 	return out
+}
+
+// formatName accepts both Calibre's normal absolute paths and the bare format
+// names returned by a few remote/server variants (for example "EPUB").
+func formatName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if ext := filepath.Ext(value); ext != "" {
+		return strings.ToLower(strings.TrimPrefix(ext, "."))
+	}
+	if strings.ContainsAny(value, `/\\`) {
+		return ""
+	}
+	value = strings.ToLower(strings.TrimPrefix(value, "."))
+	if isKnownFormat(value) {
+		return value
+	}
+	return ""
+}
+
+func isKnownFormat(format string) bool {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "epub", "pdf", "mobi", "azw", "azw3", "prc":
+		return true
+	default:
+		return false
+	}
+}
+
+func isConvertibleFormat(format string) bool {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "mobi", "azw", "azw3", "prc":
+		return true
+	default:
+		return false
+	}
 }
 
 func withSearchTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {

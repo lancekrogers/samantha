@@ -155,6 +155,69 @@ func TestBestFormatPathMOBIOnly(t *testing.T) {
 	}
 }
 
+func TestBestFormatPathConvertsMOBIToCachedEPUB(t *testing.T) {
+	source := filepath.Join(t.TempDir(), "book.mobi")
+	if err := os.WriteFile(source, []byte("mobi"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cacheDir := t.TempDir()
+	var calls int
+	var gotName string
+	var gotArgs []string
+	c := Client{
+		LookPath: func(name string) (string, error) {
+			gotName = name
+			return "/bin/ebook-convert", nil
+		},
+		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			calls++
+			gotName = name
+			gotArgs = append([]string(nil), args...)
+			if err := os.WriteFile(args[1], []byte("epub"), 0o600); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		},
+		CacheDir: cacheDir,
+	}
+	b := Book{ID: 42, Title: "Crypto 101", Formats: []string{source}}
+
+	path, format, err := c.BestFormatPathContext(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if format != "epub" || filepath.Ext(path) != ".epub" || path == source {
+		t.Fatalf("got path=%q format=%q", path, format)
+	}
+	if gotName != "/bin/ebook-convert" || len(gotArgs) != 2 || gotArgs[0] != source {
+		t.Fatalf("converter call = %q %v", gotName, gotArgs)
+	}
+	if calls != 1 {
+		t.Fatalf("converter calls = %d, want 1", calls)
+	}
+
+	// The same source metadata reuses the generated EPUB instead of converting
+	// every time a user revisits the picker.
+	path2, format2, err := c.BestFormatPath(b)
+	if err != nil || path2 != path || format2 != "epub" {
+		t.Fatalf("cached result = %q/%q, err=%v", path2, format2, err)
+	}
+	if calls != 1 {
+		t.Fatalf("converter calls after cache hit = %d, want 1", calls)
+	}
+}
+
+func TestFormatNameRecognizesBareFormatNames(t *testing.T) {
+	for _, input := range []string{"EPUB", ".pdf", "MOBI"} {
+		if got := formatName(input); got == "" {
+			t.Errorf("formatName(%q) = empty", input)
+		}
+	}
+	if got := formatName("/library/book"); got != "" {
+		t.Fatalf("formatName(path without extension) = %q", got)
+	}
+}
+
 func TestResolveSingle(t *testing.T) {
 	c := Client{
 		LookPath: func(string) (string, error) { return "calibredb", nil },
