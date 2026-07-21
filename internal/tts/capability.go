@@ -3,6 +3,7 @@ package tts
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // VoiceMode identifies a provider-neutral way of choosing a speaker. Providers
@@ -24,6 +25,7 @@ type VoiceModeCapability struct {
 	RequiresInstruction    bool
 	RequiresReferenceAudio bool
 	RequiresReferenceText  bool
+	SupportsInstruction    bool
 	Experimental           bool
 }
 
@@ -41,6 +43,7 @@ type ProviderCapabilities struct {
 	SupportsStreaming      bool
 	SupportsCancellation   bool
 	SupportsReferenceAudio bool
+	SupportsSpeed          bool
 }
 
 // ProviderStatus reports readiness without requiring callers to parse an
@@ -134,6 +137,98 @@ func (e *ProviderError) Unwrap() []error {
 func IsProviderErrorKind(err error, kind ProviderErrorKind) bool {
 	var providerErr *ProviderError
 	return errors.As(err, &providerErr) && providerErr.Kind == kind
+}
+
+// ValidateRequest checks provider-neutral request fields against a discovered
+// capability set. Providers can call this before starting a worker; callers
+// can also use it for TUI/configuration validation without a model download.
+func ValidateRequest(capabilities ProviderCapabilities, req SynthesisRequest) error {
+	if strings.TrimSpace(req.Text) == "" {
+		return &ProviderError{Provider: capabilities.Provider, Operation: "validate request", Kind: ProviderErrorInput, Err: errors.New("text is empty")}
+	}
+	if req.Speed != 0 && !capabilities.SupportsSpeed {
+		return unsupportedCapability(capabilities.Provider, "speech speed", "provider does not advertise speed control")
+	}
+	if req.SampleRate != 0 && !containsInt(capabilities.SampleRates, req.SampleRate) {
+		return unsupportedCapability(capabilities.Provider, "sample rate", fmt.Sprintf("%d Hz is not advertised", req.SampleRate))
+	}
+	if req.Language != "" && len(capabilities.Languages) > 0 && !containsStringFold(capabilities.Languages, req.Language) {
+		return unsupportedCapability(capabilities.Provider, "language", fmt.Sprintf("%q is not advertised", req.Language))
+	}
+	if req.Mode == "" {
+		return nil
+	}
+
+	var mode *VoiceModeCapability
+	for i := range capabilities.Modes {
+		if capabilities.Modes[i].ID == req.Mode {
+			mode = &capabilities.Modes[i]
+			break
+		}
+	}
+	if mode == nil {
+		return unsupportedCapability(capabilities.Provider, "voice mode", fmt.Sprintf("%q is not advertised", req.Mode))
+	}
+	if req.Voice != "" && len(mode.Voices) > 0 && !containsVoice(mode.Voices, req.Voice) {
+		return unsupportedCapability(capabilities.Provider, "speaker", fmt.Sprintf("%q is not advertised for %s", req.Voice, req.Mode))
+	}
+	if mode.RequiresInstruction && strings.TrimSpace(req.Instruction) == "" {
+		return &ProviderError{Provider: capabilities.Provider, Operation: "validate request", Kind: ProviderErrorInput, Err: errors.New("voice instruction is required")}
+	}
+	if strings.TrimSpace(req.Instruction) != "" && !mode.SupportsInstruction && !mode.RequiresInstruction {
+		return unsupportedCapability(capabilities.Provider, "voice instruction", fmt.Sprintf("mode %s does not accept instructions", req.Mode))
+	}
+	hasReferenceAudio := strings.TrimSpace(req.ReferenceAudio) != ""
+	hasReferenceText := strings.TrimSpace(req.ReferenceTranscript) != ""
+	if mode.RequiresReferenceAudio && !hasReferenceAudio {
+		return &ProviderError{Provider: capabilities.Provider, Operation: "validate request", Kind: ProviderErrorInput, Err: errors.New("reference audio is required for this voice mode")}
+	}
+	if hasReferenceAudio && !mode.RequiresReferenceAudio {
+		return unsupportedCapability(capabilities.Provider, "reference audio", fmt.Sprintf("mode %s does not accept reference audio", req.Mode))
+	}
+	if mode.RequiresReferenceText && !hasReferenceText {
+		return &ProviderError{Provider: capabilities.Provider, Operation: "validate request", Kind: ProviderErrorInput, Err: errors.New("reference transcript is required for this voice mode")}
+	}
+	if hasReferenceText && !mode.RequiresReferenceText {
+		return unsupportedCapability(capabilities.Provider, "reference transcript", fmt.Sprintf("mode %s does not accept reference text", req.Mode))
+	}
+	return nil
+}
+
+func unsupportedCapability(provider, feature, detail string) error {
+	return &ProviderError{
+		Provider:  provider,
+		Operation: "validate request",
+		Kind:      ProviderErrorInput,
+		Err:       &UnsupportedFeatureError{Provider: provider, Feature: feature, Detail: detail},
+	}
+}
+
+func containsInt(values []int, want int) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsStringFold(values []string, want string) bool {
+	for _, value := range values {
+		if strings.EqualFold(value, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsVoice(values []Voice, want string) bool {
+	for _, value := range values {
+		if value.Name == want {
+			return true
+		}
+	}
+	return false
 }
 
 // UnsupportedFeatureError identifies the rejected provider-neutral feature.

@@ -129,3 +129,62 @@ func TestProviderContractPreservesUnavailableCanceledAndUnsupportedStates(t *tes
 		})
 	}
 }
+
+func TestValidateRequestCoversEveryAdvertisedVoiceMode(t *testing.T) {
+	capabilities := ProviderCapabilities{
+		Provider:      "fake-qwen",
+		Languages:     []string{"English", "Chinese"},
+		SampleRates:   []int{24000},
+		SupportsSpeed: false,
+		Modes: []VoiceModeCapability{
+			{ID: VoiceModeStatic, Voices: []Voice{{Name: "Ryan"}}, SupportsInstruction: false},
+			{ID: VoiceModeCustomVoice, Voices: []Voice{{Name: "Vivian"}}, SupportsInstruction: true},
+			{ID: VoiceModeVoiceDesign, RequiresInstruction: true, SupportsInstruction: true, Experimental: true},
+			{ID: VoiceModeApprovedClone, RequiresReferenceAudio: true, RequiresReferenceText: true, Experimental: true},
+		},
+	}
+
+	tests := []struct {
+		name string
+		req  SynthesisRequest
+	}{
+		{name: "static", req: SynthesisRequest{Text: "hello", Mode: VoiceModeStatic, Voice: "Ryan", Language: "English", SampleRate: 24000}},
+		{name: "custom voice", req: SynthesisRequest{Text: "hello", Mode: VoiceModeCustomVoice, Voice: "Vivian", Instruction: "warm", Language: "English"}},
+		{name: "voice design", req: SynthesisRequest{Text: "hello", Mode: VoiceModeVoiceDesign, Instruction: "warm narrator", Language: "English"}},
+		{name: "approved clone", req: SynthesisRequest{Text: "hello", Mode: VoiceModeApprovedClone, ReferenceAudio: "/private/ref.wav", ReferenceTranscript: "hello", Language: "English"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := ValidateRequest(capabilities, tt.req); err != nil {
+				t.Fatalf("ValidateRequest() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRequestRejectsUnsupportedCombinations(t *testing.T) {
+	capabilities := ProviderCapabilities{
+		Provider:    "fake-qwen",
+		Languages:   []string{"English"},
+		SampleRates: []int{24000},
+		Modes:       []VoiceModeCapability{{ID: VoiceModeVoiceDesign, RequiresInstruction: true, SupportsInstruction: true}},
+	}
+	tests := []struct {
+		name string
+		req  SynthesisRequest
+		kind ProviderErrorKind
+	}{
+		{name: "unknown mode", req: SynthesisRequest{Text: "hello", Mode: VoiceModeCustomVoice}, kind: ProviderErrorInput},
+		{name: "missing instruction", req: SynthesisRequest{Text: "hello", Mode: VoiceModeVoiceDesign}, kind: ProviderErrorInput},
+		{name: "unsupported language", req: SynthesisRequest{Text: "hello", Mode: VoiceModeVoiceDesign, Instruction: "clear", Language: "Klingon"}, kind: ProviderErrorInput},
+		{name: "unsupported speed", req: SynthesisRequest{Text: "hello", Mode: VoiceModeVoiceDesign, Instruction: "clear", Speed: 1.1}, kind: ProviderErrorInput},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateRequest(capabilities, tt.req)
+			if err == nil || !IsProviderErrorKind(err, tt.kind) {
+				t.Fatalf("ValidateRequest() error = %v, want %s", err, tt.kind)
+			}
+		})
+	}
+}

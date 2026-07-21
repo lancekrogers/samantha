@@ -294,6 +294,7 @@ func (q *Qwen3TTS) Capabilities() ProviderCapabilities {
 		SampleRates:            []int{qwen3TTSSampleRate},
 		SupportsCancellation:   true,
 		SupportsReferenceAudio: false,
+		SupportsSpeed:          false,
 	}
 }
 

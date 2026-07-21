@@ -281,6 +281,7 @@ func (k *KokoroTTS) Capabilities() ProviderCapabilities {
 		SupportsStreaming:      true,
 		SupportsCancellation:   true,
 		SupportsReferenceAudio: false,
+		SupportsSpeed:          true,
 	}
 }
 
