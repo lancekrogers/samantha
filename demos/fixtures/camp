@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Deterministic camp stub for VHS demos (no real registry required).
+set -euo pipefail
+
+if [[ "${1:-}" == "list" && "${2:-}" == "--json" ]]; then
+	cat <<'EOF'
+[
+  {"id":"demo-my-tools","name":"My_Tools","org":"devtools","type":"product","path":"/tmp/demo-My_Tools","status":"active","tags":[]},
+  {"id":"demo-obey","name":"obey-campaign","org":"obc","type":"product","path":"/tmp/demo-obey","status":"active","tags":["meeting"]},
+  {"id":"demo-job","name":"JobSearch","org":"job-search","type":"product","path":"/tmp/demo-JobSearch","status":"active","tags":[]}
+]
+EOF
+	exit 0
+fi
+
+if [[ "${1:-}" == "idea" && "${2:-}" == "add" ]]; then
+	# samantha shells: camp idea add <title> --body-file … -c <campaign>
+	title="idea"
+	campaign="campaign"
+	shift 2
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+			-c|--campaign)
+				campaign="${2:-campaign}"
+				shift 2
+				;;
+			--body-file|--body|--tag|--author|--concept)
+				shift 2
+				;;
+			--note|--json|--full|--edit)
+				shift
+				;;
+			*)
+				if [[ "$1" != -* ]]; then
+					title="$1"
+				fi
+				shift
+				;;
+		esac
+	done
+	echo "created intent ${title} → ${campaign}"
+	exit 0
+fi
+
+echo "fake-camp: unsupported args: $*" >&2
+exit 1

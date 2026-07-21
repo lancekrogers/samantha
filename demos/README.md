@@ -73,3 +73,20 @@ disposable `$HOME` config). Color: `env -u NO_COLOR` + `SAMANTHA_COLOR_PROFILE=a
 ```bash
 just demo-library
 ```
+
+## meeting-route-speaker.gif — route picker + Speaker settings
+
+Full Bubble Tea app demonstrating the meeting notes routing UX:
+
+1. **Settings → Meeting** — refresh destinations (`camp list --json` + config)  
+2. **Settings → Speaker** — enable analysis + meeting diarization  
+3. **Meeting start** — title (1/2) → destination pick (2/2) with discovered campaigns  
+4. **Recorder** — brief demo STT, then stop auto-routes to the chosen campaign  
+
+Fixture: `demos/fixtures/camp` (selected via `PATH` ahead of a real camp).  
+Color: `env -u NO_COLOR` + `SAMANTHA_COLOR_PROFILE=ansi`.
+
+```bash
+just demo-meeting-route-speaker
+```
+
