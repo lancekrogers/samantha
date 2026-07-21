@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -376,10 +377,10 @@ func (c Client) BestFormatPathContext(ctx context.Context, b Book) (path, format
 // exporting that format into Samantha's cache. Local Calibre libraries usually
 // return absolute paths and do not need this fallback.
 //
-// Cache identity: after export, the cache key includes the exported file size
-// and mtime (same spirit as convertToEPUB). A provisional hit for
-// library+id+format is only reused when the cached file is younger than
-// exportCacheMaxAge, so replaced Calibre library entries eventually refresh.
+// Cache identity is the content digest of the exported file. Replacing a
+// Calibre book under the same ID therefore produces a different cache entry;
+// the library path is deliberately not part of the key because the content
+// itself is the identity.
 func (c Client) exportFormat(ctx context.Context, b Book, format string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -392,14 +393,6 @@ func (c Client) exportFormat(ctx context.Context, b Book, format string) (string
 		return "", fmt.Errorf("%w: prepare cache: %v", ErrConversionFailed, err)
 	}
 	lib := strings.TrimSpace(c.LibraryPath)
-	// Provisional key (no content fingerprint yet) for a short-lived reuse window.
-	provisional := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("export\x00%s\x00%d\x00%s", lib, b.ID, format))))
-	provisionalPath := filepath.Join(cacheDir, provisional+"."+format)
-	if cached, ok := usableFile(provisionalPath); ok {
-		if st, err := os.Stat(cached); err == nil && time.Since(st.ModTime()) < exportCacheMaxAge {
-			return cached, nil
-		}
-	}
 
 	bin, err := c.resolveBinary(ctx)
 	if err != nil {
@@ -443,16 +436,11 @@ func (c Client) exportFormat(ctx context.Context, b Book, format string) (string
 	if exported == "" {
 		return "", fmt.Errorf("%w: export did not create a %s file", ErrConversionFailed, format)
 	}
-	st, err := os.Stat(exported)
+	digest, err := fileSHA256(exported)
 	if err != nil {
-		return "", fmt.Errorf("%w: stat exported book: %v", ErrConversionFailed, err)
+		return "", fmt.Errorf("%w: hash exported book: %v", ErrConversionFailed, err)
 	}
-	// Content-aware key: size + mtime of the bytes we just exported.
-	key := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf(
-		"export\x00%s\x00%d\x00%s\x00%d\x00%d",
-		lib, b.ID, format, st.Size(), st.ModTime().UnixNano(),
-	))))
-	final := filepath.Join(cacheDir, key+"."+format)
+	final := filepath.Join(cacheDir, "export-"+digest+"."+format)
 	if cached, ok := usableFile(final); ok {
 		return cached, nil
 	}
@@ -462,21 +450,22 @@ func (c Client) exportFormat(ctx context.Context, b Book, format string) (string
 		}
 		return "", fmt.Errorf("%w: store exported book: %v", ErrConversionFailed, err)
 	}
-	// Keep a provisional pointer so the short-age hit path finds this export.
-	_ = os.Remove(provisionalPath)
-	if linkErr := os.Link(final, provisionalPath); linkErr != nil {
-		// Best-effort: copy if hardlink unsupported.
-		if data, readErr := os.ReadFile(final); readErr == nil {
-			_ = os.WriteFile(provisionalPath, data, 0o600)
-		}
-	}
 	return final, nil
 }
 
-// exportCacheMaxAge bounds reuse of provisional export keys (library+id+format)
-// when we do not yet know the on-disk content fingerprint. After this age the
-// next resolve re-exports from Calibre so replaced books are not stuck forever.
-const exportCacheMaxAge = 24 * time.Hour
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
 
 // convertToEPUB converts a source format into a cache entry. The source file
 // and the library are never modified. The cache key includes source metadata,

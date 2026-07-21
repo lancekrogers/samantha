@@ -130,6 +130,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break // fall through to screen Update
 		}
 		if msg.String() == "ctrl+c" {
+			if a.screen == screenPickBook {
+				a.pickBook.cancelResolve()
+			}
 			a.settings.closePreview()
 			a.remote.stop()
 			if err := a.stopMeetingRuntime(); err != nil {
@@ -158,6 +161,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case switchScreenMsg:
 		target := screen(msg)
+		if a.screen == screenPickBook && target != screenPickBook {
+			a.pickBook.cancelResolve()
+		}
 		var pauseVoice tea.Cmd
 		if target == screenSettings {
 			a.settingsReturnScreen = a.screen
@@ -269,16 +275,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case bookPickedMsg:
-		// Ignore stale async resolves (user re-selected or left the screen).
-		if msg.requestID != a.pickBook.requestID {
+		// Results only belong to the active picker screen. This prevents a late
+		// conversion from changing the audiobook form after the user left, and
+		// the request ID prevents an older result from winning after a reload.
+		if a.screen != screenPickBook || msg.requestID != a.pickBook.requestID {
 			return a, nil
 		}
-		if a.screen != screenPickBook {
-			a.pickBook.loadPhase = pickIdle
-			return a, nil
-		}
+		a.pickBook.cancelResolve()
 		if msg.err != nil {
-			a.pickBook.loadPhase = pickIdle
 			a.pickBook.errText = msg.err.Error()
 			a.pickBook.message = ""
 			return a, nil
@@ -364,6 +368,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 
 	case quitMsg:
+		if a.screen == screenPickBook {
+			a.pickBook.cancelResolve()
+		}
 		a.remote.stop()
 		a.quitting = true
 		return a, tea.Quit

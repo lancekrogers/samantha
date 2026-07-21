@@ -3,6 +3,7 @@ package calibre
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -221,6 +222,7 @@ func TestFormatNameRecognizesBareFormatNames(t *testing.T) {
 func TestBestFormatPathExportsBareEPUBFormatName(t *testing.T) {
 	cacheDir := t.TempDir()
 	var exportArgs []string
+	var exportCalls int
 	c := Client{
 		LookPath: func(name string) (string, error) { return name, nil },
 		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -237,7 +239,8 @@ func TestBestFormatPathExportsBareEPUBFormatName(t *testing.T) {
 			if toDir == "" {
 				t.Fatal("export missing --to-dir")
 			}
-			if err := os.WriteFile(filepath.Join(toDir, "remote-book.epub"), []byte("epub"), 0o600); err != nil {
+			exportCalls++
+			if err := os.WriteFile(filepath.Join(toDir, "remote-book.epub"), []byte(fmt.Sprintf("epub-%d", exportCalls)), 0o600); err != nil {
 				return nil, err
 			}
 			return nil, nil
@@ -255,11 +258,19 @@ func TestBestFormatPathExportsBareEPUBFormatName(t *testing.T) {
 	if len(exportArgs) == 0 || exportArgs[1] != "161" {
 		t.Fatalf("export args = %v", exportArgs)
 	}
+	path2, format2, err := c.BestFormatPath(b)
+	if err != nil || format2 != "epub" || path2 == path {
+		t.Fatalf("replacement export = %q/%q, first=%q, err=%v", path2, format2, path, err)
+	}
+	if exportCalls != 2 {
+		t.Fatalf("export calls = %d, want 2", exportCalls)
+	}
 }
 
 func TestBestFormatPathExportsBareMOBIThenConverts(t *testing.T) {
 	cacheDir := t.TempDir()
 	var steps []string
+	var convertArgs []string
 	c := Client{
 		LookPath: func(name string) (string, error) { return name, nil },
 		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -283,6 +294,7 @@ func TestBestFormatPathExportsBareMOBIThenConverts(t *testing.T) {
 				if len(args) < 2 {
 					t.Fatalf("convert args: %v", args)
 				}
+				convertArgs = append([]string(nil), args...)
 				if err := os.WriteFile(args[1], []byte("epub-from-mobi"), 0o600); err != nil {
 					return nil, err
 				}
@@ -305,8 +317,11 @@ func TestBestFormatPathExportsBareMOBIThenConverts(t *testing.T) {
 	if len(steps) < 2 || steps[0] != "calibredb" || steps[1] != "ebook-convert" {
 		t.Fatalf("steps = %v, want export then convert", steps)
 	}
-	// Second resolve must still succeed (provisional export age hit may skip
-	// re-export; convert keys include abs path so a re-convert is acceptable).
+	if filepath.Ext(convertArgs[0]) != ".mobi" || filepath.Ext(convertArgs[1]) != ".epub" {
+		t.Fatalf("convert args = %v", convertArgs)
+	}
+	// The export is refreshed, but identical content gets the same
+	// content-addressed source and reuses the converted EPUB.
 	path2, format2, err := c.BestFormatPath(b)
 	if err != nil {
 		t.Fatal(err)

@@ -154,8 +154,8 @@ func TestBookPickedMsgIgnoresWhenLeftScreen(t *testing.T) {
 	if a.screen != screenAudiobook || a.audiobook.input != "original" {
 		t.Fatalf("late apply: screen=%v input=%q", a.screen, a.audiobook.input)
 	}
-	if a.pickBook.loadPhase != pickIdle {
-		t.Fatalf("phase=%v", a.pickBook.loadPhase)
+	if a.pickBook.loadPhase != pickPreparing {
+		t.Fatalf("late result mutated phase=%v", a.pickBook.loadPhase)
 	}
 }
 
@@ -179,6 +179,39 @@ func TestPickBookPreparingBlocksSecondEnter(t *testing.T) {
 	m, cmd3 := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd3 != nil {
 		t.Fatal("enter should be ignored while busy")
+	}
+}
+
+func TestPickBookPreparingShowsPreparationStatus(t *testing.T) {
+	m := newPickBook(&config.Config{CalibreEnabled: true})
+	m.books = []calibre.Book{{ID: 1, Title: "T", Formats: []string{"EPUB"}}}
+	m.focus = pickFocusList
+	m, cmd := m.selectBook()
+	if cmd == nil {
+		t.Fatal("expected preparation cmd")
+	}
+	view := m.View()
+	if !strings.Contains(view, "Preparing audiobook input") {
+		t.Fatalf("view missing preparation status:\n%s", view)
+	}
+	if strings.Contains(view, "Searching…") {
+		t.Fatalf("view reported search while preparing:\n%s", view)
+	}
+}
+
+func TestLeavingPickBookCancelsResolve(t *testing.T) {
+	cancelled := false
+	app := NewApp(&config.Config{CalibreEnabled: true})
+	app.screen = screenPickBook
+	app.pickBook.loadPhase = pickPreparing
+	app.pickBook.resolveCancel = func() { cancelled = true }
+	model, _ := app.Update(switchScreenMsg(screenAudiobook))
+	a := model.(App)
+	if !cancelled {
+		t.Fatal("leaving picker did not cancel conversion")
+	}
+	if a.pickBook.loadPhase != pickIdle {
+		t.Fatalf("picker phase = %v, want idle", a.pickBook.loadPhase)
 	}
 }
 

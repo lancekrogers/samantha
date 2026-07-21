@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -56,10 +57,18 @@ type pickBookModel struct {
 	cursor    int
 	offset    int
 	loadPhase pickLoadPhase
-	// requestID tags async selectBook work; stale results are ignored.
-	requestID uint64
-	errText   string
-	message   string
+	// requestID tags async selectBook work; stale results are ignored. IDs are
+	// process-wide so reopening the picker cannot reuse an old request ID.
+	requestID     uint64
+	resolveCancel context.CancelFunc
+	errText       string
+	message       string
+}
+
+var pickBookRequestSequence atomic.Uint64
+
+func nextPickBookRequestID() uint64 {
+	return pickBookRequestSequence.Add(1)
 }
 
 func newPickBook(cfg *config.Config) pickBookModel {
@@ -120,9 +129,6 @@ func (m pickBookModel) Update(msg tea.Msg) (pickBookModel, tea.Cmd) {
 		m.ensureVisible()
 	case tea.KeyMsg:
 		key := msg.String()
-		if m.editing && m.focus == pickFocusQuery {
-			return m.handleQueryEdit(key)
-		}
 		// Block concurrent selects / searches while work is in flight.
 		if m.busy() {
 			switch key {
@@ -133,6 +139,9 @@ func (m pickBookModel) Update(msg tea.Msg) (pickBookModel, tea.Cmd) {
 			default:
 				return m, nil
 			}
+		}
+		if m.editing && m.focus == pickFocusQuery {
+			return m.handleQueryEdit(key)
 		}
 		switch key {
 		case "up", "k":
@@ -253,16 +262,27 @@ func (m pickBookModel) selectBook() (pickBookModel, tea.Cmd) {
 	}
 	b := m.books[m.cursor]
 	client := m.client
-	m.requestID++
+	m.requestID = nextPickBookRequestID()
 	reqID := m.requestID
 	m.loadPhase = pickPreparing
 	m.errText = ""
 	m.message = "Preparing audiobook input…"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	m.resolveCancel = cancel
 	return m, func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 		path, _, err := client.BestFormatPathContext(ctx, b)
 		return bookPickedMsg{path: path, err: err, requestID: reqID}
+	}
+}
+
+func (m *pickBookModel) cancelResolve() {
+	if m.resolveCancel != nil {
+		m.resolveCancel()
+		m.resolveCancel = nil
+	}
+	if m.loadPhase == pickPreparing {
+		m.loadPhase = pickIdle
 	}
 }
 
