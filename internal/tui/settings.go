@@ -280,16 +280,18 @@ func (m *settingsModel) ensureCursorVisible() {
 }
 
 func (m settingsModel) visibleRows() int {
-	if m.height <= 0 {
-		return 10
+	h := m.height
+	if h <= 0 {
+		// No WindowSize yet — assume a normal terminal rather than a tiny list.
+		h = 24
 	}
 	// Compact: title, tabs, footer. Full: title, tabs, rule, status, footer.
-	// The list receives every other row instead of reserving guessed whitespace.
+	// The list receives every remaining row so the body tracks terminal height.
 	chrome := 5
-	if m.height < 12 {
+	if h < 12 {
 		chrome = 3
 	}
-	return max(m.height-chrome, 1)
+	return max(h-chrome, 1)
 }
 
 func (m *settingsModel) currentListLen() int {

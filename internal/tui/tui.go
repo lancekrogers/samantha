@@ -186,6 +186,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Replacing the model must not orphan an in-flight preview or player.
 			a.settings.closePreview()
 			a.settings = newSettings(a.cfg, a.providers)
+			// Apply stored geometry immediately — Bubble Tea only re-emits
+			// WindowSize on actual resize, not on screen switches. Without
+			// this, the list falls back to a default height and 80-col width
+			// even in a large terminal split. Live resizes still flow through
+			// WindowSizeMsg while settings is open.
+			a.settings.width, a.settings.height = a.width, a.height
+			a.settings.ensureCursorVisible()
 			return a, tea.Batch(a.settings.loadDevices(), pauseVoice)
 		case screenSessions:
 			// Apply stored geometry immediately — Bubble Tea only re-emits

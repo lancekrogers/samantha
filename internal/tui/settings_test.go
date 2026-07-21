@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -94,6 +95,54 @@ func TestSettingsShowsEntireListWhenItFits(t *testing.T) {
 		if !strings.Contains(view, item) {
 			t.Errorf("settings hid %q even though the list fits:\n%s", item, view)
 		}
+	}
+	if got := len(strings.Split(view, "\n")); got != 24 {
+		t.Fatalf("settings view has %d rows, want full 24-row terminal:\n%s", got, view)
+	}
+}
+
+// Settings chrome and list region must track live terminal resizes (splits,
+// full-screen toggles), not only the size captured when the screen opened.
+func TestSettingsResizesDynamicallyWithTerminal(t *testing.T) {
+	items := make([]string, 40)
+	for i := range items {
+		items[i] = fmt.Sprintf("provider-%02d", i)
+	}
+	m := settingsModel{cfg: &config.Config{}, providerItems: items}
+
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
+	if got := m.visibleRows(); got != 7 {
+		t.Fatalf("visible rows at 12h = %d, want 7", got)
+	}
+	small := stripANSI(m.View())
+	if got := len(strings.Split(small, "\n")); got != 12 {
+		t.Fatalf("small terminal view has %d rows, want 12:\n%s", got, small)
+	}
+	if !strings.Contains(small, strings.Repeat("─", 40)) {
+		t.Fatalf("small terminal missing full-width rule:\n%s", small)
+	}
+	if strings.Contains(small, "provider-07") {
+		t.Fatalf("small terminal showed more rows than fit:\n%s", small)
+	}
+
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	if got := m.visibleRows(); got != 35 {
+		t.Fatalf("visible rows at 40h = %d, want 35", got)
+	}
+	large := stripANSI(m.View())
+	if got := len(strings.Split(large, "\n")); got != 40 {
+		t.Fatalf("large terminal view has %d rows, want 40:\n%s", got, large)
+	}
+	if !strings.Contains(large, strings.Repeat("─", 120)) {
+		t.Fatalf("large terminal missing full-width rule:\n%s", large)
+	}
+	for _, item := range items[:35] {
+		if !strings.Contains(large, item) {
+			t.Errorf("expanded settings missing %q after resize", item)
+		}
+	}
+	if strings.Contains(large, "provider-35") {
+		t.Fatalf("large terminal showed more rows than fit:\n%s", large)
 	}
 }
 

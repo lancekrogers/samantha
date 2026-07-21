@@ -8,12 +8,12 @@ import (
 )
 
 func (m settingsModel) View() string {
-	var b strings.Builder
 	width := m.renderWidth()
-	compact := m.height > 0 && m.height < 12
+	compact := m.isCompact()
+	listRows := m.visibleRows()
 
-	b.WriteString(headerStyle.Render("  Settings"))
-	b.WriteString("\n")
+	var parts []string
+	parts = append(parts, headerStyle.Render("  Settings"))
 
 	tabs := []string{"Brain", "Brain model", "Tools", "TTS", "Voice", "Input", "Output", "Meeting"}
 	var tabLine strings.Builder
@@ -27,87 +27,21 @@ func (m settingsModel) View() string {
 		}
 		tabLine.WriteString(style.Render(tab))
 	}
-	b.WriteString(ansi.Truncate("  "+tabLine.String(), width, "…"))
-	b.WriteString("\n")
+	parts = append(parts, ansi.Truncate("  "+tabLine.String(), width, "…"))
 	if !compact {
-		b.WriteString(dimStyle.Render(strings.Repeat("─", max(width, 1))))
-		b.WriteString("\n")
+		// Full terminal width so the chrome tracks resizes/splits.
+		parts = append(parts, dimStyle.Render(strings.Repeat("─", max(width, 1))))
 	}
 
-	// Render active section list.
-	switch m.section {
-	case sectionProvider:
-		start, end := m.visibleRange(len(m.providerItems))
-		for i := start; i < end; i++ {
-			item := m.providerItems[i]
-			active := ""
-			if i < len(m.providers) && m.providers[i].Name == m.cfg.BrainProvider {
-				active = " ✓"
-			}
-			m.renderItem(&b, i, item+active)
-		}
-
-	case sectionModel:
-		start, end := m.visibleRange(len(m.modelItems))
-		for i := start; i < end; i++ {
-			item := m.modelItems[i]
-			active := ""
-			if item == m.activeModel() {
-				active = " ✓"
-			}
-			m.renderItem(&b, i, item+active)
-		}
-
-	case sectionTools:
-		start, end := m.visibleRange(len(m.toolItems))
-		for i := start; i < end; i++ {
-			m.renderItem(&b, i, m.toolItems[i])
-		}
-
-	case sectionTTS:
-		activeProvider := activeTTSProvider(m.cfg)
-		for i, item := range m.ttsItems {
-			active := ""
-			if item.provider == activeProvider {
-				active = " ✓"
-			}
-			m.renderItem(&b, i, item.provider+" — "+item.detail+active)
-		}
-
-	case sectionVoice:
-		if len(m.voiceItems) == 0 {
-			b.WriteString(dimStyle.Render("  No browsable voices for the active TTS provider."))
-			b.WriteString("\n")
-			break
-		}
-		start, end := m.visibleRange(len(m.voiceItems))
-		for i := start; i < end; i++ {
-			v := m.voiceItems[i]
-			active := ""
-			if v.Name == m.cfg.TTSVoice {
-				active = " ✓"
-			}
-			preview := ""
-			if v.Name == m.previewing {
-				preview = " ♫ playing..."
-			}
-			label := fmt.Sprintf("%-16s %s / %s%s%s", v.Name, v.Gender, v.Locale, active, preview)
-			m.renderItem(&b, i, label)
-		}
-
-	case sectionInput:
-		m.renderDevices(&b, m.inputItems, m.cfg.InputDevice)
-
-	case sectionOutput:
-		m.renderDevices(&b, m.outputItems, m.cfg.OutputDevice)
-
-	case sectionMeeting:
-		items := m.meetingItems()
-		start, end := m.visibleRange(len(items))
-		for i := start; i < end; i++ {
-			m.renderItem(&b, i, items[i])
-		}
+	listLines := m.sectionListLines()
+	// Fill the list region so short sections still expand with the terminal.
+	if len(listLines) > listRows {
+		listLines = listLines[:listRows]
 	}
+	for len(listLines) < listRows {
+		listLines = append(listLines, "")
+	}
+	parts = append(parts, listLines...)
 
 	help := "  ←/→ section • ↑/↓ navigate • enter select"
 	if m.section == sectionVoice {
@@ -119,21 +53,113 @@ func (m settingsModel) View() string {
 		if m.message != "" {
 			footer = statusStyle.Render("  " + m.message)
 		}
-		b.WriteString(ansi.Truncate(footer, width, "…"))
+		parts = append(parts, ansi.Truncate(footer, width, "…"))
 	} else {
 		if m.message != "" {
-			b.WriteString(ansi.Truncate("  "+statusStyle.Render(m.message), width, "…"))
+			parts = append(parts, ansi.Truncate("  "+statusStyle.Render(m.message), width, "…"))
 		} else {
-			b.WriteString(" ")
+			parts = append(parts, " ")
 		}
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render(ansi.Truncate(help, width, "…")))
+		parts = append(parts, dimStyle.Render(ansi.Truncate(help, width, "…")))
 	}
 
-	return b.String()
+	return strings.Join(parts, "\n")
 }
 
-func (m *settingsModel) renderItem(b *strings.Builder, idx int, label string) {
+func (m settingsModel) isCompact() bool {
+	return m.height > 0 && m.height < 12
+}
+
+func (m settingsModel) sectionListLines() []string {
+	switch m.section {
+	case sectionProvider:
+		start, end := m.visibleRange(len(m.providerItems))
+		lines := make([]string, 0, end-start)
+		for i := start; i < end; i++ {
+			item := m.providerItems[i]
+			active := ""
+			if i < len(m.providers) && m.providers[i].Name == m.cfg.BrainProvider {
+				active = " ✓"
+			}
+			lines = append(lines, m.itemLine(i, item+active))
+		}
+		return lines
+
+	case sectionModel:
+		start, end := m.visibleRange(len(m.modelItems))
+		lines := make([]string, 0, end-start)
+		for i := start; i < end; i++ {
+			item := m.modelItems[i]
+			active := ""
+			if item == m.activeModel() {
+				active = " ✓"
+			}
+			lines = append(lines, m.itemLine(i, item+active))
+		}
+		return lines
+
+	case sectionTools:
+		start, end := m.visibleRange(len(m.toolItems))
+		lines := make([]string, 0, end-start)
+		for i := start; i < end; i++ {
+			lines = append(lines, m.itemLine(i, m.toolItems[i]))
+		}
+		return lines
+
+	case sectionTTS:
+		activeProvider := activeTTSProvider(m.cfg)
+		start, end := m.visibleRange(len(m.ttsItems))
+		lines := make([]string, 0, end-start)
+		for i := start; i < end; i++ {
+			item := m.ttsItems[i]
+			active := ""
+			if item.provider == activeProvider {
+				active = " ✓"
+			}
+			lines = append(lines, m.itemLine(i, item.provider+" — "+item.detail+active))
+		}
+		return lines
+
+	case sectionVoice:
+		if len(m.voiceItems) == 0 {
+			return []string{dimStyle.Render("  No browsable voices for the active TTS provider.")}
+		}
+		start, end := m.visibleRange(len(m.voiceItems))
+		lines := make([]string, 0, end-start)
+		for i := start; i < end; i++ {
+			v := m.voiceItems[i]
+			active := ""
+			if v.Name == m.cfg.TTSVoice {
+				active = " ✓"
+			}
+			preview := ""
+			if v.Name == m.previewing {
+				preview = " ♫ playing..."
+			}
+			label := fmt.Sprintf("%-16s %s / %s%s%s", v.Name, v.Gender, v.Locale, active, preview)
+			lines = append(lines, m.itemLine(i, label))
+		}
+		return lines
+
+	case sectionInput:
+		return m.deviceLines(m.inputItems, m.cfg.InputDevice)
+
+	case sectionOutput:
+		return m.deviceLines(m.outputItems, m.cfg.OutputDevice)
+
+	case sectionMeeting:
+		items := m.meetingItems()
+		start, end := m.visibleRange(len(items))
+		lines := make([]string, 0, end-start)
+		for i := start; i < end; i++ {
+			lines = append(lines, m.itemLine(i, items[i]))
+		}
+		return lines
+	}
+	return nil
+}
+
+func (m settingsModel) itemLine(idx int, label string) string {
 	cursor := "  "
 	style := normalStyle
 	if idx == m.cursor {
@@ -141,7 +167,7 @@ func (m *settingsModel) renderItem(b *strings.Builder, idx int, label string) {
 		style = selectedStyle
 	}
 	line := "  " + cursor + style.Render(label)
-	b.WriteString(ansi.Truncate(line, m.renderWidth(), "…") + "\n")
+	return ansi.Truncate(line, m.renderWidth(), "…")
 }
 
 func (m settingsModel) renderWidth() int {
@@ -151,19 +177,19 @@ func (m settingsModel) renderWidth() int {
 	return m.width
 }
 
-func (m *settingsModel) renderDevices(b *strings.Builder, items []string, active string) {
+func (m settingsModel) deviceLines(items []string, active string) []string {
 	if m.devicesLoading {
-		b.WriteString(dimStyle.Render("  Discovering audio devices..."))
-		b.WriteString("\n")
-		return
+		return []string{dimStyle.Render("  Discovering audio devices...")}
 	}
 	start, end := m.visibleRange(len(items))
+	lines := make([]string, 0, end-start)
 	for i := start; i < end; i++ {
 		item := items[i]
 		label := deviceLabel(item)
 		if item == active {
 			label += " ✓"
 		}
-		m.renderItem(b, i, label)
+		lines = append(lines, m.itemLine(i, label))
 	}
+	return lines
 }

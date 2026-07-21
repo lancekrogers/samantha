@@ -49,6 +49,28 @@ func TestSwitchToSettingsCancelsPreview(t *testing.T) {
 	}
 }
 
+// Opening settings recreates the model; geometry must be copied from the app
+// because Bubble Tea does not re-emit WindowSize on screen switches.
+func TestSwitchToSettingsAppliesTerminalGeometry(t *testing.T) {
+	app := App{
+		cfg:    &config.Config{},
+		width:  120,
+		height: 40,
+	}
+	// Prior window-size updates may have left stale geometry on the old model.
+	app.settings.width, app.settings.height = 40, 12
+
+	model, _ := app.Update(switchScreenMsg(screenSettings))
+	got := model.(App).settings
+	if got.width != 120 || got.height != 40 {
+		t.Fatalf("settings geometry = %dx%d, want 120x40 from app", got.width, got.height)
+	}
+	// chrome is 5 rows in non-compact mode → 40 - 5 = 35 list rows
+	if rows := got.visibleRows(); rows != 35 {
+		t.Fatalf("visible rows = %d, want 35 for a 40-row terminal", rows)
+	}
+}
+
 func TestSettingsReturnsToConversationAndRestoresVoice(t *testing.T) {
 	app := App{cfg: &config.Config{}, screen: screenConversation}
 	app.conversation = newConversation("Samantha")
