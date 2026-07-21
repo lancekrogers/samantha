@@ -350,6 +350,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			sessionID:      msg.rt.SessionID,
 			inputDevice:    msg.rt.InputDevice,
 			outputDevice:   msg.rt.OutputDevice,
+			liveSpeaker:    msg.rt.LiveSpeaker,
 			ctx:            a.runCtx,
 			wg:             a.wg,
 		})

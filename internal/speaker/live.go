@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 var (
@@ -34,12 +35,16 @@ type LiveAnalyzer interface {
 
 // LiveStats is a point-in-time, copy-safe view for TUI/CLI status.
 type LiveStats struct {
-	Status     LiveStatus
-	QueueDepth int
-	Capacity   int
-	Dropped    uint64
-	Processed  uint64
-	LastError  string
+	Status                LiveStatus
+	QueueDepth            int
+	Capacity              int
+	Dropped               uint64
+	Processed             uint64
+	AnalyzerNanos         uint64
+	LastAnalyzerNanos     uint64
+	ResponsePathNanos     uint64
+	LastResponsePathNanos uint64
+	LastError             string
 }
 
 type liveFrame struct{ segment Segment }
@@ -63,8 +68,12 @@ type LiveAdapter struct {
 	previous string
 	wg       sync.WaitGroup
 
-	dropped   atomic.Uint64
-	processed atomic.Uint64
+	dropped               atomic.Uint64
+	processed             atomic.Uint64
+	analyzerNanos         atomic.Uint64
+	lastAnalyzerNanos     atomic.Uint64
+	responsePathNanos     atomic.Uint64
+	lastResponsePathNanos atomic.Uint64
 }
 
 // NewLiveAdapter creates an enabled adapter when analyzer is available. A nil
@@ -99,12 +108,18 @@ func (a *LiveAdapter) Events() <-chan Event { return a.events }
 // Submit copies samples and returns immediately. ErrLiveDropped is
 // informational: callers may ignore it to keep the response path clean.
 func (a *LiveAdapter) Submit(ctx context.Context, segment Segment) error {
+	started := time.Now()
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	segment.Samples = append([]float32(nil), segment.Samples...)
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	defer func() {
+		a.mu.Unlock()
+		nanos := uint64(time.Since(started).Nanoseconds())
+		a.responsePathNanos.Add(nanos)
+		a.lastResponsePathNanos.Store(nanos)
+	}()
 	if a.closed {
 		return ErrLiveClosed
 	}
@@ -150,16 +165,24 @@ func (a *LiveAdapter) process(segment Segment) {
 	analyzer := a.analyzer
 	session := a.session
 	a.mu.Unlock()
+	started := time.Now()
 	obs, err := analyzer.IdentifySegment(a.ctx, segment)
+	nanos := uint64(time.Since(started).Nanoseconds())
+	a.analyzerNanos.Add(nanos)
+	a.lastAnalyzerNanos.Store(nanos)
 	a.processed.Add(1)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.closed {
+	if a.closed || session != a.session {
 		return
 	}
 	a.sequence++
 	ev := Event{Kind: EventSpeakerUpdated, Observation: obs, SessionID: fmt.Sprintf("session-%d", session), Sequence: a.sequence}
 	if err != nil {
+		ev.Observation.SegmentID = segment.ID
+		ev.Observation.StartMS = MS(segment.Start)
+		ev.Observation.EndMS = MS(segment.End)
+		ev.Observation.Source = segment.Source
 		a.status = LiveDegraded
 		a.lastErr = err.Error()
 		ev.Observation.Label = LabelUnknown
@@ -186,7 +209,12 @@ func (a *LiveAdapter) SetEnabled(enabled bool) {
 	if a.closed {
 		return
 	}
-	a.enabled = enabled && a.analyzer != nil
+	if a.analyzer == nil {
+		a.enabled = false
+		a.status = LiveUnavailable
+		return
+	}
+	a.enabled = enabled
 	if !a.enabled {
 		a.status = LiveDisabled
 		return
@@ -217,7 +245,18 @@ func (a *LiveAdapter) Reset() error {
 func (a *LiveAdapter) Stats() LiveStats {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return LiveStats{Status: a.status, QueueDepth: len(a.frames), Capacity: cap(a.frames), Dropped: a.dropped.Load(), Processed: a.processed.Load(), LastError: a.lastErr}
+	return LiveStats{
+		Status:                a.status,
+		QueueDepth:            len(a.frames),
+		Capacity:              cap(a.frames),
+		Dropped:               a.dropped.Load(),
+		Processed:             a.processed.Load(),
+		AnalyzerNanos:         a.analyzerNanos.Load(),
+		LastAnalyzerNanos:     a.lastAnalyzerNanos.Load(),
+		ResponsePathNanos:     a.responsePathNanos.Load(),
+		LastResponsePathNanos: a.lastResponsePathNanos.Load(),
+		LastError:             a.lastErr,
+	}
 }
 
 func (a *LiveAdapter) finish() {

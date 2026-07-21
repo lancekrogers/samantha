@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/speaker"
 )
 
 type slashCommandID int
@@ -22,6 +23,7 @@ const (
 	commandActivity
 	commandSettings
 	commandVoice
+	commandSpeakers
 	commandVim
 	commandQuit
 )
@@ -46,6 +48,7 @@ var slashCommands = []slashCommand{
 	{id: commandActivity, name: "/activity", usage: "/activity", description: "Switch between chat and activity", aliases: []string{"/timeline"}},
 	{id: commandSettings, name: "/settings", usage: "/settings", description: "Open TUI settings"},
 	{id: commandVoice, name: "/voice", usage: "/voice", description: "Return to voice mode after fallback", aliases: []string{"/v"}},
+	{id: commandSpeakers, name: "/speakers", usage: "/speakers [on|off|status]", description: "Show or toggle live speaker analysis"},
 	{id: commandVim, name: "/vim", usage: "/vim [on|off|insert]", description: "Toggle modal Vim editing"},
 	{id: commandQuit, name: "/quit", usage: "/quit", description: "Exit Samantha", aliases: []string{"/q", "/exit"}},
 }
@@ -144,7 +147,7 @@ func sharedPrefixLen(a, b string) int {
 }
 
 func (m *conversationModel) executeSlashCommand(command slashCommand, args []string) tea.Cmd {
-	if command.id != commandHelp && command.id != commandVim && len(args) > 0 {
+	if command.id != commandHelp && command.id != commandVim && command.id != commandSpeakers && len(args) > 0 {
 		m.commandError(fmt.Sprintf("%s does not take arguments", command.name))
 		return m.resumeListening()
 	}
@@ -180,6 +183,9 @@ func (m *conversationModel) executeSlashCommand(command slashCommand, args []str
 			m.emit(events.Info{Message: "Switching back to voice mode."})
 		}
 		return m.resumeListening()
+	case commandSpeakers:
+		m.configureLiveSpeakers(args)
+		return m.resumeListening()
 	case commandVim:
 		m.configureVim(args)
 		return m.resumeListening()
@@ -189,6 +195,50 @@ func (m *conversationModel) executeSlashCommand(command slashCommand, args []str
 	default:
 		return m.resumeListening()
 	}
+}
+
+func (m *conversationModel) configureLiveSpeakers(args []string) {
+	if m.liveSpeaker == nil {
+		m.commandNotice("Live speaker analysis is unavailable in this runtime.")
+		return
+	}
+	if len(args) > 1 {
+		m.commandError("usage: /speakers [on|off|status]")
+		return
+	}
+	stats := m.liveSpeaker.Stats()
+	if len(args) == 0 || strings.EqualFold(args[0], "status") {
+		m.liveSpeakerStats = stats
+		m.liveSpeakerStatsKnown = true
+		m.commandNotice(liveSpeakerStatusDetail(stats))
+		return
+	}
+	var enabled bool
+	switch strings.ToLower(args[0]) {
+	case "on", "enable", "enabled":
+		enabled = true
+	case "off", "disable", "disabled":
+		enabled = false
+	default:
+		m.commandError("usage: /speakers [on|off|status]")
+		return
+	}
+	m.liveSpeaker.SetEnabled(enabled)
+	stats = m.liveSpeaker.Stats()
+	m.liveSpeakerStats = stats
+	m.liveSpeakerStatsKnown = true
+	m.commandNotice(liveSpeakerStatusDetail(stats))
+}
+
+func liveSpeakerStatusDetail(stats speaker.LiveStats) string {
+	message := liveSpeakerStatusLabel(stats.Status)
+	if stats.QueueDepth > 0 || stats.Dropped > 0 {
+		message += fmt.Sprintf(" · queue %d/%d · dropped %d", stats.QueueDepth, stats.Capacity, stats.Dropped)
+	}
+	if stats.LastError != "" {
+		message += " · " + stats.LastError
+	}
+	return message
 }
 
 func (m *conversationModel) showCommandHelp(args []string) {
