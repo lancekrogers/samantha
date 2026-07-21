@@ -12,8 +12,10 @@ import (
 )
 
 // Render builds a markdown document from a Summary + JSONL event stream.
-// body is notes | full (default notes). Pure over the JSONL so route-later
-// works on any past meeting.
+// body is notes | full (default notes). Both scopes include the full
+// transcript text so campaign intents and other sinks remain self-contained
+// (local path pointers alone are not useful off-machine). Pure over the JSONL
+// so route-later works on any past meeting.
 func Render(summary meetinglog.Summary, body string) (RenderedNote, error) {
 	if body == "" {
 		body = BodyNotes
@@ -84,7 +86,7 @@ func RenderEvents(summary meetinglog.Summary, events []meetinglog.Event, body st
 		summary.Utterances, summary.Notes, summary.Bookmarks)
 
 	if summary.File != "" {
-		b.WriteString("_Local transcript:_ `")
+		b.WriteString("_Local copy:_ `")
 		b.WriteString(summary.File)
 		b.WriteString("`\n\n")
 	}
@@ -126,26 +128,18 @@ func RenderEvents(summary meetinglog.Summary, events []meetinglog.Event, body st
 		b.WriteString("\n")
 	}
 
-	if body == BodyFull {
-		b.WriteString("## Transcript\n\n")
-		if len(utterances) == 0 {
-			b.WriteString("_No utterances recorded._\n")
-		} else {
-			for _, e := range utterances {
-				fmt.Fprintf(&b, "- %s%s\n", offsetLabel(e.OffsetMs), e.Text)
-			}
+	// Always embed the transcript so routed intents/files are self-contained.
+	// body=full is retained for compatibility; content is the same as notes.
+	_ = body
+	b.WriteString("## Transcript\n\n")
+	if len(utterances) == 0 {
+		b.WriteString("_No utterances recorded._\n")
+	} else {
+		for _, e := range utterances {
+			fmt.Fprintf(&b, "- %s%s\n", offsetLabel(e.OffsetMs), e.Text)
 		}
-		b.WriteString("\n")
-	} else if len(utterances) > 0 {
-		b.WriteString("## Transcript\n\n")
-		b.WriteString("_Full transcript kept locally")
-		if summary.File != "" {
-			b.WriteString(" at `")
-			b.WriteString(summary.File)
-			b.WriteString("`")
-		}
-		fmt.Fprintf(&b, " (%d utterances). Export with body=full to include it._\n\n", len(utterances))
 	}
+	b.WriteString("\n")
 
 	return RenderedNote{
 		Title:       title,

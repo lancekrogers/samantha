@@ -261,7 +261,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("meeting.dir", "")
 	v.SetDefault("meeting.route.mode", "ask")
 	v.SetDefault("meeting.route.default", "")
-	v.SetDefault("meeting.route.body", "notes")
+	// Embed transcript by default so routed intents are self-contained.
+	v.SetDefault("meeting.route.body", "full")
 	v.SetDefault("meeting.route.destinations", []any{})
 
 	// Speaker analysis off by default.
