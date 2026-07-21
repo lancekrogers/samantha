@@ -37,3 +37,10 @@ vendor/
 # Models (downloaded at runtime)
 *.onnx
 *.bin
+
+# Large downloaded meeting audio fixtures (fetch via just fetch-meeting-fixture)
+tests/fixtures/meetings/*.wav
+tests/fixtures/meetings/*.m4a
+tests/fixtures/meetings/*.webm
+tests/fixtures/meetings/*.mp3
+tests/fixtures/meetings/*-speaker-analysis.json

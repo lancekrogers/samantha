@@ -89,6 +89,35 @@ demo-meeting-route-speaker: build
         vhs demos/meeting-route-speaker.tape
     ls -lh demos/meeting-route-speaker.gif
 
+# Multi-voice meeting conversation + speaker analysis status (VHS).
+demo-meeting-speakers: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    env -u NO_COLOR -u CLICOLOR \
+        CLICOLOR_FORCE=1 FORCE_COLOR=1 \
+        TERM=xterm-256color COLORTERM=truecolor \
+        vhs demos/meeting-speakers.tape
+    ls -lh demos/meeting-speakers.gif
+
+# Download the multi-speaker YouTube meeting clip (90s, 16 kHz mono WAV).
+# Source: https://www.youtube.com/watch?v=lBVtvOpU80Q
+fetch-meeting-fixture:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    chmod +x scripts/fetch-meeting-fixture.sh
+    ./scripts/fetch-meeting-fixture.sh
+
+# Diarization integration against real multi-voice meeting audio.
+# Requires: just fetch-meeting-fixture
+speakerflow:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! -f tests/fixtures/meetings/product-marketing-meeting-90s.wav ]]; then
+        echo "fixture missing — run: just fetch-meeting-fixture" >&2
+        exit 1
+    fi
+    go test -tags=integration -count=1 -timeout 3m -v ./tests/speakerflow/...
+
 [private]
 _optimize-demo-gif path:
     #!/usr/bin/env bash

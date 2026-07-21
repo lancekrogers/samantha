@@ -90,3 +90,23 @@ Color: `env -u NO_COLOR` + `SAMANTHA_COLOR_PROFILE=ansi`.
 just demo-meeting-route-speaker
 ```
 
+## meeting-speakers.gif — multi-voice meeting + diarization status
+
+Scripts a multi-person product marketing conversation and shows speaker
+analysis status moving **queued → running → complete**, with labeled turns
+(`[speaker-1] …`, `[speaker-2] …`).
+
+No live mic. Uses `SAMANTHA_DEMO_MEETING_SPEAKERS=1`.
+
+```bash
+just demo-meeting-speakers
+```
+
+Related: real multi-voice audio fixture + integration suite:
+
+```bash
+just fetch-meeting-fixture   # yt-dlp YouTube meeting clip → 16 kHz WAV
+just speakerflow             # AnalyzeRecording + AttributeTranscript
+samantha meeting analyze tests/fixtures/meetings/product-marketing-meeting-90s.wav
+```
+
