@@ -30,9 +30,9 @@ func newMeetingAnalyzeCmd() *cobra.Command {
 		Long: `Analyze a mono WAV recording (preferably 16 kHz) with the meeting
 speaker pipeline and write a speaker-analysis JSON timeline.
 
-Example (YouTube multi-voice fixture):
+Example (YouTube multi-voice fixture, shared cache):
   just fetch-meeting-fixture
-  samantha meeting analyze tests/fixtures/meetings/product-marketing-meeting-90s.wav
+  samantha meeting analyze ~/.cache/samantha/fixtures/meetings/product-marketing-meeting-90s.wav
 
 Notes:
   - Requires speaker analysis enabled (or passes --speakers N).

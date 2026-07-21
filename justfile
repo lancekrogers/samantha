@@ -99,8 +99,11 @@ demo-meeting-speakers: build
         vhs demos/meeting-speakers.tape
     ls -lh demos/meeting-speakers.gif
 
-# Download the multi-speaker YouTube meeting clip (90s, 16 kHz mono WAV).
-# Source: https://www.youtube.com/watch?v=lBVtvOpU80Q
+# Download the multi-speaker YouTube meeting clip (first 90s only, 16 kHz mono).
+# Source: https://www.youtube.com/watch?v=lBVtvOpU80Q (~43 min full video — we
+# only pull 0:00–1:30). Stored in a shared user cache so worktrees reuse it:
+#   ${XDG_CACHE_HOME:-$HOME/.cache}/samantha/fixtures/meetings/
+# Override with SAMANTHA_FIXTURE_CACHE=… or FORCE_FETCH=1 to re-download.
 fetch-meeting-fixture:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -109,7 +112,7 @@ fetch-meeting-fixture:
 
 # Diarization integration against real multi-voice meeting audio.
 #
-# 1. Ensures the YouTube meeting fixture (auto-fetch if missing)
+# 1. Ensures the shared-cache YouTube fixture (auto-fetch once if missing)
 # 2. Runs tests/speakerflow
 # 3. Refreshes demos/meeting-speakers.gif when `vhs` is installed
 #    (skip with SPEAKERFLOW_SKIP_VHS=1)
@@ -118,15 +121,28 @@ fetch-meeting-fixture:
 speakerflow:
     #!/usr/bin/env bash
     set -euo pipefail
-    fixture="tests/fixtures/meetings/product-marketing-meeting-90s.wav"
+    # Resolve shared cache path (same rules as scripts/fetch-meeting-fixture.sh).
+    if [[ -n "${SAMANTHA_MEETING_FIXTURE:-}" ]]; then
+        fixture="$SAMANTHA_MEETING_FIXTURE"
+    else
+        if [[ -n "${SAMANTHA_FIXTURE_CACHE:-}" ]]; then
+            cache="${SAMANTHA_FIXTURE_CACHE}"
+        elif [[ -n "${XDG_CACHE_HOME:-}" ]]; then
+            cache="${XDG_CACHE_HOME}/samantha/fixtures/meetings"
+        else
+            cache="${HOME}/.cache/samantha/fixtures/meetings"
+        fi
+        fixture="${cache}/product-marketing-meeting-90s.wav"
+    fi
     if [[ ! -f "$fixture" ]]; then
-        echo "fixture missing — fetching via just fetch-meeting-fixture…"
+        echo "shared fixture missing — fetching once into cache…"
         just fetch-meeting-fixture
     fi
     if [[ ! -f "$fixture" ]]; then
         echo "fixture still missing after fetch: $fixture" >&2
         exit 1
     fi
+    echo "==> speakerflow: using $fixture"
     echo "==> speakerflow: integration tests"
     go test -tags=integration -count=1 -timeout 3m -v ./tests/speakerflow/...
     if [[ "${SPEAKERFLOW_SKIP_VHS:-}" == "1" ]]; then
