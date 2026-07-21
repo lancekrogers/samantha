@@ -28,10 +28,11 @@ const (
 	ModeOff  = "off"
 )
 
-// Body scopes control how much of the meeting is rendered into the export.
+// Body scopes control export shape. Both include the full transcript text so
+// campaign intents and other sinks stay self-contained (not just local paths).
 const (
-	BodyNotes = "notes" // notes + bookmarks + metadata (+ pointer to local transcript)
-	BodyFull  = "full"  // entire transcript
+	BodyNotes = "notes" // notes + bookmarks + metadata + full transcript
+	BodyFull  = "full"  // same content as notes (compat alias)
 )
 
 // Outcome is the result of a route attempt.

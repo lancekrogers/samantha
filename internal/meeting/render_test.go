@@ -41,11 +41,12 @@ func TestRenderEventsNotesScope(t *testing.T) {
 	if !strings.Contains(note.Body, "★") {
 		t.Fatalf("missing bookmark:\n%s", note.Body)
 	}
-	if strings.Contains(note.Body, "hello world") {
-		t.Fatalf("notes scope should not include full transcript:\n%s", note.Body)
+	// Notes scope must embed the transcript (campaign intents cannot rely on local paths).
+	if !strings.Contains(note.Body, "hello world") || !strings.Contains(note.Body, "bye") {
+		t.Fatalf("notes scope missing transcript utterances:\n%s", note.Body)
 	}
-	if !strings.Contains(note.Body, "Full transcript kept locally") {
-		t.Fatalf("expected local transcript pointer:\n%s", note.Body)
+	if strings.Contains(note.Body, "Full transcript kept locally") {
+		t.Fatalf("notes scope should not point at local path instead of embedding:\n%s", note.Body)
 	}
 
 	full := RenderEvents(summary, events, BodyFull)
