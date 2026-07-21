@@ -91,7 +91,7 @@ func (m meetingRouteModel) Update(msg tea.Msg) (meetingRouteModel, tea.Cmd) {
 			m.message = "Routing…"
 			summary := m.summary
 			body := m.cfg.Body
-			cfg := m.cfg
+			cfg := meeting.WithDestination(m.cfg, dest)
 			return m, func() tea.Msg {
 				note, err := meeting.Render(summary, body)
 				if err != nil {

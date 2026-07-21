@@ -47,6 +47,9 @@ func (a *App) stopMeetingRuntimeWithSummary() (meetinglog.Summary, error) {
 // Returns a tea.Cmd when auto-routing asynchronously; otherwise mutates screen and returns nil.
 // Uses the live a.cfg (settings already mutate it via SetAndSave) so tests stay isolated
 // from the developer's on-disk config.yaml.
+//
+// Per-session plan from the start-meeting picker (meetingRoutePlan) wins over
+// global meeting.route.mode when set.
 func (a *App) beginMeetingRoute(summary meetinglog.Summary) tea.Cmd {
 	if summary.File == "" && summary.JSONLFile == "" {
 		return nil
@@ -56,6 +59,35 @@ func (a *App) beginMeetingRoute(summary meetinglog.Summary) tea.Cmd {
 		return nil
 	}
 	routeCfg := meeting.FromConfig(cfg)
+	plan := a.meetingRoutePlan
+	a.meetingRoutePlan = meetingRoutePlan{} // consume once
+
+	// Explicit choice at meeting start.
+	switch plan.Kind {
+	case routePlanLocal:
+		a.launcher = a.launcher.withBanner(meeting.BannerLine(meeting.Receipt{Outcome: meeting.OutcomeSkipped}), false)
+		return nil
+	case routePlanDest:
+		if plan.Dest.ID == "" {
+			break
+		}
+		rcfg := meeting.WithDestination(routeCfg, plan.Dest)
+		dest := plan.Dest
+		body := rcfg.Body
+		return func() tea.Msg {
+			note, err := meeting.Render(summary, body)
+			if err != nil {
+				return meetingRouteResultMsg{Banner: "Meeting route failed (notes kept local): " + err.Error(), IsErr: true}
+			}
+			router := meeting.NewDefaultRouter(rcfg)
+			receipt, err := router.RouteMeeting(context.Background(), note, dest)
+			return meetingRouteResultMsg{Banner: meeting.BannerLine(receipt), IsErr: err != nil}
+		}
+	case routePlanAsk:
+		return a.openMeetingRoutePicker(summary, routeCfg)
+	}
+
+	// Fall back to configured global mode.
 	switch routeCfg.Mode {
 	case meeting.ModeOff:
 		return nil
@@ -77,16 +109,27 @@ func (a *App) beginMeetingRoute(summary meetinglog.Summary) tea.Cmd {
 			return meetingRouteResultMsg{Banner: meeting.BannerLine(receipt), IsErr: err != nil}
 		}
 	default: // ask
-		router := meeting.NewDefaultRouter(routeCfg)
-		dests := router.AvailableDestinations()
-		if len(dests) == 0 {
-			// Nothing to pick — stay on launcher without blocking.
-			return nil
-		}
-		a.meetingRoute = newMeetingRoute(summary, routeCfg, dests)
-		a.meetingRoute.width = a.width
-		a.meetingRoute.height = a.height
-		a.screen = screenMeetingRoute
+		return a.openMeetingRoutePicker(summary, routeCfg)
+	}
+}
+
+// openMeetingRoutePicker discovers destinations (config + camp list) and shows
+// the post-meeting chooser. No-ops when nothing is available.
+func (a *App) openMeetingRoutePicker(summary meetinglog.Summary, routeCfg meeting.Config) tea.Cmd {
+	router := meeting.NewDefaultRouter(routeCfg)
+	ctx, cancel := context.WithTimeout(context.Background(), meeting.DiscoverTimeout)
+	defer cancel()
+	dests := router.DiscoverDestinations(ctx)
+	if len(dests) == 0 {
 		return nil
 	}
+	// Ensure discovered dests are routable via RouteByID if needed later.
+	for _, d := range dests {
+		routeCfg = meeting.WithDestination(routeCfg, d)
+	}
+	a.meetingRoute = newMeetingRoute(summary, routeCfg, dests)
+	a.meetingRoute.width = a.width
+	a.meetingRoute.height = a.height
+	a.screen = screenMeetingRoute
+	return nil
 }

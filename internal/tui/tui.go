@@ -7,8 +7,10 @@ import (
 	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/discovery"
+	"github.com/lancekrogers/samantha/internal/meeting"
 	"github.com/lancekrogers/samantha/internal/session"
 )
 
@@ -27,6 +29,12 @@ const (
 	screenLibrary
 	screenRemote
 )
+
+// meetingRoutePlan is the per-session routing choice from the start picker.
+type meetingRoutePlan struct {
+	Kind string // local | ask | dest | empty (use config mode)
+	Dest meeting.Destination
+}
 
 // App is the top-level bubbletea model.
 type App struct {
@@ -58,8 +66,9 @@ type App struct {
 	slot *runtimeSlot
 
 	// Meeting recorder wiring (launcher → setup → recorder).
-	meetingBuilder MeetingBuilder
-	meetingRT      *MeetingRuntime
+	meetingBuilder   MeetingBuilder
+	meetingRT        *MeetingRuntime
+	meetingRoutePlan meetingRoutePlan // chosen at setup; consumed after stop
 
 	// Set once the conversation runtime is built; Run tears it down after
 	// the program exits.
@@ -200,7 +209,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.sessions.width, a.sessions.height = a.width, a.height
 			a.sessions.ensureVisible()
 		case screenMeetingSetup:
-			a.meetingSetup = newMeetingSetup()
+			a.meetingSetup = newMeetingSetup(a.cfg)
 			a.meetingSetup.width, a.meetingSetup.height = a.width, a.height
 		case screenAudiobook:
 			// Preserve form state when returning from the library picker.
@@ -222,6 +231,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case startMeetingMsg:
+		a.meetingRoutePlan = meetingRoutePlan{
+			Kind: msg.RoutePlan,
+			Dest: msg.Destination,
+		}
 		a.screen = screenMeeting
 		a.meeting = newEmbeddedMeeting()
 		a.meeting.width, a.meeting.height = a.width, a.height
@@ -232,7 +245,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case meetingReadyMsg:
 		if msg.err != nil {
 			a.screen = screenMeetingSetup
-			a.meetingSetup = newMeetingSetup()
+			a.meetingSetup = newMeetingSetup(a.cfg)
 			a.meetingSetup.width, a.meetingSetup.height = a.width, a.height
 			a.meetingSetup.err = msg.err.Error()
 			return a, nil
@@ -260,9 +273,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.launcher = a.launcher.withBanner(fmt.Sprintf("Meeting ended with error: %v", err), true)
 			return a, nil
 		}
-		// Post-meeting routing: ask / auto / off.
+		// Post-meeting routing: ask / auto / off / start-picker plan.
+		// beginMeetingRoute may switch to screenMeetingRoute (nil cmd) or
+		// return an async route cmd — do not clobber either.
+		prevScreen := a.screen
 		if cmd := a.beginMeetingRoute(summary); cmd != nil {
 			return a, cmd
+		}
+		if a.screen != prevScreen {
+			return a, nil
 		}
 		a.screen = screenLauncher
 		return a, nil
@@ -458,4 +477,3 @@ func (a App) View() string {
 		return ""
 	}
 }
-

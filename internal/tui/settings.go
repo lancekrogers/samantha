@@ -11,6 +11,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/discovery"
+	"github.com/lancekrogers/samantha/internal/meeting"
 	"github.com/lancekrogers/samantha/internal/tts"
 )
 
@@ -25,6 +26,7 @@ const (
 	sectionInput
 	sectionOutput
 	sectionMeeting
+	sectionSpeaker
 	settingsSectionCount
 )
 
@@ -48,6 +50,12 @@ type settingsModel struct {
 	outputItems    []string
 	devicesLoading bool
 	deviceChecker  config.VoiceDeviceChecker
+
+	// Meeting route discovery (camp list + config).
+	routeDests        []meeting.Destination
+	routeDestsLoading bool
+	routeDestsErr     string
+	routeDestsSeq     int
 
 	// Preview playback state.
 	previewing       string
@@ -202,15 +210,21 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 			m.cursor = 0
 			m.offset = 0
 			m.message = ""
+			if m.section == sectionMeeting && !m.routeDestsLoading && m.routeDests == nil {
+				return m, m.loadRouteDestinations()
+			}
 		case "shift+tab", "left", "h":
 			if m.section > 0 {
 				m.section--
 			} else {
-				m.section = sectionMeeting
+				m.section = sectionSpeaker
 			}
 			m.cursor = 0
 			m.offset = 0
 			m.message = ""
+			if m.section == sectionMeeting && !m.routeDestsLoading && m.routeDests == nil {
+				return m, m.loadRouteDestinations()
+			}
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
@@ -221,6 +235,10 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 				m.cursor++
 			}
 		case "enter":
+			if m.section == sectionMeeting && m.cursor == 5 {
+				m.selectMeetingItem()
+				return m, m.loadRouteDestinations()
+			}
 			m.selectCurrent()
 		case "p":
 			if m.section == sectionVoice && m.cursor < len(m.voiceItems) {
@@ -257,6 +275,21 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 		}
 		m.inputItems = append([]string{""}, msg.inputs...)
 		m.outputItems = append([]string{""}, msg.outputs...)
+
+	case meetingRouteDestsMsg:
+		if msg.seq != m.routeDestsSeq {
+			break
+		}
+		m.routeDestsLoading = false
+		if msg.err != nil {
+			m.routeDestsErr = msg.err.Error()
+			m.routeDests = nil
+			m.message = "Destination discovery failed: " + msg.err.Error()
+			break
+		}
+		m.routeDestsErr = ""
+		m.routeDests = msg.dests
+		m.message = fmt.Sprintf("Found %d route destination(s)", len(msg.dests))
 	}
 
 	return m, nil
@@ -312,6 +345,8 @@ func (m *settingsModel) currentListLen() int {
 		return len(m.outputItems)
 	case sectionMeeting:
 		return len(m.meetingItems())
+	case sectionSpeaker:
+		return len(m.speakerItems())
 	}
 	return 0
 }
@@ -421,6 +456,8 @@ func (m *settingsModel) selectCurrent() {
 		}
 	case sectionMeeting:
 		m.selectMeetingItem()
+	case sectionSpeaker:
+		m.selectSpeakerItem()
 	case sectionOutput:
 		if m.cursor < len(m.outputItems) {
 			name := m.outputItems[m.cursor]

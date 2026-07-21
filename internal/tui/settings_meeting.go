@@ -1,13 +1,16 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/meeting"
 )
 
-// meetingItems lists Meeting Notes settings rows (mode, default, body).
-// Destination CRUD stays in YAML for v1.
+// meetingItems lists Meeting Notes settings rows (mode, default, body, discovery).
 func (m settingsModel) meetingItems() []string {
 	mode := m.cfg.Meeting.Route.Mode
 	if mode == "" {
@@ -21,12 +24,23 @@ func (m settingsModel) meetingItems() []string {
 	if body == "" {
 		body = "notes"
 	}
-	nDest := len(m.cfg.Meeting.Route.Destinations)
+	nCfg := len(m.cfg.Meeting.Route.Destinations)
+	nAvail := len(m.routeDests)
+	availLabel := "…"
+	if m.routeDestsLoading {
+		availLabel = "discovering…"
+	} else if m.routeDestsErr != "" {
+		availLabel = "discovery error"
+	} else {
+		availLabel = fmt.Sprintf("%d available", nAvail)
+	}
 	return []string{
 		fmt.Sprintf("Route mode: %s", mode),
 		fmt.Sprintf("Default destination: %s", def),
 		fmt.Sprintf("Body scope: %s", body),
-		fmt.Sprintf("Destinations: %d (edit config.yaml)", nDest),
+		fmt.Sprintf("Configured destinations: %d", nCfg),
+		fmt.Sprintf("Picker destinations: %s", availLabel),
+		"Refresh destinations (camp list + config)",
 	}
 }
 
@@ -47,14 +61,28 @@ func (m *settingsModel) selectMeetingItem() {
 		}
 		m.cfg.Meeting.Route.Mode = next
 		m.message = fmt.Sprintf("Meeting route mode: %s", next)
-	case 1: // cycle default destination among configured ids + empty
-		dests := m.cfg.Meeting.Route.Destinations
-		ids := make([]string, 0, len(dests)+1)
-		ids = append(ids, "")
-		for _, d := range dests {
-			if d.ID != "" {
-				ids = append(ids, d.ID)
+	case 1: // cycle default among configured + discovered ids + empty
+		ids := []string{""}
+		seen := map[string]struct{}{"": {}}
+		for _, d := range m.cfg.Meeting.Route.Destinations {
+			if d.ID == "" {
+				continue
 			}
+			if _, ok := seen[d.ID]; ok {
+				continue
+			}
+			seen[d.ID] = struct{}{}
+			ids = append(ids, d.ID)
+		}
+		for _, d := range m.routeDests {
+			if d.ID == "" {
+				continue
+			}
+			if _, ok := seen[d.ID]; ok {
+				continue
+			}
+			seen[d.ID] = struct{}{}
+			ids = append(ids, d.ID)
 		}
 		cur := m.cfg.Meeting.Route.Default
 		idx := 0
@@ -91,6 +119,56 @@ func (m *settingsModel) selectMeetingItem() {
 		m.cfg.Meeting.Route.Body = next
 		m.message = fmt.Sprintf("Meeting body scope: %s", next)
 	case 3:
-		m.message = "Edit meeting.route.destinations in " + config.ConfigFile()
+		m.message = "Configured destinations live in " + config.ConfigFile() + " (meeting.route.destinations)"
+	case 4:
+		if m.routeDestsLoading {
+			m.message = "Still discovering destinations…"
+			return
+		}
+		if m.routeDestsErr != "" {
+			m.message = "Discovery error: " + m.routeDestsErr
+			return
+		}
+		if len(m.routeDests) == 0 {
+			m.message = "No destinations yet — install camp or add YAML destinations; start a meeting to pick"
+			return
+		}
+		// Show a short preview of the first few labels.
+		n := min(len(m.routeDests), 3)
+		parts := make([]string, 0, n)
+		for i := 0; i < n; i++ {
+			parts = append(parts, meeting.DestinationLabel(m.routeDests[i]))
+		}
+		more := ""
+		if len(m.routeDests) > n {
+			more = fmt.Sprintf(" (+%d more)", len(m.routeDests)-n)
+		}
+		m.message = fmt.Sprintf("%d destination(s): %v%s — choose when starting a meeting", len(m.routeDests), parts, more)
+	case 5:
+		m.message = "Refreshing destinations…"
 	}
+}
+
+// loadRouteDestinations probes camp list + config for the Meeting settings tab.
+func (m *settingsModel) loadRouteDestinations() tea.Cmd {
+	m.routeDestsLoading = true
+	m.routeDestsErr = ""
+	m.routeDestsSeq++
+	seq := m.routeDestsSeq
+	cfg := m.cfg
+	return func() tea.Msg {
+		routeCfg := meeting.FromConfig(cfg)
+		router := meeting.NewDefaultRouter(routeCfg)
+		ctx, cancel := context.WithTimeout(context.Background(), meeting.DiscoverTimeout)
+		defer cancel()
+		dests := router.DiscoverDestinations(ctx)
+		return meetingRouteDestsMsg{seq: seq, dests: dests}
+	}
+}
+
+// meetingRouteDestsMsg is async discovery for Settings → Meeting.
+type meetingRouteDestsMsg struct {
+	seq   int
+	dests []meeting.Destination
+	err   error
 }
