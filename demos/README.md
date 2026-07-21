@@ -106,7 +106,13 @@ Related: real multi-voice audio fixture + integration suite:
 
 ```bash
 just fetch-meeting-fixture   # yt-dlp YouTube meeting clip → 16 kHz WAV
-just speakerflow             # AnalyzeRecording + AttributeTranscript
+just speakerflow             # tests + refreshes this GIF when vhs is installed
+just test full               # unit + integration + voiceflow + speakerflow + audio-crackle
+just all                     # clean + build + test full
 samantha meeting analyze tests/fixtures/meetings/product-marketing-meeting-90s.wav
 ```
+
+`just speakerflow` auto-fetches the fixture if missing and, when `vhs` is on
+PATH, re-records `demos/meeting-speakers.gif`. Set `SPEAKERFLOW_SKIP_VHS=1` to
+skip the GIF step (useful in CI).
 
