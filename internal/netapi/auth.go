@@ -26,6 +26,9 @@ import (
 // Credentials are the bearer token and TLS identity `serve` requires on
 // every connection. Auth is mandatory — there is no "trusted LAN, skip
 // auth" mode.
+//
+// Token is the primary/shared bearer (serve/token). PROTOCOL_DELTAS D2 also
+// mints per-device tokens under serve/tokens/; either form authenticates.
 type Credentials struct {
 	Token       string
 	Certificate tls.Certificate
@@ -44,6 +47,10 @@ type Credentials struct {
 	// Pairing is a short-lived code clients exchange for Token over TLS.
 	// Regenerated each serve start; single-use once exchanged.
 	Pairing *PairingCode
+
+	// devices holds per-device tokens (nil only for in-memory test creds
+	// constructed without LoadOrCreateCredentials).
+	devices *deviceStore
 
 	pairingMu sync.Mutex
 }
@@ -102,7 +109,7 @@ func loadCredentials(dir, externalCert, externalKey string, id CertIdentity) (*C
 		return nil, fmt.Errorf("create serve credentials dir: %w", err)
 	}
 
-	creds := &Credentials{Dir: dir}
+	creds := &Credentials{Dir: dir, devices: newDeviceStore(dir)}
 
 	tokenPath := filepath.Join(dir, tokenFile)
 	tokenBytes, err := os.ReadFile(tokenPath)
@@ -124,6 +131,10 @@ func loadCredentials(dir, externalCert, externalKey string, id CertIdentity) (*C
 	}
 	if creds.Token == "" {
 		return nil, fmt.Errorf("token file %s is empty — delete it to regenerate", tokenPath)
+	}
+
+	if err := creds.devices.load(); err != nil {
+		return nil, err
 	}
 
 	certPath, keyPath := externalCert, externalKey
@@ -191,35 +202,90 @@ func (c *Credentials) RefreshPairingCode() (*PairingCode, error) {
 	return pairing, nil
 }
 
-// ExchangePairingCode validates a pairing code and returns the long-lived
-// bearer token. The code is single-use; on success it is marked used.
+// ExchangePairingCode validates a pairing code and returns the primary
+// long-lived bearer token. The code is single-use; on success it is marked
+// used. Prefer ExchangePairingCodeForDevice when the client sends a name.
 func (c *Credentials) ExchangePairingCode(code string) (token string, err error) {
+	if err := c.consumePairingCode(code); err != nil {
+		return "", err
+	}
+	return c.Token, nil
+}
+
+// ExchangePairingCodeForDevice validates a pairing code and, when deviceName
+// is non-empty, mints a per-device token (D2). Empty deviceName returns the
+// primary shared token for back-compat with older clients.
+func (c *Credentials) ExchangePairingCodeForDevice(code, deviceName string) (token string, deviceID string, err error) {
+	if err := c.consumePairingCode(code); err != nil {
+		return "", "", err
+	}
+	deviceName = strings.TrimSpace(deviceName)
+	if deviceName == "" {
+		return c.Token, "", nil
+	}
+	if c.devices == nil {
+		return "", "", fmt.Errorf("device tokens unavailable without credentials directory")
+	}
+	rec, err := c.devices.mint(deviceName)
+	if err != nil {
+		return "", "", err
+	}
+	return rec.Token, rec.ID, nil
+}
+
+func (c *Credentials) consumePairingCode(code string) error {
 	c.pairingMu.Lock()
 	defer c.pairingMu.Unlock()
 
 	code = strings.TrimSpace(code)
 	if c.Pairing == nil {
-		return "", fmt.Errorf("no pairing code available")
+		return fmt.Errorf("no pairing code available")
 	}
 	if c.Pairing.used {
-		return "", fmt.Errorf("pairing code already used — restart serve to issue a new code")
+		return fmt.Errorf("pairing code already used — restart serve to issue a new code")
 	}
 	if time.Now().After(c.Pairing.ExpiresAt) {
-		return "", fmt.Errorf("pairing code expired")
+		return fmt.Errorf("pairing code expired")
 	}
 	if subtle.ConstantTimeCompare([]byte(code), []byte(c.Pairing.Code)) != 1 {
-		return "", fmt.Errorf("invalid pairing code")
+		return fmt.Errorf("invalid pairing code")
 	}
 	if !c.tokenActive() {
-		return "", fmt.Errorf("serve token has been revoked")
+		return fmt.Errorf("serve token has been revoked")
 	}
 	c.Pairing.used = true
-	return c.Token, nil
+	return nil
 }
 
-// RevokeTokens deletes the long-lived bearer token file. A running server
-// observes the deletion, rejects further controls, closes active streams, and
-// exits; the next serve start mints a fresh token and pairing code.
+// ListDevices returns public metadata for all paired device tokens.
+func (c *Credentials) ListDevices() []DeviceInfo {
+	if c.devices == nil {
+		return nil
+	}
+	return c.devices.list()
+}
+
+// DeleteDevice revokes one paired device. ok is false when the id is unknown.
+// The returned token is the revoked bearer (for stream eviction).
+func (c *Credentials) DeleteDevice(id string) (token string, ok bool, err error) {
+	if c.devices == nil {
+		return "", false, fmt.Errorf("device tokens unavailable without credentials directory")
+	}
+	return c.devices.delete(id)
+}
+
+// MintDeviceToken creates a device token without pairing (tests / internal).
+func (c *Credentials) MintDeviceToken(deviceName string) (*DeviceRecord, error) {
+	if c.devices == nil {
+		return nil, fmt.Errorf("device tokens unavailable without credentials directory")
+	}
+	return c.devices.mint(deviceName)
+}
+
+// RevokeTokens deletes the long-lived bearer token file and all per-device
+// tokens. A running server observes primary deletion, rejects further
+// controls, closes active streams, and exits; the next serve start mints a
+// fresh primary token and pairing code.
 func RevokeTokens(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create serve credentials dir: %w", err)
@@ -227,6 +293,12 @@ func RevokeTokens(dir string) error {
 	tokenPath := filepath.Join(dir, tokenFile)
 	if err := os.Remove(tokenPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove token: %w", err)
+	}
+	// Best-effort wipe of D2 device tokens so --revoke-tokens remains global.
+	store := newDeviceStore(dir)
+	_ = store.load()
+	if err := store.clearAll(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -256,30 +328,54 @@ func RotateToken(dir string) (*Credentials, error) {
 	return LoadOrCreateCredentials(dir)
 }
 
-// VerifyRequest checks the Authorization bearer header on every protected
-// route. Browsers cannot set custom headers on WebSocket handshakes, so the
-// stream endpoint alone also accepts ?token=.
-func (c *Credentials) VerifyRequest(r *http.Request) bool {
-	if !c.tokenActive() {
-		return false
-	}
+// presentedToken extracts the bearer or stream query token from r.
+// Empty string means none was presented.
+func presentedToken(r *http.Request) string {
 	const prefix = "Bearer "
 	header := r.Header.Get("Authorization")
 	if strings.HasPrefix(header, prefix) {
-		presented := strings.TrimPrefix(header, prefix)
-		if subtle.ConstantTimeCompare([]byte(presented), []byte(c.Token)) == 1 {
-			return true
-		}
+		return strings.TrimPrefix(header, prefix)
 	}
-	if r.URL.Path != "/v1/stream" {
+	if r.URL.Path == "/v1/stream" {
+		return r.URL.Query().Get("token")
+	}
+	return ""
+}
+
+// AcceptToken reports whether presented is the primary token or an active
+// per-device token while the primary credentials file remains present.
+func (c *Credentials) AcceptToken(presented string) bool {
+	if presented == "" || !c.tokenActive() {
 		return false
 	}
-	// Query token is restricted to the browser WebSocket handshake.
-	q := r.URL.Query().Get("token")
-	if q == "" {
+	if constantTimeTokenMatch(presented, c.Token) {
+		return true
+	}
+	if c.devices != nil && c.devices.acceptToken(presented) {
+		return true
+	}
+	return false
+}
+
+// TouchToken updates last_seen for a device token (no-op for primary).
+func (c *Credentials) TouchToken(presented string) {
+	if c.devices == nil || presented == "" || constantTimeTokenMatch(presented, c.Token) {
+		return
+	}
+	c.devices.touch(presented)
+}
+
+// VerifyRequest checks the Authorization bearer header on every protected
+// route. Browsers cannot set custom headers on WebSocket handshakes, so the
+// stream endpoint alone also accepts ?token=. Accepts primary or D2 device
+// tokens while the primary token file remains active.
+func (c *Credentials) VerifyRequest(r *http.Request) bool {
+	presented := presentedToken(r)
+	if !c.AcceptToken(presented) {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(q), []byte(c.Token)) == 1
+	c.TouchToken(presented)
+	return true
 }
 
 // ensureSelfSignedCert loads an existing self-signed pair or mints a new one.

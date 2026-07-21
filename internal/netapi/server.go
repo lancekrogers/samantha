@@ -96,6 +96,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	mux.HandleFunc("POST /v1/sessions/{id}/resume", s.handleResume)
 	// Phase 2: public pairing exchange (short code → long-lived token).
 	mux.HandleFunc("POST /v1/pair", s.handlePair)
+	// PROTOCOL_DELTAS D2: per-device token list / revoke.
+	mux.HandleFunc("GET /v1/devices", s.handleDevices)
+	mux.HandleFunc("DELETE /v1/devices/{id}", s.handleDeviceDelete)
 	// Embedded phone voice client (public HTML/JS; WS still authenticated).
 	web := webFileServer()
 	mux.Handle("GET /{$}", web)
