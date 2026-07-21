@@ -266,6 +266,28 @@ func (k *KokoroTTS) ListVoices(locale, gender string) []Voice {
 	return voices
 }
 
+// Capabilities exposes Kokoro's verified static voice catalog through the
+// provider-neutral discovery seam. Kokoro remains the default and does not
+// advertise cloning or design controls.
+func (k *KokoroTTS) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{
+		Provider:               kokoroProviderName,
+		Model:                  "kokoro",
+		ModelReady:             k.Available(),
+		Modes:                  []VoiceModeCapability{{ID: VoiceModeStatic, Voices: k.ListVoices("", "")}},
+		Languages:              []string{"en-US", "en-GB", "es", "fr", "hi", "it", "ja", "pt", "zh"},
+		SampleRates:            []int{k.sampleRate},
+		SupportsPreview:        true,
+		SupportsStreaming:      true,
+		SupportsCancellation:   true,
+		SupportsReferenceAudio: false,
+	}
+}
+
+func (k *KokoroTTS) Status() ProviderStatus {
+	return ProviderStatus{Provider: kokoroProviderName, Available: k.Available(), ModelReady: k.Available()}
+}
+
 // Delete frees TTS resources. It takes the same mutex as generate: Generate is
 // an uncancellable cgo call, and freeing the handle while one is in flight (a
 // superseded voice preview, shutdown cleanup) is a use-after-free.

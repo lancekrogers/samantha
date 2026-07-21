@@ -245,6 +245,28 @@ func (q *Qwen3TTS) Available() bool { return q.alive.Load() }
 // the selected model and optional reference-audio workflow.
 func (q *Qwen3TTS) ListVoices(locale, gender string) []Voice { return nil }
 
+// Capabilities reports only the baseline native worker guarantees. Voice
+// modes are intentionally empty until a worker/model probe verifies them.
+func (q *Qwen3TTS) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{
+		Provider:               qwen3TTSProviderName,
+		Model:                  q.model,
+		ModelReady:             q.model != "" && q.Available(),
+		SampleRates:            []int{qwen3TTSSampleRate},
+		SupportsCancellation:   true,
+		SupportsReferenceAudio: false,
+	}
+}
+
+func (q *Qwen3TTS) Status() ProviderStatus {
+	available := q.Available()
+	detail := "native worker and model configured"
+	if !available {
+		detail = "provider is closed"
+	}
+	return ProviderStatus{Provider: qwen3TTSProviderName, Available: available, ModelReady: q.model != "" && available, Detail: detail}
+}
+
 // Delete prevents new work. Existing workers are still bounded by their
 // request context; callers should cancel that context during shutdown.
 func (q *Qwen3TTS) Delete() { q.alive.Store(false) }

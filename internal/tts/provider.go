@@ -21,11 +21,16 @@ type Provider interface {
 // SynthesisRequest describes a single synthesis call. Empty Voice and zero
 // Speed fall back to the provider's configured defaults.
 type SynthesisRequest struct {
-	Text       string
-	Voice      string
-	Speed      float64
-	SampleRate int
-	Metadata   map[string]string
+	Text                string
+	Voice               string
+	Mode                VoiceMode
+	Language            string
+	Instruction         string
+	ReferenceAudio      string
+	ReferenceTranscript string
+	Speed               float64
+	SampleRate          int
+	Metadata            map[string]string
 }
 
 // SynthesisResult carries a synthesized stream and its metadata.
@@ -34,6 +39,8 @@ type SynthesisResult struct {
 	SampleRate int
 	Provider   string
 	Voice      string
+	Mode       VoiceMode
+	Metadata   map[string]string
 }
 
 // RequestProvider is implemented by providers that accept typed requests.
