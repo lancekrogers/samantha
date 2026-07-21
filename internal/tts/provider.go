@@ -38,6 +38,7 @@ type SynthesisResult struct {
 	Stream     *audio.PCMStream
 	SampleRate int
 	Provider   string
+	Model      string
 	Voice      string
 	Mode       VoiceMode
 	Metadata   map[string]string

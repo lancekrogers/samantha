@@ -133,6 +133,9 @@ func (q *Qwen3TTS) SynthesizeRequest(ctx context.Context, req SynthesisRequest) 
 	if strings.TrimSpace(req.Text) == "" {
 		return SynthesisResult{}, &ProviderError{Provider: qwen3TTSProviderName, Operation: "synthesize", Kind: ProviderErrorInput, Err: errors.New("text is empty")}
 	}
+	if err := validateQwenReference(req); err != nil {
+		return SynthesisResult{}, err
+	}
 	if req.SampleRate != 0 && req.SampleRate != qwen3TTSSampleRate {
 		return SynthesisResult{}, qwenUnsupported("sample rate", fmt.Sprintf("cannot resample to %d Hz (native rate %d Hz)", req.SampleRate, qwen3TTSSampleRate))
 	}
@@ -166,6 +169,7 @@ func (q *Qwen3TTS) SynthesizeRequest(ctx context.Context, req SynthesisRequest) 
 		Stream:     stream,
 		SampleRate: qwen3TTSSampleRate,
 		Provider:   qwen3TTSProviderName,
+		Model:      q.model,
 		Voice:      voice,
 		Mode:       VoiceModeStatic,
 	}, nil
@@ -192,10 +196,10 @@ func (q *Qwen3TTS) synthesize(ctx context.Context, req SynthesisRequest, stream 
 	runCtx, cancel := context.WithTimeout(ctx, q.timeout)
 	defer cancel()
 
-	args := []string{
-		"-m", q.model,
-		"-t", req.Text,
-		"-o", outputPath,
+	args, err := q.buildArgs(req, outputPath)
+	if err != nil {
+		stream.CloseWithError(err)
+		return
 	}
 	cmd := q.command(runCtx, q.binary, args...)
 	if cmd == nil {
@@ -265,6 +269,55 @@ func (q *Qwen3TTS) synthesize(ctx context.Context, req SynthesisRequest, stream 
 		}
 	}
 	stream.Close()
+}
+
+// buildArgs is the only place where provider input becomes a native worker
+// argument vector. The currently verified Samantha worker supports only the
+// baseline model/text/output contract; future probed modes must extend this
+// function with explicit flags and corresponding capability tests.
+func (q *Qwen3TTS) buildArgs(req SynthesisRequest, outputPath string) ([]string, error) {
+	if req.Mode != "" && req.Mode != VoiceModeStatic {
+		return nil, qwenUnsupported("voice mode", fmt.Sprintf("mode %q is not verified by the native CLI", req.Mode))
+	}
+	if strings.TrimSpace(req.Voice) != "" && !strings.EqualFold(req.Voice, "default") {
+		return nil, qwenUnsupported("voice selection", fmt.Sprintf("voice %q is unsupported by the native CLI", req.Voice))
+	}
+	if req.Language != "" || req.Instruction != "" || req.ReferenceAudio != "" || req.ReferenceTranscript != "" {
+		return nil, qwenUnsupported("voice controls", "the verified native CLI exposes no voice-mode flags")
+	}
+	return []string{"-m", q.model, "-t", req.Text, "-o", outputPath}, nil
+}
+
+func validateQwenReference(req SynthesisRequest) error {
+	path := strings.TrimSpace(req.ReferenceAudio)
+	if path == "" {
+		if strings.TrimSpace(req.ReferenceTranscript) != "" {
+			return &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate reference", Kind: ProviderErrorInput, Err: errors.New("reference transcript requires reference audio")}
+		}
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate reference", Kind: ProviderErrorInput, Err: fmt.Errorf("reference audio is unavailable")}
+	}
+	if !info.Mode().IsRegular() {
+		return &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate reference", Kind: ProviderErrorInput, Err: errors.New("reference audio must be a regular file")}
+	}
+	if info.Size() > 50<<20 {
+		return &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate reference", Kind: ProviderErrorInput, Err: errors.New("reference audio exceeds the 50 MiB limit")}
+	}
+	samples, rate, err := audio.ReadWAVFloat32(path)
+	if err != nil || len(samples) == 0 || rate <= 0 {
+		return &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate reference", Kind: ProviderErrorInput, Err: errors.New("reference audio must be a non-empty readable WAV")}
+	}
+	duration := time.Duration(float64(len(samples)) / float64(rate) * float64(time.Second))
+	if duration < time.Second || duration > 30*time.Second {
+		return &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate reference", Kind: ProviderErrorInput, Err: errors.New("reference audio duration must be between 1 and 30 seconds")}
+	}
+	if strings.TrimSpace(req.ReferenceTranscript) == "" {
+		return &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate reference", Kind: ProviderErrorInput, Err: errors.New("reference transcript is required")}
+	}
+	return nil
 }
 
 func workerOutputSuffix(stderr, stdout string) string {

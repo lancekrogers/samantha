@@ -215,6 +215,7 @@ func (k *KokoroTTS) SynthesizeRequest(ctx context.Context, req SynthesisRequest)
 		Stream:     stream,
 		SampleRate: k.sampleRate,
 		Provider:   kokoroProviderName,
+		Model:      "kokoro",
 		Voice:      voice,
 	}, nil
 }

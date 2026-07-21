@@ -118,6 +118,9 @@ func TestQwenSynthesizeRequestRunsNativeWorkerAndStreamsWAV(t *testing.T) {
 	if rate != qwen3TTSSampleRate {
 		t.Fatalf("sample rate = %d, want %d", rate, qwen3TTSSampleRate)
 	}
+	if result.Model != model || result.Provider != qwen3TTSProviderName {
+		t.Fatalf("result identity = provider=%q model=%q, want provider=%q model=%q", result.Provider, result.Model, qwen3TTSProviderName, model)
+	}
 	var samples []float32
 	for frame := range result.Stream.Frames() {
 		samples = append(samples, frame...)
@@ -240,6 +243,34 @@ func TestQwenSynthesizeRequestRejectsUnsupportedSampleRate(t *testing.T) {
 	_, err := q.SynthesizeRequest(context.Background(), SynthesisRequest{Text: "hi", SampleRate: 16000})
 	if err == nil || !strings.Contains(err.Error(), "cannot resample") {
 		t.Fatalf("SynthesizeRequest() error = %v, want sample-rate rejection", err)
+	}
+}
+
+func TestQwenSynthesizeRequestValidatesReferenceBeforeWorker(t *testing.T) {
+	var gotArgs []string
+	q := newQwen3TTS("fake-qwen3-tts", t.TempDir(), time.Second, fakeQwenCommand(&gotArgs, ""))
+	q.alive.Store(true)
+
+	_, err := q.SynthesizeRequest(context.Background(), SynthesisRequest{
+		Text:                "hello",
+		Mode:                VoiceModeApprovedClone,
+		ReferenceAudio:      filepath.Join(t.TempDir(), "missing.wav"),
+		ReferenceTranscript: "hello",
+	})
+	if err == nil || !IsProviderErrorKind(err, ProviderErrorInput) || !strings.Contains(err.Error(), "reference audio is unavailable") {
+		t.Fatalf("invalid reference error = %v, want actionable input error", err)
+	}
+	if len(gotArgs) != 0 {
+		t.Fatalf("worker args = %v, want no worker launch for invalid reference", gotArgs)
+	}
+
+	ref := filepath.Join(t.TempDir(), "reference.wav")
+	if err := audio.WriteWAVFloat32(ref, qwen3TTSSampleRate, make([]float32, qwen3TTSSampleRate)); err != nil {
+		t.Fatal(err)
+	}
+	_, err = q.SynthesizeRequest(context.Background(), SynthesisRequest{Text: "hello", ReferenceAudio: ref})
+	if err == nil || !strings.Contains(err.Error(), "reference transcript is required") {
+		t.Fatalf("missing transcript error = %v, want transcript validation", err)
 	}
 }
 
