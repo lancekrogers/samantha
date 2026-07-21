@@ -36,6 +36,18 @@ func TestQwenFakeWorker(t *testing.T) {
 	if output == "" {
 		t.Fatal("fake worker output path is empty")
 	}
+	if os.Getenv("SAMANTHA_QWEN_FAKE_WORKER_INVALID") == "1" {
+		if err := os.WriteFile(output, []byte("not a wav"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		os.Exit(0)
+	}
+	if os.Getenv("SAMANTHA_QWEN_FAKE_WORKER_EMPTY") == "1" {
+		if err := audio.WriteWAVFloat32(output, qwen3TTSSampleRate, nil); err != nil {
+			t.Fatal(err)
+		}
+		os.Exit(0)
+	}
 	if err := audio.WriteWAVFloat32(output, qwen3TTSSampleRate, []float32{0.1, -0.2, 0.3}); err != nil {
 		t.Fatal(err)
 	}
@@ -165,6 +177,27 @@ func TestQwenSynthesizeRequestPropagatesWorkerFailure(t *testing.T) {
 	if result.Stream.Err() == nil || !strings.Contains(result.Stream.Err().Error(), "deterministic fake worker failure") {
 		t.Fatalf("stream error = %v, want worker stderr", result.Stream.Err())
 	}
+	if !IsProviderErrorKind(result.Stream.Err(), ProviderErrorWorker) || !errors.Is(result.Stream.Err(), ErrWorkerFailure) {
+		t.Fatalf("stream error = %v, want worker failure classification", result.Stream.Err())
+	}
+}
+
+func TestQwenSynthesizeRequestRejectsMalformedAndEmptyWAV(t *testing.T) {
+	for _, mode := range []string{"invalid", "empty"} {
+		t.Run(mode, func(t *testing.T) {
+			q := newQwen3TTS("fake-qwen3-tts", t.TempDir(), time.Second, fakeQwenCommand(nil, mode))
+			q.alive.Store(true)
+			result, err := q.SynthesizeRequest(context.Background(), SynthesisRequest{Text: mode})
+			if err != nil {
+				t.Fatalf("SynthesizeRequest() error = %v", err)
+			}
+			for range result.Stream.Frames() {
+			}
+			if err := result.Stream.Err(); err == nil || !IsProviderErrorKind(err, ProviderErrorMalformed) || !errors.Is(err, ErrMalformedOutput) {
+				t.Fatalf("stream error = %v, want malformed-output classification", err)
+			}
+		})
+	}
 }
 
 func TestQwenSynthesizeRequestTimesOutAndCancelsWorker(t *testing.T) {
@@ -233,6 +266,10 @@ func fakeQwenCommand(gotArgs *[]string, mode string) qwenCommand {
 			env = append(env, "SAMANTHA_QWEN_FAKE_WORKER_FAIL=1")
 		case "sleep":
 			env = append(env, "SAMANTHA_QWEN_FAKE_WORKER_SLEEP_MS=500")
+		case "invalid":
+			env = append(env, "SAMANTHA_QWEN_FAKE_WORKER_INVALID=1")
+		case "empty":
+			env = append(env, "SAMANTHA_QWEN_FAKE_WORKER_EMPTY=1")
 		}
 		cmd.Env = env
 		return cmd
