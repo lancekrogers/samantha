@@ -39,6 +39,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.TTSProvider != "kokoro" {
 		t.Errorf("TTSProvider = %q, want kokoro", cfg.TTSProvider)
 	}
+	if cfg.TTSFallbackProvider != "kokoro" {
+		t.Errorf("TTSFallbackProvider = %q, want kokoro", cfg.TTSFallbackProvider)
+	}
 	if cfg.TTSVoice != "af_heart" {
 		t.Errorf("TTSVoice = %q, want af_heart", cfg.TTSVoice)
 	}

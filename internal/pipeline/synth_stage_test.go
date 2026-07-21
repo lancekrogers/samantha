@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,6 +22,70 @@ func (e *errTTS) Synthesize(ctx context.Context, text string) (*audio.PCMStream,
 }
 func (e *errTTS) Available() bool                              { return true }
 func (e *errTTS) ListVoices(locale, gender string) []tts.Voice { return nil }
+
+type failedStreamTTS struct{}
+
+func (failedStreamTTS) Synthesize(ctx context.Context, text string) (*audio.PCMStream, error) {
+	stream := audio.NewPCMStream(ctx)
+	stream.CloseWithError(errors.New("native worker failed before audio was ready"))
+	return stream, nil
+}
+func (failedStreamTTS) Available() bool                              { return true }
+func (failedStreamTTS) ListVoices(locale, gender string) []tts.Voice { return nil }
+
+func TestSynthesizeWithFallbackRetriesSynchronousProviderFailure(t *testing.T) {
+	bus := events.NewBus()
+	var fallbackEvent events.Error
+	events.Subscribe(bus, func(e events.Error) {
+		if e.Stage == "tts-fallback" {
+			fallbackEvent = e
+		}
+	})
+	fallback := &fakeTTS{}
+	p := &Pipeline{TTS: &errTTS{err: errors.New("qwen unavailable")}, TTSFallback: fallback, Events: bus}
+
+	stream, usedFallback, err := p.synthesizeWithFallback(context.Background(), "hello")
+	if err != nil || !usedFallback {
+		t.Fatalf("synthesizeWithFallback() = stream=%v fallback=%v err=%v, want fallback success", stream != nil, usedFallback, err)
+	}
+	for range stream.Frames() {
+	}
+	if stream.Err() != nil {
+		t.Fatalf("fallback stream error = %v", stream.Err())
+	}
+	if len(fallback.CallTimes()) != 1 {
+		t.Fatalf("fallback calls = %d, want 1", len(fallback.CallTimes()))
+	}
+	if fallbackEvent.Stage != "tts-fallback" || !strings.Contains(fallbackEvent.Message, "qwen unavailable") {
+		t.Fatalf("fallback event = %+v, want observable primary failure", fallbackEvent)
+	}
+}
+
+func TestSynthesizeSegmentRetriesWhenProviderStreamFailsBeforeReady(t *testing.T) {
+	bus := events.NewBus()
+	var fallbackEvent events.Error
+	var playbackErrEvent events.Error
+	events.Subscribe(bus, func(e events.Error) {
+		if e.Stage == "tts-fallback" {
+			fallbackEvent = e
+		}
+		if e.Stage == "playback" {
+			playbackErrEvent = e
+		}
+	})
+	fallback := &fakeTTS{}
+	player := newFakePlayer(time.Millisecond)
+	defer player.Close()
+	p := &Pipeline{TTS: failedStreamTTS{}, TTSFallback: fallback, Player: player, Events: bus}
+
+	out := make(chan playbackEvent, 2)
+	if !p.synthesizeSegment(context.Background(), make(chan struct{}), "hello", new(atomic.Bool), out) {
+		t.Fatalf("synthesizeSegment() = false, want fallback playback enqueued; fallback event=%+v playback event=%+v calls=%d queued-events=%d", fallbackEvent, playbackErrEvent, len(fallback.CallTimes()), len(out))
+	}
+	if fallbackEvent.Stage != "tts-fallback" {
+		t.Fatalf("fallback event = %+v, want observable fallback", fallbackEvent)
+	}
+}
 
 // bufferingPlayer lets a test mute output after PlayStream begins but before
 // it returns, matching the complete-sentence buffering window in audio.Player.

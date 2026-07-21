@@ -369,6 +369,7 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `calibre_convert_binary` | empty | `CALIBRE_CONVERT_BINARY` | `ebook-convert` path (reserved; v1 does not convert MOBI/AZW3) |
 | `calibre_prefer_format` | `epub` | `CALIBRE_PREFER_FORMAT` | Preferred book format when resolving (`epub` then `pdf`) |
 | `tts_provider` | `kokoro` | `TTS_PROVIDER` | TTS backend |
+| `voice_fallback_provider` | `kokoro` | `VOICE_FALLBACK_PROVIDER` | One-sentence runtime fallback after the selected provider fails; set empty/disabled to turn it off |
 | `tts_voice` | `af_heart` | `TTS_VOICE` | Kokoro voice name |
 | `speech_speed` | `0.95` | | Playback speed |
 | `qwen_tts_binary` | `qwen3-tts-cli` | `QWEN_TTS_BINARY` | Optional native Qwen3-TTS CLI/worker |

@@ -16,13 +16,14 @@ import (
 // Config holds all application configuration.
 type Config struct {
 	// TTS
-	TTSProvider    string  `mapstructure:"tts_provider"`
-	TTSVoice       string  `mapstructure:"tts_voice"`
-	SpeechSpeed    float64 `mapstructure:"speech_speed"`
-	QwenTTSBinary  string  `mapstructure:"qwen_tts_binary"`
-	QwenTTSModel   string  `mapstructure:"qwen_tts_model"`
-	QwenTTSTimeout int     `mapstructure:"qwen_tts_timeout"`
-	OutputDevice   string  `mapstructure:"output_device"`
+	TTSProvider         string  `mapstructure:"tts_provider"`
+	TTSFallbackProvider string  `mapstructure:"voice_fallback_provider"`
+	TTSVoice            string  `mapstructure:"tts_voice"`
+	SpeechSpeed         float64 `mapstructure:"speech_speed"`
+	QwenTTSBinary       string  `mapstructure:"qwen_tts_binary"`
+	QwenTTSModel        string  `mapstructure:"qwen_tts_model"`
+	QwenTTSTimeout      int     `mapstructure:"qwen_tts_timeout"`
+	OutputDevice        string  `mapstructure:"output_device"`
 
 	// STT
 	STTProvider          string `mapstructure:"stt_provider"`
@@ -184,6 +185,7 @@ func init() {
 
 func setDefaults(v *viper.Viper) {
 	v.SetDefault("tts_provider", "kokoro")
+	v.SetDefault("voice_fallback_provider", "kokoro")
 	v.SetDefault("tts_voice", "af_heart")
 	v.SetDefault("speech_speed", 0.95)
 	v.SetDefault("qwen_tts_binary", "qwen3-tts-cli")
@@ -276,6 +278,7 @@ func Load() (*Config, error) {
 	// standard LANGUAGE leak into (and get persisted over) config values.
 	bindings := map[string]string{
 		"tts_provider":            "TTS_PROVIDER",
+		"voice_fallback_provider": "VOICE_FALLBACK_PROVIDER",
 		"tts_voice":               "TTS_VOICE",
 		"qwen_tts_binary":         "QWEN_TTS_BINARY",
 		"qwen_tts_model":          "QWEN_TTS_MODEL",

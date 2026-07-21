@@ -185,7 +185,7 @@ func TestQwenSynthesizeRequestPropagatesWorkerFailure(t *testing.T) {
 func TestQwenSynthesizeRequestRejectsMalformedAndEmptyWAV(t *testing.T) {
 	for _, mode := range []string{"invalid", "empty"} {
 		t.Run(mode, func(t *testing.T) {
-			q := newQwen3TTS("fake-qwen3-tts", t.TempDir(), time.Second, fakeQwenCommand(nil, mode))
+			q := newQwen3TTS("fake-qwen3-tts", t.TempDir(), 5*time.Second, fakeQwenCommand(nil, mode))
 			q.alive.Store(true)
 			result, err := q.SynthesizeRequest(context.Background(), SynthesisRequest{Text: mode})
 			if err != nil {
