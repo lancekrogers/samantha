@@ -168,9 +168,12 @@ func TestLibrarySendToAudiobook(t *testing.T) {
 	if cmd == nil {
 		t.Fatalf("expected cmd, err=%q", m.errText)
 	}
+	if !m.preparing {
+		t.Fatal("expected preparing state during resolve")
+	}
 	msg := cmd()
 	got, ok := msg.(libraryAudiobookMsg)
-	if !ok || got.path != path {
+	if !ok || got.path != path || got.err != nil || got.requestID != m.requestID {
 		t.Fatalf("msg = %#v", msg)
 	}
 }
@@ -178,7 +181,9 @@ func TestLibrarySendToAudiobook(t *testing.T) {
 func TestLibraryAudiobookMsgFillsForm(t *testing.T) {
 	app := NewApp(&config.Config{CalibreEnabled: true, TTSVoice: "af_heart"})
 	app.screen = screenLibrary
-	model, _ := app.Update(libraryAudiobookMsg{path: "/lib/book.epub"})
+	app.library.requestID = 7
+	app.library.preparing = true
+	model, _ := app.Update(libraryAudiobookMsg{path: "/lib/book.epub", requestID: 7})
 	a, ok := model.(App)
 	if !ok {
 		t.Fatalf("model type %T", model)
@@ -191,6 +196,30 @@ func TestLibraryAudiobookMsgFillsForm(t *testing.T) {
 	}
 }
 
+func TestLibraryAudiobookMsgIgnoresStaleOrWrongScreen(t *testing.T) {
+	app := NewApp(&config.Config{CalibreEnabled: true, TTSVoice: "af_heart"})
+	app.screen = screenLauncher
+	app.library.requestID = 3
+	model, _ := app.Update(libraryAudiobookMsg{path: "/lib/book.epub", requestID: 3})
+	a := model.(App)
+	if a.screen != screenLauncher {
+		t.Fatalf("stale success changed screen to %v", a.screen)
+	}
+
+	app = NewApp(&config.Config{CalibreEnabled: true, TTSVoice: "af_heart"})
+	app.screen = screenLibrary
+	app.library.requestID = 9
+	app.library.preparing = true
+	model, _ = app.Update(libraryAudiobookMsg{path: "/lib/other.epub", requestID: 1})
+	a = model.(App)
+	if a.screen != screenLibrary {
+		t.Fatalf("mismatched requestID left screen=%v", a.screen)
+	}
+	if a.audiobook.input == "/lib/other.epub" {
+		t.Fatal("stale path should not fill audiobook form")
+	}
+}
+
 func TestLibraryMOBIOnlyShowsError(t *testing.T) {
 	m := newLibrary(&config.Config{CalibreEnabled: true})
 	m.books = []calibre.Book{
@@ -198,11 +227,41 @@ func TestLibraryMOBIOnlyShowsError(t *testing.T) {
 	}
 	m.focus = libFocusList
 	m, cmd := m.sendToAudiobook(m.books[0])
-	if cmd != nil {
-		t.Fatal("should not emit audiobook for MOBI-only")
+	if cmd == nil {
+		t.Fatal("expected async prepare cmd even when convert will fail")
 	}
-	if m.errText == "" || !strings.Contains(m.errText, "supported format") {
-		t.Fatalf("errText = %q", m.errText)
+	if !m.preparing {
+		t.Fatal("expected preparing during convert/export")
+	}
+	msg := cmd()
+	got, ok := msg.(libraryAudiobookMsg)
+	if !ok || got.err == nil {
+		t.Fatalf("msg = %#v, want error", msg)
+	}
+	// Apply like the App handler would.
+	app := NewApp(&config.Config{CalibreEnabled: true})
+	app.screen = screenLibrary
+	app.library = m
+	model, _ := app.Update(got)
+	a := model.(App)
+	if a.screen != screenLibrary {
+		t.Fatalf("error should stay on library, screen=%v", a.screen)
+	}
+	if a.library.errText == "" {
+		t.Fatal("expected errText on library after failed prepare")
+	}
+	if a.library.preparing {
+		t.Fatal("preparing should clear after result")
+	}
+}
+
+func TestFormatExtListBareFormats(t *testing.T) {
+	got := formatExtList([]string{"EPUB", "MOBI", "/lib/book.pdf"})
+	if got != "epub, mobi, pdf" {
+		t.Fatalf("formatExtList = %q", got)
+	}
+	if formatExtList(nil) != "none" {
+		t.Fatalf("empty = %q", formatExtList(nil))
 	}
 }
 

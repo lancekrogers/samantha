@@ -133,6 +133,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.screen == screenPickBook {
 				a.pickBook.cancelResolve()
 			}
+			if a.screen == screenLibrary {
+				a.library.cancelPrepare()
+			}
 			a.settings.closePreview()
 			a.remote.stop()
 			if err := a.stopMeetingRuntime(); err != nil {
@@ -163,6 +166,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		target := screen(msg)
 		if a.screen == screenPickBook && target != screenPickBook {
 			a.pickBook.cancelResolve()
+		}
+		if a.screen == screenLibrary && target != screenLibrary {
+			a.library.cancelPrepare()
 		}
 		var pauseVoice tea.Cmd
 		if target == screenSettings {
@@ -296,6 +302,20 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case libraryAudiobookMsg:
+		// Ignore stale prepare results (user left or started another book).
+		if a.screen != screenLibrary || msg.requestID != a.library.requestID {
+			return a, nil
+		}
+		a.library.cancelPrepare()
+		if msg.err != nil {
+			if a.library.pane == libPaneDetail {
+				a.library.detailErr = msg.err.Error()
+			} else {
+				a.library.errText = msg.err.Error()
+			}
+			a.library.message = ""
+			return a, nil
+		}
 		// Preserve a clean audiobook form, then fill the path from the library.
 		a.audiobook = newAudiobook(a.cfg)
 		a.audiobook.input = msg.path
@@ -370,6 +390,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case quitMsg:
 		if a.screen == screenPickBook {
 			a.pickBook.cancelResolve()
+		}
+		if a.screen == screenLibrary {
+			a.library.cancelPrepare()
 		}
 		a.remote.stop()
 		a.quitting = true
