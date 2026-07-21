@@ -122,7 +122,7 @@ func (m settingsModel) sectionListLines() []string {
 
 	case sectionVoice:
 		if len(m.voiceItems) == 0 {
-			return []string{dimStyle.Render("  No browsable voices for the active TTS provider.")}
+			return []string{dimStyle.Render("  " + ttsVoiceSelectionStatus(m.cfg))}
 		}
 		start, end := m.visibleRange(len(m.voiceItems))
 		lines := make([]string, 0, end-start)

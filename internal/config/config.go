@@ -16,14 +16,21 @@ import (
 // Config holds all application configuration.
 type Config struct {
 	// TTS
-	TTSProvider         string  `mapstructure:"tts_provider"`
-	TTSFallbackProvider string  `mapstructure:"voice_fallback_provider"`
-	TTSVoice            string  `mapstructure:"tts_voice"`
-	SpeechSpeed         float64 `mapstructure:"speech_speed"`
-	QwenTTSBinary       string  `mapstructure:"qwen_tts_binary"`
-	QwenTTSModel        string  `mapstructure:"qwen_tts_model"`
-	QwenTTSTimeout      int     `mapstructure:"qwen_tts_timeout"`
-	OutputDevice        string  `mapstructure:"output_device"`
+	TTSProvider           string  `mapstructure:"tts_provider"`
+	TTSFallbackProvider   string  `mapstructure:"voice_fallback_provider"`
+	TTSVoice              string  `mapstructure:"tts_voice"`
+	SpeechSpeed           float64 `mapstructure:"speech_speed"`
+	QwenTTSBinary         string  `mapstructure:"qwen_tts_binary"`
+	QwenTTSModel          string  `mapstructure:"qwen_tts_model"`
+	QwenTTSTimeout        int     `mapstructure:"qwen_tts_timeout"`
+	QwenTTSMode           string  `mapstructure:"qwen_tts_mode"`
+	QwenTTSVoice          string  `mapstructure:"qwen_tts_voice"`
+	QwenTTSLanguage       string  `mapstructure:"qwen_tts_language"`
+	QwenTTSInstruction    string  `mapstructure:"qwen_tts_instruction"`
+	QwenTTSReferenceAudio string  `mapstructure:"qwen_tts_reference_audio"`
+	QwenTTSReferenceText  string  `mapstructure:"qwen_tts_reference_text"`
+	QwenTTSConsent        bool    `mapstructure:"qwen_tts_consent"`
+	OutputDevice          string  `mapstructure:"output_device"`
 
 	// STT
 	STTProvider          string `mapstructure:"stt_provider"`
@@ -191,6 +198,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("qwen_tts_binary", "qwen3-tts-cli")
 	v.SetDefault("qwen_tts_model", "")
 	v.SetDefault("qwen_tts_timeout", 120)
+	v.SetDefault("qwen_tts_mode", "")
+	v.SetDefault("qwen_tts_voice", "")
+	v.SetDefault("qwen_tts_language", "")
+	v.SetDefault("qwen_tts_instruction", "")
+	v.SetDefault("qwen_tts_reference_audio", "")
+	v.SetDefault("qwen_tts_reference_text", "")
+	v.SetDefault("qwen_tts_consent", false)
 	v.SetDefault("output_device", "")
 
 	v.SetDefault("stt_provider", "sherpa")
@@ -277,41 +291,48 @@ func Load() (*Config, error) {
 	// key to its bare upper-cased name and let unrelated vars like the
 	// standard LANGUAGE leak into (and get persisted over) config values.
 	bindings := map[string]string{
-		"tts_provider":            "TTS_PROVIDER",
-		"voice_fallback_provider": "VOICE_FALLBACK_PROVIDER",
-		"tts_voice":               "TTS_VOICE",
-		"qwen_tts_binary":         "QWEN_TTS_BINARY",
-		"qwen_tts_model":          "QWEN_TTS_MODEL",
-		"qwen_tts_timeout":        "QWEN_TTS_TIMEOUT",
-		"output_device":           "OUTPUT_DEVICE",
-		"stt_provider":            "STT_PROVIDER",
-		"input_device":            "INPUT_DEVICE",
-		"stt_mode":                "STT_MODE",
-		"sherpa_streaming_model":  "SHERPA_STREAMING_MODEL",
-		"whisper_model":           "WHISPER_MODEL",
-		"whispercpp_binary":       "WHISPERCPP_BINARY",
-		"whispercpp_model":        "WHISPERCPP_MODEL",
-		"whispercpp_model_path":   "WHISPERCPP_MODEL_PATH",
-		"models_dir":              "MODELS_DIR",
-		"brain_provider":          "BRAIN_PROVIDER",
-		"grok_model":              "GROK_MODEL",
-		"ollama_model":            "OLLAMA_MODEL",
-		"ollama_host":             "OLLAMA_HOST",
-		"voice_tools_enabled":     "VOICE_TOOLS_ENABLED",
-		"tool_command_timeout":    "TOOL_COMMAND_TIMEOUT",
-		"persona":                 "PERSONA",
-		"prompts_dir":             "PROMPTS_DIR",
-		"skills_enabled":          "SKILLS_ENABLED",
-		"skills_dir":              "SKILLS_DIR",
-		"barge_in_enabled":        "BARGE_IN_ENABLED",
-		"vad_threshold":           "VAD_THRESHOLD",
-		"vad_min_speech_duration": "VAD_MIN_SPEECH_DURATION",
-		"voice_frontend_enabled":  "VOICE_FRONTEND_ENABLED",
-		"calibre_enabled":         "CALIBRE_ENABLED",
-		"calibre_library_path":    "CALIBRE_LIBRARY_PATH",
-		"calibredb_binary":        "CALIBREDB_BINARY",
-		"calibre_convert_binary":  "CALIBRE_CONVERT_BINARY",
-		"calibre_prefer_format":   "CALIBRE_PREFER_FORMAT",
+		"tts_provider":             "TTS_PROVIDER",
+		"voice_fallback_provider":  "VOICE_FALLBACK_PROVIDER",
+		"tts_voice":                "TTS_VOICE",
+		"qwen_tts_binary":          "QWEN_TTS_BINARY",
+		"qwen_tts_model":           "QWEN_TTS_MODEL",
+		"qwen_tts_timeout":         "QWEN_TTS_TIMEOUT",
+		"qwen_tts_mode":            "QWEN_TTS_MODE",
+		"qwen_tts_voice":           "QWEN_TTS_VOICE",
+		"qwen_tts_language":        "QWEN_TTS_LANGUAGE",
+		"qwen_tts_instruction":     "QWEN_TTS_INSTRUCTION",
+		"qwen_tts_reference_audio": "QWEN_TTS_REFERENCE_AUDIO",
+		"qwen_tts_reference_text":  "QWEN_TTS_REFERENCE_TEXT",
+		"qwen_tts_consent":         "QWEN_TTS_CONSENT",
+		"output_device":            "OUTPUT_DEVICE",
+		"stt_provider":             "STT_PROVIDER",
+		"input_device":             "INPUT_DEVICE",
+		"stt_mode":                 "STT_MODE",
+		"sherpa_streaming_model":   "SHERPA_STREAMING_MODEL",
+		"whisper_model":            "WHISPER_MODEL",
+		"whispercpp_binary":        "WHISPERCPP_BINARY",
+		"whispercpp_model":         "WHISPERCPP_MODEL",
+		"whispercpp_model_path":    "WHISPERCPP_MODEL_PATH",
+		"models_dir":               "MODELS_DIR",
+		"brain_provider":           "BRAIN_PROVIDER",
+		"grok_model":               "GROK_MODEL",
+		"ollama_model":             "OLLAMA_MODEL",
+		"ollama_host":              "OLLAMA_HOST",
+		"voice_tools_enabled":      "VOICE_TOOLS_ENABLED",
+		"tool_command_timeout":     "TOOL_COMMAND_TIMEOUT",
+		"persona":                  "PERSONA",
+		"prompts_dir":              "PROMPTS_DIR",
+		"skills_enabled":           "SKILLS_ENABLED",
+		"skills_dir":               "SKILLS_DIR",
+		"barge_in_enabled":         "BARGE_IN_ENABLED",
+		"vad_threshold":            "VAD_THRESHOLD",
+		"vad_min_speech_duration":  "VAD_MIN_SPEECH_DURATION",
+		"voice_frontend_enabled":   "VOICE_FRONTEND_ENABLED",
+		"calibre_enabled":          "CALIBRE_ENABLED",
+		"calibre_library_path":     "CALIBRE_LIBRARY_PATH",
+		"calibredb_binary":         "CALIBREDB_BINARY",
+		"calibre_convert_binary":   "CALIBRE_CONVERT_BINARY",
+		"calibre_prefer_format":    "CALIBRE_PREFER_FORMAT",
 	}
 	for key, env := range bindings {
 		_ = v.BindEnv(key, env)

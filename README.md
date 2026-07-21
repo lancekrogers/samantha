@@ -375,6 +375,13 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `qwen_tts_binary` | `qwen3-tts-cli` | `QWEN_TTS_BINARY` | Optional native Qwen3-TTS CLI/worker |
 | `qwen_tts_model` | empty | `QWEN_TTS_MODEL` | Qwen model directory; required when `tts_provider=qwen3-tts` |
 | `qwen_tts_timeout` | `120` | `QWEN_TTS_TIMEOUT` | Per-request native worker timeout in seconds; tune for cold starts/long segments |
+| `qwen_tts_mode` | empty | `QWEN_TTS_MODE` | Verified Qwen mode; empty means model-native default until the worker capability probe succeeds |
+| `qwen_tts_voice` | empty | `QWEN_TTS_VOICE` | Provider-specific preset speaker; not populated from Kokoro voices |
+| `qwen_tts_language` | empty | `QWEN_TTS_LANGUAGE` | Provider-supported language for a verified Qwen mode |
+| `qwen_tts_instruction` | empty | `QWEN_TTS_INSTRUCTION` | Explicit voice-design/style instruction for a verified mode |
+| `qwen_tts_reference_audio` | empty | `QWEN_TTS_REFERENCE_AUDIO` | Authorized local reference WAV for an approved clone workflow |
+| `qwen_tts_reference_text` | empty | `QWEN_TTS_REFERENCE_TEXT` | Transcript required by the approved clone workflow |
+| `qwen_tts_consent` | `false` | `QWEN_TTS_CONSENT` | Explicit consent/authorization gate for reference voice use |
 | `output_device` | empty | `OUTPUT_DEVICE` | Playback device name; empty follows the system default |
 | `stt_provider` | `sherpa` | `STT_PROVIDER` | STT backend: `sherpa`, `sherpa-streaming`, `sherpa-offline`, or `whispercpp` |
 | `input_device` | empty | `INPUT_DEVICE` | Capture device name; empty follows the system default |

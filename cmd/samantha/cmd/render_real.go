@@ -5,6 +5,7 @@ package cmd
 import (
 	"archive/zip"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -275,10 +276,16 @@ func newRenderSynth(ctx context.Context, opts *render.Options) (render.Synthesiz
 		cleanup = func() {}
 	}
 	return &ttsSynth{
-		provider: provider,
-		id:       synthIdentityFor(cfg),
-		voice:    cfg.TTSVoice,
-		speed:    cfg.SpeechSpeed,
+		provider:            provider,
+		id:                  synthIdentityFor(cfg),
+		voice:               cfg.TTSVoice,
+		speed:               cfg.SpeechSpeed,
+		mode:                tts.VoiceMode(cfg.QwenTTSMode),
+		qwenVoice:           cfg.QwenTTSVoice,
+		language:            cfg.QwenTTSLanguage,
+		instruction:         cfg.QwenTTSInstruction,
+		referenceAudio:      cfg.QwenTTSReferenceAudio,
+		referenceTranscript: cfg.QwenTTSReferenceText,
 	}, cleanup, nil
 }
 
@@ -295,6 +302,24 @@ func synthIdentityFor(cfg *config.Config) string {
 		if binary := strings.TrimSpace(cfg.QwenTTSBinary); binary != "" {
 			id += "/binary=" + binary
 		}
+		if mode := strings.TrimSpace(cfg.QwenTTSMode); mode != "" {
+			id += "/mode=" + mode
+		}
+		if voice := strings.TrimSpace(cfg.QwenTTSVoice); voice != "" {
+			id += "/voice=" + voice
+		}
+		if language := strings.TrimSpace(cfg.QwenTTSLanguage); language != "" {
+			id += "/language=" + language
+		}
+		if instruction := strings.TrimSpace(cfg.QwenTTSInstruction); instruction != "" {
+			id += "/instruction-sha256=" + stringIdentityHash(instruction)
+		}
+		if referenceAudio := strings.TrimSpace(cfg.QwenTTSReferenceAudio); referenceAudio != "" {
+			id += "/reference-audio-sha256=" + fileIdentityHash(referenceAudio)
+		}
+		if referenceText := strings.TrimSpace(cfg.QwenTTSReferenceText); referenceText != "" {
+			id += "/reference-text-sha256=" + stringIdentityHash(referenceText)
+		}
 		return id
 	}
 	if cfg.TTSVoice != "" {
@@ -304,6 +329,24 @@ func synthIdentityFor(cfg *config.Config) string {
 		id += "/speed=" + strconv.FormatFloat(cfg.SpeechSpeed, 'f', -1, 64)
 	}
 	return id
+}
+
+func stringIdentityHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func fileIdentityHash(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return "unreadable:" + path
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "unreadable:" + path
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 // renderReport names the render's primary output for the shared summary.
@@ -437,10 +480,16 @@ func renderSource(opts render.Options) string {
 // can invalidate when the underlying TTS engine changes. When the provider
 // implements tts.RequestProvider, typed batch-render requests carry metadata.
 type ttsSynth struct {
-	provider tts.Provider
-	id       string
-	voice    string
-	speed    float64
+	provider            tts.Provider
+	id                  string
+	voice               string
+	speed               float64
+	mode                tts.VoiceMode
+	qwenVoice           string
+	language            string
+	instruction         string
+	referenceAudio      string
+	referenceTranscript string
 }
 
 // Identity implements render.SynthIdentity so resume keys fold in the TTS engine.
@@ -460,10 +509,15 @@ func (s *ttsSynth) SynthesizeRequest(ctx context.Context, req render.SynthesisRe
 	}
 	if rp, ok := s.provider.(tts.RequestProvider); ok {
 		result, err := rp.SynthesizeRequest(ctx, tts.SynthesisRequest{
-			Text:     req.Text,
-			Voice:    req.Voice,
-			Speed:    req.Speed,
-			Metadata: req.Metadata,
+			Text:                req.Text,
+			Voice:               firstNonEmpty(s.qwenVoice, req.Voice),
+			Mode:                s.mode,
+			Language:            s.language,
+			Instruction:         s.instruction,
+			ReferenceAudio:      s.referenceAudio,
+			ReferenceTranscript: s.referenceTranscript,
+			Speed:               req.Speed,
+			Metadata:            req.Metadata,
 		})
 		if err != nil {
 			return nil, 0, err
@@ -475,6 +529,15 @@ func (s *ttsSynth) SynthesizeRequest(ctx context.Context, req render.SynthesisRe
 		return nil, 0, err
 	}
 	return drainPCMStream(ctx, stream, 0)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func drainPCMStream(ctx context.Context, stream *audio.PCMStream, knownRate int) ([]float32, int, error) {

@@ -49,11 +49,18 @@ type qwenCommand func(context.Context, string, ...string) *exec.Cmd
 // installed qwen3-tts.cpp-compatible CLI. Samantha owns the process lifetime;
 // model files and the native executable remain outside this repository.
 type Qwen3TTS struct {
-	binary  string
-	model   string
-	timeout time.Duration
-	command qwenCommand
-	alive   atomic.Bool
+	binary              string
+	model               string
+	timeout             time.Duration
+	command             qwenCommand
+	alive               atomic.Bool
+	mode                VoiceMode
+	voice               string
+	language            string
+	instruction         string
+	referenceAudio      string
+	referenceTranscript string
+	consent             bool
 }
 
 // NewQwen3TTS validates the configured native worker and model directory.
@@ -96,6 +103,13 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 	}
 
 	q := newQwen3TTS(binaryPath, model, timeout, exec.CommandContext)
+	q.mode = VoiceMode(strings.TrimSpace(cfg.QwenTTSMode))
+	q.voice = strings.TrimSpace(cfg.QwenTTSVoice)
+	q.language = strings.TrimSpace(cfg.QwenTTSLanguage)
+	q.instruction = cfg.QwenTTSInstruction
+	q.referenceAudio = strings.TrimSpace(cfg.QwenTTSReferenceAudio)
+	q.referenceTranscript = cfg.QwenTTSReferenceText
+	q.consent = cfg.QwenTTSConsent
 	q.alive.Store(true)
 	return q, nil
 }
@@ -112,7 +126,15 @@ func newQwen3TTS(binary, model string, timeout time.Duration, command qwenComman
 
 // Synthesize streams synthesized PCM frames for the given text.
 func (q *Qwen3TTS) Synthesize(ctx context.Context, text string) (*audio.PCMStream, error) {
-	result, err := q.SynthesizeRequest(ctx, SynthesisRequest{Text: text})
+	result, err := q.SynthesizeRequest(ctx, SynthesisRequest{
+		Text:                text,
+		Voice:               q.voice,
+		Mode:                q.mode,
+		Language:            q.language,
+		Instruction:         q.instruction,
+		ReferenceAudio:      q.referenceAudio,
+		ReferenceTranscript: q.referenceTranscript,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -135,6 +157,9 @@ func (q *Qwen3TTS) SynthesizeRequest(ctx context.Context, req SynthesisRequest) 
 	}
 	if err := validateQwenReference(req); err != nil {
 		return SynthesisResult{}, err
+	}
+	if req.Mode == VoiceModeApprovedClone && !q.consent {
+		return SynthesisResult{}, &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate request", Kind: ProviderErrorInput, Err: errors.New("explicit consent is required for approved voice cloning")}
 	}
 	if req.SampleRate != 0 && req.SampleRate != qwen3TTSSampleRate {
 		return SynthesisResult{}, qwenUnsupported("sample rate", fmt.Sprintf("cannot resample to %d Hz (native rate %d Hz)", req.SampleRate, qwen3TTSSampleRate))

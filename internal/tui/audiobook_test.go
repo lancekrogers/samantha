@@ -66,6 +66,39 @@ func TestAudiobookScreenGenerateShowsCommand(t *testing.T) {
 	}
 }
 
+func TestAudiobookQwenUsesModelNativeControls(t *testing.T) {
+	m := newAudiobook(&config.Config{
+		TTSProvider:  "qwen3-tts",
+		QwenTTSModel: "/models/customvoice",
+		QwenTTSMode:  "customvoice",
+		QwenTTSVoice: "vivian",
+	})
+	m.input = "book.epub"
+	m.outDir = "out/book"
+	m.cursor = abFieldGenerate
+	m, _ = m.activate()
+	if strings.Contains(m.command, "--voice") || strings.Contains(m.command, "--speed") {
+		t.Fatalf("Qwen audiobook command = %q, must omit Kokoro-only controls", m.command)
+	}
+	view := m.View()
+	for _, want := range []string{"tts qwen3-tts", "mode customvoice", "model config (see Settings)", "model native"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("Qwen audiobook view missing %q:\n%s", want, view)
+		}
+	}
+
+	m.cursor = abFieldVoice
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if !strings.Contains(m.message, "configured in Settings") {
+		t.Fatalf("Qwen voice cycle message = %q, want configuration guidance", m.message)
+	}
+	m.cursor = abFieldSpeed
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if !strings.Contains(m.message, "model-native") {
+		t.Fatalf("Qwen speed cycle message = %q, want model-native guidance", m.message)
+	}
+}
+
 func TestAudiobookChoiceFieldsCycleWithoutTyping(t *testing.T) {
 	m := newAudiobook(&config.Config{TTSVoice: "af_heart"})
 	m.cursor = abFieldSpeed

@@ -160,6 +160,60 @@ func TestSynthIdentityIncludesQwenModelAndBinary(t *testing.T) {
 	}
 }
 
+func TestSynthIdentityIncludesQwenVoiceControlsAndReferenceContent(t *testing.T) {
+	ref := filepath.Join(t.TempDir(), "reference.wav")
+	if err := os.WriteFile(ref, []byte("reference-a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := synthIdentityFor(&config.Config{
+		TTSProvider:           "qwen3-tts",
+		QwenTTSModel:          "/models/qwen-a",
+		QwenTTSBinary:         "/bin/qwen3-tts-cli",
+		QwenTTSMode:           "customvoice",
+		QwenTTSVoice:          "vivian",
+		QwenTTSLanguage:       "English",
+		QwenTTSInstruction:    "calm and precise",
+		QwenTTSReferenceAudio: ref,
+		QwenTTSReferenceText:  "reference transcript",
+		QwenTTSConsent:        true,
+	})
+	for _, want := range []string{
+		"mode=customvoice", "voice=vivian", "language=English",
+		"instruction-sha256=", "reference-audio-sha256=", "reference-text-sha256=",
+	} {
+		if !strings.Contains(base, want) {
+			t.Errorf("identity = %q, want %q", base, want)
+		}
+	}
+
+	changed := []struct {
+		name string
+		cfg  config.Config
+	}{
+		{"mode", config.Config{TTSProvider: "qwen3-tts", QwenTTSModel: "/models/qwen-a", QwenTTSBinary: "/bin/qwen3-tts-cli", QwenTTSMode: "voicedesign"}},
+		{"voice", config.Config{TTSProvider: "qwen3-tts", QwenTTSModel: "/models/qwen-a", QwenTTSBinary: "/bin/qwen3-tts-cli", QwenTTSVoice: "serena"}},
+		{"language", config.Config{TTSProvider: "qwen3-tts", QwenTTSModel: "/models/qwen-a", QwenTTSBinary: "/bin/qwen3-tts-cli", QwenTTSLanguage: "Chinese"}},
+		{"instruction", config.Config{TTSProvider: "qwen3-tts", QwenTTSModel: "/models/qwen-a", QwenTTSBinary: "/bin/qwen3-tts-cli", QwenTTSInstruction: "bright and warm"}},
+		{"reference text", config.Config{TTSProvider: "qwen3-tts", QwenTTSModel: "/models/qwen-a", QwenTTSBinary: "/bin/qwen3-tts-cli", QwenTTSReferenceText: "different transcript"}},
+		{"consent", config.Config{TTSProvider: "qwen3-tts", QwenTTSModel: "/models/qwen-a", QwenTTSBinary: "/bin/qwen3-tts-cli", QwenTTSConsent: true}},
+	}
+	for _, tc := range changed {
+		if got := synthIdentityFor(&tc.cfg); got == base {
+			t.Errorf("changing Qwen %s must change identity", tc.name)
+		}
+	}
+
+	if err := os.WriteFile(ref, []byte("reference-b"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changedRef := synthIdentityFor(&config.Config{
+		TTSProvider: "qwen3-tts", QwenTTSModel: "/models/qwen-a", QwenTTSBinary: "/bin/qwen3-tts-cli", QwenTTSReferenceAudio: ref,
+	})
+	if changedRef == base {
+		t.Fatal("changing reference audio content must change identity")
+	}
+}
+
 // TestApplyVoiceOverridesRecordsEffectiveValues guards manifest auditability:
 // a config-driven render (no CLI flags) must still end up with the effective
 // voice/speed in opts, which is what manifests and resume keys record.
