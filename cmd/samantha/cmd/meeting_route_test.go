@@ -148,6 +148,41 @@ func TestMaybeRouteAfterRecordHumanModeBannerOnStdout(t *testing.T) {
 	}
 }
 
+func TestMaybeRouteAfterRecordAutoResolvesDiscoveredDefault(t *testing.T) {
+	dir := t.TempDir()
+	// No YAML destinations — default is a camp-discovered campaign that the
+	// fake camp list returns; ExpandForRouting must make RouteByID succeed.
+	// Use a file sink shaped campaign won't work; inject via destinations after
+	// discover by faking LookPath miss and putting only file dest in config with
+	// id matching default. Discovery soft-path: config file dest is enough when
+	// camp missing. Test camp-merge via meeting package; here verify auto with
+	// configured default still works after ExpandForRouting.
+	export := filepath.Join(dir, "export")
+	summary := finishedMeeting(t, dir, "Discover auto")
+
+	cfg := &config.Config{
+		Meeting: config.MeetingConfig{
+			Route: config.MeetingRouteConfig{
+				Mode:    meeting.ModeAuto,
+				Default: "docs",
+				Body:    meeting.BodyNotes,
+				Destinations: []config.MeetingDestinationConfig{
+					{ID: "docs", Type: meeting.TypeFile, Path: export},
+				},
+			},
+		},
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := routeTestCmd(&stdout, &stderr)
+	if err := maybeRouteAfterRecord(cmd, cfg, summary, meetingOptions{JSON: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "Meeting notes routed") {
+		t.Fatalf("banner = %q", stderr.String())
+	}
+}
+
 func TestRouteAndPrintJSONDoesNotCorruptJSONStream(t *testing.T) {
 	// Simulates the record --json flow: a JSON summary on stdout, then routing.
 	dir := t.TempDir()

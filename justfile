@@ -77,6 +77,18 @@ demo-library: build
     just _optimize-demo-gif demos/library.gif
     ls -lh demos/library.gif
 
+# Meeting route picker + Speaker settings (camp discovery UX). Full color.
+# Uses demos/fixtures/camp so recording does not need a real camp registry.
+demo-meeting-route-speaker: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    chmod +x demos/fixtures/camp
+    env -u NO_COLOR -u CLICOLOR \
+        CLICOLOR_FORCE=1 FORCE_COLOR=1 \
+        TERM=xterm-256color COLORTERM=truecolor \
+        vhs demos/meeting-route-speaker.tape
+    ls -lh demos/meeting-route-speaker.gif
+
 [private]
 _optimize-demo-gif path:
     #!/usr/bin/env bash

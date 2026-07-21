@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
@@ -27,9 +28,13 @@ func maybeRouteAfterRecord(cmd *cobra.Command, cfg *config.Config, summary meeti
 	}
 	routeCfg := meeting.FromConfig(cfg)
 	router := meeting.NewDefaultRouter(routeCfg)
+	ctx, cancel := context.WithTimeout(context.Background(), meeting.DiscoverTimeout)
+	defer cancel()
+	expanded, dests, discoverErr := router.ExpandForRouting(ctx)
+	router.Cfg = expanded
 
 	if opts.RouteTo != "" {
-		return routeAndPrint(cmd, router, summary, routeCfg.Body, opts.RouteTo, opts.JSON)
+		return routeAndPrint(cmd, router, summary, expanded.Body, opts.RouteTo, opts.JSON)
 	}
 
 	switch routeCfg.Mode {
@@ -40,15 +45,18 @@ func maybeRouteAfterRecord(cmd *cobra.Command, cfg *config.Config, summary meeti
 			fmt.Fprintln(cmd.ErrOrStderr(), "meeting route: mode=auto but no default destination configured")
 			return nil
 		}
-		return routeAndPrint(cmd, router, summary, routeCfg.Body, routeCfg.Default, opts.JSON)
+		return routeAndPrint(cmd, router, summary, expanded.Body, routeCfg.Default, opts.JSON)
 	default: // ask
 		if opts.JSON || opts.NoTUI || !isatty.IsTerminal(os.Stdout.Fd()) || !isatty.IsTerminal(os.Stdin.Fd()) {
 			// Non-interactive: skip silently (use --route or meeting route later).
 			return nil
 		}
-		dests := router.AvailableDestinations()
 		if len(dests) == 0 {
-			fmt.Fprintln(cmd.OutOrStdout(), "No routing destinations configured (edit meeting.route.destinations in config). Notes kept local.")
+			msg := "No routing destinations available (install camp or edit meeting.route.destinations). Notes kept local."
+			if discoverErr != nil {
+				msg = fmt.Sprintf("No routing destinations available (camp list: %v). Notes kept local.", discoverErr)
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), msg)
 			return nil
 		}
 		id, skipped, err := promptRouteDestination(cmd, dests, routeCfg.Default)
@@ -59,16 +67,24 @@ func maybeRouteAfterRecord(cmd *cobra.Command, cfg *config.Config, summary meeti
 			fmt.Fprintln(cmd.OutOrStdout(), meeting.BannerLine(meeting.Receipt{Outcome: meeting.OutcomeSkipped}))
 			return nil
 		}
-		return routeAndPrint(cmd, router, summary, routeCfg.Body, id, false)
+		return routeAndPrint(cmd, router, summary, expanded.Body, id, false)
 	}
 }
 
 // routeAndPrint renders and routes a meeting, then prints a human status line.
 // When jsonOut is true the banner goes to stderr so stdout stays machine-readable.
+// router.Cfg should already include discovered destinations (see ExpandForRouting).
 func routeAndPrint(cmd *cobra.Command, router *meeting.Router, summary meetinglog.Summary, body, destID string, jsonOut bool) error {
 	note, err := meeting.Render(summary, body)
 	if err != nil {
 		return fmt.Errorf("render meeting note: %w", err)
+	}
+	// If the id is still unknown, try a late expand (covers direct callers).
+	if _, ok := router.Cfg.DestinationByID(destID); !ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		expanded, _, _ := router.ExpandForRouting(ctx)
+		cancel()
+		router.Cfg = expanded
 	}
 	receipt, err := router.RouteByID(context.Background(), note, destID)
 	status := meeting.BannerLine(receipt)
@@ -96,7 +112,8 @@ func promptRouteDestination(cmd *cobra.Command, dests []meeting.Destination, def
 			mark = " (default)"
 			defaultIdx = i
 		}
-		fmt.Fprintf(out, "  %d) %s [%s]%s\n", i+1, d.ID, d.Type, mark)
+		label := meeting.DestinationLabel(d)
+		fmt.Fprintf(out, "  %d) %s%s\n", i+1, label, mark)
 	}
 	fmt.Fprintf(out, "  0) keep local only\n")
 	fmt.Fprint(out, "Choice: ")
@@ -139,6 +156,9 @@ func newMeetingRouteCmd() *cobra.Command {
 destination. With no file argument, uses the most recent meeting under the
 meetings directory.
 
+Campaign destinations are discovered via camp list --json when camp is on PATH,
+in addition to meeting.route.destinations in config.
+
 Examples:
   samantha meeting route
   samantha meeting route --to docs
@@ -170,6 +190,10 @@ Examples:
 				return err
 			}
 			router := meeting.NewDefaultRouter(routeCfg)
+			ctx, cancel := context.WithTimeout(context.Background(), meeting.DiscoverTimeout)
+			expanded, dests, discoverErr := router.ExpandForRouting(ctx)
+			cancel()
+			router.Cfg = expanded
 
 			destID := strings.TrimSpace(to)
 			if destID == "" {
@@ -179,8 +203,10 @@ Examples:
 					}
 					destID = routeCfg.Default
 				} else {
-					dests := router.AvailableDestinations()
 					if len(dests) == 0 {
+						if discoverErr != nil {
+							return fmt.Errorf("meeting route: no destinations available (camp list: %w)", discoverErr)
+						}
 						return fmt.Errorf("meeting route: no destinations configured")
 					}
 					var skipped bool
@@ -194,10 +220,10 @@ Examples:
 					}
 				}
 			}
-			return routeAndPrint(cmd, router, summary, routeCfg.Body, destID, jsonOut)
+			return routeAndPrint(cmd, router, summary, expanded.Body, destID, jsonOut)
 		},
 	}
-	cmd.Flags().StringVar(&to, "to", "", "Destination id from meeting.route.destinations")
+	cmd.Flags().StringVar(&to, "to", "", "Destination id from meeting.route.destinations or camp:<name>")
 	cmd.Flags().StringVar(&body, "body", "", "Override body scope: notes | full")
 	cmd.Flags().BoolVar(&noTUI, "no-tui", false, "Non-interactive (requires --to or meeting.route.default)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Non-interactive; keep human status on stderr (requires --to or meeting.route.default)")
