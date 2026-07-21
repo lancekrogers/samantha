@@ -265,6 +265,7 @@ func newRenderSynth(ctx context.Context, opts *render.Options) (render.Synthesiz
 		opts.Voice = ""
 		opts.Speed = 0
 	}
+	populateTTSMetadata(opts, cfg)
 	if err := config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
 		return nil, nil, fmt.Errorf("render: TTS assets: %w", err)
 	}
@@ -289,6 +290,47 @@ func newRenderSynth(ctx context.Context, opts *render.Options) (render.Synthesiz
 	}, cleanup, nil
 }
 
+func populateTTSMetadata(opts *render.Options, cfg *config.Config) {
+	provider := activeTTSProviderName(cfg.TTSProvider)
+	opts.TTSProvider = provider
+	opts.TTSMode = "static"
+	if provider == "qwen3-tts" {
+		opts.TTSModel = strings.TrimSpace(cfg.QwenTTSModel)
+		opts.TTSWorker = strings.TrimSpace(cfg.QwenTTSBinary)
+		if opts.TTSWorker == "" {
+			opts.TTSWorker = "qwen3-tts-cli"
+		}
+		opts.TTSMode = strings.TrimSpace(cfg.QwenTTSMode)
+		if opts.TTSMode == "" {
+			opts.TTSMode = "static"
+		}
+		opts.TTSVoice = strings.TrimSpace(cfg.QwenTTSVoice)
+		if opts.TTSVoice == "" {
+			opts.TTSVoice = "default"
+		}
+		opts.TTSLanguage = strings.TrimSpace(cfg.QwenTTSLanguage)
+		if instruction := strings.TrimSpace(cfg.QwenTTSInstruction); instruction != "" {
+			opts.TTSInstructionSHA256 = stringIdentityHash(instruction)
+		}
+		if referenceAudio := strings.TrimSpace(cfg.QwenTTSReferenceAudio); referenceAudio != "" {
+			opts.TTSReferenceAudioSHA256 = fileIdentityHash(referenceAudio)
+		}
+		if referenceText := strings.TrimSpace(cfg.QwenTTSReferenceText); referenceText != "" {
+			opts.TTSReferenceTranscriptSHA256 = stringIdentityHash(referenceText)
+		}
+		return
+	}
+	opts.TTSModel = "managed"
+	opts.TTSVoice = strings.TrimSpace(cfg.TTSVoice)
+}
+
+func activeTTSProviderName(provider string) string {
+	if provider = strings.ToLower(strings.TrimSpace(provider)); provider != "" {
+		return provider
+	}
+	return "kokoro"
+}
+
 // synthIdentityFor describes the TTS engine for resume keys: the provider,
 // output-affecting provider settings, and the effective voice/speed after config
 // plus CLI overrides have been resolved.
@@ -301,6 +343,7 @@ func synthIdentityFor(cfg *config.Config) string {
 		}
 		if binary := strings.TrimSpace(cfg.QwenTTSBinary); binary != "" {
 			id += "/binary=" + binary
+			id += "/binary-sha256=" + commandIdentityHash(binary)
 		}
 		if mode := strings.TrimSpace(cfg.QwenTTSMode); mode != "" {
 			id += "/mode=" + mode
@@ -347,6 +390,14 @@ func fileIdentityHash(path string) string {
 		return "unreadable:" + path
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func commandIdentityHash(binary string) string {
+	path := binary
+	if resolved, err := exec.LookPath(binary); err == nil {
+		path = resolved
+	}
+	return fileIdentityHash(path)
 }
 
 // renderReport names the render's primary output for the shared summary.

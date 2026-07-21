@@ -48,6 +48,36 @@ func TestRenderTextBuildsManifest(t *testing.T) {
 	}
 }
 
+func TestRenderManifestCarriesNonSensitiveTTSMetadata(t *testing.T) {
+	result, err := RenderText(context.Background(), Options{
+		Stdin: true, Out: "out.wav", Format: FormatText,
+		TTSProvider: "qwen3-tts", TTSModel: "/models/customvoice",
+		TTSWorker: "qwen3-tts-cli", TTSMode: "voicedesign", TTSVoice: "vivian",
+		TTSLanguage: "English", TTSInstructionSHA256: "instruction-hash",
+		TTSReferenceAudioSHA256: "audio-hash", TTSReferenceTranscriptSHA256: "text-hash",
+	}, "Hello world.", &fakeSynth{rate: 24000}, func(string, int, []float32) error { return nil })
+	if err != nil {
+		t.Fatalf("RenderText() error = %v", err)
+	}
+	m := result.Manifest
+	if m.TTSProvider != "qwen3-tts" || m.TTSModel != "/models/customvoice" || m.TTSWorker != "qwen3-tts-cli" ||
+		m.TTSMode != "voicedesign" || m.TTSVoice != "vivian" || m.TTSLanguage != "English" {
+		t.Fatalf("TTS metadata = %+v, want provider/model/worker/mode/voice/language", m)
+	}
+	for _, value := range []string{m.TTSInstructionSHA256, m.TTSReferenceAudioSHA256, m.TTSReferenceTranscriptSHA256} {
+		if value == "" {
+			t.Fatal("TTS privacy metadata contains an empty hash")
+		}
+	}
+	encoded, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "Hello world") {
+		t.Fatal("manifest must not include source text in TTS metadata")
+	}
+}
+
 func TestRenderManifestTextHashIsDeterministic(t *testing.T) {
 	first, second := textHash("hello"), textHash("hello")
 	if first != second {

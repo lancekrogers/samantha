@@ -206,11 +206,40 @@ func TestSynthIdentityIncludesQwenVoiceControlsAndReferenceContent(t *testing.T)
 	if err := os.WriteFile(ref, []byte("reference-b"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	changedRef := synthIdentityFor(&config.Config{
+	refConfig := &config.Config{
 		TTSProvider: "qwen3-tts", QwenTTSModel: "/models/qwen-a", QwenTTSBinary: "/bin/qwen3-tts-cli", QwenTTSReferenceAudio: ref,
-	})
-	if changedRef == base {
+	}
+	beforeRef := synthIdentityFor(refConfig)
+	changedRef := synthIdentityFor(refConfig)
+	if changedRef != beforeRef {
+		t.Fatal("unchanged reference audio content changed identity")
+	}
+	if err := os.WriteFile(ref, []byte("reference-c"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changedRef = synthIdentityFor(refConfig)
+	if changedRef == beforeRef {
 		t.Fatal("changing reference audio content must change identity")
+	}
+}
+
+func TestPopulateTTSMetadataUsesHashesForQwenReferences(t *testing.T) {
+	ref := filepath.Join(t.TempDir(), "voice.wav")
+	if err := os.WriteFile(ref, []byte("private audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		TTSProvider: "qwen3-tts", QwenTTSModel: "/models/customvoice", QwenTTSBinary: "qwen3-tts-cli",
+		QwenTTSMode: "approved_clone", QwenTTSVoice: "speaker-a", QwenTTSLanguage: "English",
+		QwenTTSInstruction: "private instruction", QwenTTSReferenceAudio: ref, QwenTTSReferenceText: "private transcript",
+	}
+	var opts render.Options
+	populateTTSMetadata(&opts, cfg)
+	if opts.TTSProvider != "qwen3-tts" || opts.TTSMode != "approved_clone" || opts.TTSVoice != "speaker-a" {
+		t.Fatalf("metadata = %+v, want resolved Qwen fields", opts)
+	}
+	if opts.TTSInstructionSHA256 == "private instruction" || opts.TTSReferenceTranscriptSHA256 == "private transcript" || opts.TTSReferenceAudioSHA256 == "private audio" {
+		t.Fatalf("metadata leaked private reference content: %+v", opts)
 	}
 }
 
