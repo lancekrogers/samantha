@@ -173,6 +173,35 @@ func TestResolveDestination(t *testing.T) {
 	}
 }
 
+func TestExpandForRoutingMergesCampList(t *testing.T) {
+	r := &Router{
+		Cfg: Config{
+			Destinations: []Destination{
+				{ID: "docs", Type: TypeFile, Path: "/tmp/out"},
+			},
+		},
+		LookPath: func(name string) (string, error) {
+			if name == "camp" {
+				return "/bin/camp", nil
+			}
+			return "", os.ErrNotExist
+		},
+		Run: func(context.Context, string, ...string) ([]byte, error) {
+			return []byte(`[{"name":"My_Tools"}]`), nil
+		},
+	}
+	cfg, dests, err := r.ExpandForRouting(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dests) != 2 {
+		t.Fatalf("dests = %+v", dests)
+	}
+	if _, ok := cfg.DestinationByID("camp:My_Tools"); !ok {
+		t.Fatalf("expanded cfg missing camp dest: %+v", cfg.Destinations)
+	}
+}
+
 func TestWithDestination(t *testing.T) {
 	cfg := Config{Destinations: []Destination{{ID: "a", Type: TypeFile, Path: "/a"}}}
 	dest := Destination{ID: "camp:X", Type: TypeCampaign, Campaign: "X"}

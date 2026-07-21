@@ -108,10 +108,10 @@ func (a *App) openMeetingRoutePicker(summary meetinglog.Summary, routeCfg meetin
 		router := meeting.NewDefaultRouter(routeCfg)
 		ctx, cancel := context.WithTimeout(context.Background(), meeting.DiscoverTimeout)
 		defer cancel()
-		dests, err := router.DiscoverDestinations(ctx)
+		expanded, dests, err := router.ExpandForRouting(ctx)
 		return meetingRouteReadyMsg{
 			summary:  summary,
-			routeCfg: routeCfg,
+			routeCfg: expanded,
 			dests:    dests,
 			err:      err,
 		}
@@ -157,28 +157,28 @@ func (a *App) autoRouteMeeting(summary meetinglog.Summary, routeCfg meeting.Conf
 	a.screen = screenLauncher
 	body := routeCfg.Body
 	destID := routeCfg.Default
-	rcfg := routeCfg
+	base := routeCfg
 	return func() tea.Msg {
-		router := meeting.NewDefaultRouter(rcfg)
+		router := meeting.NewDefaultRouter(base)
 		ctx, cancel := context.WithTimeout(context.Background(), meeting.DiscoverTimeout)
 		defer cancel()
-		dests, _ := router.DiscoverDestinations(ctx)
-		for _, d := range dests {
-			rcfg = meeting.WithDestination(rcfg, d)
-		}
-		dest, ok := meeting.ResolveDestination(rcfg, destID, dests)
+		expanded, dests, discoverErr := router.ExpandForRouting(ctx)
+		dest, ok := meeting.ResolveDestination(expanded, destID, dests)
 		if !ok {
+			detail := fmt.Sprintf("unknown destination %q", destID)
+			if discoverErr != nil {
+				detail = fmt.Sprintf("%s (camp list: %v)", detail, discoverErr)
+			}
 			return meetingRouteResultMsg{
-				Banner: fmt.Sprintf("Meeting route failed (notes kept local): unknown destination %q", destID),
+				Banner: "Meeting route failed (notes kept local): " + detail,
 				IsErr:  true,
 			}
 		}
-		rcfg = meeting.WithDestination(rcfg, dest)
 		note, err := meeting.Render(summary, body)
 		if err != nil {
 			return meetingRouteResultMsg{Banner: "Meeting route failed (notes kept local): " + err.Error(), IsErr: true}
 		}
-		router = meeting.NewDefaultRouter(rcfg)
+		router = meeting.NewDefaultRouter(meeting.WithDestination(expanded, dest))
 		receipt, err := router.RouteMeeting(context.Background(), note, dest)
 		return meetingRouteResultMsg{Banner: meeting.BannerLine(receipt), IsErr: err != nil}
 	}

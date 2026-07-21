@@ -72,3 +72,15 @@ func ResolveDestination(cfg Config, destID string, discovered []Destination) (De
 	}
 	return Destination{}, false
 }
+
+// ExpandForRouting discovers available destinations (config + camp list) and
+// merges them into cfg so RouteByID can resolve camp:… defaults. Returns the
+// expanded config, the destination list used by pickers, and any soft camp-list error.
+func (r *Router) ExpandForRouting(ctx context.Context) (Config, []Destination, error) {
+	dests, err := r.DiscoverDestinations(ctx)
+	cfg := r.Cfg.Normalize()
+	for _, d := range dests {
+		cfg = WithDestination(cfg, d)
+	}
+	return cfg, dests, err
+}
