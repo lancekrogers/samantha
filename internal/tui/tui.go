@@ -203,6 +203,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case screenPickBook:
 			a.pickBook = newPickBook(a.cfg)
 			a.pickBook.width, a.pickBook.height = a.width, a.height
+			return a, a.pickBook.runBrowse()
 		case screenLibrary:
 			a.library = newLibrary(a.cfg)
 			a.library.width, a.library.height = a.width, a.height
@@ -451,4 +452,3 @@ func (a App) View() string {
 		return ""
 	}
 }
-

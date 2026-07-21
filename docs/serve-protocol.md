@@ -138,6 +138,8 @@ streams. Other devices and the primary token remain active.
 | `POST` | `/v1/pair` | no | Exchange pairing code for token (optional `device_name`) |
 | `GET` | `/v1/devices` | yes | List paired devices (D2) |
 | `DELETE` | `/v1/devices/{id}` | yes | Revoke one device token + streams (D2) |
+| `POST` | `/v1/intent` | yes | Capture intent (D3; file sink) |
+| `GET` | `/v1/intent/targets` | yes | Intent routing targets (D3) |
 
 ## WebSocket `/v1/stream`
 

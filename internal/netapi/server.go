@@ -37,6 +37,9 @@ type Options struct {
 	// OnListening is called once the TCP listener is bound, before Accept
 	// loops run. Use it to print banners with the real bound address.
 	OnListening func(addr net.Addr)
+	// IntentSink configures POST /v1/intent (PROTOCOL_DELTAS D3). Optional;
+	// defaults to file mode under credentials Dir/intents.
+	IntentSink IntentSinkConfig
 }
 
 // Server is the LAN-facing HTTPS + WebSocket surface around one pipeline.
@@ -99,6 +102,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	// PROTOCOL_DELTAS D2: per-device token list / revoke.
 	mux.HandleFunc("GET /v1/devices", s.handleDevices)
 	mux.HandleFunc("DELETE /v1/devices/{id}", s.handleDeviceDelete)
+	// PROTOCOL_DELTAS D3: intent capture + targets.
+	mux.HandleFunc("POST /v1/intent", s.handleIntent)
+	mux.HandleFunc("GET /v1/intent/targets", s.handleIntentTargets)
 	// Embedded phone voice client (public HTML/JS; WS still authenticated).
 	web := webFileServer()
 	mux.Handle("GET /{$}", web)
