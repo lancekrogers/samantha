@@ -44,8 +44,12 @@ type libraryDetailMsg struct {
 }
 
 // libraryAudiobookMsg jumps to Create audiobook with a resolved input path.
+// Errors stay on the Library screen; successes are gated by screen + requestID
+// so a late MOBI export cannot yank the user after they leave.
 type libraryAudiobookMsg struct {
-	path string
+	path      string
+	err       error
+	requestID uint64
 }
 
 // libraryProbeMsg reports whether calibredb is resolvable on this machine.
@@ -68,12 +72,16 @@ type libraryModel struct {
 	cursor    int
 	offset    int
 	loading   bool
+	// preparing is true while BestFormatPathContext (export/convert) is in flight.
+	preparing bool
 	errText   string
 	message   string
 	detail    calibre.Book
 	detailOK  bool
 	detailErr string
 	requestID uint64
+	// resolveCancel cancels an in-flight send-to-audiobook prepare.
+	resolveCancel context.CancelFunc
 
 	// Probe results for onboarding (filled async).
 	probed     bool
@@ -206,6 +214,19 @@ func (m libraryModel) Update(msg tea.Msg) (libraryModel, tea.Cmd) {
 		if m.editing && m.focus == libFocusQuery {
 			return m.handleQueryEdit(key)
 		}
+		// While preparing audiobook input, only allow cancel/leave.
+		if m.preparing {
+			switch key {
+			case "esc":
+				m.cancelPrepare()
+				return m, func() tea.Msg { return switchScreenMsg(screenLauncher) }
+			case "q":
+				m.cancelPrepare()
+				return m, func() tea.Msg { return quitMsg{} }
+			default:
+				return m, nil
+			}
+		}
 		switch key {
 		case "up", "k":
 			if m.focus == libFocusList && m.cursor > 0 {
@@ -333,6 +354,22 @@ func (m *libraryModel) runProbe() tea.Cmd {
 }
 
 func (m libraryModel) handleDetailKey(key string) (libraryModel, tea.Cmd) {
+	if m.preparing {
+		switch key {
+		case "esc", "backspace":
+			m.cancelPrepare()
+			m.requestID = nextLibraryRequestID()
+			m.pane = libPaneBrowse
+			m.detailOK = false
+			m.detailErr = ""
+			return m, nil
+		case "q":
+			m.cancelPrepare()
+			return m, func() tea.Msg { return quitMsg{} }
+		default:
+			return m, nil
+		}
+	}
 	switch key {
 	case "esc", "backspace":
 		m.requestID = nextLibraryRequestID()
@@ -451,16 +488,39 @@ func (m libraryModel) openDetail() (libraryModel, tea.Cmd) {
 }
 
 func (m libraryModel) sendToAudiobook(b calibre.Book) (libraryModel, tea.Cmd) {
-	path, _, err := m.client.BestFormatPath(b)
-	if err != nil {
-		if m.pane == libPaneDetail {
-			m.detailErr = err.Error()
-		} else {
-			m.errText = err.Error()
-		}
+	if m.preparing {
 		return m, nil
 	}
-	return m, func() tea.Msg { return libraryAudiobookMsg{path: path} }
+	// Cancel any prior prepare and bump the request ID so late results are ignored.
+	m.cancelPrepare()
+	m.requestID = nextLibraryRequestID()
+	reqID := m.requestID
+	client := m.client
+	m.preparing = true
+	m.errText = ""
+	m.detailErr = ""
+	m.message = "Preparing audiobook input…"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	m.resolveCancel = cancel
+	return m, func() tea.Msg {
+		defer cancel()
+		path, _, err := client.BestFormatPathContext(ctx, b)
+		return libraryAudiobookMsg{path: path, err: err, requestID: reqID}
+	}
+}
+
+// cancelPrepare aborts an in-flight BestFormatPathContext and clears preparing state.
+func (m *libraryModel) cancelPrepare() {
+	if m.resolveCancel != nil {
+		m.resolveCancel()
+		m.resolveCancel = nil
+	}
+	if m.preparing {
+		m.preparing = false
+		if m.message == "Preparing audiobook input…" {
+			m.message = ""
+		}
+	}
 }
 
 func (m *libraryModel) ensureVisible() {
@@ -624,13 +684,16 @@ func (m libraryModel) browseView() string {
 	}
 	b.WriteString("  " + qCursor + qStyle.Render(fmt.Sprintf("%-8s %s", qLabel, qVal)) + "\n")
 
-	if m.loading {
+	if m.preparing {
+		b.WriteString(dimStyle.Render("  Preparing audiobook input…"))
+		b.WriteString("\n")
+	} else if m.loading {
 		b.WriteString(dimStyle.Render("  Loading…"))
 		b.WriteString("\n")
 	}
 
 	if len(m.books) == 0 {
-		if !m.loading && m.message != "" && m.errText == "" {
+		if !m.loading && !m.preparing && m.message != "" && m.errText == "" {
 			b.WriteString(dimStyle.Render("  " + m.message))
 			b.WriteString("\n")
 		}
@@ -660,7 +723,7 @@ func (m libraryModel) browseView() string {
 		b.WriteString("\n")
 		b.WriteString(errorStyle.Render("  " + m.errText))
 		b.WriteString("\n")
-	} else if m.message != "" && !m.loading && len(m.books) > 0 {
+	} else if m.message != "" && !m.loading && !m.preparing && len(m.books) > 0 {
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("  " + m.message))
 		b.WriteString("\n")
@@ -683,9 +746,12 @@ func (m libraryModel) detailView() string {
 	book := m.detail
 	b.WriteString(ansi.Truncate(titleStyle.Render("  Book details"), width, "…"))
 	b.WriteString("\n")
-	if m.loading {
+	switch {
+	case m.preparing:
+		b.WriteString(ansi.Truncate(subtitleStyle.Render("  Preparing audiobook input…"), width, "…"))
+	case m.loading:
 		b.WriteString(ansi.Truncate(subtitleStyle.Render("  Loading full metadata…"), width, "…"))
-	} else {
+	default:
 		b.WriteString(ansi.Truncate(subtitleStyle.Render("  Metadata from Calibre"), width, "…"))
 	}
 	b.WriteString("\n\n")
@@ -721,7 +787,10 @@ func (m libraryModel) detailView() string {
 	}
 	writeField("Formats", formatExtList(book.Formats))
 	for _, p := range book.Formats {
-		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(p), "."))
+		ext := formatLabel(p)
+		if ext == "" {
+			ext = "?"
+		}
 		line := fmt.Sprintf("             · %s  %s", ext, p)
 		b.WriteString(ansi.Truncate(dimStyle.Render(line), width, "…"))
 		b.WriteString("\n")
@@ -762,13 +831,30 @@ func formatExtList(paths []string) string {
 	}
 	exts := make([]string, 0, len(paths))
 	for _, p := range paths {
-		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(p), "."))
+		ext := formatLabel(p)
 		if ext == "" {
 			ext = "?"
 		}
 		exts = append(exts, ext)
 	}
 	return strings.Join(exts, ", ")
+}
+
+// formatLabel recognizes normal paths ("…/book.epub") and bare Calibre-server
+// format entries ("EPUB", "MOBI") so list/detail chips show real format names.
+func formatLabel(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if ext := filepath.Ext(value); ext != "" {
+		return strings.ToLower(strings.TrimPrefix(ext, "."))
+	}
+	// Path without extension is not a bare format name.
+	if strings.ContainsAny(value, `/\\`) {
+		return ""
+	}
+	return strings.ToLower(strings.TrimPrefix(value, "."))
 }
 
 // wrapWords soft-wraps s to width runes on word boundaries.

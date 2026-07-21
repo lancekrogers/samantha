@@ -59,8 +59,10 @@ run `fts_index enable` unless the user explicitly asks.
    only if present and keep under ~500 characters.
 3. **Content / quote search**: try FTS; if it fails or is empty, explain and
    offer metadata search instead. Never dump a whole book into the reply.
-4. **Audiobook path**: resolve to an EPUB or PDF path. v1 does not convert
-   MOBI/AZW3 — if those are the only formats, say so clearly.
+4. **Audiobook path**: resolve to an EPUB or PDF path. If only MOBI/AZW3 (or
+   another supported Calibre source format) is available, Samantha converts it
+   to a cached EPUB with `ebook-convert` when Calibre is installed; mention the
+   converter requirement if conversion cannot run.
 5. Cap results at ~20 titles unless the user asks for more. Prefer the most
    relevant hits.
 

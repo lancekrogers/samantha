@@ -28,8 +28,12 @@ func TestRealCalibredbSearch(t *testing.T) {
 		if b.Title == "" {
 			t.Fatalf("empty title: %+v", b)
 		}
-		// BestFormatPath should either return epub/pdf or ErrNoSupportedFormat.
-		if _, _, err := c.BestFormatPath(b); err != nil && !errors.Is(err, ErrNoSupportedFormat) {
+		// MOBI/AZW-family books may require ebook-convert; a library without
+		// that optional converter should still let the catalog search succeed.
+		if _, _, err := c.BestFormatPath(b); err != nil &&
+			!errors.Is(err, ErrNoSupportedFormat) &&
+			!errors.Is(err, ErrConverterNotFound) &&
+			!errors.Is(err, ErrConversionFailed) {
 			t.Fatalf("BestFormatPath(%d): %v", b.ID, err)
 		}
 	}

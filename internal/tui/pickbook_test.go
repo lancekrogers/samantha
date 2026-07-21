@@ -68,9 +68,12 @@ func TestPickBookSelectEmitsPath(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected cmd")
 	}
+	if m.loadPhase != pickPreparing || m.requestID == 0 {
+		t.Fatalf("phase=%v requestID=%d", m.loadPhase, m.requestID)
+	}
 	msg := cmd()
 	picked, ok := msg.(bookPickedMsg)
-	if !ok || picked.path != path {
+	if !ok || picked.path != path || picked.requestID != m.requestID {
 		t.Fatalf("msg = %#v err=%q", msg, m.errText)
 	}
 }
@@ -82,19 +85,40 @@ func TestPickBookMOBIOnlyShowsError(t *testing.T) {
 	}
 	m.focus = pickFocusList
 	m, cmd := m.selectBook()
-	if cmd != nil {
-		t.Fatal("should not emit pick for MOBI-only")
+	if cmd == nil {
+		t.Fatal("selection should resolve asynchronously")
 	}
-	if m.errText == "" || !strings.Contains(m.errText, "supported format") {
-		t.Fatalf("errText = %q", m.errText)
+	msg, ok := cmd().(bookPickedMsg)
+	if !ok || msg.err == nil {
+		t.Fatalf("msg = %#v", msg)
+	}
+	// Missing on-disk MOBI fails resolution (convert path or no-supported).
+	if msg.err.Error() == "" {
+		t.Fatal("expected non-empty error")
+	}
+}
+
+func TestPickBookConversionErrorReturnsToPicker(t *testing.T) {
+	app := NewApp(&config.Config{CalibreEnabled: true, TTSVoice: "af_heart"})
+	app.screen = screenPickBook
+	app.pickBook.requestID = 7
+	app.pickBook.loadPhase = pickPreparing
+	model, _ := app.Update(bookPickedMsg{err: errors.New("converter failed"), requestID: 7})
+	a, ok := model.(App)
+	if !ok {
+		t.Fatalf("model type %T", model)
+	}
+	if a.screen != screenPickBook || a.pickBook.loadPhase != pickIdle || a.pickBook.errText != "converter failed" {
+		t.Fatalf("picker state = screen %v phase=%v err=%q", a.screen, a.pickBook.loadPhase, a.pickBook.errText)
 	}
 }
 
 func TestBookPickedMsgFillsAudiobookInput(t *testing.T) {
 	app := NewApp(&config.Config{CalibreEnabled: true, TTSVoice: "af_heart"})
 	app.screen = screenPickBook
+	app.pickBook.requestID = 3
 	app.audiobook.input = ""
-	model, _ := app.Update(bookPickedMsg{path: "/lib/book.epub"})
+	model, _ := app.Update(bookPickedMsg{path: "/lib/book.epub", requestID: 3})
 	a, ok := model.(App)
 	if !ok {
 		t.Fatalf("model type %T", model)
@@ -104,6 +128,90 @@ func TestBookPickedMsgFillsAudiobookInput(t *testing.T) {
 	}
 	if a.audiobook.input != "/lib/book.epub" {
 		t.Fatalf("input = %q", a.audiobook.input)
+	}
+}
+
+func TestBookPickedMsgIgnoresStaleRequest(t *testing.T) {
+	app := NewApp(&config.Config{CalibreEnabled: true, TTSVoice: "af_heart"})
+	app.screen = screenPickBook
+	app.pickBook.requestID = 5
+	app.audiobook.input = "keep-me"
+	model, _ := app.Update(bookPickedMsg{path: "/stale.epub", requestID: 4})
+	a := model.(App)
+	if a.screen != screenPickBook || a.audiobook.input != "keep-me" {
+		t.Fatalf("stale apply: screen=%v input=%q", a.screen, a.audiobook.input)
+	}
+}
+
+func TestBookPickedMsgIgnoresWhenLeftScreen(t *testing.T) {
+	app := NewApp(&config.Config{CalibreEnabled: true, TTSVoice: "af_heart"})
+	app.screen = screenAudiobook
+	app.pickBook.requestID = 1
+	app.pickBook.loadPhase = pickPreparing
+	app.audiobook.input = "original"
+	model, _ := app.Update(bookPickedMsg{path: "/late.epub", requestID: 1})
+	a := model.(App)
+	if a.screen != screenAudiobook || a.audiobook.input != "original" {
+		t.Fatalf("late apply: screen=%v input=%q", a.screen, a.audiobook.input)
+	}
+	if a.pickBook.loadPhase != pickPreparing {
+		t.Fatalf("late result mutated phase=%v", a.pickBook.loadPhase)
+	}
+}
+
+func TestPickBookPreparingBlocksSecondEnter(t *testing.T) {
+	m := newPickBook(&config.Config{CalibreEnabled: true})
+	m.books = []calibre.Book{{ID: 1, Title: "T", Formats: []string{"EPUB"}}}
+	m.focus = pickFocusList
+	m, cmd1 := m.selectBook()
+	if cmd1 == nil {
+		t.Fatal("first select")
+	}
+	firstID := m.requestID
+	m, cmd2 := m.selectBook()
+	if cmd2 != nil {
+		t.Fatal("second select should be ignored while preparing")
+	}
+	if m.requestID != firstID {
+		t.Fatalf("requestID changed to %d", m.requestID)
+	}
+	// Key enter also blocked.
+	m, cmd3 := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd3 != nil {
+		t.Fatal("enter should be ignored while busy")
+	}
+}
+
+func TestPickBookPreparingShowsPreparationStatus(t *testing.T) {
+	m := newPickBook(&config.Config{CalibreEnabled: true})
+	m.books = []calibre.Book{{ID: 1, Title: "T", Formats: []string{"EPUB"}}}
+	m.focus = pickFocusList
+	m, cmd := m.selectBook()
+	if cmd == nil {
+		t.Fatal("expected preparation cmd")
+	}
+	view := m.View()
+	if !strings.Contains(view, "Preparing audiobook input") {
+		t.Fatalf("view missing preparation status:\n%s", view)
+	}
+	if strings.Contains(view, "Searching…") {
+		t.Fatalf("view reported search while preparing:\n%s", view)
+	}
+}
+
+func TestLeavingPickBookCancelsResolve(t *testing.T) {
+	cancelled := false
+	app := NewApp(&config.Config{CalibreEnabled: true})
+	app.screen = screenPickBook
+	app.pickBook.loadPhase = pickPreparing
+	app.pickBook.resolveCancel = func() { cancelled = true }
+	model, _ := app.Update(switchScreenMsg(screenAudiobook))
+	a := model.(App)
+	if !cancelled {
+		t.Fatal("leaving picker did not cancel conversion")
+	}
+	if a.pickBook.loadPhase != pickIdle {
+		t.Fatalf("picker phase = %v, want idle", a.pickBook.loadPhase)
 	}
 }
 
@@ -226,9 +334,10 @@ func TestPickBookEmptyQueryBrowses(t *testing.T) {
 
 func TestPickBookSearchError(t *testing.T) {
 	m := newPickBook(&config.Config{CalibreEnabled: true})
+	m.loadPhase = pickSearching
 	m, _ = m.Update(calibreResultsMsg{err: errors.New("boom")})
-	if m.errText != "boom" || m.searching {
-		t.Fatalf("err=%q searching=%v", m.errText, m.searching)
+	if m.errText != "boom" || m.loadPhase != pickIdle {
+		t.Fatalf("err=%q phase=%v", m.errText, m.loadPhase)
 	}
 }
 
