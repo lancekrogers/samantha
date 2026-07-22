@@ -58,24 +58,34 @@ func isNotExist(err error) bool {
 
 // ensureMigrated creates personas/<id>/persona.yaml from legacy config keys
 // when the personas directory has no valid profiles yet.
+//
+// active_persona defaults to "samantha" via viper, so an empty/unset value is
+// indistinguishable from that default. When seeding from a legacy non-default
+// persona (e.g. persona: festival), the profile id is seed.ID — always point
+// active_persona at the profile we just created. When profiles already exist
+// but the default active id is missing, heal by selecting a real profile.
 func ensureMigrated(cfg *config.Config) error {
 	existing, err := List()
 	if err != nil {
 		return err
 	}
 	if len(existing) > 0 {
-		// Still default active_persona when unset.
-		if strings.TrimSpace(cfg.ActivePersona) == "" {
-			cfg.ActivePersona = DefaultID
-			// Prefer existing default id if present.
-			for _, p := range existing {
-				if p.ID == DefaultID {
-					cfg.ActivePersona = DefaultID
-					return nil
-				}
-			}
-			cfg.ActivePersona = existing[0].ID
+		id := strings.TrimSpace(cfg.ActivePersona)
+		if id == "" {
+			id = DefaultID
 		}
+		if hasProfileID(existing, id) {
+			cfg.ActivePersona = id
+			return nil
+		}
+		// Heal: viper defaulted active_persona to samantha while migration
+		// only created a legacy non-default profile (or samantha was deleted).
+		if id == DefaultID {
+			cfg.ActivePersona = pickFallbackID(existing)
+			return nil
+		}
+		// Explicit unknown id — leave for Load to error with a clear message.
+		cfg.ActivePersona = id
 		return nil
 	}
 
@@ -83,10 +93,32 @@ func ensureMigrated(cfg *config.Config) error {
 	if err := Write(seed, true); err != nil {
 		return fmt.Errorf("migrating default persona: %w", err)
 	}
-	if strings.TrimSpace(cfg.ActivePersona) == "" {
-		cfg.ActivePersona = seed.ID
-	}
+	// Always bind active to the seeded profile. seed.ID may be a legacy
+	// persona slug (e.g. festival), not the viper default "samantha".
+	cfg.ActivePersona = seed.ID
 	return nil
+}
+
+func hasProfileID(profiles []*Profile, id string) bool {
+	for _, p := range profiles {
+		if p.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// pickFallbackID prefers the built-in default id, else the first listed profile.
+func pickFallbackID(profiles []*Profile) string {
+	if len(profiles) == 0 {
+		return DefaultID
+	}
+	for _, p := range profiles {
+		if p.ID == DefaultID {
+			return DefaultID
+		}
+	}
+	return profiles[0].ID
 }
 
 // Use sets active_persona, persists it, and applies the profile to cfg.

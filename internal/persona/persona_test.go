@@ -109,6 +109,52 @@ func TestEnsureAndApplyMigratesFromLegacy(t *testing.T) {
 	}
 }
 
+// Regression: viper defaults active_persona to "samantha" even when the legacy
+// persona prompt name is a different slug. Migration must create that slug's
+// profile and set active_persona to match (not leave active pointing at a
+// missing samantha profile).
+func TestEnsureAndApplyMigratesLegacyNonDefaultPersona(t *testing.T) {
+	dir := t.TempDir()
+	setConfigDir(t, dir)
+
+	cfg := &config.Config{
+		AgentName:     "Festival Bot",
+		Persona:       "festival",
+		TTSVoice:      "af_bella",
+		ActivePersona: "samantha", // viper default; not a real profile yet
+	}
+	if err := EnsureAndApply(cfg); err != nil {
+		t.Fatalf("EnsureAndApply() error = %v", err)
+	}
+
+	if _, err := os.Stat(ProfilePath("festival")); err != nil {
+		t.Fatalf("expected migrated profile at festival: %v", err)
+	}
+	if _, err := os.Stat(ProfilePath("samantha")); err == nil {
+		t.Fatal("did not expect a samantha profile for legacy persona=festival")
+	}
+	if cfg.ActivePersona != "festival" {
+		t.Errorf("ActivePersona = %q, want festival", cfg.ActivePersona)
+	}
+	if cfg.AgentName != "Festival Bot" || cfg.TTSVoice != "af_bella" || cfg.Persona != "festival" {
+		t.Fatalf("overlay mismatch: name=%q voice=%q persona=%q", cfg.AgentName, cfg.TTSVoice, cfg.Persona)
+	}
+
+	// Second load still heals if active stays at the viper default.
+	cfg2 := &config.Config{
+		AgentName:     "Festival Bot",
+		Persona:       "festival",
+		TTSVoice:      "af_bella",
+		ActivePersona: "samantha",
+	}
+	if err := EnsureAndApply(cfg2); err != nil {
+		t.Fatalf("second EnsureAndApply() error = %v", err)
+	}
+	if cfg2.ActivePersona != "festival" {
+		t.Errorf("second ActivePersona = %q, want festival", cfg2.ActivePersona)
+	}
+}
+
 func TestEnsureAndApplyMissingActive(t *testing.T) {
 	dir := t.TempDir()
 	setConfigDir(t, dir)
