@@ -36,7 +36,7 @@ func TestWriteLoadListApply(t *testing.T) {
 		ID:          "festival",
 		DisplayName: "Festival",
 		Builtin:     true,
-		TTS:         TTS{Voice: "af_bella"},
+		TTS:         TTS{Provider: "kokoro", Voice: "af_bella"},
 		Prompts:     PromptRefs{Persona: "festival", Turn: "festival"},
 	}
 	if err := Write(p, false); err != nil {
@@ -47,7 +47,7 @@ func TestWriteLoadListApply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.DisplayName != "Festival" || got.TTS.Voice != "af_bella" {
+	if got.DisplayName != "Festival" || got.TTS.Voice != "af_bella" || got.TTS.Provider != "kokoro" {
 		t.Fatalf("Load() = %+v", got)
 	}
 
@@ -62,12 +62,50 @@ func TestWriteLoadListApply(t *testing.T) {
 	cfg := &config.Config{
 		AgentName:     "Old",
 		Persona:       "samantha",
+		TTSProvider:   "kokoro",
 		TTSVoice:      "af_heart",
 		ActivePersona: "festival",
 	}
 	Apply(cfg, got)
-	if cfg.AgentName != "Festival" || cfg.Persona != "festival" || cfg.TTSVoice != "af_bella" {
+	if cfg.AgentName != "Festival" || cfg.Persona != "festival" || cfg.TTSVoice != "af_bella" || cfg.TTSProvider != "kokoro" {
 		t.Fatalf("Apply overlay failed: %+v", cfg)
+	}
+}
+
+func TestApplyQwenProviderAndVoice(t *testing.T) {
+	cfg := &config.Config{
+		TTSProvider:  "kokoro",
+		TTSVoice:     "af_heart",
+		QwenTTSVoice: "",
+	}
+	Apply(cfg, &Profile{
+		ID:          "obey",
+		DisplayName: "Obey",
+		Prompts:     PromptRefs{Persona: "obey"},
+		TTS:         TTS{Provider: "qwen3-tts", Voice: "Vivian"},
+	})
+	if cfg.TTSProvider != "qwen3-tts" {
+		t.Fatalf("TTSProvider = %q, want qwen3-tts", cfg.TTSProvider)
+	}
+	if cfg.QwenTTSVoice != "Vivian" {
+		t.Fatalf("QwenTTSVoice = %q, want Vivian", cfg.QwenTTSVoice)
+	}
+	// Kokoro voice left as-is (not cleared) — factory uses provider to pick keys.
+	if cfg.TTSVoice != "af_heart" {
+		t.Fatalf("TTSVoice = %q, want af_heart unchanged", cfg.TTSVoice)
+	}
+}
+
+func TestFromConfigCapturesQwenVoice(t *testing.T) {
+	p := FromConfig(&config.Config{
+		AgentName:    "Q",
+		Persona:      "samantha",
+		TTSProvider:  "qwen3-tts",
+		QwenTTSVoice: "Ryan",
+		TTSVoice:     "af_heart",
+	})
+	if p.TTS.Provider != "qwen3-tts" || p.TTS.Voice != "Ryan" {
+		t.Fatalf("FromConfig TTS = %+v", p.TTS)
 	}
 }
 

@@ -39,11 +39,20 @@ type Profile struct {
 	Path        string         `yaml:"-"` // absolute path of persona.yaml when loaded
 }
 
-// TTS holds voice settings for a persona.
+// TTS holds per-persona speech settings. Each persona may choose any supported
+// TTS provider and a voice id valid for that provider.
+//
+//	tts:
+//	  provider: kokoro      # or qwen3-tts, …
+//	  voice: af_heart       # kokoro voice id, or Qwen preset (e.g. Vivian)
+//
+// Empty provider leaves the app-level tts_provider unchanged and routes voice
+// using the effective provider after Apply. Empty voice leaves voice keys alone.
 type TTS struct {
-	Voice string `yaml:"voice,omitempty"`
-	// Provider is reserved for P4+ (optional override).
+	// Provider is the TTS backend (e.g. kokoro, qwen3-tts). Empty = keep app default.
 	Provider string `yaml:"provider,omitempty"`
+	// Voice is the speaker id for Provider (Kokoro voice name or Qwen preset).
+	Voice string `yaml:"voice,omitempty"`
 }
 
 // PromptRefs names documents in the prompts catalog.
@@ -202,13 +211,17 @@ func FromConfig(cfg *config.Config) *Profile {
 	if display == "" {
 		display = "Samantha"
 	}
-	voice := strings.TrimSpace(cfg.TTSVoice)
+	provider := strings.TrimSpace(cfg.TTSProvider)
+	voice := voiceForProvider(cfg, provider)
 	return &Profile{
 		Schema:      Schema,
 		ID:          id,
 		DisplayName: display,
 		Builtin:     id == DefaultID,
-		TTS:         TTS{Voice: voice},
+		TTS: TTS{
+			Provider: provider,
+			Voice:    voice,
+		},
 		Prompts: PromptRefs{
 			Persona: promptName,
 			Turn:    promptName,
@@ -217,6 +230,8 @@ func FromConfig(cfg *config.Config) *Profile {
 }
 
 // Apply overlays profile fields onto cfg (non-empty profile fields win).
+// TTS provider and voice are per-persona: users may pick any supported backend
+// and any voice valid for that backend on each profile.
 func Apply(cfg *config.Config, p *Profile) {
 	if cfg == nil || p == nil {
 		return
@@ -227,11 +242,79 @@ func Apply(cfg *config.Config, p *Profile) {
 	if ref := strings.TrimSpace(p.Prompts.Persona); ref != "" {
 		cfg.Persona = ref
 	}
-	if voice := strings.TrimSpace(p.TTS.Voice); voice != "" {
-		cfg.TTSVoice = voice
-	}
 	if id := strings.TrimSpace(p.ID); id != "" {
 		cfg.ActivePersona = id
+	}
+	applyTTS(cfg, p.TTS)
+}
+
+// applyTTS writes provider/voice from the profile onto cfg.
+func applyTTS(cfg *config.Config, t TTS) {
+	if provider := strings.TrimSpace(t.Provider); provider != "" {
+		cfg.TTSProvider = provider
+	}
+	voice := strings.TrimSpace(t.Voice)
+	if voice == "" {
+		return
+	}
+	// Route voice to the config key the selected provider reads.
+	switch normalizeTTSProvider(cfg.TTSProvider) {
+	case "qwen3-tts":
+		cfg.QwenTTSVoice = voice
+	default:
+		// kokoro and any other voice-keyed providers use tts_voice.
+		cfg.TTSVoice = voice
+	}
+}
+
+// voiceForProvider reads the voice field the given provider uses from cfg.
+func voiceForProvider(cfg *config.Config, provider string) string {
+	if cfg == nil {
+		return ""
+	}
+	switch normalizeTTSProvider(provider) {
+	case "qwen3-tts":
+		if v := strings.TrimSpace(cfg.QwenTTSVoice); v != "" {
+			return v
+		}
+		// Fall back to kokoro voice if qwen voice unset (legacy single-agent).
+		return strings.TrimSpace(cfg.TTSVoice)
+	default:
+		return strings.TrimSpace(cfg.TTSVoice)
+	}
+}
+
+func normalizeTTSProvider(provider string) string {
+	return strings.ToLower(strings.TrimSpace(provider))
+}
+
+// PersistTTS writes the profile's TTS selection into the live config file so
+// persona use and settings stay aligned.
+func PersistTTS(p *Profile) error {
+	if p == nil {
+		return nil
+	}
+	if provider := strings.TrimSpace(p.TTS.Provider); provider != "" {
+		if err := config.SetAndSave("tts_provider", provider); err != nil {
+			return err
+		}
+	}
+	voice := strings.TrimSpace(p.TTS.Voice)
+	if voice == "" {
+		return nil
+	}
+	// Need effective provider after optional profile provider.
+	provider := strings.TrimSpace(p.TTS.Provider)
+	if provider == "" {
+		if v, ok := config.Get("tts_provider").(string); ok {
+			provider = v
+		}
+	}
+	switch normalizeTTSProvider(provider) {
+	case "qwen3-tts":
+		return config.SetAndSave("qwen_tts_voice", voice)
+	default:
+		return config.SetAndSave("tts_voice", voice)
 	}
 }
 

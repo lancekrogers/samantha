@@ -136,13 +136,13 @@ func Use(cfg *config.Config, id string) error {
 	if err := config.SetAndSave("active_persona", id); err != nil {
 		return fmt.Errorf("saving active_persona: %w", err)
 	}
-	// Keep legacy keys in sync so older tools and config display match.
+	// Keep app config keys in sync so Settings / doctor / older tools match.
 	_ = config.SetAndSave("agent_name", p.DisplayName)
 	if ref := strings.TrimSpace(p.Prompts.Persona); ref != "" {
 		_ = config.SetAndSave("persona", ref)
 	}
-	if voice := strings.TrimSpace(p.TTS.Voice); voice != "" {
-		_ = config.SetAndSave("tts_voice", voice)
+	if err := PersistTTS(p); err != nil {
+		return fmt.Errorf("saving persona tts: %w", err)
 	}
 	Apply(cfg, p)
 	return nil

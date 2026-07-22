@@ -375,7 +375,9 @@ Files default to `~/.obey/agents/voice/festival-voice/meetings/<slug>-<timestamp
 Config lives at `~/.obey/agents/voice/festival-voice/config.yaml`. Values can also be overridden with environment variables where listed.
 
 Persona **profiles** live under `~/.obey/agents/voice/festival-voice/personas/<id>/persona.yaml`.
-On load, the active profile overlays `agent_name`, the persona prompt name, and `tts_voice`.
+On load, the active profile overlays `agent_name`, the persona prompt name, and per-persona TTS
+(`tts.provider` + `tts.voice` → `tts_provider` and either `tts_voice` or `qwen_tts_voice`).
+Each persona can use any supported TTS backend and any voice for that backend.
 Prompt bodies stay in `prompts/` (see `samantha prompts`).
 
 | Key | Default | Environment | Description |

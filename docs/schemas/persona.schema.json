@@ -23,9 +23,16 @@
     "tts": {
       "type": "object",
       "additionalProperties": false,
+      "description": "Per-persona TTS backend and voice. provider selects the engine; voice is the speaker id for that engine (Kokoro name or Qwen preset).",
       "properties": {
-        "voice": { "type": "string" },
-        "provider": { "type": "string" }
+        "provider": {
+          "type": "string",
+          "description": "TTS backend (e.g. kokoro, qwen3-tts). Empty keeps app-level tts_provider."
+        },
+        "voice": {
+          "type": "string",
+          "description": "Speaker id for the effective provider (Kokoro voice or Qwen CustomVoice preset)."
+        }
       }
     },
     "prompts": {

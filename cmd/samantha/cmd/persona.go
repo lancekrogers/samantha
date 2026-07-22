@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -47,6 +48,7 @@ var personaListCmd = &cobra.Command{
 			type row struct {
 				ID          string `json:"id"`
 				DisplayName string `json:"display_name"`
+				Provider    string `json:"provider,omitempty"`
 				Voice       string `json:"voice,omitempty"`
 				Prompt      string `json:"prompt"`
 				Builtin     bool   `json:"builtin"`
@@ -59,6 +61,7 @@ var personaListCmd = &cobra.Command{
 				out = append(out, row{
 					ID:          p.ID,
 					DisplayName: p.DisplayName,
+					Provider:    p.TTS.Provider,
 					Voice:       p.TTS.Voice,
 					Prompt:      p.Prompts.Persona,
 					Builtin:     p.Builtin,
@@ -77,13 +80,14 @@ var personaListCmd = &cobra.Command{
 		}
 		active := persona.ActiveID(cfg)
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
-		fmt.Fprintln(w, "  ID\tNAME\tVOICE\tPROMPT\tACTIVE")
+		fmt.Fprintln(w, "  ID\tNAME\tPROVIDER\tVOICE\tPROMPT\tACTIVE")
 		for _, p := range list {
 			mark := ""
 			if p.ID == active {
 				mark = "*"
 			}
-			fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\n", p.ID, p.DisplayName, p.TTS.Voice, p.Prompts.Persona, mark)
+			fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t%s\n",
+				p.ID, p.DisplayName, p.TTS.Provider, p.TTS.Voice, p.Prompts.Persona, mark)
 		}
 		_ = w.Flush()
 		fmt.Fprintf(cmd.OutOrStdout(), "\n  Profiles dir: %s\n", persona.Dir())
@@ -114,14 +118,15 @@ var personaShowCmd = &cobra.Command{
 			return enc.Encode(p)
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "\n  %s\n", titleStyle.Render("Persona: "+p.ID))
-		fmt.Fprintf(cmd.OutOrStdout(), "  display_name  %s\n", p.DisplayName)
-		fmt.Fprintf(cmd.OutOrStdout(), "  builtin       %v\n", p.Builtin)
-		fmt.Fprintf(cmd.OutOrStdout(), "  tts.voice     %s\n", p.TTS.Voice)
+		fmt.Fprintf(cmd.OutOrStdout(), "  display_name    %s\n", p.DisplayName)
+		fmt.Fprintf(cmd.OutOrStdout(), "  builtin         %v\n", p.Builtin)
+		fmt.Fprintf(cmd.OutOrStdout(), "  tts.provider    %s\n", p.TTS.Provider)
+		fmt.Fprintf(cmd.OutOrStdout(), "  tts.voice       %s\n", p.TTS.Voice)
 		fmt.Fprintf(cmd.OutOrStdout(), "  prompts.persona %s\n", p.Prompts.Persona)
 		if p.Prompts.Turn != "" {
 			fmt.Fprintf(cmd.OutOrStdout(), "  prompts.turn    %s\n", p.Prompts.Turn)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "  path          %s\n\n", p.Path)
+		fmt.Fprintf(cmd.OutOrStdout(), "  path            %s\n\n", p.Path)
 		return nil
 	},
 }
@@ -139,8 +144,15 @@ var personaUseCmd = &cobra.Command{
 			return err
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "  Active persona: %s (%s)\n", cfg.ActivePersona, cfg.AgentName)
-		if cfg.TTSVoice != "" {
-			fmt.Fprintf(cmd.OutOrStdout(), "  Voice: %s\n", cfg.TTSVoice)
+		if cfg.TTSProvider != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "  TTS provider:   %s\n", cfg.TTSProvider)
+		}
+		voice := cfg.TTSVoice
+		if strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), "qwen3-tts") && cfg.QwenTTSVoice != "" {
+			voice = cfg.QwenTTSVoice
+		}
+		if voice != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "  Voice:          %s\n", voice)
 		}
 		return nil
 	},
