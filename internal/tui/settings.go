@@ -20,7 +20,8 @@ import (
 type settingsSection int
 
 const (
-	sectionProvider settingsSection = iota
+	sectionPersona settingsSection = iota
+	sectionProvider
 	sectionModel
 	sectionTools
 	sectionTTS
@@ -43,6 +44,8 @@ type settingsModel struct {
 	offset  int
 
 	// Derived lists for current section.
+	personaItems   []*persona.Profile
+	personaLoadErr string
 	providerItems  []string
 	modelItems     []string
 	toolItems      []string
@@ -70,6 +73,8 @@ type settingsModel struct {
 	newTTSProvider   func(*config.Config) (tts.Provider, func(), error)
 	saveConfig       func(string, any) error
 	savePersonaTTS   func(*config.Config, string, string) error
+	listPersonas     func() ([]*persona.Profile, error)
+	usePersona       func(*config.Config, string) error
 	message          string
 
 	qwenStatus        managedqwen.Status
@@ -93,9 +98,12 @@ func newSettings(cfg *config.Config, providers []discovery.ProviderInfo) setting
 		newTTSProvider: tts.NewProvider,
 		saveConfig:     config.SetAndSave,
 		savePersonaTTS: persona.UpdateActiveTTS,
+		listPersonas:   persona.List,
+		usePersona:     persona.Use,
 		ensureQwen:     managedqwen.Ensure,
 	}
 	m.qwenStatus = managedqwen.Inspect(config.ModelsDirFrom(cfg))
+	m.buildPersonaItems()
 	m.buildProviderItems()
 	m.buildModelItems()
 	m.buildToolItems()
@@ -126,6 +134,47 @@ func (m *settingsModel) loadDevices() tea.Cmd {
 		outputs, err := checker.PlaybackDevices(ctx)
 		return deviceListsMsg{inputs: inputs, outputs: outputs, err: err}
 	}
+}
+
+func (m *settingsModel) buildPersonaItems() {
+	m.personaItems = nil
+	m.personaLoadErr = ""
+	list := m.listPersonas
+	if list == nil {
+		list = persona.List
+	}
+	items, err := list()
+	if err != nil {
+		m.personaLoadErr = err.Error()
+		return
+	}
+	m.personaItems = items
+}
+
+// personaListLabel formats one row for the Persona section.
+func personaListLabel(p *persona.Profile) string {
+	if p == nil {
+		return ""
+	}
+	label := p.DisplayName
+	if label == "" {
+		label = p.ID
+	}
+	if p.ID != "" && p.DisplayName != "" && !strings.EqualFold(p.DisplayName, p.ID) {
+		label = fmt.Sprintf("%s (%s)", p.DisplayName, p.ID)
+	}
+	detail := strings.TrimSpace(p.TTS.Provider)
+	if v := strings.TrimSpace(p.TTS.Voice); v != "" {
+		if detail != "" {
+			detail += " · " + v
+		} else {
+			detail = v
+		}
+	}
+	if detail != "" {
+		label += " — " + detail
+	}
+	return label
 }
 
 func (m *settingsModel) buildProviderItems() {
@@ -261,7 +310,7 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 			if m.section > 0 {
 				m.section--
 			} else {
-				m.section = sectionMeeting
+				m.section = settingsSectionCount - 1
 			}
 			m.cursor = 0
 			m.offset = 0
@@ -408,6 +457,14 @@ func (m settingsModel) visibleRows() int {
 
 func (m *settingsModel) currentListLen() int {
 	switch m.section {
+	case sectionPersona:
+		if m.personaLoadErr != "" {
+			return 1
+		}
+		if len(m.personaItems) == 0 {
+			return 1
+		}
+		return len(m.personaItems)
 	case sectionProvider:
 		return len(m.providerItems)
 	case sectionModel:
@@ -432,6 +489,32 @@ func (m *settingsModel) currentListLen() int {
 
 func (m *settingsModel) selectCurrent() tea.Cmd {
 	switch m.section {
+	case sectionPersona:
+		if m.personaLoadErr != "" || m.cursor >= len(m.personaItems) {
+			return nil
+		}
+		p := m.personaItems[m.cursor]
+		if p == nil {
+			return nil
+		}
+		use := m.usePersona
+		if use == nil {
+			use = persona.Use
+		}
+		if err := use(m.cfg, p.ID); err != nil {
+			m.message = fmt.Sprintf("Failed to switch persona: %v", err)
+			return nil
+		}
+		// Voice list depends on the persona's TTS provider.
+		m.qwenStatus = managedqwen.Inspect(config.ModelsDirFrom(m.cfg))
+		m.buildPersonaItems()
+		m.buildTTSItems()
+		m.buildVoiceItems()
+		m.buildLanguageItems()
+		m.message = fmt.Sprintf("Active persona: %s", p.DisplayName)
+		if p.DisplayName == "" {
+			m.message = fmt.Sprintf("Active persona: %s", p.ID)
+		}
 	case sectionProvider:
 		if m.cursor < len(m.providers) && m.providers[m.cursor].Available {
 			// Mutate the live config only after the save succeeds, so a

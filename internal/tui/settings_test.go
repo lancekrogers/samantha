@@ -11,6 +11,7 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/persona"
 	managedqwen "github.com/lancekrogers/samantha/internal/qwen"
 	"github.com/lancekrogers/samantha/internal/tts"
 )
@@ -55,7 +56,8 @@ func TestSettingsLoadsAudioDevices(t *testing.T) {
 
 func TestSettingsCompactsForSmallTerminal(t *testing.T) {
 	m := settingsModel{
-		cfg: &config.Config{}, providerItems: []string{"claude", "ollama", "grok", "other"},
+		cfg: &config.Config{}, section: sectionProvider,
+		providerItems: []string{"claude", "ollama", "grok", "other"},
 	}
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 36, Height: 8})
 	view := stripANSI(m.View())
@@ -66,7 +68,7 @@ func TestSettingsCompactsForSmallTerminal(t *testing.T) {
 
 func TestSettingsListUsesAllAvailableRows(t *testing.T) {
 	items := []string{"one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"}
-	m := settingsModel{cfg: &config.Config{}, providerItems: items}
+	m := settingsModel{cfg: &config.Config{}, section: sectionProvider, providerItems: items}
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 13})
 
 	if got := m.visibleRows(); got != 8 {
@@ -88,7 +90,7 @@ func TestSettingsListUsesAllAvailableRows(t *testing.T) {
 
 func TestSettingsShowsEntireListWhenItFits(t *testing.T) {
 	items := []string{"one", "two", "three", "four", "five", "six"}
-	m := settingsModel{cfg: &config.Config{}, providerItems: items}
+	m := settingsModel{cfg: &config.Config{}, section: sectionProvider, providerItems: items}
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	view := stripANSI(m.View())
@@ -109,7 +111,7 @@ func TestSettingsResizesDynamicallyWithTerminal(t *testing.T) {
 	for i := range items {
 		items[i] = fmt.Sprintf("provider-%02d", i)
 	}
-	m := settingsModel{cfg: &config.Config{}, providerItems: items}
+	m := settingsModel{cfg: &config.Config{}, section: sectionProvider, providerItems: items}
 
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
 	if got := m.visibleRows(); got != 7 {
@@ -202,6 +204,62 @@ func TestSettingsTabCycleIncludesTools(t *testing.T) {
 	m, _ = updateSettingsWithKey(t, m, "tab")
 	if m.section != sectionTools {
 		t.Fatalf("section after Model + Tab = %d, want Tools section %d", m.section, sectionTools)
+	}
+}
+
+func TestSettingsPersonaSectionListsAndSwitches(t *testing.T) {
+	cfg := &config.Config{
+		ActivePersona: "samantha",
+		AgentName:     "Samantha",
+		TTSProvider:   "kokoro",
+		TTSVoice:      "af_heart",
+		Persona:       "samantha",
+	}
+	m := newSettings(cfg, nil)
+	m.listPersonas = func() ([]*persona.Profile, error) {
+		return []*persona.Profile{
+			{
+				ID: "samantha", DisplayName: "Samantha", Builtin: true,
+				TTS: persona.TTS{Provider: "kokoro", Voice: "af_heart"},
+			},
+			{
+				ID: "festival", DisplayName: "Festival", Builtin: true,
+				TTS: persona.TTS{Provider: "kokoro", Voice: "af_bella"},
+			},
+		}, nil
+	}
+	m.buildPersonaItems()
+	m.section = sectionPersona
+	m.cursor = 1
+
+	var used string
+	m.usePersona = func(c *config.Config, id string) error {
+		used = id
+		c.ActivePersona = id
+		c.AgentName = "Festival"
+		c.TTSProvider = "kokoro"
+		c.TTSVoice = "af_bella"
+		c.Persona = "festival"
+		return nil
+	}
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Persona") {
+		t.Fatalf("settings missing Persona tab:\n%s", view)
+	}
+	if !strings.Contains(view, "Samantha") || !strings.Contains(view, "Festival") {
+		t.Fatalf("persona list missing rows:\n%s", view)
+	}
+
+	m.selectCurrent()
+	if used != "festival" {
+		t.Fatalf("usePersona id = %q, want festival", used)
+	}
+	if cfg.ActivePersona != "festival" || cfg.AgentName != "Festival" {
+		t.Fatalf("cfg after switch = active=%q name=%q", cfg.ActivePersona, cfg.AgentName)
+	}
+	if !strings.Contains(m.message, "Festival") {
+		t.Fatalf("message = %q, want Festival", m.message)
 	}
 }
 

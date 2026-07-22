@@ -40,6 +40,22 @@ paints bright theme colors.
 just demo-voice-meter
 ```
 
+## persona-switch.gif — Settings → Persona switcher
+
+Full Bubble Tea Settings flow for multi-persona voice agents:
+
+1. **Launcher → Settings** — first tab is **Persona**
+2. **List** — Samantha (active ✓) and Festival with provider · voice detail
+3. **Switch** — select Festival; checkmark and status message update
+4. **Esc** — return to launcher with the active persona applied
+
+Uses a disposable `$HOME` with two pre-seeded `personas/<id>/persona.yaml`
+profiles (no live mic or model download).
+
+```bash
+just demo-persona-switch
+```
+
 ## qwen-voices.gif — managed Qwen setup and voice selection
 
 Full Bubble Tea Settings flow for the managed Qwen provider:

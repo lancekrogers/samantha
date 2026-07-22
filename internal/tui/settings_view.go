@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	ansi "github.com/charmbracelet/x/ansi"
+
+	"github.com/lancekrogers/samantha/internal/persona"
 )
 
 func (m settingsModel) View() string {
@@ -15,7 +17,7 @@ func (m settingsModel) View() string {
 	var parts []string
 	parts = append(parts, headerStyle.Render("  Settings"))
 
-	tabs := []string{"Brain", "Brain model", "Tools", "TTS", "Voice", "Language", "Input", "Output", "Meeting"}
+	tabs := []string{"Persona", "Brain", "Brain model", "Tools", "TTS", "Voice", "Language", "Input", "Output", "Meeting"}
 	var tabLine strings.Builder
 	for i, tab := range tabs {
 		style := dimStyle
@@ -44,10 +46,14 @@ func (m settingsModel) View() string {
 	parts = append(parts, listLines...)
 
 	help := "  ←/→ section • ↑/↓ navigate • enter select"
-	if m.section == sectionVoice {
+	if m.section == sectionPersona {
+		help = "  ←/→ section • ↑/↓ navigate • enter switch persona • esc back"
+	} else if m.section == sectionVoice {
 		help += " • p preview"
+		help += " • esc back"
+	} else {
+		help += " • esc back"
 	}
-	help += " • esc back"
 	if compact {
 		footer := dimStyle.Render(help)
 		if m.message != "" {
@@ -72,6 +78,29 @@ func (m settingsModel) isCompact() bool {
 
 func (m settingsModel) sectionListLines() []string {
 	switch m.section {
+	case sectionPersona:
+		if m.personaLoadErr != "" {
+			return []string{m.itemLine(0, "error loading personas: "+m.personaLoadErr)}
+		}
+		if len(m.personaItems) == 0 {
+			return []string{m.itemLine(0, "No personas yet — run the app once to seed defaults")}
+		}
+		active := ""
+		if m.cfg != nil {
+			active = persona.ActiveID(m.cfg)
+		}
+		start, end := m.visibleRange(len(m.personaItems))
+		lines := make([]string, 0, end-start)
+		for i := start; i < end; i++ {
+			p := m.personaItems[i]
+			mark := ""
+			if p != nil && p.ID == active {
+				mark = " ✓"
+			}
+			lines = append(lines, m.itemLine(i, personaListLabel(p)+mark))
+		}
+		return lines
+
 	case sectionProvider:
 		start, end := m.visibleRange(len(m.providerItems))
 		lines := make([]string, 0, end-start)
