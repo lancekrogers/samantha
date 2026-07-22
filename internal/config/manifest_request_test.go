@@ -120,6 +120,26 @@ func TestManifestForMeetingSpeakerModelsHonorsOverridesAndDisabledGate(t *testin
 	}
 }
 
+func TestManifestForLiveSpeakerNeedsEmbeddingOnly(t *testing.T) {
+	cfg := &Config{}
+	cfg.Speaker.Enabled = true
+	cfg.Speaker.Live.Enabled = true
+	m, err := ManifestFor(cfg, AssetRequest{NeedSpeaker: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Assets) != 1 {
+		t.Fatalf("live-only speaker assets = %d, want embedding only", len(m.Assets))
+	}
+	if m.Assets[0].ID != "speaker.embedding.nemo-titanet-small" {
+		t.Fatalf("asset = %+v, want titanet embedding", m.Assets[0])
+	}
+	req := DefaultAssetRequest(cfg)
+	if !req.NeedSpeaker {
+		t.Fatal("DefaultAssetRequest should need speaker when live is enabled")
+	}
+}
+
 func TestManifestForWhisperCPPNestedFilePath(t *testing.T) {
 	cases := map[string]string{
 		"":         "whispercpp/ggml-base.en.bin",

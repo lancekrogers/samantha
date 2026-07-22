@@ -191,29 +191,34 @@ func ManifestFor(cfg *Config, req AssetRequest) (AssetManifest, error) {
 		})
 	}
 
-	if req.NeedSpeaker && cfg != nil && cfg.Speaker.Enabled && cfg.Speaker.Meeting.Enabled {
-		if strings.TrimSpace(cfg.Speaker.Models.Segmentation) == "" {
-			m.Assets = append(m.Assets, Asset{
-				ID:         "speaker.segmentation.pyannote-3.0",
-				Provider:   "sherpa",
-				Kind:       AssetKindSpeaker,
-				Name:       "pyannote speaker segmentation",
-				TargetDir:  "speaker/pyannote-segmentation-3.0",
-				Archive:    &AssetArchive{URL: speakerSegmentationURL, SHA256: speakerSegmentationSHA256},
-				CheckFiles: []string{"model.int8.onnx"},
-			})
-		}
-		if strings.TrimSpace(cfg.Speaker.Models.Embedding) == "" {
-			m.Assets = append(m.Assets, Asset{
-				ID:       "speaker.embedding.nemo-titanet-small",
-				Provider: "sherpa",
-				Kind:     AssetKindSpeaker,
-				Name:     "NeMo TitaNet speaker embedding",
-				Files: []AssetFile{{
-					Path: "speaker/nemo_en_titanet_small.onnx", URL: speakerEmbeddingURL,
-					SHA256: speakerEmbeddingSHA256, Size: speakerEmbeddingSize,
-				}},
-			})
+	// Speaker assets: meeting needs segmentation + embedding; live needs embedding only.
+	if req.NeedSpeaker && cfg != nil && cfg.Speaker.Enabled {
+		needMeeting := cfg.Speaker.Meeting.Enabled
+		needLive := cfg.Speaker.Live.Enabled
+		if needMeeting || needLive {
+			if needMeeting && strings.TrimSpace(cfg.Speaker.Models.Segmentation) == "" {
+				m.Assets = append(m.Assets, Asset{
+					ID:         "speaker.segmentation.pyannote-3.0",
+					Provider:   "sherpa",
+					Kind:       AssetKindSpeaker,
+					Name:       "pyannote speaker segmentation",
+					TargetDir:  "speaker/pyannote-segmentation-3.0",
+					Archive:    &AssetArchive{URL: speakerSegmentationURL, SHA256: speakerSegmentationSHA256},
+					CheckFiles: []string{"model.int8.onnx"},
+				})
+			}
+			if strings.TrimSpace(cfg.Speaker.Models.Embedding) == "" {
+				m.Assets = append(m.Assets, Asset{
+					ID:       "speaker.embedding.nemo-titanet-small",
+					Provider: "sherpa",
+					Kind:     AssetKindSpeaker,
+					Name:     "NeMo TitaNet speaker embedding",
+					Files: []AssetFile{{
+						Path: "speaker/nemo_en_titanet_small.onnx", URL: speakerEmbeddingURL,
+						SHA256: speakerEmbeddingSHA256, Size: speakerEmbeddingSize,
+					}},
+				})
+			}
 		}
 	}
 
@@ -311,7 +316,7 @@ func ScopedAssetRequest(cfg *Config, scope AssetScope) AssetRequest {
 		NeedSTT:     scope.STT && sttOK,
 		NeedTTS:     scope.TTS && ManagedTTS(cfg),
 		NeedVAD:     scope.VAD && cfg.VADEnabled,
-		NeedSpeaker: scope.Speaker && cfg.Speaker.Enabled && cfg.Speaker.Meeting.Enabled,
+		NeedSpeaker: scope.Speaker && cfg.Speaker.Enabled && (cfg.Speaker.Meeting.Enabled || cfg.Speaker.Live.Enabled),
 	}
 }
 
