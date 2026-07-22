@@ -40,17 +40,18 @@ paints bright theme colors.
 just demo-voice-meter
 ```
 
-## persona-switch.gif — Settings → Persona switcher
+## persona-switch.gif — Settings → Persona list / switch / create
 
 Full Bubble Tea Settings flow for multi-persona voice agents:
 
 1. **Launcher → Settings** — first tab is **Persona**
-2. **List** — Samantha (active ✓) and Festival with provider · voice detail
-3. **Switch** — select Festival; checkmark and status message update
-4. **Esc** — return to launcher with the active persona applied
+2. **List** — Samantha (active ✓), Festival, and **+ Create new persona…**
+3. **Switch** — select Festival; checkmark updates
+4. **Create** — open the create form, type **Research Buddy**, enter
+5. **Esc** — return to launcher with the new persona active
 
-Uses a disposable `$HOME` with two pre-seeded `personas/<id>/persona.yaml`
-profiles (no live mic or model download).
+Uses a disposable `$HOME` with two pre-seeded profiles (no live mic or model
+download). Create clones the current TTS provider/voice onto the new profile.
 
 ```bash
 just demo-persona-switch

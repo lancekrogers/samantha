@@ -1,7 +1,7 @@
-# Settings → Persona: list and switch active voice agent.
+# Settings → Persona: list, switch, and create a voice agent.
 #
-# Seeds two profiles (samantha + festival) under a disposable HOME so the
-# real Bubble Tea Settings Persona tab is exercised end-to-end.
+# Seeds samantha + festival under a disposable HOME, then creates
+# "Research Buddy" from the TUI create form.
 #
 # From repo root after `just build`:
 #   just demo-persona-switch
@@ -82,18 +82,27 @@ Sleep 900ms
 Enter
 Sleep 1400ms
 
-# Settings opens on Persona (first tab) with Samantha ✓ and Festival listed
-Sleep 1600ms
+# Settings opens on Persona: Samantha ✓, Festival, + Create new persona…
+Sleep 1500ms
 
-# Move to Festival and switch
+# Switch to Festival
+Down
+Sleep 600ms
+Enter
+Sleep 1400ms
+
+# Move to Create row (Festival is row 1, create is row 2)
 Down
 Sleep 700ms
 Enter
-Sleep 1600ms
+Sleep 1000ms
 
-# Show active check moved to Festival
-Sleep 1200ms
+# Type a display name and create
+Type "Research Buddy"
+Sleep 800ms
+Enter
+Sleep 1800ms
 
-# Esc back to launcher — active persona name is Festival
+# Esc back to launcher
 Escape
 Sleep 1800ms

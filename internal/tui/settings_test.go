@@ -263,6 +263,56 @@ func TestSettingsPersonaSectionListsAndSwitches(t *testing.T) {
 	}
 }
 
+func TestSettingsPersonaCreateRowAndSubmit(t *testing.T) {
+	cfg := &config.Config{
+		ActivePersona: "samantha",
+		AgentName:     "Samantha",
+		TTSProvider:   "kokoro",
+		TTSVoice:      "af_heart",
+	}
+	m := newSettings(cfg, nil)
+	m.listPersonas = func() ([]*persona.Profile, error) {
+		return []*persona.Profile{
+			{ID: "samantha", DisplayName: "Samantha", TTS: persona.TTS{Provider: "kokoro", Voice: "af_heart"}},
+		}, nil
+	}
+	m.buildPersonaItems()
+	m.section = sectionPersona
+	// Create row is after the last profile.
+	m.cursor = len(m.personaItems)
+	if m.currentListLen() != 2 {
+		t.Fatalf("list len = %d, want 2 (profile + create)", m.currentListLen())
+	}
+
+	m.selectCurrent()
+	if !m.personaCreating {
+		t.Fatal("expected create form to open")
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Create a new voice agent") {
+		t.Fatalf("create form missing:\n%s", view)
+	}
+
+	var createdName string
+	m.createPersona = func(c *config.Config, name string) (*persona.Profile, error) {
+		createdName = name
+		c.ActivePersona = "research-buddy"
+		c.AgentName = name
+		return &persona.Profile{ID: "research-buddy", DisplayName: name}, nil
+	}
+	m.personaCreate.SetValue("Research Buddy")
+	m, _ = m.updatePersonaCreate(tea.KeyMsg{Type: tea.KeyEnter})
+	if createdName != "Research Buddy" {
+		t.Fatalf("created name = %q", createdName)
+	}
+	if m.personaCreating {
+		t.Fatal("create form should close after submit")
+	}
+	if !strings.Contains(m.message, "research-buddy") {
+		t.Fatalf("message = %q", m.message)
+	}
+}
+
 func TestSettingsToolsTogglePersistsAndRefreshes(t *testing.T) {
 	cfg := &config.Config{
 		BrainProvider:     "ollama",
