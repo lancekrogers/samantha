@@ -4,11 +4,10 @@
 // Package speakerflow exercises meeting speaker diarization against real
 // multi-voice meeting audio (YouTube product marketing meeting clip).
 //
-// Engine note: production still uses speaker.FakeEngine for deterministic
-// offline diarization until a native sherpa diarization Engine is wired.
-// This suite still proves:
+// This suite proves the production native path:
 //   - real multi-speaker PCM loads (16 kHz mono WAV)
-//   - Analyzer.Finalize + AnalyzeRecording complete on real samples
+//   - managed pyannote + NeMo TitaNet assets resolve
+//   - sherpa OfflineSpeakerDiarization runs on real samples
 //   - AttributeTranscript labels utterances from the timeline
 //   - analysis JSON is written beside the fixture
 //
@@ -35,7 +34,9 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/listen"
 	"github.com/lancekrogers/samantha/internal/meeting"
+	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 	"github.com/lancekrogers/samantha/internal/speaker"
 )
 
@@ -44,6 +45,15 @@ const (
 	fixtureRate  = 16000
 	wantSpeakers = 2
 )
+
+type fixtureCapture struct{ chunks chan []float32 }
+
+func (f *fixtureCapture) Subscribe(int) (int, <-chan []float32) {
+	f.chunks = make(chan []float32, 1)
+	return 1, f.chunks
+}
+
+func (f *fixtureCapture) Unsubscribe(int) { close(f.chunks) }
 
 // sharedFixtureCandidates returns search paths for the multi-voice meeting clip.
 // Prefer the user-level cache so every git worktree reuses one download.
@@ -121,26 +131,52 @@ func TestMeetingFixtureDiarizationPipeline(t *testing.T) {
 		t.Fatalf("duration = %.1fs, want ~90s multi-voice meeting clip (section extract)", dur)
 	}
 
-	cfg := speaker.Config{
-		Enabled: true,
-		Meeting: speaker.MeetingConfig{
-			Enabled:     true,
-			RecordAudio: true,
-			NumSpeakers: wantSpeakers,
-		},
-	}.Normalize()
-
-	engine := &speaker.FakeEngine{}
+	appCfg := &config.Config{ModelsDir: config.ModelsDir()}
+	appCfg.Speaker.Enabled = true
+	appCfg.Speaker.Meeting.Enabled = true
+	appCfg.Speaker.Meeting.NumSpeakers = wantSpeakers
+	if err := config.EnsureRuntimeAssets(t.Context(), appCfg, config.AssetRequest{NeedSpeaker: true}, nil); err != nil {
+		t.Fatalf("EnsureRuntimeAssets: %v", err)
+	}
+	cfg := speaker.FromAppConfig(appCfg)
+	engine, err := speaker.NewSherpaEngine(cfg, config.ModelsDirFrom(appCfg))
+	if err != nil {
+		t.Fatalf("NewSherpaEngine: %v", err)
+	}
 	analyzer, err := speaker.NewAnalyzer(cfg, engine)
 	if err != nil {
+		_ = engine.Close()
 		t.Fatalf("NewAnalyzer: %v", err)
 	}
 	defer func() { _ = analyzer.Close() }()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	result := meeting.AnalyzeRecording(ctx, analyzer, samples)
+	dir := t.TempDir()
+	meetingPath := filepath.Join(dir, "native-meeting.log")
+	writer, err := meetinglog.Create(meetingPath, "Native speaker integration", "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.OnUtterance(listen.Utterance{
+		Text: "fixture transcript turn", At: writer.StartedAt().Add(10 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	capture := &fixtureCapture{}
+	session, err := meeting.NewSpeakerSession(capture, analyzer, writer, meetingPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture.chunks <- samples
+	result, err := session.Finalize(ctx)
+	if err != nil {
+		t.Fatalf("SpeakerSession.Finalize: %v", err)
+	}
+	if _, err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if result.Status != meeting.AnalysisComplete {
 		t.Fatalf("AnalyzeRecording status = %s error=%q, want complete", result.Status, result.Error)
 	}
@@ -188,6 +224,21 @@ func TestMeetingFixtureDiarizationPipeline(t *testing.T) {
 	}
 	if named == 0 {
 		t.Fatalf("no segments received speaker labels: %+v", attributed)
+	}
+	events, err := meeting.ReadEvents(writer.JSONLPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seenAnalysis, seenAttribution := false, false
+	for _, event := range events {
+		seenAnalysis = seenAnalysis || event.Type == meetinglog.TypeSpeakerAnalysis
+		seenAttribution = seenAttribution || event.Type == meetinglog.TypeSpeakerUtterance
+	}
+	if !seenAnalysis || !seenAttribution {
+		t.Fatalf("meeting events missing analysis/attribution: %+v", events)
+	}
+	if _, err := os.Stat(result.Artifact); err != nil {
+		t.Fatalf("speaker sidecar: %v", err)
 	}
 
 	out := filepath.Join(t.TempDir(), "speaker-analysis.json")

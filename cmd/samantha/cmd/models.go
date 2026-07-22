@@ -26,25 +26,27 @@ var (
 // scopeFlags narrows a models command to specific asset kinds. Flags combine as
 // a union; no scope flags (or --all) keeps the full default request.
 type scopeFlags struct {
-	tts bool
-	stt bool
-	vad bool
-	all bool
+	tts     bool
+	stt     bool
+	vad     bool
+	speaker bool
+	all     bool
 }
 
 func (s *scopeFlags) register(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&s.tts, "tts", false, "Limit to TTS assets")
 	cmd.Flags().BoolVar(&s.stt, "stt", false, "Limit to the configured STT provider's assets")
 	cmd.Flags().BoolVar(&s.vad, "vad", false, "Limit to the VAD asset")
+	cmd.Flags().BoolVar(&s.speaker, "speaker", false, "Limit to meeting speaker-diarization assets")
 	cmd.Flags().BoolVar(&s.all, "all", false, "All asset kinds (same as no scope flags)")
 }
 
 // request resolves the flags to the asset request for cfg.
 func (s scopeFlags) request(cfg *config.Config) config.AssetRequest {
-	if s.all || (!s.tts && !s.stt && !s.vad) {
+	if s.all || (!s.tts && !s.stt && !s.vad && !s.speaker) {
 		return config.DefaultAssetRequest(cfg)
 	}
-	return config.ScopedAssetRequest(cfg, config.AssetScope{STT: s.stt, TTS: s.tts, VAD: s.vad})
+	return config.ScopedAssetRequest(cfg, config.AssetScope{STT: s.stt, TTS: s.tts, VAD: s.vad, Speaker: s.speaker})
 }
 
 var modelsCmd = &cobra.Command{

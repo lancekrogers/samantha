@@ -25,16 +25,17 @@ const (
 
 // MeetingOpts configures the interactive meeting recorder TUI.
 type MeetingOpts struct {
-	Ctx           context.Context
-	Cancel        context.CancelFunc
-	Capture       listen.Resetter
-	Provider      stt.Provider
-	Writer        *meetinglog.Writer
-	Description   string
-	Path          string // .log path; JSONL is derived by the writer
-	StopPhrases   map[string]bool
-	SpeakerStatus meeting.AnalysisStatus
-	SpeakerError  string
+	Ctx              context.Context
+	Cancel           context.CancelFunc
+	Capture          listen.Resetter
+	Provider         stt.Provider
+	Writer           *meetinglog.Writer
+	Description      string
+	Path             string // .log path; JSONL is derived by the writer
+	StopPhrases      map[string]bool
+	SpeakerStatus    meeting.AnalysisStatus
+	SpeakerError     string
+	FinalizeSpeakers func(context.Context) (meeting.AnalysisResult, error)
 	// Embedded is true when running inside the main Samantha App launcher
 	// flow. Stop returns meetingDoneMsg instead of quitting the process.
 	Embedded bool
@@ -45,7 +46,10 @@ type meetingLevelMsg float64
 type meetingPartialMsg string
 type meetingUtteranceMsg listen.Utterance
 type meetingErrorMsg struct{ err error }
-type meetingLoopDoneMsg struct{ err error }
+type meetingLoopDoneMsg struct {
+	err      error
+	analysis meeting.AnalysisResult
+}
 type meetingTickMsg time.Time
 type meetingNoteErrMsg struct{ err error }
 
@@ -80,6 +84,7 @@ type meetingModel struct {
 	quitting   bool
 	loopDone   bool
 	loopErr    error
+	analysis   meeting.AnalysisResult
 }
 
 // RunMeeting launches a standalone Bubble Tea meeting recorder (CLI path).
@@ -98,7 +103,10 @@ func RunMeeting(opts MeetingOpts) error {
 	m := newEmbeddedMeeting()
 	m.opts = opts
 	m.started = time.Now()
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(opts.Ctx))
+	// The recording context is canceled to stop capture. Keep Bubble Tea alive
+	// until the loop has finalized post-capture speaker analysis and delivered
+	// its terminal status; meetingLoopDoneMsg then exits the program normally.
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	final, err := p.Run()
 	if err != nil {
 		return err
@@ -145,6 +153,7 @@ func (m *meetingModel) beginRecording(opts MeetingOpts) tea.Cmd {
 	m.quitting = false
 	m.loopDone = false
 	m.loopErr = nil
+	m.analysis = meeting.AnalysisResult{}
 	m.partial = ""
 	if m.opts.SpeakerStatus == "" {
 		m.opts.SpeakerStatus = meeting.AnalysisDisabled
@@ -185,8 +194,21 @@ func (m *meetingModel) startLoop() tea.Cmd {
 			capture, provider = demoMeetingDeps()
 		}
 		err := listen.LoopWithHooks(opts.Ctx, capture, provider, sink, hooks)
+		var analysis meeting.AnalysisResult
+		if opts.FinalizeSpeakers != nil {
+			sendMeeting(ch, meetingSpeakerStatusMsg{status: meeting.AnalysisRunning, detail: "diarizing captured audio…"})
+			analysisCtx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+			var analysisErr error
+			analysis, analysisErr = opts.FinalizeSpeakers(analysisCtx)
+			cancel()
+			if analysisErr != nil && analysis.Error == "" {
+				analysis.Status = meeting.AnalysisError
+				analysis.Error = analysisErr.Error()
+			}
+			sendMeeting(ch, meetingSpeakerStatusMsg{status: analysis.Status, detail: meetingAnalysisDetail(analysis)})
+		}
 		// Loop completion must not be dropped: UI uses it to exit cleanly.
-		sendMeeting(ch, meetingLoopDoneMsg{err: err})
+		sendMeeting(ch, meetingLoopDoneMsg{err: err, analysis: analysis})
 	}()
 
 	return tea.Batch(waitMeetingCh(ch), demoMeetingSpeakerStatusCmds())
@@ -281,7 +303,8 @@ func (m meetingModel) requestStop() (meetingModel, tea.Cmd) {
 func (m meetingModel) stopResultCmd() tea.Cmd {
 	if m.opts.Embedded {
 		err := m.loopErr
-		return func() tea.Msg { return meetingDoneMsg{Err: err} }
+		analysis := m.analysis
+		return func() tea.Msg { return meetingDoneMsg{Err: err, Analysis: analysis} }
 	}
 	return tea.Quit
 }
@@ -393,9 +416,13 @@ func (m meetingModel) handleListenMsg(msg tea.Msg) (meetingModel, tea.Cmd) {
 		m.statusErr = true
 		m.status = "Transcription error (retrying)"
 		m.appendLine(errorStyle.Render(fmt.Sprintf("  error: %v", msg.err)))
+	case meetingSpeakerStatusMsg:
+		m.opts.SpeakerStatus = msg.status
+		m.opts.SpeakerError = msg.detail
 	case meetingLoopDoneMsg:
 		m.loopDone = true
 		m.loopErr = msg.err
+		m.analysis = msg.analysis
 		m.voiceMode = anim.ModeIdle
 		if msg.err != nil {
 			m.statusErr = true
@@ -406,4 +433,22 @@ func (m meetingModel) handleListenMsg(msg tea.Msg) (meetingModel, tea.Cmd) {
 		m.quitting = true
 	}
 	return m, nil
+}
+
+func meetingAnalysisDetail(result meeting.AnalysisResult) string {
+	if result.Error != "" {
+		return result.Error
+	}
+	if result.Status == meeting.AnalysisComplete {
+		noun := "speakers"
+		if result.SpeakerCount == 1 {
+			noun = "speaker"
+		}
+		detail := fmt.Sprintf("%d %s", result.SpeakerCount, noun)
+		if result.Artifact != "" {
+			detail += " · " + result.Artifact
+		}
+		return detail
+	}
+	return ""
 }

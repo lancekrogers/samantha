@@ -13,6 +13,7 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/listen"
+	"github.com/lancekrogers/samantha/internal/meeting"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 	"github.com/lancekrogers/samantha/internal/tui/anim"
 )
@@ -57,6 +58,22 @@ func TestMeetingSpeakerStatusExplainsStates(t *testing.T) {
 	}
 	if got := meetingSpeakerStatus("error", "engine unavailable"); !strings.Contains(got, "error") || !strings.Contains(got, "engine unavailable") {
 		t.Fatalf("error speaker status = %q", got)
+	}
+}
+
+func TestMeetingSpeakerStatusFromRuntimeChannel(t *testing.T) {
+	m := sizedMeeting(t, 80, 24)
+	m, _ = m.handleListenMsg(meetingSpeakerStatusMsg{
+		status: meeting.AnalysisRunning,
+		detail: "diarizing captured audio…",
+	})
+	if m.opts.SpeakerStatus != meeting.AnalysisRunning || !strings.Contains(m.View(), "diarizing captured audio") {
+		t.Fatalf("speaker status not applied:\n%s", m.View())
+	}
+	result := meeting.AnalysisResult{Status: meeting.AnalysisComplete, SpeakerCount: 2, Artifact: "/tmp/a.json"}
+	m, _ = m.handleListenMsg(meetingLoopDoneMsg{analysis: result})
+	if m.analysis.SpeakerCount != 2 {
+		t.Fatalf("analysis result = %+v", m.analysis)
 	}
 }
 
@@ -246,6 +263,27 @@ func TestMeetingDoneJoinsCloseErrorOntoLauncherBanner(t *testing.T) {
 	view := a.launcher.View()
 	if !strings.Contains(view, "stt failed") {
 		t.Fatalf("launcher banner missing loop error:\n%s", view)
+	}
+}
+
+func TestMeetingDoneShowsCompletedSpeakerAnalysis(t *testing.T) {
+	w, err := meetinglog.Create(filepath.Join(t.TempDir(), "done.log"), "Done", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{}
+	cfg.Meeting.Route.Mode = meeting.ModeOff
+	app := NewApp(cfg)
+	app.launcher.width, app.launcher.height = 80, 24
+	app.meetingRT = &MeetingRuntime{Writer: w, Cleanup: func() {}}
+	app.screen = screenMeeting
+
+	updated, _ := app.Update(meetingDoneMsg{Analysis: meeting.AnalysisResult{
+		Status: meeting.AnalysisComplete, SpeakerCount: 3, Artifact: "/tmp/done.speaker-analysis.json",
+	}})
+	a := updated.(App)
+	if a.screen != screenLauncher || !strings.Contains(a.launcher.View(), "3 speakers") {
+		t.Fatalf("launcher did not report analysis:\n%s", a.launcher.View())
 	}
 }
 

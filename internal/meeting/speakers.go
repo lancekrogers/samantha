@@ -24,9 +24,12 @@ const (
 // AnalysisResult is metadata only. Source PCM remains owned by the caller and
 // the timeline contains no audio or embedding data.
 type AnalysisResult struct {
-	Status   AnalysisStatus   `json:"status"`
-	Timeline speaker.Timeline `json:"timeline"`
-	Error    string           `json:"error,omitempty"`
+	Status       AnalysisStatus   `json:"status"`
+	Timeline     speaker.Timeline `json:"timeline"`
+	Error        string           `json:"error,omitempty"`
+	Artifact     string           `json:"artifact,omitempty"`
+	AudioFile    string           `json:"audio_file,omitempty"`
+	SpeakerCount int              `json:"speaker_count,omitempty"`
 }
 
 // SpeakerAnalyzer is the small boundary shared by real and deterministic
@@ -40,6 +43,9 @@ type SpeakerAnalyzer interface {
 func AnalyzeRecording(ctx context.Context, analyzer SpeakerAnalyzer, samples []float32) AnalysisResult {
 	if analyzer == nil {
 		return AnalysisResult{Status: AnalysisDisabled}
+	}
+	if len(samples) == 0 {
+		return AnalysisResult{Status: AnalysisError, Error: "no meeting audio captured for speaker analysis"}
 	}
 	result := AnalysisResult{Status: AnalysisRunning}
 	timeline, err := analyzer.Finalize(ctx, samples)

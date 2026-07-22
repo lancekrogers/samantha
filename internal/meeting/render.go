@@ -84,6 +84,13 @@ func RenderEvents(summary meetinglog.Summary, events []meetinglog.Event, body st
 	b.WriteString("  \n")
 	fmt.Fprintf(&b, "**Utterances:** %d · **Notes:** %d · **Bookmarks:** %d\n\n",
 		summary.Utterances, summary.Notes, summary.Bookmarks)
+	if summary.SpeakerStatus != "" {
+		fmt.Fprintf(&b, "**Speaker analysis:** %s", summary.SpeakerStatus)
+		if summary.SpeakerCount > 0 {
+			fmt.Fprintf(&b, " · **Detected speakers:** %d", summary.SpeakerCount)
+		}
+		b.WriteString("\n\n")
+	}
 
 	if summary.File != "" {
 		b.WriteString("_Local copy:_ `")
@@ -91,7 +98,7 @@ func RenderEvents(summary meetinglog.Summary, events []meetinglog.Event, body st
 		b.WriteString("`\n\n")
 	}
 
-	var notes, bookmarks, utterances []meetinglog.Event
+	var notes, bookmarks, utterances, attributed []meetinglog.Event
 	for _, e := range events {
 		switch e.Type {
 		case meetinglog.TypeNote:
@@ -100,7 +107,12 @@ func RenderEvents(summary meetinglog.Summary, events []meetinglog.Event, body st
 			bookmarks = append(bookmarks, e)
 		case meetinglog.TypeUtterance:
 			utterances = append(utterances, e)
+		case meetinglog.TypeSpeakerUtterance:
+			attributed = append(attributed, e)
 		}
+	}
+	if len(attributed) > 0 {
+		utterances = attributed
 	}
 
 	if len(notes) > 0 {
@@ -136,6 +148,10 @@ func RenderEvents(summary meetinglog.Summary, events []meetinglog.Event, body st
 		b.WriteString("_No utterances recorded._\n")
 	} else {
 		for _, e := range utterances {
+			if e.Type == meetinglog.TypeSpeakerUtterance && e.Label != "" {
+				fmt.Fprintf(&b, "- %s**%s:** %s\n", offsetLabel(e.OffsetMs), e.Label, e.Text)
+				continue
+			}
 			fmt.Fprintf(&b, "- %s%s\n", offsetLabel(e.OffsetMs), e.Text)
 		}
 	}

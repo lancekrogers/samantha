@@ -1,12 +1,10 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -35,10 +33,8 @@ Example (YouTube multi-voice fixture, shared cache):
   samantha meeting analyze ~/.cache/festival-voice/fixtures/meetings/product-marketing-meeting-90s.wav
 
 Notes:
-  - Requires speaker analysis enabled (or passes --speakers N).
-  - Until a native sherpa diarization engine is wired, this uses the
-    deterministic FakeEngine split so the pipeline and JSON layout can be
-    verified end-to-end against real multi-voice PCM.`,
+  - Uses Samantha's managed pyannote + NeMo TitaNet speaker models.
+  - Speaker labels are anonymous clusters (speaker-1, speaker-2, ...).`,
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -48,45 +44,50 @@ Notes:
 			if err != nil {
 				return fmt.Errorf("read wav: %w", err)
 			}
-			if rate != 16000 {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: sample rate %d Hz (pipeline assumes 16 kHz mono)\n", rate)
+			if rate != audio.SampleRate {
+				return fmt.Errorf("speaker diarization requires %d Hz mono audio; got %d Hz", audio.SampleRate, rate)
 			}
 			if len(samples) == 0 {
 				return fmt.Errorf("empty audio: %s", wavPath)
 			}
 
-			cfg, err := config.Load()
+			loaded, err := config.Load()
 			if err != nil {
 				return err
 			}
-			sp := speaker.FromAppConfig(cfg)
+			cfg := *loaded
+			cfg.Speaker.Enabled = true
+			cfg.Speaker.Meeting.Enabled = true
+			if numSpeakers > 0 {
+				cfg.Speaker.Meeting.NumSpeakers = numSpeakers
+			}
+			sp := speaker.FromAppConfig(&cfg)
 			sp.Enabled = true
 			sp.Meeting.Enabled = true
-			if numSpeakers > 0 {
-				sp.Meeting.NumSpeakers = numSpeakers
-			}
-			if sp.Meeting.NumSpeakers <= 0 {
-				sp.Meeting.NumSpeakers = 2
-			}
 			sp = sp.Normalize()
 
-			// FakeEngine is the only Engine implementation today; real sherpa
-			// diarization will replace it when models are wired.
-			engine := &speaker.FakeEngine{}
+			if err := config.EnsureRuntimeAssets(cmd.Context(), &cfg, config.AssetRequest{NeedSpeaker: true}, meetingAssetProgress(jsonOut)); err != nil {
+				return err
+			}
+			engine, err := speaker.NewSherpaEngine(sp, config.ModelsDirFrom(&cfg))
+			if err != nil {
+				return err
+			}
 			analyzer, err := speaker.NewAnalyzer(sp, engine)
 			if err != nil {
+				_ = engine.Close()
 				return err
 			}
 			defer func() { _ = analyzer.Close() }()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-			result := meeting.AnalyzeRecording(ctx, analyzer, samples)
+			result := meeting.AnalyzeRecording(cmd.Context(), analyzer, samples)
 
 			if outPath == "" {
 				base := strings.TrimSuffix(filepath.Base(wavPath), filepath.Ext(wavPath))
 				outPath = filepath.Join(filepath.Dir(wavPath), base+"-speaker-analysis.json")
 			}
+			result.Artifact = outPath
+			result.SpeakerCount = countTimelineSpeakers(result.Timeline)
 			if err := meeting.WriteAnalysis(outPath, result); err != nil {
 				return err
 			}
@@ -119,4 +120,14 @@ Notes:
 	cmd.Flags().StringVar(&outPath, "out", "", "Write analysis JSON here (default: <audio>-speaker-analysis.json)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print analysis JSON to stdout")
 	return cmd
+}
+
+func countTimelineSpeakers(timeline speaker.Timeline) int {
+	labels := make(map[string]struct{})
+	for _, observation := range timeline.Observations {
+		if observation.Label != "" && observation.Label != speaker.LabelUnknown {
+			labels[observation.Label] = struct{}{}
+		}
+	}
+	return len(labels)
 }

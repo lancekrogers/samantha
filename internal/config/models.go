@@ -107,9 +107,10 @@ type ModelArchive struct {
 
 // AssetRequest describes which runtime assets are needed for a command.
 type AssetRequest struct {
-	NeedSTT bool
-	NeedTTS bool
-	NeedVAD bool
+	NeedSTT     bool
+	NeedTTS     bool
+	NeedVAD     bool
+	NeedSpeaker bool
 }
 
 // EnsureRuntimeAssets downloads any missing model files and archives needed for
@@ -122,7 +123,7 @@ func EnsureRuntimeAssets(ctx context.Context, cfg *Config, req AssetRequest, onP
 	if err != nil {
 		return err
 	}
-	dir := ModelsDir()
+	dir := ModelsDirFrom(cfg)
 	if err := ensureManifest(ctx, manifest, dir, onProgress); err != nil {
 		return err
 	}

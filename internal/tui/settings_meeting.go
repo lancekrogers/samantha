@@ -84,7 +84,7 @@ func (m *settingsModel) selectMeetingItem() {
 				return
 			}
 			m.cfg.Speaker.Meeting.Enabled = true
-			m.message = "Speaker diarization ON (meeting notes)"
+			m.message = "Speaker diarization ON — models install when the next meeting starts"
 			return
 		}
 		if err := saveConfig("speaker.meeting.enabled", false); err != nil {

@@ -357,12 +357,29 @@ Spoken stop phrases end the session like Ctrl+C and are **not** appended to the
 `.log` / `.jsonl` transcript. The meetings directory is created mode `0700` and
 log files mode `0600` (owner-only).
 
+Optional local speaker diarization is available under **Settings → Meeting →
+Speaker diarization**. The first enabled meeting installs Samantha's managed
+pyannote segmentation and NeMo TitaNet models, then captures 16 kHz PCM through
+a non-blocking subscriber while STT continues normally. When recording stops,
+the recorder visibly moves from `queued` to `running` to `complete` (or
+`error`) and writes anonymous `speaker-1…N` labels. These are voice clusters,
+not enrolled names or identity claims.
+
+The full timeline is stored beside the meeting as
+`<meeting>.speaker-analysis.json`; the human log gains an additive speaker
+timeline and attributed transcript, and routed meeting notes prefer those
+attributed utterances. Enable **Record audio for analysis** only when a private
+`<meeting>.wav` sidecar is also desired. Model or analysis failures are shown
+and logged without discarding or stopping the meeting transcript.
+
 JSONL events include `offset_ms` from meeting start for alignment:
 
 ```json
 {"type":"utterance","ts":"...","offset_ms":12340,"text":"next agenda item"}
 {"type":"note","ts":"...","offset_ms":15000,"text":"follow up with finance"}
 {"type":"bookmark","ts":"...","offset_ms":18200,"label":"important","text":"budget decision"}
+{"type":"speaker_analysis","ts":"...","offset_ms":20000,"status":"complete","speaker_count":2,"artifact":"...speaker-analysis.json"}
+{"type":"speaker_utterance","ts":"...","offset_ms":12340,"id":"utterance-1","text":"next agenda item","label":"speaker-1","start_ms":11000,"end_ms":12340,"state":"stable","timing":"estimated"}
 ```
 
 ```bash
@@ -370,6 +387,7 @@ samantha meeting record
 samantha meeting record --description "Weekly planning sync"
 samantha meeting record --description "Standup" --out-dir ~/notes/meetings --json
 samantha meeting record --description "CI log" --no-tui
+samantha meeting analyze meeting.wav --speakers 2
 ```
 
 Files default to `~/.obey/agents/voice/festival-voice/meetings/<slug>-<timestamp>.{log,jsonl}`.

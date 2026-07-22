@@ -75,6 +75,51 @@ func TestManifestForInteractiveStartupResolvesSTTAndVAD(t *testing.T) {
 	}
 }
 
+func TestManifestForMeetingSpeakerModels(t *testing.T) {
+	cfg := &Config{}
+	cfg.Speaker.Enabled = true
+	cfg.Speaker.Meeting.Enabled = true
+	m, err := ManifestFor(cfg, AssetRequest{NeedSpeaker: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Assets) != 2 {
+		t.Fatalf("speaker assets = %d, want segmentation + embedding", len(m.Assets))
+	}
+	for _, asset := range m.Assets {
+		if asset.Kind != AssetKindSpeaker || asset.Provider != "sherpa" {
+			t.Fatalf("speaker asset = %+v", asset)
+		}
+	}
+	files := m.ModelFiles()
+	if len(files) != 1 || files[0].Name != "speaker/nemo_en_titanet_small.onnx" || files[0].SHA256 != speakerEmbeddingSHA256 || files[0].Size != speakerEmbeddingSize {
+		t.Fatalf("embedding files = %+v", files)
+	}
+	archives := m.ModelArchives("/models")
+	if len(archives) != 1 || archives[0].TargetDir != filepath.Join("/models", "speaker", "pyannote-segmentation-3.0") || archives[0].SHA256 != speakerSegmentationSHA256 {
+		t.Fatalf("segmentation archives = %+v", archives)
+	}
+}
+
+func TestManifestForMeetingSpeakerModelsHonorsOverridesAndDisabledGate(t *testing.T) {
+	cfg := &Config{}
+	if m, err := ManifestFor(cfg, AssetRequest{NeedSpeaker: true}); err != nil || len(m.Assets) != 0 {
+		t.Fatalf("disabled speaker manifest = %+v, %v", m, err)
+	}
+
+	cfg.Speaker.Enabled = true
+	cfg.Speaker.Meeting.Enabled = true
+	cfg.Speaker.Models.Embedding = "/custom/embedding.onnx"
+	cfg.Speaker.Models.Segmentation = "custom/segmentation.onnx"
+	m, err := ManifestFor(cfg, AssetRequest{NeedSpeaker: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Assets) != 0 {
+		t.Fatalf("custom model paths should not request managed assets: %+v", m.Assets)
+	}
+}
+
 func TestManifestForWhisperCPPNestedFilePath(t *testing.T) {
 	cases := map[string]string{
 		"":         "whispercpp/ggml-base.en.bin",

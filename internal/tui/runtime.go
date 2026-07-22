@@ -11,6 +11,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/listen"
+	"github.com/lancekrogers/samantha/internal/meeting"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 	"github.com/lancekrogers/samantha/internal/pipeline"
 	"github.com/lancekrogers/samantha/internal/stt"
@@ -42,13 +43,16 @@ type RuntimeBuilder func(ctx context.Context, progress func(name string, pct flo
 
 // MeetingRuntime holds STT + dual-log writer for the embedded meeting screen.
 type MeetingRuntime struct {
-	Capture     listen.Resetter
-	Provider    stt.Provider
-	Writer      *meetinglog.Writer
-	Description string
-	Path        string
-	StopPhrases map[string]bool
-	Cleanup     func()
+	Capture          listen.Resetter
+	Provider         stt.Provider
+	Writer           *meetinglog.Writer
+	FinalizeSpeakers func(context.Context) (meeting.AnalysisResult, error)
+	SpeakerStatus    meeting.AnalysisStatus
+	SpeakerError     string
+	Description      string
+	Path             string
+	StopPhrases      map[string]bool
+	Cleanup          func()
 }
 
 // MeetingBuilder constructs meeting resources when the user starts recording
