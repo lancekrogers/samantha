@@ -17,6 +17,7 @@ func init() {
 	personaCmd.AddCommand(personaListCmd)
 	personaCmd.AddCommand(personaShowCmd)
 	personaCmd.AddCommand(personaUseCmd)
+	personaCmd.AddCommand(personaCreateCmd)
 }
 
 var personaCmd = &cobra.Command{
@@ -154,6 +155,34 @@ var personaUseCmd = &cobra.Command{
 		if voice != "" {
 			fmt.Fprintf(cmd.OutOrStdout(), "  Voice:          %s\n", voice)
 		}
+		return nil
+	},
+}
+
+var personaCreateCmd = &cobra.Command{
+	Use:   "create <display-name>",
+	Short: "Create a new persona and make it active",
+	Long: `Create a user persona under personas/<id>/persona.yaml.
+
+The id is derived from the display name (kebab-case). TTS provider/voice and
+prompt refs are cloned from the current config so the new agent starts with
+your active voice stack. Switch TTS/Voice in Settings afterward if needed.`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		name := strings.TrimSpace(strings.Join(args, " "))
+		p, err := persona.CreateAndUse(cfg, name)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "  Created persona: %s (%s)\n", p.DisplayName, p.ID)
+		if p.TTS.Provider != "" || p.TTS.Voice != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "  TTS: %s %s\n", p.TTS.Provider, p.TTS.Voice)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "  Active now. Edit prompts under %s\n", persona.Dir())
 		return nil
 	},
 }

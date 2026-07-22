@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/lancekrogers/samantha/internal/audio"
@@ -105,6 +106,42 @@ func newSettings(cfg *config.Config, providers []discovery.ProviderInfo) setting
 	m.inputItems = []string{""}
 	m.outputItems = []string{""}
 	return m
+}
+
+// newPersonaCreateInput builds the name field for the Personas main-menu screen.
+func newPersonaCreateInput() textinput.Model {
+	ti := textinput.New()
+	ti.Placeholder = "Research buddy"
+	ti.CharLimit = 64
+	ti.Width = 40
+	ti.Prompt = "  Name: "
+	return ti
+}
+
+// personaListLabel formats one row for the Personas screen.
+func personaListLabel(p *persona.Profile) string {
+	if p == nil {
+		return ""
+	}
+	label := p.DisplayName
+	if label == "" {
+		label = p.ID
+	}
+	if p.ID != "" && p.DisplayName != "" && !strings.EqualFold(p.DisplayName, p.ID) {
+		label = fmt.Sprintf("%s (%s)", p.DisplayName, p.ID)
+	}
+	detail := strings.TrimSpace(p.TTS.Provider)
+	if v := strings.TrimSpace(p.TTS.Voice); v != "" {
+		if detail != "" {
+			detail += " · " + v
+		} else {
+			detail = v
+		}
+	}
+	if detail != "" {
+		label += " — " + detail
+	}
+	return label
 }
 
 type deviceListsMsg struct {
@@ -261,7 +298,7 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 			if m.section > 0 {
 				m.section--
 			} else {
-				m.section = sectionMeeting
+				m.section = settingsSectionCount - 1
 			}
 			m.cursor = 0
 			m.offset = 0

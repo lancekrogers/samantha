@@ -55,7 +55,8 @@ func TestSettingsLoadsAudioDevices(t *testing.T) {
 
 func TestSettingsCompactsForSmallTerminal(t *testing.T) {
 	m := settingsModel{
-		cfg: &config.Config{}, providerItems: []string{"claude", "ollama", "grok", "other"},
+		cfg: &config.Config{}, section: sectionProvider,
+		providerItems: []string{"claude", "ollama", "grok", "other"},
 	}
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 36, Height: 8})
 	view := stripANSI(m.View())
@@ -66,7 +67,7 @@ func TestSettingsCompactsForSmallTerminal(t *testing.T) {
 
 func TestSettingsListUsesAllAvailableRows(t *testing.T) {
 	items := []string{"one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"}
-	m := settingsModel{cfg: &config.Config{}, providerItems: items}
+	m := settingsModel{cfg: &config.Config{}, section: sectionProvider, providerItems: items}
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 13})
 
 	if got := m.visibleRows(); got != 8 {
@@ -88,7 +89,7 @@ func TestSettingsListUsesAllAvailableRows(t *testing.T) {
 
 func TestSettingsShowsEntireListWhenItFits(t *testing.T) {
 	items := []string{"one", "two", "three", "four", "five", "six"}
-	m := settingsModel{cfg: &config.Config{}, providerItems: items}
+	m := settingsModel{cfg: &config.Config{}, section: sectionProvider, providerItems: items}
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	view := stripANSI(m.View())
@@ -109,7 +110,7 @@ func TestSettingsResizesDynamicallyWithTerminal(t *testing.T) {
 	for i := range items {
 		items[i] = fmt.Sprintf("provider-%02d", i)
 	}
-	m := settingsModel{cfg: &config.Config{}, providerItems: items}
+	m := settingsModel{cfg: &config.Config{}, section: sectionProvider, providerItems: items}
 
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
 	if got := m.visibleRows(); got != 7 {
@@ -204,6 +205,8 @@ func TestSettingsTabCycleIncludesTools(t *testing.T) {
 		t.Fatalf("section after Model + Tab = %d, want Tools section %d", m.section, sectionTools)
 	}
 }
+
+
 
 func TestSettingsToolsTogglePersistsAndRefreshes(t *testing.T) {
 	cfg := &config.Config{

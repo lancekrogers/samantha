@@ -28,6 +28,7 @@ const (
 	screenPickBook
 	screenLibrary
 	screenRemote
+	screenPersonas
 )
 
 // meetingRoutePlan is the per-session routing choice from the start picker.
@@ -55,6 +56,7 @@ type App struct {
 	pickBook     pickBookModel
 	library      libraryModel
 	remote       remoteModel
+	personas     personasModel
 
 	// Conversation runtime wiring, set by Run before the program starts.
 	builder  RuntimeBuilder
@@ -105,6 +107,7 @@ func NewApp(cfg *config.Config) App {
 		audiobook:    newAudiobook(cfg),
 		pickBook:     newPickBook(cfg),
 		library:      newLibrary(cfg),
+		personas:     newPersonas(cfg),
 	}
 }
 
@@ -167,6 +170,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.pickBook, _ = a.pickBook.Update(msg)
 		a.library, _ = a.library.Update(msg)
 		a.remote, _ = a.remote.Update(msg)
+		a.personas, _ = a.personas.Update(msg)
 		if a.screen != screenConversation {
 			a.conversation, _ = a.conversation.Update(msg)
 		}
@@ -242,6 +246,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.remote = newRemote(a.runCtx, nil)
 			a.remote.width, a.remote.height = a.width, a.height
 			return a, a.remote.start()
+		case screenPersonas:
+			a.personas = newPersonas(a.cfg)
+			a.personas.width, a.personas.height = a.width, a.height
+			a.personas.ensureVisible()
+		case screenLauncher:
+			// Refresh menu hints (active persona name) after Personas/Settings.
+			if prev == screenPersonas || prev == screenSettings {
+				saved := resumableSessions(session.List())
+				a.launcher = newLauncher(a.cfg, a.providers, saved)
+				a.launcher.width, a.launcher.height = a.width, a.height
+			}
 		}
 		return a, nil
 
@@ -482,6 +497,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.library, cmd = a.library.Update(msg)
 			case screenRemote:
 				a.remote, cmd = a.remote.Update(msg)
+			case screenPersonas:
+				a.personas, cmd = a.personas.Update(msg)
 			}
 			return a, tea.Batch(convCmd, cmd)
 		}
@@ -514,6 +531,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.library, cmd = a.library.Update(msg)
 	case screenRemote:
 		a.remote, cmd = a.remote.Update(msg)
+	case screenPersonas:
+		a.personas, cmd = a.personas.Update(msg)
 	}
 
 	return a, cmd
@@ -552,6 +571,8 @@ func (a App) View() string {
 		return a.library.View()
 	case screenRemote:
 		return a.remote.View()
+	case screenPersonas:
+		return a.personas.View()
 	default:
 		return ""
 	}

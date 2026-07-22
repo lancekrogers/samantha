@@ -66,6 +66,17 @@ demo-qwen-voices: build
     just _optimize-demo-gif demos/qwen-voices.gif
     ls -lh demos/qwen-voices.gif
 
+# Settings → Persona: list seeded agents and switch active persona.
+demo-persona-switch: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    env -u NO_COLOR -u CLICOLOR \
+        CLICOLOR_FORCE=1 FORCE_COLOR=1 \
+        TERM=xterm-256color COLORTERM=truecolor \
+        vhs demos/persona-switch.tape
+    just _optimize-demo-gif demos/persona-switch.gif
+    ls -lh demos/persona-switch.gif
+
 # Opt-in live managed-Qwen gate. Requires the managed model to have already
 # been installed with `samantha models ensure --tts`; outputs remain available
 # for listening instead of disappearing with the Go test temp directory.
