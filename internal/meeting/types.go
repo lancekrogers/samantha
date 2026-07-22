@@ -2,9 +2,9 @@
 // post-meeting note routing.
 //
 // Stop phrases are shared by CLI and TUI so match semantics cannot drift.
-// Routing is additive and lossless: the original meeting bundle (or legacy
-// .log/.jsonl pair) always stays local; a failed or skipped route never deletes
-// local data. Crash-safe writers live in package meeting/log.
+// Routing is additive and lossless: the original meeting bundle always stays
+// local; a failed or skipped route never deletes local data. Crash-safe writers
+// live in package meeting/log.
 package meeting
 
 import (

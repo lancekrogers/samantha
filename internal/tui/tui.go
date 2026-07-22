@@ -338,11 +338,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.screen = screenLauncher
-		path := msg.summary.Bundle
-		if path == "" {
-			path = msg.summary.File
-		}
-		a.launcher = a.launcher.withBanner("Meeting saved: "+path, false)
+		a.launcher = a.launcher.withBanner("Meeting saved: "+msg.summary.Bundle, false)
 		return a, nil
 
 	case meetingRouteReadyMsg:

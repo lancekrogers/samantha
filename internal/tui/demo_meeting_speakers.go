@@ -143,6 +143,10 @@ func demoMeetingSpeakerFinalizer(writer *meetinglog.Writer, bundlePath string) f
 		if err := ctx.Err(); err != nil {
 			return meeting.AnalysisResult{Status: meeting.AnalysisError, Error: err.Error()}, err
 		}
+		if !strings.HasSuffix(strings.ToLower(filepath.Base(bundlePath)), ".meeting") {
+			err := fmt.Errorf("demo meeting: .meeting bundle path is required")
+			return meeting.AnalysisResult{Status: meeting.AnalysisError, Error: err.Error()}, err
+		}
 		analysis := meetinglog.SpeakerAnalysis{Status: string(meeting.AnalysisComplete)}
 		result := meeting.AnalysisResult{Status: meeting.AnalysisComplete}
 		labels := make(map[string]struct{})
@@ -170,12 +174,10 @@ func demoMeetingSpeakerFinalizer(writer *meetinglog.Writer, bundlePath string) f
 			})
 		}
 		result.SpeakerCount = len(labels)
-		if bundlePath != "" {
-			result.Artifact = filepath.Join(bundlePath, meetinglog.BundleInternalDirName, meetinglog.BundleSpeakerAnalysisName)
-			analysis.Artifact = result.Artifact
-			if err := meeting.WriteAnalysis(result.Artifact, result); err != nil {
-				return meeting.AnalysisResult{Status: meeting.AnalysisError, Error: err.Error()}, err
-			}
+		result.Artifact = filepath.Join(bundlePath, meetinglog.BundleInternalDirName, meetinglog.BundleSpeakerAnalysisName)
+		analysis.Artifact = result.Artifact
+		if err := meeting.WriteAnalysis(result.Artifact, result); err != nil {
+			return meeting.AnalysisResult{Status: meeting.AnalysisError, Error: err.Error()}, err
 		}
 		if err := writer.WriteSpeakerAnalysis(analysis); err != nil {
 			return meeting.AnalysisResult{Status: meeting.AnalysisError, Error: err.Error()}, err

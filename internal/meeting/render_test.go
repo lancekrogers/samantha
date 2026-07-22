@@ -14,8 +14,9 @@ func TestRenderEventsNotesScope(t *testing.T) {
 	start := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
 	summary := meetinglog.Summary{
 		Description: "Standup",
-		File:        "/tmp/standup.log",
-		JSONLFile:   "/tmp/standup.jsonl",
+		Bundle:      "/tmp/standup.meeting",
+		File:        "/tmp/standup.meeting/meeting.md",
+		JSONLFile:   "/tmp/standup.meeting/.samantha/events.jsonl",
 		StartedAt:   start,
 		EndedAt:     start.Add(5 * time.Minute),
 		Utterances:  2,
@@ -73,10 +74,10 @@ func TestRenderEventsPrefersSpeakerAttributedTranscript(t *testing.T) {
 	}
 }
 
-func TestRenderFromJSONLFile(t *testing.T) {
+func TestRenderFromMeetingBundle(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "m.log")
-	w, err := meetinglog.Create(path, "Design review", "fake")
+	bundle := filepath.Join(dir, "m.meeting")
+	w, err := meetinglog.CreateBundle(bundle, "Design review", "fake")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +99,10 @@ func TestRenderFromJSONLFile(t *testing.T) {
 	if !strings.Contains(note.Body, "follow up on routing") {
 		t.Fatalf("render missing note:\n%s", note.Body)
 	}
-	// Original files still present.
+	// Original bundle remains present.
+	if _, err := os.Stat(summary.Bundle); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(summary.File); err != nil {
 		t.Fatal(err)
 	}

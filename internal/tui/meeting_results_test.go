@@ -49,7 +49,7 @@ func TestDemoMeetingFinalizerUsesProductionResultsContract(t *testing.T) {
 }
 
 func TestMeetingResultsFallsBackToPlainTranscript(t *testing.T) {
-	w, err := meetinglog.Create(filepath.Join(t.TempDir(), "plain.log"), "Plain", "fake")
+	w, err := meetinglog.CreateBundle(filepath.Join(t.TempDir(), "plain.meeting"), "Plain", "fake")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,6 +69,27 @@ func TestMeetingResultsFallsBackToPlainTranscript(t *testing.T) {
 	}
 	if strings.Contains(view, "Speaker-attributed transcript") {
 		t.Fatalf("plain meeting claimed attribution:\n%s", view)
+	}
+}
+
+func TestSpeakerLabelsUseStableDistinctColors(t *testing.T) {
+	labels := []string{"speaker-1", "speaker-2", "speaker-3", "speaker-4", "speaker-5", "speaker-6"}
+	seen := make(map[string]string, len(labels))
+	for _, label := range labels {
+		color := string(speakerColor(label))
+		if previous, exists := seen[color]; exists {
+			t.Fatalf("%s and %s share color %s", previous, label, color)
+		}
+		seen[color] = label
+		if again := string(speakerColor(label)); again != color {
+			t.Fatalf("%s color changed from %s to %s", label, color, again)
+		}
+	}
+	if speakerColor("speaker-7") != speakerColor("speaker-1") {
+		t.Fatal("speaker palette should cycle predictably")
+	}
+	if speakerColor(" guest ") != speakerColor("GUEST") {
+		t.Fatal("non-standard labels must normalize deterministically")
 	}
 }
 

@@ -27,7 +27,7 @@ func sizedMeeting(t *testing.T, w, h int) meetingModel {
 	m := meetingModel{
 		opts: MeetingOpts{
 			Description: "Standup",
-			Path:        "/tmp/standup.log",
+			Path:        "/tmp/standup.meeting",
 		},
 		note:      ta,
 		started:   time.Now(),
@@ -105,14 +105,14 @@ func TestMeetingPhaseAndLevelUpdateMode(t *testing.T) {
 
 func TestMeetingNoteAndBookmarkPersist(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "m.log")
-	w, err := meetinglog.Create(path, "Notes test", "fake")
+	bundle := filepath.Join(dir, "m.meeting")
+	w, err := meetinglog.CreateBundle(bundle, "Notes test", "fake")
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := sizedMeeting(t, 80, 24)
 	m.opts.Writer = w
-	m.opts.Path = path
+	m.opts.Path = bundle
 
 	m.note.SetValue("check budget")
 	m, cmd := m.submitNote()
@@ -203,8 +203,8 @@ func TestSendMeetingDeliversWhenCapacityTight(t *testing.T) {
 
 func TestStopMeetingRuntimeSurfacesCloseErrorAndIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "close.log")
-	w, err := meetinglog.Create(path, "Close test", "fake")
+	bundle := filepath.Join(dir, "close.meeting")
+	w, err := meetinglog.CreateBundle(bundle, "Close test", "fake")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestStopMeetingRuntimeSurfacesCloseErrorAndIsIdempotent(t *testing.T) {
 		t.Fatalf("idempotent stop: %v", err)
 	}
 	// Trailer present after successful close.
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(w.Path())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,8 +240,7 @@ func TestStopMeetingRuntimeSurfacesCloseErrorAndIsIdempotent(t *testing.T) {
 
 func TestMeetingDoneJoinsCloseErrorOntoLauncherBanner(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "done.log")
-	w, err := meetinglog.Create(path, "Done", "fake")
+	w, err := meetinglog.CreateBundle(filepath.Join(dir, "done.meeting"), "Done", "fake")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +266,7 @@ func TestMeetingDoneJoinsCloseErrorOntoLauncherBanner(t *testing.T) {
 }
 
 func TestMeetingDoneShowsCompletedSpeakerAnalysis(t *testing.T) {
-	w, err := meetinglog.Create(filepath.Join(t.TempDir(), "done.log"), "Done", "fake")
+	w, err := meetinglog.CreateBundle(filepath.Join(t.TempDir(), "done.meeting"), "Done", "fake")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,8 +313,7 @@ func TestMeetingDoneShowsCompletedSpeakerAnalysis(t *testing.T) {
 
 func TestMeetingUISinkOmitsStopPhraseFromLog(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "stop.log")
-	w, err := meetinglog.Create(path, "Stop test", "fake")
+	w, err := meetinglog.CreateBundle(filepath.Join(dir, "stop.meeting"), "Stop test", "fake")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +341,7 @@ func TestMeetingUISinkOmitsStopPhraseFromLog(t *testing.T) {
 	if sum.Utterances != 1 {
 		t.Fatalf("utterances = %d, want 1 (stop phrase omitted)", sum.Utterances)
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(w.Path())
 	if err != nil {
 		t.Fatal(err)
 	}

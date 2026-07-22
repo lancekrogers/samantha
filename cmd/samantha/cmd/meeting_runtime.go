@@ -68,8 +68,7 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 	if err != nil {
 		return err
 	}
-	path := writer.Path()
-	speakerSession, speakerSetupErr := prepareMeetingSpeakers(ctx, &cfgCopy, capture, writer, path, progress)
+	speakerSession, speakerSetupErr := prepareMeetingSpeakers(ctx, &cfgCopy, capture, writer, bundlePath, progress)
 	if speakerSession != nil {
 		defer speakerSession.Close()
 	}
@@ -212,7 +211,7 @@ func meetingRuntimeBuilder() appTUI.MeetingBuilder {
 			cleanup()
 			return nil, err
 		}
-		speakerSession, speakerSetupErr := prepareMeetingSpeakers(ctx, cfg, capture, writer, writer.Path(), progress)
+		speakerSession, speakerSetupErr := prepareMeetingSpeakers(ctx, cfg, capture, writer, bundlePath, progress)
 		if speakerSetupErr != nil {
 			_ = writer.WriteSpeakerAnalysis(meetinglog.SpeakerAnalysis{
 				Status: string(meeting.AnalysisError), Error: speakerSetupErr.Error(),
@@ -240,7 +239,7 @@ func meetingRuntimeBuilder() appTUI.MeetingBuilder {
 	}
 }
 
-func prepareMeetingSpeakers(ctx context.Context, cfg *config.Config, capture *audio.Capture, writer *meetinglog.Writer, path string, progress func(string, float64)) (*meeting.SpeakerSession, error) {
+func prepareMeetingSpeakers(ctx context.Context, cfg *config.Config, capture *audio.Capture, writer *meetinglog.Writer, bundlePath string, progress func(string, float64)) (*meeting.SpeakerSession, error) {
 	sp := speaker.FromAppConfig(cfg)
 	if !sp.MeetingActive() {
 		return nil, nil
@@ -257,7 +256,7 @@ func prepareMeetingSpeakers(ctx context.Context, cfg *config.Config, capture *au
 		_ = engine.Close()
 		return nil, err
 	}
-	session, err := meeting.NewSpeakerSession(capture, analyzer, writer, path, sp.Meeting.RecordAudio)
+	session, err := meeting.NewSpeakerSession(capture, analyzer, writer, bundlePath, sp.Meeting.RecordAudio)
 	if err != nil {
 		_ = analyzer.Close()
 		return nil, err

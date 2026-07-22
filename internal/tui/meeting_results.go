@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"hash/fnv"
+	"strconv"
 	"strings"
 	"time"
 
@@ -142,7 +144,7 @@ func (m meetingResultsModel) content() string {
 		for _, event := range transcript {
 			b.WriteString(resultOffset(event.OffsetMs))
 			if event.Type == meetinglog.TypeSpeakerUtterance && event.Label != "" {
-				b.WriteString(selectedStyle.Render(event.Label + ":"))
+				b.WriteString(speakerLabelStyle(event.Label).Render(event.Label + ":"))
 				b.WriteString(" ")
 			}
 			b.WriteString(event.Text)
@@ -150,6 +152,20 @@ func (m meetingResultsModel) content() string {
 		}
 	}
 	return lipgloss.NewStyle().Width(max(m.view.Width, 1)).Render(b.String())
+}
+
+func speakerLabelStyle(label string) lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(speakerColor(label)).Bold(true)
+}
+
+func speakerColor(label string) lipgloss.Color {
+	normalized := strings.ToLower(strings.TrimSpace(label))
+	if number, err := strconv.Atoi(strings.TrimPrefix(normalized, "speaker-")); err == nil && number > 0 {
+		return speakerColors[(number-1)%len(speakerColors)]
+	}
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(normalized))
+	return speakerColors[int(hash.Sum32()%uint32(len(speakerColors)))]
 }
 
 func resultOffset(ms int64) string {
@@ -181,11 +197,7 @@ func (m meetingResultsModel) View() string {
 			stats += fmt.Sprintf(" (%d)", m.summary.SpeakerCount)
 		}
 	}
-	path := m.summary.Bundle
-	if path == "" {
-		path = m.summary.File
-	}
-	pathLine := ansi.Truncate("  Saved: "+path, w, "…")
+	pathLine := ansi.Truncate("  Saved: "+m.summary.Bundle, w, "…")
 	rule := lipgloss.NewStyle().Foreground(colorAccent).Render(strings.Repeat("─", w))
 	footer := ansi.Truncate("  ↑/↓/pgup/pgdown review  •  enter/esc continue to routing", w, "…")
 	analysisError := ""

@@ -31,7 +31,7 @@ type MeetingOpts struct {
 	Provider         stt.Provider
 	Writer           *meetinglog.Writer
 	Description      string
-	Path             string // meeting bundle path (or legacy document path)
+	Path             string // .meeting bundle path
 	StopPhrases      map[string]bool
 	SpeakerStatus    meeting.AnalysisStatus
 	SpeakerError     string

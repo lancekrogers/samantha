@@ -134,6 +134,7 @@ just demo-meeting-route-speaker
 Scripts a multi-person product marketing conversation, shows speaker analysis
 status moving **queued → running → complete**, then stops on the post-meeting
 results screen with labeled turns (`speaker-1`, `speaker-2`, …) before routing.
+Each speaker label uses a stable, distinct color.
 
 No live mic. Uses `SAMANTHA_DEMO_MEETING_SPEAKERS=1`.
 

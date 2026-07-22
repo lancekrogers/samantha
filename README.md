@@ -351,7 +351,7 @@ full-screen recorder:
 | Type + **Enter** | Save a note at the current timestamp |
 | **Ctrl+B** | Mark this moment ★ important (optional caption from the note field) |
 | **Ctrl+C** / **Ctrl+Q** | Stop recording |
-| Spoken stop phrase | "stop recording" / "end meeting" / "stop listening" (exact utterance; not written to the log) |
+| Spoken stop phrase | "stop recording" / "end meeting" / "stop listening" (exact utterance; not written to the meeting) |
 
 Spoken stop phrases end the session like Ctrl+C and are **not** appended to the
 meeting transcript. Meeting bundles and internal directories are created mode
@@ -363,8 +363,9 @@ pyannote segmentation and NeMo TitaNet models, then captures 16 kHz PCM through
 a non-blocking subscriber while STT continues normally. When recording stops,
 the recorder visibly moves from `queued` to `running` to `complete` (or
 `error`) and opens a review screen with anonymous `speaker-1…N` labels beside
-attributed turns. These are voice clusters, not enrolled names or identity
-claims. Continue from the review screen to the configured routing flow.
+attributed turns. Each speaker label has a stable, distinct color throughout
+the review. These are voice clusters, not enrolled names or identity claims.
+Continue from the review screen to the configured routing flow.
 
 The meetings directory contains one visible item per recording:
 
@@ -401,7 +402,7 @@ samantha meeting analyze meeting.wav --speakers 2
 ```
 
 Bundles default to `~/.obey/agents/voice/festival-voice/meetings/<slug>-<timestamp>.meeting/`.
-Legacy flat `.log`/`.jsonl` meetings remain readable and routable.
+Meeting routing accepts a `.meeting` bundle or its canonical `meeting.md`.
 `--json` also emits one JSON line per utterance plus a final summary on stdout.
 
 ## Configuration

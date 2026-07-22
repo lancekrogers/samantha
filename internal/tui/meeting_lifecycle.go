@@ -52,7 +52,7 @@ func (a *App) stopMeetingRuntimeWithSummary() (meetinglog.Summary, error) {
 // Per-session plan from the start-meeting picker (meetingRoutePlan) wins over
 // global meeting.route.mode when set.
 func (a *App) beginMeetingRoute(summary meetinglog.Summary) tea.Cmd {
-	if summary.File == "" && summary.JSONLFile == "" {
+	if summary.Bundle == "" || summary.JSONLFile == "" {
 		return nil
 	}
 	cfg := a.cfg

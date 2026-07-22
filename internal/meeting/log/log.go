@@ -150,13 +150,6 @@ type Writer struct {
 	summary            Summary // last Close result; returned again on idempotent Close
 }
 
-// Create opens a legacy document path and sibling .jsonl event stream. New
-// production recordings should use CreateBundle; this remains for old callers
-// and tests that intentionally work with flat artifacts.
-func Create(path, description, sttLabel string) (*Writer, error) {
-	return createAt(path, jsonlPathFor(path), "", description, sttLabel)
-}
-
 // CreateBundle creates one private meeting directory with a canonical
 // meeting.md document and hidden machine event stream. bundlePath must not
 // already exist, preventing accidental mixing of two recordings.
@@ -227,23 +220,13 @@ func (w *Writer) abortCreate() error {
 	return nil
 }
 
-// jsonlPathFor maps foo.log → foo.jsonl and foo → foo.jsonl.
-func jsonlPathFor(path string) string {
-	ext := filepath.Ext(path)
-	if ext == "" {
-		return path + ".jsonl"
-	}
-	return strings.TrimSuffix(path, ext) + ".jsonl"
-}
-
 // Path returns the canonical human-readable meeting document.
 func (w *Writer) Path() string { return w.path }
 
 // JSONLPath returns the structured event stream path.
 func (w *Writer) JSONLPath() string { return w.jsonlPath }
 
-// BundlePath returns the meeting-level directory for bundle recordings. It is
-// empty for legacy flat writers created with Create.
+// BundlePath returns the meeting-level directory.
 func (w *Writer) BundlePath() string { return w.bundlePath }
 
 // StartedAt returns when the session opened.

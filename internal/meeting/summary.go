@@ -13,17 +13,21 @@ import (
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 )
 
-// LoadSummaryFromJSONL rebuilds a Summary from a finished meeting's JSONL
-// (and optional sibling .log path). Used by `meeting route` and route-later.
+// LoadSummaryFromJSONL rebuilds a Summary from a meeting bundle's internal
+// event stream. Used by `meeting route` and route-later.
 func LoadSummaryFromJSONL(jsonlPath string) (meetinglog.Summary, error) {
+	bundle := bundlePathForJSONL(jsonlPath)
+	if bundle == "" {
+		return meetinglog.Summary{}, fmt.Errorf("meeting: events must be inside a .meeting bundle: %s", jsonlPath)
+	}
 	events, err := ReadEvents(jsonlPath)
 	if err != nil {
 		return meetinglog.Summary{}, err
 	}
 	s := meetinglog.Summary{
 		JSONLFile: jsonlPath,
-		File:      logPathFor(jsonlPath),
-		Bundle:    bundlePathForJSONL(jsonlPath),
+		File:      filepath.Join(bundle, meetinglog.BundleDocumentName),
+		Bundle:    bundle,
 	}
 	for _, e := range events {
 		switch e.Type {
@@ -61,23 +65,6 @@ func LoadSummaryFromJSONL(jsonlPath string) (meetinglog.Summary, error) {
 	return s, nil
 }
 
-func logPathFor(jsonlPath string) string {
-	if bundle := bundlePathForJSONL(jsonlPath); bundle != "" {
-		return filepath.Join(bundle, meetinglog.BundleDocumentName)
-	}
-	ext := filepath.Ext(jsonlPath)
-	base := strings.TrimSuffix(jsonlPath, ext)
-	candidate := base + ".log"
-	if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
-		return candidate
-	}
-	markdown := base + ".md"
-	if st, err := os.Stat(markdown); err == nil && !st.IsDir() {
-		return markdown
-	}
-	return candidate
-}
-
 func bundlePathForJSONL(jsonlPath string) string {
 	if filepath.Base(jsonlPath) != meetinglog.BundleEventsName {
 		return ""
@@ -98,15 +85,13 @@ func bundleEventsPath(bundle string) string {
 }
 
 // ResolveMeetingFile picks a meeting artifact path:
-// - empty → most recent bundle event stream or legacy .jsonl under meetingsDir
+// - empty → most recent meeting bundle's event stream under meetingsDir
 // - .meeting directory → its hidden event stream
 // - meeting.md → its bundle event stream
-// - .log → sibling .jsonl
-// - .jsonl → as-is
 func ResolveMeetingFile(meetingsDir, path string) (jsonlPath string, err error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return mostRecentJSONL(meetingsDir)
+		return mostRecentMeetingEvents(meetingsDir)
 	}
 	// Expand ~ for convenience.
 	path = expandHome(path)
@@ -115,37 +100,30 @@ func ResolveMeetingFile(meetingsDir, path string) (jsonlPath string, err error) 
 		return "", fmt.Errorf("meeting: meeting file: %w", err)
 	}
 	if st.IsDir() {
-		candidate := bundleEventsPath(path)
-		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
-			return candidate, nil
+		if !strings.HasSuffix(strings.ToLower(filepath.Base(path)), ".meeting") {
+			return "", fmt.Errorf("meeting: expected a .meeting bundle, got directory %s", path)
 		}
-		return mostRecentJSONL(path)
+		candidate := bundleEventsPath(path)
+		if info, statErr := os.Stat(candidate); statErr != nil || info.IsDir() {
+			if statErr == nil {
+				statErr = fmt.Errorf("is a directory")
+			}
+			return "", fmt.Errorf("meeting: bundle events missing for %s: %w", path, statErr)
+		}
+		return candidate, nil
 	}
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".jsonl":
-		return path, nil
-	case ".md":
+	if filepath.Base(path) == meetinglog.BundleDocumentName &&
+		strings.HasSuffix(strings.ToLower(filepath.Base(filepath.Dir(path))), ".meeting") {
 		candidate := bundleEventsPath(filepath.Dir(path))
 		if _, err := os.Stat(candidate); err != nil {
 			return "", fmt.Errorf("meeting: bundle events missing for %s: %w", path, err)
 		}
 		return candidate, nil
-	case ".log":
-		j := strings.TrimSuffix(path, filepath.Ext(path)) + ".jsonl"
-		if _, err := os.Stat(j); err != nil {
-			return "", fmt.Errorf("meeting: sibling jsonl missing for %s: %w", path, err)
-		}
-		return j, nil
-	default:
-		// Try treating as base path.
-		if _, err := os.Stat(path + ".jsonl"); err == nil {
-			return path + ".jsonl", nil
-		}
-		return "", fmt.Errorf("meeting: expected a .meeting bundle, meeting.md, .log, or .jsonl; got %s", path)
 	}
+	return "", fmt.Errorf("meeting: expected a .meeting bundle or its meeting.md, got %s", path)
 }
 
-func mostRecentJSONL(dir string) (string, error) {
+func mostRecentMeetingEvents(dir string) (string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return "", fmt.Errorf("meeting: list meetings dir: %w", err)
@@ -156,32 +134,22 @@ func mostRecentJSONL(dir string) (string, error) {
 	}
 	var hits []hit
 	for _, e := range entries {
-		if e.IsDir() {
-			candidate := bundleEventsPath(filepath.Join(dir, e.Name()))
-			info, statErr := os.Stat(candidate)
-			if statErr == nil && !info.IsDir() {
-				hits = append(hits, hit{path: candidate, started: meetingRecordedAt(candidate, info.ModTime())})
-			}
+		if !e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".meeting") {
 			continue
 		}
-		name := e.Name()
-		if !strings.HasSuffix(strings.ToLower(name), ".jsonl") {
-			continue
+		candidate := bundleEventsPath(filepath.Join(dir, e.Name()))
+		info, statErr := os.Stat(candidate)
+		if statErr == nil && !info.IsDir() {
+			hits = append(hits, hit{path: candidate, started: meetingRecordedAt(candidate, info.ModTime())})
 		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		path := filepath.Join(dir, name)
-		hits = append(hits, hit{path: path, started: meetingRecordedAt(path, info.ModTime())})
 	}
 	if len(hits) == 0 {
-		return "", fmt.Errorf("meeting: no meeting bundles or .jsonl files in %s", dir)
+		return "", fmt.Errorf("meeting: no .meeting bundles in %s", dir)
 	}
 	sort.Slice(hits, func(i, j int) bool {
 		if hits[i].started.Equal(hits[j].started) {
-			// Older event streams only recorded whole seconds. Use the sortable
-			// path as a deterministic tie-breaker instead of mutable mtime.
+			// Same-second recordings use the sortable bundle path as a
+			// deterministic tie-breaker instead of mutable mtime.
 			return hits[i].path > hits[j].path
 		}
 		return hits[i].started.After(hits[j].started)
