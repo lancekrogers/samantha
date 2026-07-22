@@ -40,6 +40,26 @@ paints bright theme colors.
 just demo-voice-meter
 ```
 
+## qwen-voices.gif — managed Qwen setup and voice selection
+
+Full Bubble Tea Settings flow for the managed Qwen provider:
+
+1. **Settings → TTS** — the pinned CustomVoice 0.6B installation is ready while
+   Kokoro remains active
+2. **Select Qwen3-TTS** — mode, default voice, and language are persisted
+3. **Settings → Voice** — all nine model-native Qwen speakers are visible
+4. **Select Ryan** — the active check and launcher badge update to Qwen,
+   CustomVoice, and Ryan
+
+The tape creates a disposable completion-marker/file-layout fixture consumed by
+the real production `Inspect` path. It does not mock the TUI or download the
+multi-GB model; inference remains covered by provider fixtures and opt-in
+real-model testing.
+
+```bash
+just demo-qwen-voices
+```
+
 ## meeting.gif — main launcher + Meeting recorder
 
 Full Bubble Tea app (not a CLI stub):
@@ -115,4 +135,3 @@ samantha meeting analyze tests/fixtures/meetings/product-marketing-meeting-90s.w
 `just speakerflow` auto-fetches the fixture if missing and, when `vhs` is on
 PATH, re-records `demos/meeting-speakers.gif`. Set `SPEAKERFLOW_SKIP_VHS=1` to
 skip the GIF step (useful in CI).
-
