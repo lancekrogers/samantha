@@ -133,6 +133,9 @@ samantha config                         # View all config
 samantha config tts_voice af_bella      # Set a config value
 samantha config migrate --dry-run       # Preview explicit STT config migration
 samantha config migrate --write         # Apply STT config migration with backup
+samantha persona list                   # List voice agent personas
+samantha persona show                   # Show the active persona profile
+samantha persona use samantha           # Switch active persona (persists)
 samantha voices                         # List available Kokoro voices
 samantha voices --locale en-US          # Filter voices by locale
 samantha providers                      # Show brain, TTS, and STT providers
@@ -371,8 +374,17 @@ Files default to `~/.obey/agents/voice/festival-voice/meetings/<slug>-<timestamp
 
 Config lives at `~/.obey/agents/voice/festival-voice/config.yaml`. Values can also be overridden with environment variables where listed.
 
+Persona **profiles** live under `~/.obey/agents/voice/festival-voice/personas/<id>/persona.yaml`.
+On load, the active profile overlays `agent_name`, the persona prompt name, and per-persona TTS
+(`tts.provider` + `tts.voice` → `tts_provider` and either `tts_voice` or `qwen_tts_voice`).
+Each persona can use any supported TTS backend and any voice for that backend.
+Prompt bodies stay in `prompts/` (see `samantha prompts`).
+
 | Key | Default | Environment | Description |
 |-----|---------|-------------|-------------|
+| `active_persona` | `samantha` | `ACTIVE_PERSONA` | Persona profile id under `personas/<id>/` |
+| `agent_name` | `Samantha` | | Display name (overlaid from active persona) |
+| `persona` | `samantha` | `PERSONA` | Prompt document name for kind=persona (overlaid from active persona) |
 | `brain_provider` | `claude` | `BRAIN_PROVIDER` | Brain backend: `claude`, `grok`, or `ollama` |
 | `ollama_model` | empty | `OLLAMA_MODEL` | Ollama model name |
 | `ollama_host` | `http://localhost:11434` | `OLLAMA_HOST` | Ollama server URL |

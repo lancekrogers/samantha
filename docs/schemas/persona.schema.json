@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/lancekrogers/samantha/docs/schemas/persona.schema.json",
+  "title": "festival-voice.persona.v1",
+  "type": "object",
+  "required": ["schema", "id", "display_name", "prompts"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "festival-voice.persona.v1"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "builtin": {
+      "type": "boolean"
+    },
+    "tts": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-persona TTS backend and voice. provider selects the engine; voice is the speaker id for that engine (Kokoro name or Qwen preset).",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "TTS backend (e.g. kokoro, qwen3-tts). Empty keeps app-level tts_provider."
+        },
+        "voice": {
+          "type": "string",
+          "description": "Speaker id for the effective provider (Kokoro voice or Qwen CustomVoice preset)."
+        }
+      }
+    },
+    "prompts": {
+      "type": "object",
+      "required": ["persona"],
+      "additionalProperties": false,
+      "properties": {
+        "persona": { "type": "string", "minLength": 1 },
+        "turn": { "type": "string" }
+      }
+    }
+  }
+}
