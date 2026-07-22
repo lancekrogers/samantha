@@ -51,6 +51,14 @@ func liveSpeakerStatusLabel(status speaker.LiveStatus) string {
 	}
 }
 
+func liveSpeakerFooterLabel(stats speaker.LiveStats) string {
+	label := liveSpeakerStatusLabel(stats.Status)
+	if stats.LastLabel != "" && (stats.Status == speaker.LiveHealthy || stats.Status == speaker.LiveRunning) {
+		return label + " · " + stats.LastLabel
+	}
+	return label
+}
+
 func liveSpeakerStatusStyle(status speaker.LiveStatus) lipgloss.Style {
 	switch status {
 	case speaker.LiveDegraded, speaker.LiveUnavailable:

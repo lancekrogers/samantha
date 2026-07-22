@@ -140,10 +140,12 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 			return nil, fmt.Errorf("reload config: %w", err)
 		}
 
+		spCfg := speaker.FromAppConfig(cfg)
 		req := config.AssetRequest{
-			NeedTTS: !noVoice,
-			NeedSTT: !textMode,
-			NeedVAD: !textMode && cfg.VADEnabled,
+			NeedTTS:     !noVoice,
+			NeedSTT:     !textMode,
+			NeedVAD:     !textMode && cfg.VADEnabled,
+			NeedSpeaker: !textMode && spCfg.LiveActive(),
 		}
 		if err := config.EnsureRuntimeAssets(ctx, cfg, req, progress); err != nil {
 			return nil, fmt.Errorf("ensure runtime assets: %w", err)
@@ -175,7 +177,15 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 		} else {
 			p.Brain.LoadHistory(sess.Turns)
 		}
-		liveSpeaker := speaker.NewLiveAdapter(ctx, nil, 4)
+
+		var captureSrc speaker.CaptureSource
+		if p.Capture != nil {
+			captureSrc = p.Capture
+		}
+		liveSpeaker, stopLive, liveDetail := prepareLiveSpeaker(ctx, cfg, captureSrc, progress)
+		if liveDetail != "" {
+			bus.Emit(events.Info{Message: liveDetail})
+		}
 		liveTTS := &liveTTSManager{}
 
 		p.OnTurn = func() {
@@ -221,7 +231,10 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 				return nil
 			},
 			Cleanup: func() {
-				_ = liveSpeaker.Close()
+				// stopLive closes feed, adapter, and analyzer/engine.
+				if stopLive != nil {
+					stopLive()
+				}
 				if err := sess.Save(p.Brain.History()); err != nil {
 					fmt.Fprintf(os.Stderr, "  warning: failed to save session %s: %v\n", sess.ID, err)
 				}

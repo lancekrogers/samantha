@@ -884,7 +884,7 @@ func (m conversationModel) View() string {
 	}
 	footerLeft := "  " + micChip + " " + outChip
 	if m.liveSpeakerStatsKnown {
-		label := liveSpeakerStatusLabel(m.liveSpeakerStats.Status)
+		label := liveSpeakerFooterLabel(m.liveSpeakerStats)
 		footerLeft += " " + liveSpeakerStatusStyle(m.liveSpeakerStats.Status).Render(label)
 	}
 	activeViewport := m.activeViewport()

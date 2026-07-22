@@ -231,7 +231,10 @@ func (m *conversationModel) configureLiveSpeakers(args []string) {
 }
 
 func liveSpeakerStatusDetail(stats speaker.LiveStats) string {
-	message := liveSpeakerStatusLabel(stats.Status)
+	message := liveSpeakerFooterLabel(stats)
+	if stats.Processed > 0 {
+		message += fmt.Sprintf(" · processed %d", stats.Processed)
+	}
 	if stats.QueueDepth > 0 || stats.Dropped > 0 {
 		message += fmt.Sprintf(" · queue %d/%d · dropped %d", stats.QueueDepth, stats.Capacity, stats.Dropped)
 	}

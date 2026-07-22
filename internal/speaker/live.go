@@ -45,6 +45,8 @@ type LiveStats struct {
 	ResponsePathNanos     uint64
 	LastResponsePathNanos uint64
 	LastError             string
+	// LastLabel is the most recent stable/provisional speaker id (indicator mode).
+	LastLabel string
 }
 
 type liveFrame struct{ segment Segment }
@@ -257,6 +259,7 @@ func (a *LiveAdapter) Stats() LiveStats {
 		ResponsePathNanos:     a.responsePathNanos.Load(),
 		LastResponsePathNanos: a.lastResponsePathNanos.Load(),
 		LastError:             a.lastErr,
+		LastLabel:             a.previous,
 	}
 }
 
