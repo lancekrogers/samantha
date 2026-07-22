@@ -261,7 +261,7 @@ func voiceAssistantTools(catalog []skills.Skill) api.Tools {
 			Type: "function",
 			Function: api.ToolFunction{
 				Name:        "read_skill",
-				Description: "Load the full instructions for a named Agent Skill. You must call this autonomously whenever a skill name or description matches the user's task; do not wait for the user to name the skill. You may load multiple relevant skills, and all tools remain available. Bundled scripts live under the returned skill directory.",
+				Description: "Load the full instructions for a named Agent Skill when semantic routing did not already activate a relevant skill, or when the user explicitly requests one. You may load multiple relevant skills, and all tools remain available. Bundled scripts live under the returned skill directory.",
 				Parameters: api.ToolFunctionParameters{
 					Type:     "object",
 					Required: []string{"name"},

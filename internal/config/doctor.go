@@ -163,7 +163,7 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 			diags = append(diags, Diagnostic{
 				Name:     "voice-tools",
 				Severity: SeverityOK,
-				Detail:   "voice_tools_enabled=true (list_files/read_file/write_file/run_command available)",
+				Detail:   "voice_tools_enabled=true (list_files/read_file/write_file/run_command/web_search/fetch_url available)",
 			})
 		} else {
 			diags = append(diags, Diagnostic{
@@ -181,7 +181,7 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 			diags = append(diags, Diagnostic{
 				Name:     "skills",
 				Severity: SeverityOK,
-				Detail:   fmt.Sprintf("skills_enabled=true (scan cwd/.agents/skills, nearest ancestor .agents/skills, ~/.agents/skills, then %s)", dir),
+				Detail:   fmt.Sprintf("skills_enabled=true (semantic model %q; scan cwd/.agents/skills, nearest ancestor .agents/skills, ~/.agents/skills, then %s)", cfg.OllamaEmbeddingModel, dir),
 			})
 		} else {
 			diags = append(diags, Diagnostic{

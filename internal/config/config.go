@@ -63,11 +63,16 @@ type Config struct {
 	BargeInEnabled bool `mapstructure:"barge_in_enabled"`
 
 	// Brain
-	BrainProvider     string `mapstructure:"brain_provider"`
-	GrokModel         string `mapstructure:"grok_model"`
-	OllamaModel       string `mapstructure:"ollama_model"`
-	OllamaHost        string `mapstructure:"ollama_host"`
-	VoiceToolsEnabled bool   `mapstructure:"voice_tools_enabled"`
+	BrainProvider string `mapstructure:"brain_provider"`
+	GrokModel     string `mapstructure:"grok_model"`
+	OllamaModel   string `mapstructure:"ollama_model"`
+	// OllamaEmbeddingModel routes user prompts to relevant Agent Skills. Empty
+	// disables harness-side semantic activation and leaves model-driven
+	// read_skill available as a fallback.
+	OllamaEmbeddingModel      string  `mapstructure:"ollama_embedding_model"`
+	SkillsSimilarityThreshold float64 `mapstructure:"skills_similarity_threshold"`
+	OllamaHost                string  `mapstructure:"ollama_host"`
+	VoiceToolsEnabled         bool    `mapstructure:"voice_tools_enabled"`
 	// ToolCommandTimeout bounds one local run_command invocation in seconds.
 	// The brain turn timeout remains the outer bound for a complete turn.
 	ToolCommandTimeout int `mapstructure:"tool_command_timeout"`
@@ -239,6 +244,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("brain_provider", "claude")
 	v.SetDefault("grok_model", "")
 	v.SetDefault("ollama_model", "")
+	v.SetDefault("ollama_embedding_model", "nomic-embed-text")
+	v.SetDefault("skills_similarity_threshold", 0.55)
 	v.SetDefault("ollama_host", "http://localhost:11434")
 	v.SetDefault("voice_tools_enabled", false)
 	v.SetDefault("tool_command_timeout", 30)
@@ -349,6 +356,7 @@ func loadLocked() (*Config, error) {
 		"brain_provider":           "BRAIN_PROVIDER",
 		"grok_model":               "GROK_MODEL",
 		"ollama_model":             "OLLAMA_MODEL",
+		"ollama_embedding_model":   "OLLAMA_EMBEDDING_MODEL",
 		"ollama_host":              "OLLAMA_HOST",
 		"voice_tools_enabled":      "VOICE_TOOLS_ENABLED",
 		"tool_command_timeout":     "TOOL_COMMAND_TIMEOUT",
@@ -370,6 +378,7 @@ func loadLocked() (*Config, error) {
 	for key, env := range bindings {
 		_ = v.BindEnv(key, env)
 	}
+	_ = v.BindEnv("skills_similarity_threshold", "SKILLS_SIMILARITY_THRESHOLD")
 
 	// Read config file (missing file is OK — use defaults)
 	if err := v.ReadInConfig(); err != nil {

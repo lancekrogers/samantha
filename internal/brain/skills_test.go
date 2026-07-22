@@ -42,8 +42,8 @@ func TestSkillContextAdvertise(t *testing.T) {
 	if !strings.Contains(got, "read_skill") {
 		t.Fatalf("missing read_skill instruction: %q", got)
 	}
-	if !strings.Contains(got, "MUST call read_skill") || !strings.Contains(got, "never wait for the user") {
-		t.Fatalf("missing autonomous skill-selection policy: %q", got)
+	if !strings.Contains(got, "semantically matches") || !strings.Contains(got, "discovery fallback") {
+		t.Fatalf("missing semantic skill-routing policy: %q", got)
 	}
 	if !strings.Contains(got, "- hello: A friendly greeting skill for tests.") {
 		t.Fatalf("missing skill line: %q", got)
@@ -88,6 +88,22 @@ func TestBuildMessagesIncludesSkillsWhenLoaded(t *testing.T) {
 	}
 	if strings.Contains(sys, "Say hello warmly") {
 		t.Fatal("system prompt must not embed full skill body")
+	}
+}
+
+func TestBuildMessagesInjectsSemanticallyActivatedSkillBodies(t *testing.T) {
+	t.Parallel()
+
+	o := &OllamaBrain{
+		workDir:            "/work",
+		cfg:                &config.Config{AgentName: "Samantha", MaxHistory: 10},
+		systemPrompt:       "You are Samantha.",
+		skills:             fixtureCatalog(),
+		activeSkillContext: ActivatedSkillContext(fixtureCatalog()),
+	}
+	sys := o.buildMessages()[0].Content
+	if !strings.Contains(sys, "<activated_skills>") || !strings.Contains(sys, "Say hello warmly") {
+		t.Fatalf("system prompt missing activated skill body: %q", sys)
 	}
 }
 

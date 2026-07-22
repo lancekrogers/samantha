@@ -469,6 +469,8 @@ func TestSkillsConfigDefaults(t *testing.T) {
 	setDefaults(v)
 	t.Setenv("SKILLS_ENABLED", "")
 	t.Setenv("SKILLS_DIR", "")
+	t.Setenv("OLLAMA_EMBEDDING_MODEL", "")
+	t.Setenv("SKILLS_SIMILARITY_THRESHOLD", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -479,6 +481,12 @@ func TestSkillsConfigDefaults(t *testing.T) {
 	}
 	if cfg.SkillsDir != "" {
 		t.Errorf("SkillsDir field = %q, want empty default", cfg.SkillsDir)
+	}
+	if cfg.OllamaEmbeddingModel != "nomic-embed-text" {
+		t.Errorf("OllamaEmbeddingModel = %q, want nomic-embed-text default", cfg.OllamaEmbeddingModel)
+	}
+	if cfg.SkillsSimilarityThreshold != 0.55 {
+		t.Errorf("SkillsSimilarityThreshold = %v, want 0.55 default", cfg.SkillsSimilarityThreshold)
 	}
 	wantDir := filepath.Join(configDir, "skills")
 	if got := SkillsDir(); got != wantDir {
@@ -494,6 +502,8 @@ func TestSkillsConfigEnvOverrides(t *testing.T) {
 	setDefaults(v)
 	t.Setenv("SKILLS_ENABLED", "true")
 	t.Setenv("SKILLS_DIR", "/tmp/samantha-skills")
+	t.Setenv("OLLAMA_EMBEDDING_MODEL", "embeddinggemma")
+	t.Setenv("SKILLS_SIMILARITY_THRESHOLD", "0.7")
 
 	cfg, err := Load()
 	if err != nil {
@@ -504,6 +514,12 @@ func TestSkillsConfigEnvOverrides(t *testing.T) {
 	}
 	if cfg.SkillsDir != "/tmp/samantha-skills" {
 		t.Errorf("SkillsDir = %q, want /tmp/samantha-skills from env", cfg.SkillsDir)
+	}
+	if cfg.OllamaEmbeddingModel != "embeddinggemma" {
+		t.Errorf("OllamaEmbeddingModel = %q, want embeddinggemma from env", cfg.OllamaEmbeddingModel)
+	}
+	if cfg.SkillsSimilarityThreshold != 0.7 {
+		t.Errorf("SkillsSimilarityThreshold = %v, want 0.7 from env", cfg.SkillsSimilarityThreshold)
 	}
 	if got := SkillsDir(); got != "/tmp/samantha-skills" {
 		t.Errorf("SkillsDir() = %q, want /tmp/samantha-skills", got)

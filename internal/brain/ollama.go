@@ -24,6 +24,11 @@ type OllamaBrain struct {
 	cfg          *config.Config
 	systemPrompt string
 	skills       []skills.Skill
+	skillRouter  *semanticSkillRouter
+	// activeSkillContext is selected from the current user prompt before the
+	// Ollama chat loop begins and remains stable across that turn's tool calls.
+	activeSkillContext string
+	skillRouterWarned  bool
 }
 
 // NewOllama creates an Ollama brain provider.
@@ -72,14 +77,22 @@ func NewOllama(cfg *config.Config) (*OllamaBrain, error) {
 	if err != nil {
 		return nil, err
 	}
+	embedCtx, embedCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	router, routerErr := newSemanticSkillRouter(embedCtx, client, cfg.OllamaEmbeddingModel, cfg.SkillsSimilarityThreshold, catalog)
+	embedCancel()
+	if routerErr != nil {
+		fmt.Fprintf(os.Stderr, "samantha: semantic skill routing unavailable (%v); continuing with the Agent Skills catalog\n", routerErr)
+	}
 
 	return &OllamaBrain{
-		client:       client,
-		model:        cfg.OllamaModel,
-		workDir:      workDir,
-		cfg:          cfg,
-		systemPrompt: systemPrompt,
-		skills:       catalog,
+		client:            client,
+		model:             cfg.OllamaModel,
+		workDir:           workDir,
+		cfg:               cfg,
+		systemPrompt:      systemPrompt,
+		skills:            catalog,
+		skillRouter:       router,
+		skillRouterWarned: routerErr != nil,
 	}, nil
 }
 
@@ -109,6 +122,7 @@ func loadSkillsCatalog(ctx context.Context, cfg *config.Config, workDir string) 
 // Implements an agent loop: if the model returns tool calls, executes them
 // and re-requests until the model produces a text response.
 func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts StreamOptions) (*Stream, error) {
+	o.activeSkillContext = o.routeSkillContext(ctx, input, opts.OnToolStart, opts.OnToolEnd)
 	o.history = append(o.history, api.Message{Role: "user", Content: input})
 
 	out := make(chan string, 8)
@@ -226,6 +240,7 @@ func sendChunk(ctx context.Context, out chan<- string, chunk string) error {
 
 // ThinkFull sends input and waits for the complete response.
 func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOptions) (string, error) {
+	o.activeSkillContext = o.routeSkillContext(ctx, input, opts.OnToolStart, opts.OnToolEnd)
 	o.history = append(o.history, api.Message{Role: "user", Content: input})
 
 	sess := &toolSession{
@@ -326,6 +341,7 @@ func (o *OllamaBrain) Warmup(ctx context.Context) {
 // ClearHistory wipes conversation history.
 func (o *OllamaBrain) ClearHistory() {
 	o.history = nil
+	o.activeSkillContext = ""
 }
 
 // History returns conversation history as Turn slices for session persistence.
@@ -356,6 +372,7 @@ func (o *OllamaBrain) buildMessages() []api.Message {
 	if sc := SkillContext(o.skills); sc != "" {
 		systemPrompt += sc
 	}
+	systemPrompt += o.activeSkillContext
 
 	msgs := []api.Message{
 		{Role: "system", Content: systemPrompt},
@@ -365,6 +382,30 @@ func (o *OllamaBrain) buildMessages() []api.Message {
 
 	msgs = append(msgs, recent...)
 	return msgs
+}
+
+func (o *OllamaBrain) routeSkillContext(ctx context.Context, input string, onStart, onEnd func(name, detail string)) string {
+	matched, err := o.skillRouter.Match(ctx, input)
+	if err != nil {
+		if !o.skillRouterWarned {
+			fmt.Fprintf(os.Stderr, "samantha: semantic skill routing failed (%v); continuing with the Agent Skills catalog\n", err)
+			o.skillRouterWarned = true
+		}
+		return ""
+	}
+	if len(matched) > 0 {
+		names := make([]string, len(matched))
+		for i, skill := range matched {
+			names[i] = skill.Name
+		}
+		if onStart != nil {
+			onStart("activate_skill", strings.Join(names, ", "))
+		}
+		if onEnd != nil {
+			onEnd("activate_skill", fmt.Sprintf("injected %d skill(s): %s", len(names), strings.Join(names, ", ")))
+		}
+	}
+	return ActivatedSkillContext(matched)
 }
 
 func (o *OllamaBrain) trimHistory() {

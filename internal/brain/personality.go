@@ -68,7 +68,7 @@ func SkillContext(catalog []skills.Skill) string {
 	}
 	var b strings.Builder
 	b.WriteString("\n## Agent Skills\n")
-	b.WriteString("For every user request, evaluate the available skills below before answering or using other tools. If a skill name or description plausibly matches the task, you MUST call read_skill with its name first and follow the returned instructions. Select skills autonomously; never wait for the user to mention a skill by name. You may load multiple relevant skills, and loading a skill never removes other tools.\n\n")
+	b.WriteString("The harness semantically matches each user request and injects relevant skill instructions in an <activated_skills> block. The catalog below is the discovery fallback. If a relevant skill was not activated automatically, call read_skill yourself before proceeding. You may load multiple relevant skills, and loading a skill never removes other tools.\n\n")
 	b.WriteString("Available skills:\n")
 	for _, s := range catalog {
 		desc := skills.TruncateRunes(strings.TrimSpace(s.Description), skills.MaxDescriptionRunes)
