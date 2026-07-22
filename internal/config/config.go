@@ -91,6 +91,10 @@ type Config struct {
 	// Agent
 	AgentName string `mapstructure:"agent_name"`
 
+	// ActivePersona is the persona profile id under personas/<id>/.
+	// On Load it drives agent_name, persona prompt name, and tts_voice overlays.
+	ActivePersona string `mapstructure:"active_persona"`
+
 	// Prompts
 	Persona    string `mapstructure:"persona"`
 	PromptsDir string `mapstructure:"prompts_dir"`
@@ -246,6 +250,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("calibre_prefer_format", "epub")
 
 	v.SetDefault("agent_name", "Samantha")
+	v.SetDefault("active_persona", "samantha")
 	v.SetDefault("persona", "samantha")
 	v.SetDefault("prompts_dir", "")
 	v.SetDefault("skills_enabled", false)
@@ -280,8 +285,32 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("speaker.models.segmentation", "")
 }
 
+// afterLoad is optional post-processing (persona ensure/apply). Set via
+// SetAfterLoad; persona package registers itself from init.
+var afterLoad func(*Config) error
+
+// SetAfterLoad registers a hook invoked at the end of Load (after unlock).
+// Used by the persona package to migrate/apply active persona profiles.
+func SetAfterLoad(fn func(*Config) error) {
+	afterLoad = fn
+}
+
 // Load reads configuration from disk and environment.
 func Load() (*Config, error) {
+	cfg, err := loadLocked()
+	if err != nil {
+		return nil, err
+	}
+	if afterLoad != nil {
+		if err := afterLoad(cfg); err != nil {
+			return nil, err
+		}
+	}
+	return cfg, nil
+}
+
+// loadLocked reads and unmarshals config while holding mu.
+func loadLocked() (*Config, error) {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -322,6 +351,7 @@ func Load() (*Config, error) {
 		"voice_tools_enabled":      "VOICE_TOOLS_ENABLED",
 		"tool_command_timeout":     "TOOL_COMMAND_TIMEOUT",
 		"persona":                  "PERSONA",
+		"active_persona":           "ACTIVE_PERSONA",
 		"prompts_dir":              "PROMPTS_DIR",
 		"skills_enabled":           "SKILLS_ENABLED",
 		"skills_dir":               "SKILLS_DIR",
@@ -607,6 +637,27 @@ func expandHomePath(path string) string {
 // ConfigDir returns the config directory path.
 func ConfigDir() string {
 	return configDir
+}
+
+// SetConfigDirForTest redirects ConfigDir (and the default config file path)
+// for the duration of t. Used by persona and other packages that write under
+// the install root.
+func SetConfigDirForTest(t interface {
+	Helper()
+	Cleanup(func())
+}, dir string) {
+	t.Helper()
+	origDir, origFile := configDir, configFile
+	configDir = dir
+	configFile = filepath.Join(dir, "config.yaml")
+	t.Cleanup(func() {
+		configDir, configFile = origDir, origFile
+	})
+}
+
+// PersonasDir returns <configDir>/personas.
+func PersonasDir() string {
+	return filepath.Join(configDir, "personas")
 }
 
 // PromptsDir returns the user prompt-documents directory: the configured

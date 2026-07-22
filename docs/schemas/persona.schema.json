@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/lancekrogers/samantha/docs/schemas/persona.schema.json",
+  "title": "festival-voice.persona.v1",
+  "type": "object",
+  "required": ["schema", "id", "display_name", "prompts"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "festival-voice.persona.v1"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "builtin": {
+      "type": "boolean"
+    },
+    "tts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "voice": { "type": "string" },
+        "provider": { "type": "string" }
+      }
+    },
+    "prompts": {
+      "type": "object",
+      "required": ["persona"],
+      "additionalProperties": false,
+      "properties": {
+        "persona": { "type": "string", "minLength": 1 },
+        "turn": { "type": "string" }
+      }
+    }
+  }
+}
