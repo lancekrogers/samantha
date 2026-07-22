@@ -451,11 +451,13 @@ func TestModelsDirDefault(t *testing.T) {
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	home, _ := os.UserHomeDir()
-	want := filepath.Join(home, ".cache", "samantha", "models")
+	want := DefaultModelsDir()
 	got := ModelsDir()
 	if got != want {
 		t.Errorf("ModelsDir() = %q, want %q", got, want)
+	}
+	if !strings.Contains(got, AppSlug) {
+		t.Errorf("ModelsDir() = %q, want path containing AppSlug %q", got, AppSlug)
 	}
 }
 

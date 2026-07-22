@@ -20,7 +20,7 @@
 // Cache path (first hit wins):
 //  1. $SAMANTHA_MEETING_FIXTURE (explicit file)
 //  2. $SAMANTHA_FIXTURE_CACHE/product-marketing-meeting-90s.wav
-//  3. $XDG_CACHE_HOME/samantha/fixtures/meetings/… or ~/.cache/samantha/…
+//  3. $XDG_CACHE_HOME/<AppSlug>/fixtures/meetings/… or ~/.cache/<AppSlug>/…
 //  4. <module>/tests/fixtures/meetings/… (legacy per-tree path)
 package speakerflow
 
@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/meeting"
 	"github.com/lancekrogers/samantha/internal/speaker"
 )
@@ -54,9 +55,9 @@ func sharedFixtureCandidates() []string {
 	cacheDir := os.Getenv("SAMANTHA_FIXTURE_CACHE")
 	if cacheDir == "" {
 		if xdg := os.Getenv("XDG_CACHE_HOME"); xdg != "" {
-			cacheDir = filepath.Join(xdg, "samantha", "fixtures", "meetings")
+			cacheDir = filepath.Join(xdg, config.AppSlug, "fixtures", "meetings")
 		} else if home, err := os.UserHomeDir(); err == nil {
-			cacheDir = filepath.Join(home, ".cache", "samantha", "fixtures", "meetings")
+			cacheDir = filepath.Join(home, ".cache", config.AppSlug, "fixtures", "meetings")
 		}
 	}
 	if cacheDir != "" {
@@ -224,8 +225,8 @@ func TestSharedFixtureCachePathHelpers(t *testing.T) {
 	// Prefer a user cache path so worktrees share one download.
 	foundCache := false
 	for _, c := range cands {
-		if strings.Contains(c, filepath.Join("samantha", "fixtures", "meetings")) ||
-			strings.Contains(c, ".cache"+string(filepath.Separator)+"samantha") {
+		if strings.Contains(c, filepath.Join(config.AppSlug, "fixtures", "meetings")) ||
+			strings.Contains(c, ".cache"+string(filepath.Separator)+config.AppSlug) {
 			foundCache = true
 			break
 		}

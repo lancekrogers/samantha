@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/events"
 )
 
@@ -70,7 +71,7 @@ func writeGoroutineDump() (string, error) {
 		buf = make([]byte, 2*len(buf))
 	}
 
-	dir := filepath.Join(os.TempDir(), "samantha")
+	dir := filepath.Join(os.TempDir(), config.AppSlug)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}

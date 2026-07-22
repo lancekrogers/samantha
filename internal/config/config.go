@@ -177,7 +177,7 @@ type SpeakerModelsConfig struct {
 }
 
 var (
-	configDir  = filepath.Join(homeDir(), ".obey", "agents", "voice", "samantha")
+	configDir  = DefaultConfigDir()
 	configFile = filepath.Join(configDir, "config.yaml")
 	v          *viper.Viper
 	// mu guards v: the TUI reads config from tea.Cmd goroutines while the
@@ -215,7 +215,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("whisper_quantized", true)
 	v.SetDefault("whispercpp_binary", "whisper-cli")
 	v.SetDefault("whispercpp_model", "base.en")
-	v.SetDefault("whispercpp_model_path", filepath.Join(homeDir(), ".cache", "samantha", "models", "whispercpp", "ggml-base.en.bin"))
+	v.SetDefault("whispercpp_model_path", filepath.Join(DefaultModelsDir(), "whispercpp", "ggml-base.en.bin"))
 
 	v.SetDefault("vad_enabled", true)
 	v.SetDefault("vad_silence_duration", 0.8)
@@ -250,7 +250,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("prompts_dir", "")
 	v.SetDefault("skills_enabled", false)
 	v.SetDefault("skills_dir", "")
-	v.SetDefault("models_dir", filepath.Join(homeDir(), ".cache", "samantha", "models"))
+	v.SetDefault("models_dir", DefaultModelsDir())
 
 	v.SetDefault("language", "en-US")
 	v.SetDefault("max_history", 10)
@@ -573,7 +573,7 @@ func SessionsDir() string {
 }
 
 // MeetingsDir returns the meeting transcripts directory.
-// Honors meeting.dir when set; otherwise ~/.obey/agents/voice/samantha/meetings.
+// Honors meeting.dir when set; otherwise <configDir>/meetings.
 func MeetingsDir() string {
 	mu.RLock()
 	defer mu.RUnlock()

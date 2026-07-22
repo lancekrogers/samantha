@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/lancekrogers/samantha/internal/config"
 )
 
 func TestEnsureKokoroTokensWithSyllabicN(t *testing.T) {
@@ -117,7 +119,7 @@ func TestEnsureKokoroTokensFallsBackToUserCacheWhenModelsDirReadOnly(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPrefix := filepath.Join(cacheRoot, "samantha", "kokoro-tokens")
+	wantPrefix := filepath.Join(cacheRoot, config.AppSlug, "kokoro-tokens")
 	if !strings.HasPrefix(path, wantPrefix) {
 		t.Fatalf("path = %q, want under cache %q", path, wantPrefix)
 	}

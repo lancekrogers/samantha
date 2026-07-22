@@ -15,7 +15,7 @@ The fixture lives in a **user-level cache** so every git worktree reuses one
 file and is only downloaded once per machine:
 
 ```text
-${XDG_CACHE_HOME:-$HOME/.cache}/samantha/fixtures/meetings/product-marketing-meeting-90s.wav
+${XDG_CACHE_HOME:-$HOME/.cache}/festival-voice/fixtures/meetings/product-marketing-meeting-90s.wav
 ```
 
 ```bash

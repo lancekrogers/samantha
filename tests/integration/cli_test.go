@@ -4,8 +4,11 @@
 package integration
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/lancekrogers/samantha/internal/config"
 )
 
 func TestCLI_Help(t *testing.T) {
@@ -48,7 +51,7 @@ func TestCLI_ConfigSet(t *testing.T) {
 	}
 
 	// Verify the config file was written.
-	content, err := tc.ReadFile("/root/.obey/agents/voice/samantha/config.yaml")
+	content, err := tc.ReadFile(filepath.Join("/root/.obey/agents/voice", config.AppSlug, "config.yaml"))
 	if err != nil {
 		t.Fatalf("failed to read config file: %v", err)
 	}

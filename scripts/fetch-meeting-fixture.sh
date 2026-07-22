@@ -7,10 +7,16 @@
 # Only the first ~90 seconds are downloaded (not the full ~43 min video).
 # The WAV is stored in a *shared user cache* so every git worktree reuses it:
 #
-#   ${SAMANTHA_FIXTURE_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/samantha/fixtures/meetings}
+#   ${SAMANTHA_FIXTURE_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/festival-voice/fixtures/meetings}
+#
+# App cache slug matches config.AppSlug (festival-voice). Override with
+# SAMANTHA_FIXTURE_CACHE if needed.
 #
 # Requires: yt-dlp, ffmpeg
 set -euo pipefail
+
+# Keep in sync with internal/config.AppSlug.
+APP_SLUG="${APP_SLUG:-festival-voice}"
 
 STEM="product-marketing-meeting-90s"
 URL="${MEETING_FIXTURE_URL:-https://www.youtube.com/watch?v=lBVtvOpU80Q}"
@@ -20,9 +26,9 @@ SECTION="${MEETING_FIXTURE_SECTION:-*0:00-1:30}"
 if [[ -n "${SAMANTHA_FIXTURE_CACHE:-}" ]]; then
 	CACHE_DIR="${SAMANTHA_FIXTURE_CACHE}"
 elif [[ -n "${XDG_CACHE_HOME:-}" ]]; then
-	CACHE_DIR="${XDG_CACHE_HOME}/samantha/fixtures/meetings"
+	CACHE_DIR="${XDG_CACHE_HOME}/${APP_SLUG}/fixtures/meetings"
 else
-	CACHE_DIR="${HOME}/.cache/samantha/fixtures/meetings"
+	CACHE_DIR="${HOME}/.cache/${APP_SLUG}/fixtures/meetings"
 fi
 
 OUT_WAV="${CACHE_DIR}/${STEM}.wav"
@@ -43,7 +49,7 @@ fi
 command -v yt-dlp >/dev/null || { echo "yt-dlp required" >&2; exit 1; }
 command -v ffmpeg >/dev/null || { echo "ffmpeg required" >&2; exit 1; }
 
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/samantha-meeting-fixture.XXXXXX")"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/${APP_SLUG}-meeting-fixture.XXXXXX")"
 cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT
 
