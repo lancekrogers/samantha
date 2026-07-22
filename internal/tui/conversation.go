@@ -926,8 +926,10 @@ func (m conversationModel) View() string {
 		inputLabel = speakStyle.Render("◉ Speaking — type to barge in")
 	case m.turnState == turnVoiceListening:
 		inputLabel = headerStyle.Render("🎙 Listening — type to interrupt")
-	case m.turnState == turnVoiceResponding || m.turnState == turnVoiceCanceling || m.turnState == turnTextRunning:
-		inputLabel = thinkStyle.Render("✦ Responding — keep drafting")
+	case m.turnState == turnVoiceResponding || m.turnState == turnTextRunning:
+		inputLabel = thinkStyle.Render("✦ Responding — type to barge in")
+	case m.turnState == turnVoiceCanceling:
+		inputLabel = thinkStyle.Render("✦ Interrupting…")
 	default:
 		inputLabel = dimStyle.Render(inputLabel)
 	}
