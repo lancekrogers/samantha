@@ -11,7 +11,6 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
-	"github.com/lancekrogers/samantha/internal/persona"
 	managedqwen "github.com/lancekrogers/samantha/internal/qwen"
 	"github.com/lancekrogers/samantha/internal/tts"
 )
@@ -207,111 +206,7 @@ func TestSettingsTabCycleIncludesTools(t *testing.T) {
 	}
 }
 
-func TestSettingsPersonaSectionListsAndSwitches(t *testing.T) {
-	cfg := &config.Config{
-		ActivePersona: "samantha",
-		AgentName:     "Samantha",
-		TTSProvider:   "kokoro",
-		TTSVoice:      "af_heart",
-		Persona:       "samantha",
-	}
-	m := newSettings(cfg, nil)
-	m.listPersonas = func() ([]*persona.Profile, error) {
-		return []*persona.Profile{
-			{
-				ID: "samantha", DisplayName: "Samantha", Builtin: true,
-				TTS: persona.TTS{Provider: "kokoro", Voice: "af_heart"},
-			},
-			{
-				ID: "festival", DisplayName: "Festival", Builtin: true,
-				TTS: persona.TTS{Provider: "kokoro", Voice: "af_bella"},
-			},
-		}, nil
-	}
-	m.buildPersonaItems()
-	m.section = sectionPersona
-	m.cursor = 1
 
-	var used string
-	m.usePersona = func(c *config.Config, id string) error {
-		used = id
-		c.ActivePersona = id
-		c.AgentName = "Festival"
-		c.TTSProvider = "kokoro"
-		c.TTSVoice = "af_bella"
-		c.Persona = "festival"
-		return nil
-	}
-
-	view := stripANSI(m.View())
-	if !strings.Contains(view, "Persona") {
-		t.Fatalf("settings missing Persona tab:\n%s", view)
-	}
-	if !strings.Contains(view, "Samantha") || !strings.Contains(view, "Festival") {
-		t.Fatalf("persona list missing rows:\n%s", view)
-	}
-
-	m.selectCurrent()
-	if used != "festival" {
-		t.Fatalf("usePersona id = %q, want festival", used)
-	}
-	if cfg.ActivePersona != "festival" || cfg.AgentName != "Festival" {
-		t.Fatalf("cfg after switch = active=%q name=%q", cfg.ActivePersona, cfg.AgentName)
-	}
-	if !strings.Contains(m.message, "Festival") {
-		t.Fatalf("message = %q, want Festival", m.message)
-	}
-}
-
-func TestSettingsPersonaCreateRowAndSubmit(t *testing.T) {
-	cfg := &config.Config{
-		ActivePersona: "samantha",
-		AgentName:     "Samantha",
-		TTSProvider:   "kokoro",
-		TTSVoice:      "af_heart",
-	}
-	m := newSettings(cfg, nil)
-	m.listPersonas = func() ([]*persona.Profile, error) {
-		return []*persona.Profile{
-			{ID: "samantha", DisplayName: "Samantha", TTS: persona.TTS{Provider: "kokoro", Voice: "af_heart"}},
-		}, nil
-	}
-	m.buildPersonaItems()
-	m.section = sectionPersona
-	// Create row is after the last profile.
-	m.cursor = len(m.personaItems)
-	if m.currentListLen() != 2 {
-		t.Fatalf("list len = %d, want 2 (profile + create)", m.currentListLen())
-	}
-
-	m.selectCurrent()
-	if !m.personaCreating {
-		t.Fatal("expected create form to open")
-	}
-	view := stripANSI(m.View())
-	if !strings.Contains(view, "Create a new voice agent") {
-		t.Fatalf("create form missing:\n%s", view)
-	}
-
-	var createdName string
-	m.createPersona = func(c *config.Config, name string) (*persona.Profile, error) {
-		createdName = name
-		c.ActivePersona = "research-buddy"
-		c.AgentName = name
-		return &persona.Profile{ID: "research-buddy", DisplayName: name}, nil
-	}
-	m.personaCreate.SetValue("Research Buddy")
-	m, _ = m.updatePersonaCreate(tea.KeyMsg{Type: tea.KeyEnter})
-	if createdName != "Research Buddy" {
-		t.Fatalf("created name = %q", createdName)
-	}
-	if m.personaCreating {
-		t.Fatal("create form should close after submit")
-	}
-	if !strings.Contains(m.message, "research-buddy") {
-		t.Fatalf("message = %q", m.message)
-	}
-}
 
 func TestSettingsToolsTogglePersistsAndRefreshes(t *testing.T) {
 	cfg := &config.Config{

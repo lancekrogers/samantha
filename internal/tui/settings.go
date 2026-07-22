@@ -18,14 +18,10 @@ import (
 	"github.com/lancekrogers/samantha/internal/tts"
 )
 
-// personaCreateRow is the trailing list entry that opens the create form.
-const personaCreateRowLabel = "+ Create new persona…"
-
 type settingsSection int
 
 const (
-	sectionPersona settingsSection = iota
-	sectionProvider
+	sectionProvider settingsSection = iota
 	sectionModel
 	sectionTools
 	sectionTTS
@@ -48,8 +44,6 @@ type settingsModel struct {
 	offset  int
 
 	// Derived lists for current section.
-	personaItems   []*persona.Profile
-	personaLoadErr string
 	providerItems  []string
 	modelItems     []string
 	toolItems      []string
@@ -77,14 +71,7 @@ type settingsModel struct {
 	newTTSProvider   func(*config.Config) (tts.Provider, func(), error)
 	saveConfig       func(string, any) error
 	savePersonaTTS   func(*config.Config, string, string) error
-	listPersonas     func() ([]*persona.Profile, error)
-	usePersona       func(*config.Config, string) error
-	createPersona    func(*config.Config, string) (*persona.Profile, error)
 	message          string
-
-	// Persona create form (Settings → Persona → Create new).
-	personaCreating bool
-	personaCreate   textinput.Model
 
 	qwenStatus        managedqwen.Status
 	qwenInstalling    bool
@@ -107,14 +94,9 @@ func newSettings(cfg *config.Config, providers []discovery.ProviderInfo) setting
 		newTTSProvider: tts.NewProvider,
 		saveConfig:     config.SetAndSave,
 		savePersonaTTS: persona.UpdateActiveTTS,
-		listPersonas:   persona.List,
-		usePersona:     persona.Use,
-		createPersona:  persona.CreateAndUse,
 		ensureQwen:     managedqwen.Ensure,
 	}
-	m.personaCreate = newPersonaCreateInput()
 	m.qwenStatus = managedqwen.Inspect(config.ModelsDirFrom(cfg))
-	m.buildPersonaItems()
 	m.buildProviderItems()
 	m.buildModelItems()
 	m.buildToolItems()
@@ -126,6 +108,7 @@ func newSettings(cfg *config.Config, providers []discovery.ProviderInfo) setting
 	return m
 }
 
+// newPersonaCreateInput builds the name field for the Personas main-menu screen.
 func newPersonaCreateInput() textinput.Model {
 	ti := textinput.New()
 	ti.Placeholder = "Research buddy"
@@ -135,43 +118,7 @@ func newPersonaCreateInput() textinput.Model {
 	return ti
 }
 
-type deviceListsMsg struct {
-	inputs  []string
-	outputs []string
-	err     error
-}
-
-func (m *settingsModel) loadDevices() tea.Cmd {
-	m.devicesLoading = true
-	checker := m.deviceChecker
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		inputs, err := checker.CaptureDevices(ctx)
-		if err != nil {
-			return deviceListsMsg{err: err}
-		}
-		outputs, err := checker.PlaybackDevices(ctx)
-		return deviceListsMsg{inputs: inputs, outputs: outputs, err: err}
-	}
-}
-
-func (m *settingsModel) buildPersonaItems() {
-	m.personaItems = nil
-	m.personaLoadErr = ""
-	list := m.listPersonas
-	if list == nil {
-		list = persona.List
-	}
-	items, err := list()
-	if err != nil {
-		m.personaLoadErr = err.Error()
-		return
-	}
-	m.personaItems = items
-}
-
-// personaListLabel formats one row for the Persona section.
+// personaListLabel formats one row for the Personas screen.
 func personaListLabel(p *persona.Profile) string {
 	if p == nil {
 		return ""
@@ -195,6 +142,27 @@ func personaListLabel(p *persona.Profile) string {
 		label += " — " + detail
 	}
 	return label
+}
+
+type deviceListsMsg struct {
+	inputs  []string
+	outputs []string
+	err     error
+}
+
+func (m *settingsModel) loadDevices() tea.Cmd {
+	m.devicesLoading = true
+	checker := m.deviceChecker
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		inputs, err := checker.CaptureDevices(ctx)
+		if err != nil {
+			return deviceListsMsg{err: err}
+		}
+		outputs, err := checker.PlaybackDevices(ctx)
+		return deviceListsMsg{inputs: inputs, outputs: outputs, err: err}
+	}
 }
 
 func (m *settingsModel) buildProviderItems() {
@@ -314,14 +282,9 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.personaCreate.Width = max(m.width-16, 20)
 		m.ensureCursorVisible()
 
 	case tea.KeyMsg:
-		// Persona create form captures keys until submit/cancel.
-		if m.personaCreating {
-			return m.updatePersonaCreate(msg)
-		}
 		switch msg.String() {
 		case "tab", "right", "l":
 			m.section = (m.section + 1) % settingsSectionCount
@@ -480,78 +443,8 @@ func (m settingsModel) visibleRows() int {
 	return max(h-chrome, 1)
 }
 
-func (m settingsModel) updatePersonaCreate(msg tea.KeyMsg) (settingsModel, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		m.cancelPersonaCreate()
-		m.message = "Create cancelled"
-		return m, nil
-	case "enter":
-		name := strings.TrimSpace(m.personaCreate.Value())
-		if name == "" {
-			m.message = "Enter a display name for the new persona"
-			return m, nil
-		}
-		create := m.createPersona
-		if create == nil {
-			create = persona.CreateAndUse
-		}
-		p, err := create(m.cfg, name)
-		if err != nil {
-			m.message = fmt.Sprintf("Failed to create persona: %v", err)
-			return m, nil
-		}
-		m.cancelPersonaCreate()
-		m.qwenStatus = managedqwen.Inspect(config.ModelsDirFrom(m.cfg))
-		m.buildPersonaItems()
-		m.buildTTSItems()
-		m.buildVoiceItems()
-		m.buildLanguageItems()
-		// Focus the new persona row.
-		for i, item := range m.personaItems {
-			if item != nil && item.ID == p.ID {
-				m.cursor = i
-				break
-			}
-		}
-		m.message = fmt.Sprintf("Created and activated %s (%s)", p.DisplayName, p.ID)
-		return m, nil
-	}
-	var cmd tea.Cmd
-	m.personaCreate, cmd = m.personaCreate.Update(msg)
-	return m, cmd
-}
-
-func (m *settingsModel) beginPersonaCreate() {
-	m.personaCreating = true
-	m.message = ""
-	if m.personaCreate.CharLimit == 0 {
-		m.personaCreate = newPersonaCreateInput()
-	}
-	m.personaCreate.SetValue("")
-	m.personaCreate.Width = max(m.width-16, 20)
-	m.personaCreate.Focus()
-}
-
-func (m *settingsModel) cancelPersonaCreate() {
-	m.personaCreating = false
-	m.personaCreate.Blur()
-	m.personaCreate.SetValue("")
-}
-
 func (m *settingsModel) currentListLen() int {
 	switch m.section {
-	case sectionPersona:
-		if m.personaLoadErr != "" {
-			return 1
-		}
-		// Always reserve a trailing "Create new" row.
-		n := len(m.personaItems)
-		if n == 0 {
-			return 1 // create-only when empty / error already handled
-		}
-		return n + 1
-
 	case sectionProvider:
 		return len(m.providerItems)
 	case sectionModel:
@@ -576,40 +469,6 @@ func (m *settingsModel) currentListLen() int {
 
 func (m *settingsModel) selectCurrent() tea.Cmd {
 	switch m.section {
-	case sectionPersona:
-		if m.personaLoadErr != "" {
-			return nil
-		}
-		// Trailing create row (or sole row when empty).
-		if len(m.personaItems) == 0 || m.cursor == len(m.personaItems) {
-			m.beginPersonaCreate()
-			return nil
-		}
-		if m.cursor < 0 || m.cursor >= len(m.personaItems) {
-			return nil
-		}
-		p := m.personaItems[m.cursor]
-		if p == nil {
-			return nil
-		}
-		use := m.usePersona
-		if use == nil {
-			use = persona.Use
-		}
-		if err := use(m.cfg, p.ID); err != nil {
-			m.message = fmt.Sprintf("Failed to switch persona: %v", err)
-			return nil
-		}
-		// Voice list depends on the persona's TTS provider.
-		m.qwenStatus = managedqwen.Inspect(config.ModelsDirFrom(m.cfg))
-		m.buildPersonaItems()
-		m.buildTTSItems()
-		m.buildVoiceItems()
-		m.buildLanguageItems()
-		m.message = fmt.Sprintf("Active persona: %s", p.DisplayName)
-		if p.DisplayName == "" {
-			m.message = fmt.Sprintf("Active persona: %s", p.ID)
-		}
 	case sectionProvider:
 		if m.cursor < len(m.providers) && m.providers[m.cursor].Available {
 			// Mutate the live config only after the save succeeds, so a

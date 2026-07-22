@@ -5,8 +5,6 @@ import (
 	"strings"
 
 	ansi "github.com/charmbracelet/x/ansi"
-
-	"github.com/lancekrogers/samantha/internal/persona"
 )
 
 func (m settingsModel) View() string {
@@ -17,7 +15,7 @@ func (m settingsModel) View() string {
 	var parts []string
 	parts = append(parts, headerStyle.Render("  Settings"))
 
-	tabs := []string{"Persona", "Brain", "Brain model", "Tools", "TTS", "Voice", "Language", "Input", "Output", "Meeting"}
+	tabs := []string{"Brain", "Brain model", "Tools", "TTS", "Voice", "Language", "Input", "Output", "Meeting"}
 	var tabLine strings.Builder
 	for i, tab := range tabs {
 		style := dimStyle
@@ -35,31 +33,21 @@ func (m settingsModel) View() string {
 		parts = append(parts, dimStyle.Render(strings.Repeat("─", max(width, 1))))
 	}
 
-	if m.personaCreating {
-		parts = append(parts, m.personaCreateLines(listRows)...)
-	} else {
-		listLines := m.sectionListLines()
-		// Fill the list region so short sections still expand with the terminal.
-		if len(listLines) > listRows {
-			listLines = listLines[:listRows]
-		}
-		for len(listLines) < listRows {
-			listLines = append(listLines, "")
-		}
-		parts = append(parts, listLines...)
+	listLines := m.sectionListLines()
+	// Fill the list region so short sections still expand with the terminal.
+	if len(listLines) > listRows {
+		listLines = listLines[:listRows]
 	}
+	for len(listLines) < listRows {
+		listLines = append(listLines, "")
+	}
+	parts = append(parts, listLines...)
 
 	help := "  ←/→ section • ↑/↓ navigate • enter select"
-	if m.personaCreating {
-		help = "  type a display name • enter create & activate • esc cancel"
-	} else if m.section == sectionPersona {
-		help = "  ←/→ section • ↑/↓ navigate • enter switch/create • esc back"
-	} else if m.section == sectionVoice {
+	if m.section == sectionVoice {
 		help += " • p preview"
-		help += " • esc back"
-	} else {
-		help += " • esc back"
 	}
+	help += " • esc back"
 	if compact {
 		footer := dimStyle.Render(help)
 		if m.message != "" {
@@ -82,58 +70,8 @@ func (m settingsModel) isCompact() bool {
 	return m.height > 0 && m.height < 12
 }
 
-func (m settingsModel) personaCreateLines(listRows int) []string {
-	slug := persona.Slugify(m.personaCreate.Value())
-	if slug == "" {
-		slug = "persona"
-	}
-	lines := []string{
-		"  Create a new voice agent",
-		"",
-		m.personaCreate.View(),
-		dimStyle.Render(fmt.Sprintf("  id will be: %s", slug)),
-		"",
-		dimStyle.Render("  Clones current TTS provider/voice; edit Voice after create."),
-	}
-	for len(lines) < listRows {
-		lines = append(lines, "")
-	}
-	if len(lines) > listRows {
-		lines = lines[:listRows]
-	}
-	return lines
-}
-
 func (m settingsModel) sectionListLines() []string {
 	switch m.section {
-	case sectionPersona:
-		if m.personaLoadErr != "" {
-			return []string{m.itemLine(0, "error loading personas: "+m.personaLoadErr)}
-		}
-		active := ""
-		if m.cfg != nil {
-			active = persona.ActiveID(m.cfg)
-		}
-		total := len(m.personaItems) + 1 // trailing create row
-		start, end := m.visibleRange(total)
-		lines := make([]string, 0, end-start)
-		for i := start; i < end; i++ {
-			if i == len(m.personaItems) {
-				lines = append(lines, m.itemLine(i, personaCreateRowLabel))
-				continue
-			}
-			if i >= len(m.personaItems) {
-				continue
-			}
-			p := m.personaItems[i]
-			mark := ""
-			if p != nil && p.ID == active {
-				mark = " ✓"
-			}
-			lines = append(lines, m.itemLine(i, personaListLabel(p)+mark))
-		}
-		return lines
-
 	case sectionProvider:
 		start, end := m.visibleRange(len(m.providerItems))
 		lines := make([]string, 0, end-start)

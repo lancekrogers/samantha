@@ -23,6 +23,7 @@ const (
 	actionRemote
 	actionLibrary
 	actionAudiobook
+	actionPersonas
 	actionSettings
 	actionQuit
 )
@@ -90,7 +91,18 @@ func newLauncher(cfg *config.Config, providers []discovery.ProviderInfo, saved .
 			action: actionSessions,
 		})
 	}
+	// Active persona hint for the main-menu Personas entry.
+	personaHint := "Switch or create voice agents"
+	if m.cfg != nil {
+		if name := strings.TrimSpace(m.cfg.AgentName); name != "" {
+			personaHint = "Active: " + name + " · switch or create"
+		}
+	}
 	m.items = append(m.items,
+		launcherItem{
+			label: "Personas", hint: personaHint, glyph: "◎",
+			action: actionPersonas,
+		},
 		launcherItem{
 			label: "Meeting", hint: "Record · notes · ★ bookmarks", glyph: "◉",
 			action: actionMeeting,
@@ -151,6 +163,8 @@ func (m launcherModel) Update(msg tea.Msg) (launcherModel, tea.Cmd) {
 				return m, func() tea.Msg { return switchScreenMsg(screenLibrary) }
 			case actionAudiobook:
 				return m, func() tea.Msg { return switchScreenMsg(screenAudiobook) }
+			case actionPersonas:
+				return m, func() tea.Msg { return switchScreenMsg(screenPersonas) }
 			case actionSettings:
 				return m, func() tea.Msg { return switchScreenMsg(screenSettings) }
 			case actionQuit:

@@ -1,7 +1,7 @@
-# Settings → Persona: list, switch, and create a voice agent.
+# Main menu → Personas: list, switch, and create a voice agent.
 #
 # Seeds samantha + festival under a disposable HOME, then creates
-# "Research Buddy" from the TUI create form.
+# "Research Buddy" from the Personas screen create form.
 #
 # From repo root after `just build`:
 #   just demo-persona-switch
@@ -64,26 +64,18 @@ Type "EOF" Enter
 Type "clear" Enter
 Show
 
-# ── Launcher → Settings ──────────────────────────────────────────────
+# ── Launcher: New conversation, Personas, Meeting, … ─────────────────
 Type "samantha -t -n" Sleep 300ms Enter
 Sleep 2s
 
-# New conversation, Meeting, Remote, Library, Audiobook, Settings (5 downs)
+# Cursor starts on New conversation → down once to Personas
 Down
-Sleep 250ms
-Down
-Sleep 250ms
-Down
-Sleep 250ms
-Down
-Sleep 250ms
-Down
-Sleep 900ms
+Sleep 800ms
 Enter
-Sleep 1400ms
-
-# Settings opens on Persona: Samantha ✓, Festival, + Create new persona…
 Sleep 1500ms
+
+# Personas screen: Samantha ✓, Festival, + Create new persona…
+Sleep 1400ms
 
 # Switch to Festival
 Down
@@ -91,7 +83,7 @@ Sleep 600ms
 Enter
 Sleep 1400ms
 
-# Move to Create row (Festival is row 1, create is row 2)
+# Move to Create row
 Down
 Sleep 700ms
 Enter
@@ -103,6 +95,6 @@ Sleep 800ms
 Enter
 Sleep 1800ms
 
-# Esc back to launcher
+# Esc back to launcher — Personas hint shows Research Buddy
 Escape
 Sleep 1800ms
