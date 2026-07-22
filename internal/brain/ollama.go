@@ -117,7 +117,7 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 		defer close(out)
 		defer close(done)
 
-		// Per-turn tool session: tracks active skill for progressive disclosure.
+		// Per-turn tool session: exposes skills through progressive disclosure.
 		sess := &toolSession{
 			catalog:        o.skills,
 			commandTimeout: time.Duration(config.ClampToolCommandTimeout(o.cfg.ToolCommandTimeout)) * time.Second,

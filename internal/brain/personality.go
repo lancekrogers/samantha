@@ -67,7 +67,9 @@ func SkillContext(catalog []skills.Skill) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n## Available skills (call read_skill(\"<name>\") to load full instructions)\n")
+	b.WriteString("\n## Agent Skills\n")
+	b.WriteString("For every user request, evaluate the available skills below before answering or using other tools. If a skill name or description plausibly matches the task, you MUST call read_skill with its name first and follow the returned instructions. Select skills autonomously; never wait for the user to mention a skill by name. You may load multiple relevant skills, and loading a skill never removes other tools.\n\n")
+	b.WriteString("Available skills:\n")
 	for _, s := range catalog {
 		desc := skills.TruncateRunes(strings.TrimSpace(s.Description), skills.MaxDescriptionRunes)
 		fmt.Fprintf(&b, "- %s: %s\n", s.Name, desc)

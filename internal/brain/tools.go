@@ -25,17 +25,12 @@ const skillBodyMaxBytes = 32 * 1024
 // is available (for example, in a direct unit-test tool session).
 const defaultToolCommandTimeout = 30 * time.Second
 
-// toolSession tracks catalog + active skill for progressive disclosure during
-// a single Think* turn.
-//
-// Product model: skills (playbooks) select a tool allow-list after activation;
-// the global voice_tools_enabled / remote_tools_enabled gates still control
-// whether any tool can be called at all.
+// toolSession holds the skill catalog and UI hooks for one Think* turn.
+// Skills add instructions; they never remove tools. The global
+// voice_tools_enabled / remote_tools_enabled gates remain the authority for
+// whether tools are available at all.
 type toolSession struct {
 	catalog []skills.Skill
-	// active is set after a successful read_skill and controls the next
-	// request's tool schemas and runtime allow-list.
-	active *skills.Skill
 	// commandTimeout bounds each run_command call in this session.
 	commandTimeout time.Duration
 	// Optional UI hooks (from StreamOptions).
@@ -43,20 +38,16 @@ type toolSession struct {
 	onEnd   func(name, preview string)
 }
 
-// tools returns the full tool definitions for the next model request.
-// Before a skill is activated, the model may choose from the base tools and
-// read_skill. Once a skill declares allowed-tools, only that allow-list is
-// advertised for subsequent requests (including read_skill — skill switching
-// is not an escape hatch).
+// tools returns every enabled tool definition for the next model request.
+// Agent Skills allowed-tools metadata is intentionally not a runtime filter:
+// local Ollama should behave like a general harness and may load more than one
+// relevant skill without losing capabilities.
 func (s *toolSession) tools() api.Tools {
-	if s.active == nil || len(s.active.AllowedTools) == 0 {
-		return voiceAssistantTools(s.catalog)
-	}
-	return filterTools(voiceAssistantTools(s.catalog), s.active.AllowedTools)
+	return voiceAssistantTools(s.catalog)
 }
 
-// execute runs a tool call. Successful read_skill activates the skill and
-// applies its allow-list to subsequent tool calls.
+// execute runs a tool call. read_skill returns instructions without changing
+// the tools available on subsequent model requests.
 // onEnd always runs (via defer) so a slow or failed tool cannot leave the TUI
 // stuck on "🔧 tool..." without a finish event.
 func (s *toolSession) execute(ctx context.Context, workDir string, call api.ToolCall) (result string) {
@@ -70,11 +61,6 @@ func (s *toolSession) execute(ctx context.Context, workDir string, call api.Tool
 			s.onEnd(name, toolResultPreview(result))
 		}
 	}()
-	// Enforce allow-list for every tool name, including read_skill, so a
-	// restricted skill cannot be escaped by inventing another read_skill call.
-	if s.active != nil && len(s.active.AllowedTools) > 0 && !skills.ToolAllowed(name, s.active.AllowedTools) {
-		return fmt.Sprintf("error: tool %q is not allowed by active skill %q", name, s.active.Name)
-	}
 	if name == "read_skill" {
 		return s.executeReadSkill(call)
 	}
@@ -139,28 +125,11 @@ func (s *toolSession) executeReadSkill(call api.ToolCall) string {
 		if sk.Name != name {
 			continue
 		}
-		// Reject activation when allowed-tools is non-empty but maps to no
-		// Samantha tools — otherwise the turn is soft-bricked with zero tools.
-		if len(sk.AllowedTools) > 0 {
-			if len(filterTools(voiceAssistantTools(s.catalog), sk.AllowedTools)) == 0 {
-				return fmt.Sprintf(
-					"error: skill %q allowed-tools %v match no Samantha tools; not activated",
-					sk.Name, sk.AllowedTools,
-				)
-			}
-		}
-		s.active = sk
 		body := sk.Body
 		if len(body) > skillBodyMaxBytes {
 			body = body[:skillBodyMaxBytes] + "\n... (truncated)"
 		}
 		msg := fmt.Sprintf("Skill %q (directory: %s)\n\n%s", sk.Name, sk.Dir, body)
-		if len(sk.AllowedTools) > 0 {
-			msg += fmt.Sprintf(
-				"\n\n[skill policy: only these tools are available for this skill: %s]",
-				strings.Join(sk.AllowedTools, " "),
-			)
-		}
 		return msg
 	}
 	return fmt.Sprintf("error: unknown skill %q", name)
@@ -292,7 +261,7 @@ func voiceAssistantTools(catalog []skills.Skill) api.Tools {
 			Type: "function",
 			Function: api.ToolFunction{
 				Name:        "read_skill",
-				Description: "Load the full instructions for a named Agent Skill. Call this when a skill from the Available skills list is relevant, then follow its body. Bundled scripts live under the skill directory returned with the body. If the skill declares allowed-tools, only those tools remain available after loading.",
+				Description: "Load the full instructions for a named Agent Skill. You must call this autonomously whenever a skill name or description matches the user's task; do not wait for the user to name the skill. You may load multiple relevant skills, and all tools remain available. Bundled scripts live under the returned skill directory.",
 				Parameters: api.ToolFunctionParameters{
 					Type:     "object",
 					Required: []string{"name"},
@@ -465,16 +434,6 @@ func toolRunCommandWithTimeout(ctx context.Context, workDir string, args map[str
 		"command": command,
 	})
 	return string(resp)
-}
-
-func filterTools(tools api.Tools, allowed []string) api.Tools {
-	filtered := make(api.Tools, 0, len(tools))
-	for _, tool := range tools {
-		if skills.ToolAllowed(tool.Function.Name, allowed) {
-			filtered = append(filtered, tool)
-		}
-	}
-	return filtered
 }
 
 // clampCommandTimeout caps one run_command at 120s. Zero/negative fall back to

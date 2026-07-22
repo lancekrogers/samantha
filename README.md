@@ -487,22 +487,16 @@ Ollama does **not** scan `.claude/skills`; the Claude Code provider owns that
 path, and dual-scanning would duplicate skills when both trees are projected.
 Duplicate skill names resolve with **project first**. Ollama advertises each
 skill's name and description in the system prompt and offers a `read_skill` tool
-to load full instructions on demand (progressive disclosure).
+to load full instructions on demand (progressive disclosure). The system prompt
+requires Ollama to evaluate this catalog on every request, autonomously load
+matching skills, and not wait for the user to identify a skill by name.
 
 Optional frontmatter `allowed-tools` (Agent Skills experimental field) is
-enforced after a skill is loaded. Before activation, the base tools remain
-available so the model can discover and load the relevant skill. After
-activation, **only the listed tools are advertised and every call outside the
-list is rejected — including `read_skill`**, so a restricted skill cannot be
-escaped by loading another. Tokens use common aliases (`Read` → `read_file`,
-`Bash` / `Bash(…)` → `run_command`, `WebSearch` → `web_search`, and
-`WebFetch` → `fetch_url`). If `allowed-tools` maps to no Samantha
-tools, activation fails with an error instead of soft-bricking the turn.
-The global safety gates still apply: `voice_tools_enabled` /
-`remote_tools_enabled` must allow tools before any skill policy can grant a call.
-
-Allow-lists are **not** a pre-activation sandbox: until `read_skill` succeeds,
-full base tools apply whenever tools are enabled.
+retained as catalog metadata but does not restrict Samantha's Ollama runtime.
+Skills add instructions rather than capabilities, all implemented tools remain
+available after a skill is loaded, and the model may load multiple skills in one
+turn. The global safety gates still apply: `voice_tools_enabled` /
+`remote_tools_enabled` must allow tools before any tool call can run.
 
 Claude and Grok pick up skills via their own CLIs. Remote `samantha serve` still
 gates all tools (including `read_skill`) behind `remote_tools_enabled`.
