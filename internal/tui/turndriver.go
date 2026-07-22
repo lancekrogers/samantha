@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -265,9 +266,9 @@ func (m *conversationModel) recoverTurnState() tea.Cmd {
 	return nil
 }
 
-// handleSubmit routes an Enter press by turn state: idle submits; a listening
-// or responding voice turn is canceled first so typed text can barge in; a
-// text turn keeps the draft until the pipeline is free.
+// handleSubmit routes an Enter press by turn state: idle submits; any in-flight
+// voice or text turn is canceled first so typed text can barge in repeatedly
+// (not only the first voice reply).
 //
 // Slash commands are local (never need the brain). They run immediately in
 // any turn state so a long STT cancel or in-flight response cannot freeze
@@ -310,17 +311,20 @@ func (m *conversationModel) handleSubmit() tea.Cmd {
 			return nil
 		}
 		return m.beginTextBargeIn(text)
-	case turnVoiceResponding:
-		// "Speaking — type to barge in": cancel TTS/brain and run the draft.
+	case turnVoiceResponding, turnTextRunning:
+		// "Speaking — type to barge in" applies to both voice and text turns:
+		// the first barge-in runs as text, so the reply is turnTextRunning —
+		// Enter must cancel that turn too or barge-in only works once.
 		return m.beginTextBargeIn(text)
 	default:
-		// Text turn owns the pipeline; leave the draft alone.
+		// Already canceling a prior barge-in; leave the draft until drain.
 		return nil
 	}
 }
 
 // beginTextBargeIn parks the draft, echoes it, and cancels the in-flight voice
-// turn. handleVoiceTurnDone dispatches the text when the cancel drains.
+// or text turn. handleVoiceTurnDone / handleTextTurnDone dispatch the text when
+// the cancel drains.
 func (m *conversationModel) beginTextBargeIn(text string) tea.Cmd {
 	m.pendingText = text
 	previous := m.input.Value()
@@ -504,8 +508,22 @@ func (m *conversationModel) handleVoiceTurnDone(msg voiceTurnDoneMsg) tea.Cmd {
 
 func (m *conversationModel) handleTextTurnDone(msg textTurnDoneMsg) tea.Cmd {
 	m.turnCancel = nil
+	// Barge-in during a text turn (agent speaking after a prior typed message)
+	// sets turnVoiceCanceling + pendingText, then cancel drains here — same
+	// path as voice barge-in via handleVoiceTurnDone.
+	wasCanceling := m.turnState == turnVoiceCanceling
+	pending := m.pendingText
+	m.pendingText = ""
 	m.turnState = turnIdle
-	if msg.err != nil {
+
+	if wasCanceling {
+		if pending != "" {
+			return m.submitText(pending)
+		}
+		return m.resumeListening()
+	}
+
+	if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 		m.emit(events.Error{Message: msg.err.Error()})
 	}
 	return m.resumeListening()

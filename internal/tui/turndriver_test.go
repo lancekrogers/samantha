@@ -21,6 +21,8 @@ type fakeTurnRunner struct {
 	voiceCalls int
 	textInputs []string
 	textErr    error
+	blockText  bool // park RunTurnTextMode until ctx cancel (simulates TTS)
+	stopped    int  // StopPlayback call count
 }
 
 type voiceScript struct {
@@ -48,9 +50,21 @@ func (f *fakeTurnRunner) RunTurn(ctx context.Context) (string, error) {
 
 func (f *fakeTurnRunner) RunTurnTextMode(ctx context.Context, input string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.textInputs = append(f.textInputs, input)
-	return f.textErr
+	block := f.blockText
+	err := f.textErr
+	f.mu.Unlock()
+	if block {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return err
+}
+
+func (f *fakeTurnRunner) StopPlayback() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped++
 }
 
 func (f *fakeTurnRunner) calls() int {
@@ -363,6 +377,67 @@ func TestSubmitWhileRespondingBargesIn(t *testing.T) {
 	if cmd == nil && m.turnState != turnTextRunning && m.turnState != turnIdle {
 		// dispatchTextTurn returns a Cmd; if fake runner is sync it may complete.
 		t.Logf("after barge drain: state=%d cmd=%v", m.turnState, cmd != nil)
+	}
+}
+
+// After the first typed barge-in, the agent reply is a text turn with TTS.
+// Enter during that reply must cancel again — otherwise barge-in only works once.
+func TestSubmitWhileTextTurnBargesInAgain(t *testing.T) {
+	runner := &fakeTurnRunner{blockText: true}
+	m, _ := startedConversation(t, runner, true)
+	m.turnState = turnIdle
+
+	// First typed message (idle path) starts a long text turn (speaking).
+	m, textCmd := typeAndEnter(m, "first barge")
+	if textCmd == nil {
+		t.Fatal("idle submit must dispatch text turn")
+	}
+	if m.turnState != turnTextRunning {
+		t.Fatalf("turnState = %d, want text running", m.turnState)
+	}
+	textDone := make(chan tea.Msg, 1)
+	go func() { textDone <- textCmd() }()
+
+	// Second Enter while the agent is still on the text turn.
+	m, cmd := typeAndEnter(m, "second barge")
+	if cmd != nil {
+		t.Fatal("barge during text turn should wait for cancel drain")
+	}
+	if m.turnState != turnVoiceCanceling {
+		t.Fatalf("turnState = %d, want canceling after second barge", m.turnState)
+	}
+	if m.pendingText != "second barge" {
+		t.Fatalf("pendingText = %q, want second barge", m.pendingText)
+	}
+	if runner.stopped < 1 {
+		t.Fatal("StopPlayback should run on barge-in so TTS stops immediately")
+	}
+
+	select {
+	case msg := <-textDone:
+		m, cmd = m.Update(msg)
+	case <-time.After(2 * time.Second):
+		t.Fatal("text turn was not canceled by second barge-in")
+	}
+	if m.pendingText != "" {
+		t.Fatalf("pendingText still set after drain: %q", m.pendingText)
+	}
+	if cmd == nil {
+		t.Fatal("cancel drain must dispatch the second text turn")
+	}
+	if m.turnState != turnTextRunning {
+		t.Fatalf("turnState = %d, want text running for second barge", m.turnState)
+	}
+	// Run the newly dispatched text turn (non-blocking path: unblock runner).
+	runner.mu.Lock()
+	runner.blockText = false
+	runner.mu.Unlock()
+	if msg := cmd(); msg == nil {
+		t.Fatal("second text turn cmd returned nil")
+	}
+	got := runner.texts()
+	if len(got) < 2 || got[len(got)-1] != "second barge" {
+		t.Fatalf("text inputs = %v, want … second barge", got)
 	}
 }
 
