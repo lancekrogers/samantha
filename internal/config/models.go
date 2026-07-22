@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lancekrogers/samantha/internal/qwen"
 	"github.com/lancekrogers/samantha/internal/textclean"
 )
 
@@ -124,6 +125,13 @@ func EnsureRuntimeAssets(ctx context.Context, cfg *Config, req AssetRequest, onP
 	dir := ModelsDir()
 	if err := ensureManifest(ctx, manifest, dir, onProgress); err != nil {
 		return err
+	}
+	if req.NeedTTS && cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), qwen.ProviderName) {
+		if qwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
+			_, err := qwen.Ensure(ctx, ModelsDirFrom(cfg), qwen.ProgressFunc(onProgress))
+			return err
+		}
+		return nil
 	}
 	if req.NeedTTS && ManagedTTS(cfg) {
 		if err := sanitizeKokoroLexicons(dir); err != nil {

@@ -160,6 +160,17 @@ func TestSynthIdentityIncludesQwenModelAndBinary(t *testing.T) {
 	}
 }
 
+func TestSynthIdentityMigratesLegacyQwenDefaultToManaged(t *testing.T) {
+	legacy := synthIdentityFor(&config.Config{TTSProvider: "qwen3-tts", QwenTTSBinary: "qwen3-tts-cli"})
+	managed := synthIdentityFor(&config.Config{TTSProvider: "qwen3-tts"})
+	if legacy != managed {
+		t.Fatalf("legacy managed identity = %q, new managed identity = %q", legacy, managed)
+	}
+	if strings.Contains(legacy, "binary=qwen3-tts-cli") {
+		t.Fatalf("managed identity retained external binary: %q", legacy)
+	}
+}
+
 func TestSynthIdentityIncludesQwenVoiceControlsAndReferenceContent(t *testing.T) {
 	ref := filepath.Join(t.TempDir(), "reference.wav")
 	if err := os.WriteFile(ref, []byte("reference-a"), 0o600); err != nil {

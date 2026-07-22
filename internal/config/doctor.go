@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/lancekrogers/samantha/internal/qwen"
 )
 
 // Severity classifies a diagnostic result.
@@ -47,66 +49,93 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 		})
 	}
 
-	if ManagedTTS(cfg) {
+	if strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), qwen.ProviderName) {
+		binary := strings.TrimSpace(cfg.QwenTTSBinary)
+		model := strings.TrimSpace(cfg.QwenTTSModel)
+		managed := qwen.UseManaged(binary, model)
+		providerDetail := "qwen3-tts (external default-voice worker)"
+		controlsDetail := "external model-native default/static synthesis"
+		controlsRemediation := "clear unsupported voice controls for the external worker"
+		if managed {
+			providerDetail = "qwen3-tts (managed CustomVoice presets)"
+			controlsDetail = "managed CustomVoice speaker selection"
+			controlsRemediation = "select a speaker and mode advertised in Settings → Voice"
+		}
 		diags = append(diags, Diagnostic{
 			Name:     "tts-provider",
 			Severity: SeverityOK,
-			Detail:   "kokoro (" + KokoroPack() + ")",
-		})
-	} else if strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), "qwen3-tts") {
-		diags = append(diags, Diagnostic{
-			Name:     "tts-provider",
-			Severity: SeverityOK,
-			Detail:   "qwen3-tts (external native worker; model-native default/static only)",
+			Detail:   providerDetail,
 		})
 		if err := ValidateQwenTTSConfig(cfg); err != nil {
 			diags = append(diags, Diagnostic{
 				Name:        "qwen3-tts-voice-controls",
 				Severity:    SeverityError,
 				Detail:      err.Error(),
-				Remediation: "clear the unsupported qwen_tts voice controls or use Kokoro until the native worker advertises them",
+				Remediation: controlsRemediation,
 			})
 		} else {
 			diags = append(diags, Diagnostic{
 				Name:     "qwen3-tts-voice-controls",
 				Severity: SeverityOK,
-				Detail:   "model-native default/static synthesis",
+				Detail:   controlsDetail,
 			})
 		}
 
-		binary := strings.TrimSpace(cfg.QwenTTSBinary)
-		if binary == "" {
-			binary = "qwen3-tts-cli"
-		}
-		if _, err := lookPath(binary); err != nil {
-			diags = append(diags, Diagnostic{
-				Name:        "qwen3-tts-binary",
-				Severity:    SeverityError,
-				Detail:      fmt.Sprintf("native Qwen3-TTS worker %q not found in PATH", binary),
-				Remediation: "install qwen3-tts.cpp's qwen3-tts-cli and set qwen_tts_binary if needed",
-			})
+		if managed {
+			status := qwen.Inspect(modelsDir)
+			if status.RuntimeReady {
+				diags = append(diags, Diagnostic{Name: "qwen3-tts-binary", Severity: SeverityOK, Detail: status.Python})
+			} else {
+				diags = append(diags, Diagnostic{
+					Name: "qwen3-tts-binary", Severity: SeverityError,
+					Detail:      "managed Qwen runtime is not installed",
+					Remediation: "open Settings → TTS, select Qwen3-TTS, and install preset voices",
+				})
+			}
+			if status.ModelReady {
+				diags = append(diags, Diagnostic{Name: "qwen3-tts-model", Severity: SeverityOK, Detail: status.Model})
+			} else {
+				diags = append(diags, Diagnostic{
+					Name: "qwen3-tts-model", Severity: SeverityError,
+					Detail:      "managed Qwen CustomVoice model is not installed",
+					Remediation: "open Settings → TTS, select Qwen3-TTS, and install preset voices",
+				})
+			}
 		} else {
-			diags = append(diags, Diagnostic{Name: "qwen3-tts-binary", Severity: SeverityOK, Detail: binary})
+			if binary == "" {
+				binary = "qwen3-tts-cli"
+			}
+			if _, err := lookPath(binary); err != nil {
+				diags = append(diags, Diagnostic{
+					Name:        "qwen3-tts-binary",
+					Severity:    SeverityError,
+					Detail:      fmt.Sprintf("native Qwen3-TTS worker %q not found in PATH", binary),
+					Remediation: "install qwen3-tts.cpp's qwen3-tts-cli and set qwen_tts_binary if needed",
+				})
+			} else {
+				diags = append(diags, Diagnostic{Name: "qwen3-tts-binary", Severity: SeverityOK, Detail: binary})
+			}
+			if model == "" {
+				diags = append(diags, Diagnostic{
+					Name: "qwen3-tts-model", Severity: SeverityError, Detail: "qwen_tts_model is not configured",
+					Remediation: "set qwen_tts_model or clear qwen_tts_binary to use managed setup",
+				})
+			} else if info, err := os.Stat(model); err != nil || !info.IsDir() {
+				diags = append(diags, Diagnostic{
+					Name: "qwen3-tts-model", Severity: SeverityError,
+					Detail:      fmt.Sprintf("Qwen3-TTS model directory %q is unavailable", model),
+					Remediation: "install/convert the Qwen3-TTS native model artifacts and set qwen_tts_model",
+				})
+			} else {
+				diags = append(diags, Diagnostic{Name: "qwen3-tts-model", Severity: SeverityOK, Detail: model})
+			}
 		}
-
-		model := strings.TrimSpace(cfg.QwenTTSModel)
-		if model == "" {
-			diags = append(diags, Diagnostic{
-				Name:        "qwen3-tts-model",
-				Severity:    SeverityError,
-				Detail:      "qwen_tts_model is not configured",
-				Remediation: "set qwen_tts_model to the native Qwen3-TTS model directory",
-			})
-		} else if info, err := os.Stat(model); err != nil || !info.IsDir() {
-			diags = append(diags, Diagnostic{
-				Name:        "qwen3-tts-model",
-				Severity:    SeverityError,
-				Detail:      fmt.Sprintf("Qwen3-TTS model directory %q is unavailable", model),
-				Remediation: "install/convert the Qwen3-TTS native model artifacts and set qwen_tts_model",
-			})
-		} else {
-			diags = append(diags, Diagnostic{Name: "qwen3-tts-model", Severity: SeverityOK, Detail: model})
-		}
+	} else if ManagedTTS(cfg) {
+		diags = append(diags, Diagnostic{
+			Name:     "tts-provider",
+			Severity: SeverityOK,
+			Detail:   "kokoro (" + KokoroPack() + ")",
+		})
 	} else {
 		diags = append(diags, Diagnostic{
 			Name:        "tts-provider",

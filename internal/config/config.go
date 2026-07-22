@@ -199,7 +199,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("voice_fallback_provider", "kokoro")
 	v.SetDefault("tts_voice", "af_heart")
 	v.SetDefault("speech_speed", 0.95)
-	v.SetDefault("qwen_tts_binary", "qwen3-tts-cli")
+	// Empty selects Samantha's managed Qwen runtime. Set an explicit binary and
+	// model path only for the advanced external-worker compatibility path.
+	v.SetDefault("qwen_tts_binary", "")
 	v.SetDefault("qwen_tts_model", "")
 	v.SetDefault("qwen_tts_timeout", 120)
 	v.SetDefault("qwen_tts_mode", "")
@@ -584,6 +586,16 @@ func ModelsDir() string {
 	mu.RLock()
 	defer mu.RUnlock()
 	return v.GetString("models_dir")
+}
+
+// ModelsDirFrom resolves the model cache for an already-loaded Config without
+// consulting mutable global viper state. Tests and TUI setup commands use this
+// so an explicit models_dir remains isolated.
+func ModelsDirFrom(cfg *Config) string {
+	if cfg != nil && strings.TrimSpace(cfg.ModelsDir) != "" {
+		return strings.TrimSpace(cfg.ModelsDir)
+	}
+	return ModelsDir()
 }
 
 // LanguageCode returns the lowercase language code of a locale tag

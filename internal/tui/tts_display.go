@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/lancekrogers/samantha/internal/config"
+	managedqwen "github.com/lancekrogers/samantha/internal/qwen"
 	"github.com/lancekrogers/samantha/internal/tts"
 )
 
@@ -36,6 +37,9 @@ func ttsModelLabelForProvider(provider string, cfg *config.Config) string {
 			return "unset"
 		}
 		model := strings.TrimSpace(cfg.QwenTTSModel)
+		if managedqwen.UseManaged(cfg.QwenTTSBinary, model) {
+			return "managed CustomVoice 0.6B"
+		}
 		if model == "" {
 			return "unset"
 		}
@@ -46,13 +50,10 @@ func ttsModelLabelForProvider(provider string, cfg *config.Config) string {
 }
 
 func ttsBinaryLabel(cfg *config.Config) string {
-	if cfg == nil {
-		return "qwen3-tts-cli"
+	if cfg == nil || managedqwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
+		return "managed worker"
 	}
 	binary := strings.TrimSpace(cfg.QwenTTSBinary)
-	if binary == "" {
-		binary = "qwen3-tts-cli"
-	}
 	return filepath.Base(filepath.Clean(binary))
 }
 
@@ -83,6 +84,9 @@ func ttsVoiceModeLabel(cfg *config.Config) string {
 func ttsVoiceModeLabelForProvider(provider string, cfg *config.Config) string {
 	if strings.EqualFold(strings.TrimSpace(provider), "qwen3-tts") {
 		if cfg == nil || strings.TrimSpace(cfg.QwenTTSMode) == "" {
+			if cfg != nil && managedqwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
+				return "mode customvoice"
+			}
 			return "mode unverified/default"
 		}
 		return "mode " + strings.TrimSpace(cfg.QwenTTSMode)
@@ -99,6 +103,9 @@ func ttsEffectiveVoiceLabelForProvider(provider string, cfg *config.Config) stri
 		if cfg != nil && strings.TrimSpace(cfg.QwenTTSVoice) != "" {
 			return "voice " + strings.TrimSpace(cfg.QwenTTSVoice)
 		}
+		if cfg != nil && managedqwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
+			return "voice Vivian"
+		}
 		return "voice model-native default"
 	}
 	voice := "af_heart"
@@ -110,8 +117,8 @@ func ttsEffectiveVoiceLabelForProvider(provider string, cfg *config.Config) stri
 
 func ttsVoiceSelectionStatus(cfg *config.Config) string {
 	if strings.EqualFold(activeTTSProvider(cfg), "qwen3-tts") {
-		if cfg == nil || strings.TrimSpace(cfg.QwenTTSModel) == "" {
-			return "Qwen voice modes unavailable: set qwen_tts_model and run samantha doctor"
+		if cfg == nil || managedqwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
+			return "Qwen preset voices are not installed; return to TTS and press enter on Qwen3-TTS to install"
 		}
 		return "Qwen voice controls are not verified by this worker; leave qwen_tts_mode/voice/language/instruction/reference settings empty and use the model-native default."
 	}
