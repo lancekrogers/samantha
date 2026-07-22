@@ -10,7 +10,7 @@ import (
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 )
 
-// stopMeetingRuntime cancels the listen loop, writes the dual-log trailer, and
+// stopMeetingRuntime cancels the listen loop, writes the bundle trailer, and
 // releases STT resources. Returns any Writer.Close failure so callers can
 // surface a silent trailer/session_end write problem (files may already hold
 // synced events). Idempotent when no runtime is active.

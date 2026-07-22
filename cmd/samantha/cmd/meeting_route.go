@@ -152,7 +152,7 @@ func newMeetingRouteCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "route [file]",
 		Short: "Route an existing meeting's notes to a destination",
-		Long: `Render a finished meeting (.log/.jsonl) and send it to a configured
+		Long: `Render a finished meeting bundle (or legacy .log/.jsonl) and send it to a configured
 destination. With no file argument, uses the most recent meeting under the
 meetings directory.
 
@@ -162,7 +162,7 @@ in addition to meeting.route.destinations in config.
 Examples:
   samantha meeting route
   samantha meeting route --to docs
-  samantha meeting route ~/path/to/standup-20260720.jsonl --to mytools
+  samantha meeting route ~/path/to/standup-20260720.meeting --to mytools
   samantha meeting route --to docs --body full`,
 		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,

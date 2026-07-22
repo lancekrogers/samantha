@@ -51,24 +51,24 @@ func TestResolveMeetingDescription(t *testing.T) {
 	}
 }
 
-func TestMeetingFilename(t *testing.T) {
+func TestMeetingBundleName(t *testing.T) {
 	now := time.Date(2026, 7, 9, 9, 30, 0, 0, time.Local)
 	tests := []struct {
 		description string
 		want        string
 	}{
-		{"Weekly planning sync", "weekly-planning-sync-20260709-093000.log"},
-		{"", "meeting-20260709-093000.log"},
-		{"!!!", "meeting-20260709-093000.log"},
-		{"Q3 / OKR review!", "q3-okr-review-20260709-093000.log"},
+		{"Weekly planning sync", "weekly-planning-sync-20260709-093000.meeting"},
+		{"", "meeting-20260709-093000.meeting"},
+		{"!!!", "meeting-20260709-093000.meeting"},
+		{"Q3 / OKR review!", "q3-okr-review-20260709-093000.meeting"},
 	}
 	for _, tt := range tests {
-		if got := meetingFilename(tt.description, now); got != tt.want {
-			t.Fatalf("meetingFilename(%q) = %q, want %q", tt.description, got, tt.want)
+		if got := meetingBundleName(tt.description, now); got != tt.want {
+			t.Fatalf("meetingBundleName(%q) = %q, want %q", tt.description, got, tt.want)
 		}
 	}
-	long := meetingFilename("this description is very long and keeps going well past the sixty character slug cap for sure", now)
-	if len(long) > 60+len("-20260709-093000.log") {
+	long := meetingBundleName("this description is very long and keeps going well past the sixty character slug cap for sure", now)
+	if len(long) > 60+len("-20260709-093000.meeting") {
 		t.Fatalf("slug not capped: %q", long)
 	}
 }

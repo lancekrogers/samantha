@@ -1,7 +1,8 @@
-# Multi-voice meeting + speaker analysis status (VHS, full color).
+# Multi-voice meeting + attributed post-meeting results (VHS, full color).
 #
 # Scripts a product-style multi-speaker conversation and shows speaker
-# analysis status progressing queued → running → complete. No live mic.
+# analysis status progressing queued → running → complete, then keeps the
+# labeled transcript visible for review. No live mic.
 #
 #   just demo-meeting-speakers
 
@@ -22,16 +23,19 @@ Set Theme {"name":"termcast","background":"#0d0d11","foreground":"#f8f8f2","curs
 Hide
 Type "unset NO_COLOR; unset CLICOLOR; export CLICOLOR_FORCE=1 FORCE_COLOR=1" Enter
 Type "export TERM=xterm-256color COLORFGBG=15\;0" Enter
-Type "export SAMANTHA_COLOR_PROFILE=ansi SAMANTHA_DEMO_MEETING_SPEAKERS=1" Enter
+Type "export SAMANTHA_COLOR_PROFILE=ansi SAMANTHA_DEMO_MEETING=1 SAMANTHA_DEMO_MEETING_SPEAKERS=1" Enter
 Type "export HOME=/tmp/samantha-speakers-demo-$$" Enter
-Type "rm -rf $HOME && mkdir -p $HOME/.obey/agents/voice/samantha/sessions $HOME/.obey/agents/voice/samantha/meetings" Enter
+Type "rm -rf $HOME && mkdir -p $HOME/.obey/agents/voice/festival-voice/sessions $HOME/.obey/agents/voice/festival-voice/meetings" Enter
 Type "export PATH=$PWD/bin:$PATH" Enter
-Type "cat > $HOME/.obey/agents/voice/samantha/config.yaml <<'EOF'" Enter
+Type "cat > $HOME/.obey/agents/voice/festival-voice/config.yaml <<'EOF'" Enter
 Type "brain_provider: ollama" Enter
 Type "ollama_host: http://localhost:11434" Enter
 Type "ollama_model: demo-model" Enter
 Type "tts_voice: af_sky" Enter
 Type "agent_name: Samantha" Enter
+Type "meeting:" Enter
+Type "  route:" Enter
+Type "    mode: off" Enter
 Type "speaker:" Enter
 Type "  enabled: true" Enter
 Type "  meeting:" Enter
@@ -44,7 +48,9 @@ Show
 Type "samantha -t -n" Sleep 300ms Enter
 Sleep 2s
 
-# Open Meeting (second item after New conversation)
+# Open Meeting (New conversation → Personas → Meeting)
+Down
+Sleep 250ms
 Down
 Sleep 800ms
 Enter
@@ -54,20 +60,20 @@ Sleep 900ms
 Type "Product marketing sync"
 Sleep 600ms
 Enter
-Sleep 1400ms
-
-# Route step: keep local
-Sleep 800ms
-Enter
 Sleep 1800ms
 
-# Multi-speaker dialogue plays (demo STT)
-Sleep 9000ms
+# Multi-speaker dialogue plays once (demo STT)
+Sleep 5000ms
 
 # Hold complete analysis status + labeled turns
-Sleep 2500ms
+Sleep 100ms
 
 Ctrl+C
-Sleep 1500ms
+Sleep 2500ms
+
+# Review the completed labeled transcript, then continue to the launcher.
+Sleep 2500ms
+Enter
+Sleep 1200ms
 Type "q"
 Sleep 400ms

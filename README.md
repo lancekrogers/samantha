@@ -338,9 +338,9 @@ samantha audiobook create book.pdf --out-dir out/book
 ### Meeting recording
 
 `samantha meeting record` listens continuously (STT only — no Brain, no TTS)
-and dual-writes a human `.log` plus a structured `.jsonl` event stream
-(utterances, typed notes, important bookmarks), each synced so a crash never
-loses what was already captured.
+and creates one timestamped `.meeting` bundle directory. Its canonical
+`meeting.md` and internal structured event stream are each synced so a crash
+never loses what was already captured.
 
 From the main `samantha` launcher choose **Record meeting**, or run
 `samantha meeting record` on a TTY (not `--json` / `--no-tui`) for the
@@ -354,23 +354,33 @@ full-screen recorder:
 | Spoken stop phrase | "stop recording" / "end meeting" / "stop listening" (exact utterance; not written to the log) |
 
 Spoken stop phrases end the session like Ctrl+C and are **not** appended to the
-`.log` / `.jsonl` transcript. The meetings directory is created mode `0700` and
-log files mode `0600` (owner-only).
+meeting transcript. Meeting bundles and internal directories are created mode
+`0700`; documents and machine data are `0600` (owner-only).
 
 Optional local speaker diarization is available under **Settings → Meeting →
 Speaker diarization**. The first enabled meeting installs Samantha's managed
 pyannote segmentation and NeMo TitaNet models, then captures 16 kHz PCM through
 a non-blocking subscriber while STT continues normally. When recording stops,
 the recorder visibly moves from `queued` to `running` to `complete` (or
-`error`) and writes anonymous `speaker-1…N` labels. These are voice clusters,
-not enrolled names or identity claims.
+`error`) and opens a review screen with anonymous `speaker-1…N` labels beside
+attributed turns. These are voice clusters, not enrolled names or identity
+claims. Continue from the review screen to the configured routing flow.
 
-The full timeline is stored beside the meeting as
-`<meeting>.speaker-analysis.json`; the human log gains an additive speaker
-timeline and attributed transcript, and routed meeting notes prefer those
-attributed utterances. Enable **Record audio for analysis** only when a private
-`<meeting>.wav` sidecar is also desired. Model or analysis failures are shown
-and logged without discarding or stopping the meeting transcript.
+The meetings directory contains one visible item per recording:
+
+```text
+weekly-planning-20260722-090000.meeting/
+  meeting.md
+  audio.wav                 # optional
+  .samantha/
+    events.jsonl
+    speaker-analysis.json
+```
+
+The attributed transcript is added to `meeting.md`, and routed meeting notes
+prefer those attributed utterances. Enable **Record audio for analysis** only
+when a private `audio.wav` is also desired. Model or analysis failures are
+shown and logged without discarding or stopping the meeting transcript.
 
 JSONL events include `offset_ms` from meeting start for alignment:
 
@@ -390,7 +400,8 @@ samantha meeting record --description "CI log" --no-tui
 samantha meeting analyze meeting.wav --speakers 2
 ```
 
-Files default to `~/.obey/agents/voice/festival-voice/meetings/<slug>-<timestamp>.{log,jsonl}`.
+Bundles default to `~/.obey/agents/voice/festival-voice/meetings/<slug>-<timestamp>.meeting/`.
+Legacy flat `.log`/`.jsonl` meetings remain readable and routable.
 `--json` also emits one JSON line per utterance plus a final summary on stdout.
 
 ## Configuration

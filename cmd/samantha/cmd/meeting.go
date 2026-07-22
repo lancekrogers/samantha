@@ -43,10 +43,10 @@ func newMeetingRecordCmd() *cobra.Command {
 	var opts meetingOptions
 	cmd := &cobra.Command{
 		Use:   "record",
-		Short: "Listen and write everything heard to a timestamped log file",
+		Short: "Listen and save everything heard in a timestamped meeting bundle",
 		Long: `Record a meeting transcript: listens continuously (no Brain, no TTS, no
-speaker output) and appends one line per utterance to a timestamped log
-file, synced per line so a crash never loses what was already heard.
+speaker output) and appends one line per utterance to a timestamped meeting
+bundle, synced per line so a crash never loses what was already heard.
 
 Interactive runs without --description prompt once for a meeting
 description; --description, --no-tui, or a non-TTY stdin/stdout skip the
@@ -58,11 +58,12 @@ On a TTY (and not --json/--no-tui), recording opens a full-screen TUI with:
   - note composer (Enter saves a timestamped note)
   - Ctrl+B marks the current moment important (optional caption from the note field)
 
-Each session writes a human .log and a structured .jsonl event stream
-(session_start, utterance, note, bookmark, error, session_end) with offset_ms
-from the start of the meeting.
+Each session creates one <slug>-<timestamp>.meeting directory containing a
+canonical meeting.md and hidden structured event stream (session_start,
+utterance, note, bookmark, error, session_end) with offset_ms from the start.
 
---no-tui and --json keep plain line-oriented sinks (still dual-write log+jsonl).
+--no-tui and --json keep plain line-oriented console sinks while writing the
+same meeting bundle.
 
 After recording, notes can be routed to a configured destination (campaign intent,
 filesystem path, or Apple Notes). Defaults live under meeting.route in config;
@@ -74,8 +75,8 @@ substring; --stop-phrase adds more). Matching stop phrases end the session and
 are intentionally omitted from the transcript and JSONL (they are commands, not
 content).
 
-Meeting files are created mode 0600 (owner-only) because transcripts may contain
-sensitive speech.
+Meeting bundle directories are 0700 and files are 0600 (owner-only) because
+transcripts may contain sensitive speech.
 
 Examples:
   samantha meeting record
@@ -180,10 +181,10 @@ func meetingSlug(description string) string {
 	return s
 }
 
-// meetingFilename joins the slug with the codebase's sortable timestamp
-// layout (the same one session.generateID uses).
-func meetingFilename(description string, now time.Time) string {
-	return fmt.Sprintf("%s-%s.log", meetingSlug(description), now.Format("20060102-150405"))
+// meetingBundleName joins the slug with the codebase's sortable timestamp
+// layout and a recognizable directory suffix.
+func meetingBundleName(description string, now time.Time) string {
+	return fmt.Sprintf("%s-%s.meeting", meetingSlug(description), now.Format("20060102-150405"))
 }
 
 // stopPhraseSet is the shared meeting stop-phrase set (CLI + TUI).

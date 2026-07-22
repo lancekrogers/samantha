@@ -205,13 +205,30 @@ func distinctSpeakerCount(timeline speaker.Timeline) int {
 }
 
 func speakerArtifactPath(meetingPath string) string {
+	if bundle := bundleDirForDocument(meetingPath); bundle != "" {
+		return filepath.Join(bundle, meetinglog.BundleInternalDirName, meetinglog.BundleSpeakerAnalysisName)
+	}
 	ext := filepath.Ext(meetingPath)
 	return strings.TrimSuffix(meetingPath, ext) + ".speaker-analysis.json"
 }
 
 func speakerAudioPath(meetingPath string) string {
+	if bundle := bundleDirForDocument(meetingPath); bundle != "" {
+		return filepath.Join(bundle, meetinglog.BundleAudioName)
+	}
 	ext := filepath.Ext(meetingPath)
 	return strings.TrimSuffix(meetingPath, ext) + ".wav"
+}
+
+func bundleDirForDocument(meetingPath string) string {
+	if filepath.Base(meetingPath) != meetinglog.BundleDocumentName {
+		return ""
+	}
+	bundle := filepath.Dir(meetingPath)
+	if !strings.HasSuffix(strings.ToLower(filepath.Base(bundle)), ".meeting") {
+		return ""
+	}
+	return bundle
 }
 
 // Close stops collection and releases native resources when a meeting exits

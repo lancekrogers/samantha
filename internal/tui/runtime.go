@@ -41,7 +41,8 @@ type ConversationRuntime struct {
 // in-screen.
 type RuntimeBuilder func(ctx context.Context, progress func(name string, pct float64), sessionID string) (*ConversationRuntime, error)
 
-// MeetingRuntime holds STT + dual-log writer for the embedded meeting screen.
+// MeetingRuntime holds STT, the bundle writer, and optional speaker finalizer
+// for the embedded meeting screen.
 type MeetingRuntime struct {
 	Capture          listen.Resetter
 	Provider         stt.Provider

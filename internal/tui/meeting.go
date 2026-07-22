@@ -31,7 +31,7 @@ type MeetingOpts struct {
 	Provider         stt.Provider
 	Writer           *meetinglog.Writer
 	Description      string
-	Path             string // .log path; JSONL is derived by the writer
+	Path             string // meeting bundle path (or legacy document path)
 	StopPhrases      map[string]bool
 	SpeakerStatus    meeting.AnalysisStatus
 	SpeakerError     string
@@ -113,6 +113,18 @@ func RunMeeting(opts MeetingOpts) error {
 	}
 	if fm, ok := final.(meetingModel); ok && fm.loopErr != nil {
 		return fm.loopErr
+	}
+	if opts.Writer != nil {
+		summary, closeErr := opts.Writer.Close()
+		if closeErr != nil {
+			return closeErr
+		}
+		results := newMeetingResults(summary)
+		results.standalone = true
+		resultsProgram := tea.NewProgram(standaloneMeetingResults{meetingResultsModel: results}, tea.WithAltScreen())
+		if _, err := resultsProgram.Run(); err != nil {
+			return err
+		}
 	}
 	return nil
 }

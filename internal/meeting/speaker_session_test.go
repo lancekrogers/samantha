@@ -138,3 +138,16 @@ func TestAnalyzeRecordingEnabledWithoutPCMIsVisibleError(t *testing.T) {
 		t.Fatalf("result = %+v", got)
 	}
 }
+
+func TestSpeakerArtifactsStayInsideMeetingBundle(t *testing.T) {
+	bundle := filepath.Join(t.TempDir(), "planning-20260722-090000.meeting")
+	document := filepath.Join(bundle, meetinglog.BundleDocumentName)
+	wantAnalysis := filepath.Join(bundle, meetinglog.BundleInternalDirName, meetinglog.BundleSpeakerAnalysisName)
+	if got := speakerArtifactPath(document); got != wantAnalysis {
+		t.Fatalf("speakerArtifactPath = %q, want %q", got, wantAnalysis)
+	}
+	wantAudio := filepath.Join(bundle, meetinglog.BundleAudioName)
+	if got := speakerAudioPath(document); got != wantAudio {
+		t.Fatalf("speakerAudioPath = %q, want %q", got, wantAudio)
+	}
+}

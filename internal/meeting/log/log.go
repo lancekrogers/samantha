@@ -1,5 +1,5 @@
-// Package log records a meeting as a human-readable .log plus a structured
-// .jsonl event stream. Both files are synced after every event so a crash
+// Package log records a meeting as a human-readable document plus a structured
+// JSONL event stream. Both files are synced after every event so a crash
 // never loses what was already captured.
 //
 // Import as:
@@ -35,6 +35,14 @@ const (
 	TypeSpeakerSegment   = "speaker_segment"
 	TypeSpeakerUtterance = "speaker_utterance"
 	TypeSessionEnd       = "session_end"
+
+	// Bundle filenames keep one visible item per meeting while preserving the
+	// machine event stream needed for recovery, routing, and reprocessing.
+	BundleDocumentName        = "meeting.md"
+	BundleInternalDirName     = ".samantha"
+	BundleEventsName          = "events.jsonl"
+	BundleSpeakerAnalysisName = "speaker-analysis.json"
+	BundleAudioName           = "audio.wav"
 )
 
 // Event is one JSONL record. OffsetMs is milliseconds since session start.
@@ -99,8 +107,9 @@ type SpeakerAnalysis struct {
 // command's console/JSON summaries.
 type Summary struct {
 	Description         string    `json:"description"`
-	File                string    `json:"file"`       // plain-text .log
-	JSONLFile           string    `json:"jsonl_file"` // structured .jsonl
+	Bundle              string    `json:"bundle,omitempty"` // one meeting-level directory
+	File                string    `json:"file"`             // canonical human document
+	JSONLFile           string    `json:"jsonl_file"`       // structured event stream
 	StartedAt           time.Time `json:"started_at"`
 	EndedAt             time.Time `json:"ended_at"`
 	DurationSeconds     int64     `json:"duration_seconds"`
@@ -118,13 +127,14 @@ type Summary struct {
 // Duration reports the recording length.
 func (s Summary) Duration() time.Duration { return s.EndedAt.Sub(s.StartedAt) }
 
-// Writer is the dual-file sink for one meeting recording.
+// Writer is the crash-safe document/event sink for one meeting recording.
 type Writer struct {
 	mu                 sync.Mutex
 	log                *os.File
 	jsonl              *os.File
 	path               string
 	jsonlPath          string
+	bundlePath         string
 	description        string
 	sttLabel           string
 	started            time.Time
@@ -140,15 +150,41 @@ type Writer struct {
 	summary            Summary // last Close result; returned again on idempotent Close
 }
 
-// Create opens path (.log) exclusively and a sibling .jsonl file. Path must
-// end in .log (or any extension); the JSONL path replaces/adds .jsonl.
+// Create opens a legacy document path and sibling .jsonl event stream. New
+// production recordings should use CreateBundle; this remains for old callers
+// and tests that intentionally work with flat artifacts.
 func Create(path, description, sttLabel string) (*Writer, error) {
+	return createAt(path, jsonlPathFor(path), "", description, sttLabel)
+}
+
+// CreateBundle creates one private meeting directory with a canonical
+// meeting.md document and hidden machine event stream. bundlePath must not
+// already exist, preventing accidental mixing of two recordings.
+func CreateBundle(bundlePath, description, sttLabel string) (*Writer, error) {
+	if err := os.Mkdir(bundlePath, 0o700); err != nil {
+		return nil, fmt.Errorf("meetinglog: create bundle %s: %w", bundlePath, err)
+	}
+	internalDir := filepath.Join(bundlePath, BundleInternalDirName)
+	if err := os.Mkdir(internalDir, 0o700); err != nil {
+		_ = os.Remove(bundlePath)
+		return nil, fmt.Errorf("meetinglog: create bundle internals %s: %w", internalDir, err)
+	}
+	documentPath := filepath.Join(bundlePath, BundleDocumentName)
+	eventsPath := filepath.Join(internalDir, BundleEventsName)
+	w, err := createAt(documentPath, eventsPath, bundlePath, description, sttLabel)
+	if err != nil {
+		_ = os.RemoveAll(bundlePath)
+		return nil, err
+	}
+	return w, nil
+}
+
+func createAt(path, jsonlPath, bundlePath, description, sttLabel string) (*Writer, error) {
 	// 0o600: meeting transcripts are private (credentials, personal speech).
 	logF, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("meetinglog: create %s: %w", path, err)
 	}
-	jsonlPath := jsonlPathFor(path)
 	jsonlF, err := os.OpenFile(jsonlPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		_ = logF.Close()
@@ -161,6 +197,7 @@ func Create(path, description, sttLabel string) (*Writer, error) {
 		jsonl:       jsonlF,
 		path:        path,
 		jsonlPath:   jsonlPath,
+		bundlePath:  bundlePath,
 		description: description,
 		sttLabel:    sttLabel,
 		started:     time.Now(),
@@ -199,11 +236,15 @@ func jsonlPathFor(path string) string {
 	return strings.TrimSuffix(path, ext) + ".jsonl"
 }
 
-// Path returns the plain-text log path.
+// Path returns the canonical human-readable meeting document.
 func (w *Writer) Path() string { return w.path }
 
 // JSONLPath returns the structured event stream path.
 func (w *Writer) JSONLPath() string { return w.jsonlPath }
+
+// BundlePath returns the meeting-level directory for bundle recordings. It is
+// empty for legacy flat writers created with Create.
+func (w *Writer) BundlePath() string { return w.bundlePath }
 
 // StartedAt returns when the session opened.
 func (w *Writer) StartedAt() time.Time {
@@ -451,6 +492,7 @@ func (w *Writer) Close() (Summary, error) {
 	}
 	s := Summary{
 		Description:         w.description,
+		Bundle:              w.bundlePath,
 		File:                w.path,
 		JSONLFile:           w.jsonlPath,
 		StartedAt:           w.started,
@@ -502,7 +544,9 @@ func (w *Writer) writeLog(line string) error {
 func (w *Writer) writeEvent(e Event) error {
 	now := time.Now()
 	if e.TS == "" {
-		e.TS = now.Format(time.RFC3339)
+		// Preserve sub-second ordering between short/test meetings while staying
+		// RFC3339-compatible for existing readers.
+		e.TS = now.Format(time.RFC3339Nano)
 	}
 	// Prefer wall clock of TS when parseable for offset; else now.
 	at := now

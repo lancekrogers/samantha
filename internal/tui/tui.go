@@ -23,6 +23,7 @@ const (
 	screenSessions
 	screenMeetingSetup
 	screenMeeting
+	screenMeetingResults
 	screenMeetingRoute
 	screenAudiobook
 	screenPickBook
@@ -45,18 +46,19 @@ type App struct {
 	width     int
 	height    int
 
-	launcher     launcherModel
-	settings     settingsModel
-	conversation conversationModel
-	sessions     sessionsModel
-	meetingSetup meetingSetupModel
-	meeting      meetingModel
-	meetingRoute meetingRouteModel
-	audiobook    audiobookModel
-	pickBook     pickBookModel
-	library      libraryModel
-	remote       remoteModel
-	personas     personasModel
+	launcher       launcherModel
+	settings       settingsModel
+	conversation   conversationModel
+	sessions       sessionsModel
+	meetingSetup   meetingSetupModel
+	meeting        meetingModel
+	meetingResults meetingResultsModel
+	meetingRoute   meetingRouteModel
+	audiobook      audiobookModel
+	pickBook       pickBookModel
+	library        libraryModel
+	remote         remoteModel
+	personas       personasModel
 
 	// Conversation runtime wiring, set by Run before the program starts.
 	builder  RuntimeBuilder
@@ -281,6 +283,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.meetingRT = msg.rt
+		finalizeSpeakers := msg.rt.FinalizeSpeakers
+		speakerStatus, speakerError := msg.rt.SpeakerStatus, msg.rt.SpeakerError
+		if demoMeetingSpeakersEnabled() && finalizeSpeakers == nil {
+			finalizeSpeakers = demoMeetingSpeakerFinalizer(msg.rt.Writer, msg.rt.Path)
+			speakerStatus = meeting.AnalysisQueued
+			speakerError = "scripted multi-speaker fixture"
+		}
 		// Child cancel stops the listen loop without ending the whole App.
 		mctx, mcancel := context.WithCancel(a.runCtx)
 		cmd := a.meeting.beginRecording(MeetingOpts{
@@ -292,9 +301,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Description:      msg.rt.Description,
 			Path:             msg.rt.Path,
 			StopPhrases:      msg.rt.StopPhrases,
-			SpeakerStatus:    msg.rt.SpeakerStatus,
-			SpeakerError:     msg.rt.SpeakerError,
-			FinalizeSpeakers: msg.rt.FinalizeSpeakers,
+			SpeakerStatus:    speakerStatus,
+			SpeakerError:     speakerError,
+			FinalizeSpeakers: finalizeSpeakers,
 			Embedded:         true,
 		})
 		return a, cmd
@@ -306,23 +315,34 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.launcher = a.launcher.withBanner(fmt.Sprintf("Meeting ended with error: %v", err), true)
 			return a, nil
 		}
+		// Keep the completed meeting visible for review. Routing continues only
+		// after the user has seen the attributed transcript.
+		a.meetingResults = newMeetingResults(summary)
+		a.meetingResults.width, a.meetingResults.height = a.width, a.height
+		a.meetingResults.resize()
+		a.screen = screenMeetingResults
+		return a, nil
+
+	case meetingResultsDoneMsg:
 		// Post-meeting routing: ask / auto / off / start-picker plan.
-		// beginMeetingRoute may switch screens (nil cmd) or return an async
-		// discovery/route cmd — do not clobber either.
+		// beginMeetingRoute may switch screens or return asynchronous work.
 		prevScreen := a.screen
-		if cmd := a.beginMeetingRoute(summary); cmd != nil {
+		if cmd := a.beginMeetingRoute(msg.summary); cmd != nil {
+			if a.screen == prevScreen {
+				a.screen = screenLauncher
+				a.launcher = a.launcher.withBanner("Routing meeting notes…", false)
+			}
 			return a, cmd
 		}
 		if a.screen != prevScreen {
 			return a, nil
 		}
 		a.screen = screenLauncher
-		if msg.Analysis.Status != "" && msg.Analysis.Status != meeting.AnalysisDisabled {
-			a.launcher = a.launcher.withBanner(
-				"Speaker analysis: "+meetingAnalysisDetail(msg.Analysis),
-				msg.Analysis.Status == meeting.AnalysisError,
-			)
+		path := msg.summary.Bundle
+		if path == "" {
+			path = msg.summary.File
 		}
+		a.launcher = a.launcher.withBanner("Meeting saved: "+path, false)
 		return a, nil
 
 	case meetingRouteReadyMsg:
@@ -496,6 +516,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var m tea.Model
 				m, cmd = a.meeting.Update(msg)
 				a.meeting = m.(meetingModel)
+			case screenMeetingResults:
+				a.meetingResults, cmd = a.meetingResults.Update(msg)
 			case screenMeetingRoute:
 				a.meetingRoute, cmd = a.meetingRoute.Update(msg)
 			case screenAudiobook:
@@ -530,6 +552,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var m tea.Model
 		m, cmd = a.meeting.Update(msg)
 		a.meeting = m.(meetingModel)
+	case screenMeetingResults:
+		a.meetingResults, cmd = a.meetingResults.Update(msg)
 	case screenMeetingRoute:
 		a.meetingRoute, cmd = a.meetingRoute.Update(msg)
 	case screenAudiobook:
@@ -570,6 +594,8 @@ func (a App) View() string {
 		return a.meetingSetup.View()
 	case screenMeeting:
 		return a.meeting.View()
+	case screenMeetingResults:
+		return a.meetingResults.View()
 	case screenMeetingRoute:
 		return a.meetingRoute.View()
 	case screenAudiobook:

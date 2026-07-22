@@ -62,12 +62,13 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 	if err := os.MkdirAll(outDir, 0o700); err != nil {
 		return fmt.Errorf("meeting record: create out dir: %w", err)
 	}
-	path := filepath.Join(outDir, meetingFilename(opts.Description, time.Now()))
+	bundlePath := filepath.Join(outDir, meetingBundleName(opts.Description, time.Now()))
 
-	writer, err := meetinglog.Create(path, opts.Description, sttLabel)
+	writer, err := meetinglog.CreateBundle(bundlePath, opts.Description, sttLabel)
 	if err != nil {
 		return err
 	}
+	path := writer.Path()
 	speakerSession, speakerSetupErr := prepareMeetingSpeakers(ctx, &cfgCopy, capture, writer, path, progress)
 	if speakerSession != nil {
 		defer speakerSession.Close()
@@ -90,7 +91,7 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 			Provider:         provider,
 			Writer:           writer,
 			Description:      opts.Description,
-			Path:             path,
+			Path:             bundlePath,
 			StopPhrases:      stopPhraseSet(opts.StopPhrases),
 			SpeakerStatus:    speakerInitialStatus(speakerSession, speakerSetupErr),
 			SpeakerError:     speakerInitialDetail(speakerSession, speakerSetupErr),
@@ -103,7 +104,7 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 			sinks = append(sinks, &jsonSink{enc: json.NewEncoder(out)})
 		} else {
 			fmt.Fprintf(out, "Recording meeting: %q\n", opts.Description)
-			fmt.Fprintf(out, "Writing to: %s\n", path)
+			fmt.Fprintf(out, "Meeting bundle: %s\n", bundlePath)
 			fmt.Fprintln(out, "🎙 Listening... (say \"stop recording\" or press Ctrl+C to stop)")
 			sinks = append(sinks, &consoleSink{out: out, errOut: cmd.ErrOrStderr()})
 		}
@@ -131,10 +132,8 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Meeting recording stopped.")
 		fmt.Fprintf(out, "  Description: %s\n", summary.Description)
-		fmt.Fprintf(out, "  Log:         %s\n", summary.File)
-		if summary.JSONLFile != "" {
-			fmt.Fprintf(out, "  JSONL:       %s\n", summary.JSONLFile)
-		}
+		fmt.Fprintf(out, "  Bundle:      %s\n", summary.Bundle)
+		fmt.Fprintf(out, "  Meeting:     %s\n", summary.File)
 		fmt.Fprintf(out, "  Duration:    %s\n", summary.Duration().Round(time.Second))
 		fmt.Fprintf(out, "  Utterances:  %d\n", summary.Utterances)
 		fmt.Fprintf(out, "  Notes:       %d\n", summary.Notes)
@@ -146,7 +145,7 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 		}
 	}
 
-	// Post-meeting routing (additive; never deletes local .log/.jsonl).
+	// Post-meeting routing is additive; the local meeting bundle remains intact.
 	var routeErr error
 	if closeErr == nil {
 		// Prefer the already-loaded cfg copy over a second Load when possible.
@@ -181,13 +180,13 @@ func meetingRuntimeBuilder() appTUI.MeetingBuilder {
 		if err := os.MkdirAll(outDir, 0o700); err != nil {
 			return nil, fmt.Errorf("meeting: create out dir: %w", err)
 		}
-		path := filepath.Join(outDir, meetingFilename(description, time.Now()))
+		bundlePath := filepath.Join(outDir, meetingBundleName(description, time.Now()))
 
 		// VHS/demo path: skip real mic/models; the TUI scripts STT events.
 		if os.Getenv("SAMANTHA_DEMO_MEETING") == "1" ||
 			os.Getenv("SAMANTHA_DEMO_MEETING") == "true" ||
 			os.Getenv("SAMANTHA_DEMO_MEETING") == "yes" {
-			writer, err := meetinglog.Create(path, description, "demo")
+			writer, err := meetinglog.CreateBundle(bundlePath, description, "demo")
 			if err != nil {
 				return nil, err
 			}
@@ -198,7 +197,7 @@ func meetingRuntimeBuilder() appTUI.MeetingBuilder {
 				Provider:    noopProvider{},
 				Writer:      writer,
 				Description: description,
-				Path:        path,
+				Path:        bundlePath,
 				StopPhrases: stopPhraseSet(nil),
 				Cleanup:     func() {},
 			}, nil
@@ -208,12 +207,12 @@ func meetingRuntimeBuilder() appTUI.MeetingBuilder {
 		if err != nil {
 			return nil, err
 		}
-		writer, err := meetinglog.Create(path, description, sttLabel)
+		writer, err := meetinglog.CreateBundle(bundlePath, description, sttLabel)
 		if err != nil {
 			cleanup()
 			return nil, err
 		}
-		speakerSession, speakerSetupErr := prepareMeetingSpeakers(ctx, cfg, capture, writer, path, progress)
+		speakerSession, speakerSetupErr := prepareMeetingSpeakers(ctx, cfg, capture, writer, writer.Path(), progress)
 		if speakerSetupErr != nil {
 			_ = writer.WriteSpeakerAnalysis(meetinglog.SpeakerAnalysis{
 				Status: string(meeting.AnalysisError), Error: speakerSetupErr.Error(),
@@ -234,7 +233,7 @@ func meetingRuntimeBuilder() appTUI.MeetingBuilder {
 			SpeakerStatus:    speakerInitialStatus(speakerSession, speakerSetupErr),
 			SpeakerError:     speakerInitialDetail(speakerSession, speakerSetupErr),
 			Description:      description,
-			Path:             path,
+			Path:             bundlePath,
 			StopPhrases:      stopPhraseSet(nil),
 			Cleanup:          cleanup,
 		}, nil
