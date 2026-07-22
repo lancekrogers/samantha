@@ -24,6 +24,12 @@ func (m *settingsModel) cancelPreview() {
 
 func (m *settingsModel) closePreview() {
 	m.cancelPreview()
+	if m.qwenInstallCancel != nil {
+		m.qwenInstallCancel()
+		m.qwenInstallCancel = nil
+		m.qwenInstalling = false
+		m.qwenInstallEvents = nil
+	}
 	if m.previewPlayer != nil {
 		_ = m.previewPlayer.Close()
 		m.previewPlayer = nil
@@ -48,7 +54,15 @@ func (m settingsModel) previewVoice(ctx context.Context, id int64, voice tts.Voi
 	// Snapshot the config before the closure runs: the returned Cmd executes on
 	// its own goroutine while selectCurrent keeps mutating m.cfg on Update's.
 	cfg := *m.cfg
-	cfg.TTSVoice = voice.Name
+	if activeTTSProvider(&cfg) == "qwen3-tts" {
+		cfg.QwenTTSMode = string(tts.VoiceModeCustomVoice)
+		cfg.QwenTTSVoice = voice.Name
+		if cfg.QwenTTSLanguage == "" {
+			cfg.QwenTTSLanguage = "Auto"
+		}
+	} else {
+		cfg.TTSVoice = voice.Name
+	}
 	return func() tea.Msg {
 		// A superseded preview (ctx cancelled) reports quietly so it doesn't
 		// clobber the newer preview's message or "playing" indicator.

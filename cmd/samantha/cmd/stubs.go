@@ -124,7 +124,11 @@ var voicesCmd = &cobra.Command{
 
 		for _, v := range voices {
 			active := ""
-			if v.Name == cfg.TTSVoice {
+			activeVoice := cfg.TTSVoice
+			if strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), "qwen3-tts") {
+				activeVoice = cfg.QwenTTSVoice
+			}
+			if strings.EqualFold(v.Name, activeVoice) {
 				active = " " + activeStyle.Render("●")
 			}
 			fmt.Printf("  %s %s  %s\n", keyStyle.Render(fmt.Sprintf("%-16s", v.Name)), v.FriendlyName, dimStyle.Render(fmt.Sprintf("%s / %s", v.Gender, v.Locale))+active)

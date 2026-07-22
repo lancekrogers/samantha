@@ -170,6 +170,35 @@ func TestQwenSynthesizeRequestRejectsUnsupportedControls(t *testing.T) {
 	}
 }
 
+func TestManagedQwenMapsPresetVoiceControlsToWorker(t *testing.T) {
+	var gotArgs []string
+	q := newQwen3TTS("python", t.TempDir(), 5*time.Second, fakeQwenCommand(&gotArgs, ""))
+	q.managed = true
+	q.workerScript = "/managed/qwen_worker.py"
+	q.alive.Store(true)
+
+	result, err := q.SynthesizeRequest(context.Background(), SynthesisRequest{
+		Text: "hello managed voice", Mode: VoiceModeCustomVoice,
+		Voice: "Ryan", Language: "English",
+	})
+	if err != nil {
+		t.Fatalf("SynthesizeRequest() error = %v", err)
+	}
+	_ = drainStream(t, result.Stream)
+	joined := strings.Join(gotArgs, " ")
+	for _, want := range []string{
+		"/managed/qwen_worker.py synthesize", "--speaker Ryan",
+		"--language English", "--text-file", "--output",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("managed worker args %q missing %q", joined, want)
+		}
+	}
+	if result.Voice != "Ryan" || result.Mode != VoiceModeCustomVoice {
+		t.Fatalf("result = voice %q mode %q", result.Voice, result.Mode)
+	}
+}
+
 func TestQwenSynthesizeRequestPropagatesWorkerFailure(t *testing.T) {
 	q := newQwen3TTS("fake-qwen3-tts", t.TempDir(), time.Second, fakeQwenCommand(nil, "fail"))
 	q.alive.Store(true)
@@ -284,7 +313,7 @@ func fakeQwenCommand(gotArgs *[]string, mode string) qwenCommand {
 		}
 		output := ""
 		for i := 0; i+1 < len(args); i++ {
-			if args[i] == "-o" {
+			if args[i] == "-o" || args[i] == "--output" {
 				output = args[i+1]
 				break
 			}

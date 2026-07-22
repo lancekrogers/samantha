@@ -21,6 +21,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/narrate"
+	managedqwen "github.com/lancekrogers/samantha/internal/qwen"
 	"github.com/lancekrogers/samantha/internal/render"
 	"github.com/lancekrogers/samantha/internal/render/encoder"
 	"github.com/lancekrogers/samantha/internal/render/epub"
@@ -251,19 +252,18 @@ func newRenderSynth(ctx context.Context, opts *render.Options) (render.Synthesiz
 	cliVoice, cliSpeed := opts.Voice, opts.Speed
 	applyVoiceOverrides(cfg, opts)
 	if strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), "qwen3-tts") {
-		if cliVoice != "" {
-			return nil, nil, errors.New("render: qwen3-tts does not support --voice; use the model's default voice")
-		}
 		if cliSpeed > 0 {
 			return nil, nil, errors.New("render: qwen3-tts does not support --speed")
 		}
-		// The shared config defaults are Kokoro-specific. Qwen uses the
-		// model-native voice and speed, so keep those unused values out of the
-		// manifest and resume key rather than claiming they affected audio.
+		// The shared speed default is Kokoro-specific. Managed Qwen does honor
+		// the selected preset voice, but still uses model-native speed.
 		cfg.TTSVoice = ""
 		cfg.SpeechSpeed = 0
-		opts.Voice = ""
 		opts.Speed = 0
+		if cliVoice != "" {
+			cfg.QwenTTSVoice = cliVoice
+			opts.Voice = cliVoice
+		}
 		if err := config.ValidateQwenTTSConfig(cfg); err != nil {
 			return nil, nil, fmt.Errorf("render: qwen3-tts configuration: %w", err)
 		}
@@ -300,16 +300,17 @@ func populateTTSMetadata(opts *render.Options, cfg *config.Config) {
 	if provider == "qwen3-tts" {
 		opts.TTSModel = strings.TrimSpace(cfg.QwenTTSModel)
 		opts.TTSWorker = strings.TrimSpace(cfg.QwenTTSBinary)
-		if opts.TTSWorker == "" {
-			opts.TTSWorker = "qwen3-tts-cli"
+		if managedqwen.UseManaged(opts.TTSWorker, opts.TTSModel) {
+			opts.TTSModel = managedqwen.DefaultModelID + "@" + managedqwen.DefaultModelRevision
+			opts.TTSWorker = "samantha-managed/qwen-tts@" + managedqwen.PackageVersion
 		}
 		opts.TTSMode = strings.TrimSpace(cfg.QwenTTSMode)
 		if opts.TTSMode == "" {
-			opts.TTSMode = "static"
+			opts.TTSMode = "customvoice"
 		}
 		opts.TTSVoice = strings.TrimSpace(cfg.QwenTTSVoice)
 		if opts.TTSVoice == "" {
-			opts.TTSVoice = "default"
+			opts.TTSVoice = "Vivian"
 		}
 		opts.TTSLanguage = strings.TrimSpace(cfg.QwenTTSLanguage)
 		if instruction := strings.TrimSpace(cfg.QwenTTSInstruction); instruction != "" {
@@ -341,10 +342,16 @@ func synthIdentityFor(cfg *config.Config) string {
 	id := strings.TrimSpace(cfg.TTSProvider)
 	if strings.EqualFold(id, "qwen3-tts") {
 		id = "qwen3-tts"
-		if model := strings.TrimSpace(cfg.QwenTTSModel); model != "" {
+		model := strings.TrimSpace(cfg.QwenTTSModel)
+		binary := strings.TrimSpace(cfg.QwenTTSBinary)
+		managed := managedqwen.UseManaged(binary, model)
+		if managed {
+			id += "/model=" + managedqwen.DefaultModelID + "@" + managedqwen.DefaultModelRevision
+			id += "/worker=samantha-managed/qwen-tts@" + managedqwen.PackageVersion
+		} else if model != "" {
 			id += "/model=" + model
 		}
-		if binary := strings.TrimSpace(cfg.QwenTTSBinary); binary != "" {
+		if !managed && binary != "" {
 			id += "/binary=" + binary
 			id += "/binary-sha256=" + commandIdentityHash(binary)
 		}

@@ -12,6 +12,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/discovery"
 	"github.com/lancekrogers/samantha/internal/meeting"
+	managedqwen "github.com/lancekrogers/samantha/internal/qwen"
 	"github.com/lancekrogers/samantha/internal/tts"
 )
 
@@ -66,6 +67,12 @@ type settingsModel struct {
 	newTTSProvider   func(*config.Config) (tts.Provider, func(), error)
 	saveConfig       func(string, any) error
 	message          string
+
+	qwenStatus        managedqwen.Status
+	qwenInstalling    bool
+	qwenInstallCancel context.CancelFunc
+	qwenInstallEvents *eventBridge
+	ensureQwen        func(context.Context, string, managedqwen.ProgressFunc) (managedqwen.Status, error)
 }
 
 func newSettings(cfg *config.Config, providers []discovery.ProviderInfo) settingsModel {
@@ -81,7 +88,9 @@ func newSettings(cfg *config.Config, providers []discovery.ProviderInfo) setting
 		},
 		newTTSProvider: tts.NewProvider,
 		saveConfig:     config.SetAndSave,
+		ensureQwen:     managedqwen.Ensure,
 	}
+	m.qwenStatus = managedqwen.Inspect(config.ModelsDirFrom(cfg))
 	m.buildProviderItems()
 	m.buildModelItems()
 	m.buildToolItems()
@@ -166,15 +175,37 @@ type ttsSettingItem struct {
 func (m *settingsModel) buildTTSItems() {
 	m.ttsItems = nil
 	for _, spec := range tts.Providers() {
+		detail := ttsProviderDetail(spec, m.cfg)
+		if spec.Name == managedqwen.ProviderName {
+			managed := managedqwen.UseManaged(m.cfg.QwenTTSBinary, m.cfg.QwenTTSModel)
+			switch {
+			case m.qwenInstalling:
+				detail = "installing managed runtime and CustomVoice model…"
+			case managed && m.qwenStatus.Installed:
+				detail = fmt.Sprintf("managed CustomVoice · %d preset voices · ready", len(managedqwen.CustomVoices()))
+			case managed:
+				detail = "not installed · enter to install preset voices"
+			}
+		}
 		m.ttsItems = append(m.ttsItems, ttsSettingItem{
 			provider: spec.Name,
-			detail:   ttsProviderDetail(spec, m.cfg),
+			detail:   detail,
 		})
 	}
 }
 
 func (m *settingsModel) buildVoiceItems() {
 	m.voiceItems = nil
+	if strings.EqualFold(activeTTSProvider(m.cfg), managedqwen.ProviderName) && m.qwenStatus.Installed &&
+		managedqwen.UseManaged(m.cfg.QwenTTSBinary, m.cfg.QwenTTSModel) {
+		for _, voice := range managedqwen.CustomVoices() {
+			m.voiceItems = append(m.voiceItems, tts.Voice{
+				Name: voice.Name, FriendlyName: voice.Description,
+				Gender: "preset", Locale: voice.NativeLanguage,
+			})
+		}
+		return
+	}
 	voices, err := tts.StaticVoices(m.cfg.TTSProvider, "", "")
 	if err != nil {
 		return
@@ -238,7 +269,7 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 				m.selectMeetingItem()
 				return m, m.loadRouteDestinations()
 			}
-			m.selectCurrent()
+			return m, m.selectCurrent()
 		case "p":
 			if m.section == sectionVoice && m.cursor < len(m.voiceItems) {
 				m.cancelPreview()
@@ -265,6 +296,40 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 				m.message = msg.message
 			}
 		}
+
+	case qwenInstallDoneMsg:
+		m.qwenInstalling = false
+		m.qwenInstallCancel = nil
+		if msg.err != nil {
+			m.message = fmt.Sprintf("Qwen setup failed: %v", msg.err)
+			m.buildTTSItems()
+			break
+		}
+		m.qwenStatus = msg.status
+		if err := m.activateManagedQwen(); err != nil {
+			m.message = fmt.Sprintf("Qwen installed but configuration could not be saved: %v", err)
+			m.buildTTSItems()
+			break
+		}
+		m.buildTTSItems()
+		m.buildVoiceItems()
+		m.message = "Qwen preset voices installed and activated; open Voice to preview and select"
+
+	case qwenInstallProgressMsg:
+		if !m.qwenInstalling {
+			break
+		}
+		if msg.pct > 0 {
+			m.message = fmt.Sprintf("Qwen setup: %s (%d%%)", msg.stage, int(msg.pct))
+		} else {
+			m.message = fmt.Sprintf("Qwen setup: %s…", msg.stage)
+		}
+		if m.qwenInstallEvents != nil {
+			return m, m.qwenInstallEvents.wait()
+		}
+
+	case qwenInstallProgressClosedMsg:
+		m.qwenInstallEvents = nil
 
 	case deviceListsMsg:
 		m.devicesLoading = false
@@ -348,7 +413,7 @@ func (m *settingsModel) currentListLen() int {
 	return 0
 }
 
-func (m *settingsModel) selectCurrent() {
+func (m *settingsModel) selectCurrent() tea.Cmd {
 	switch m.section {
 	case sectionProvider:
 		if m.cursor < len(m.providers) && m.providers[m.cursor].Available {
@@ -358,7 +423,7 @@ func (m *settingsModel) selectCurrent() {
 			name := m.providers[m.cursor].Name
 			if err := config.SetAndSaveBrainProvider(m.cfg, name); err != nil {
 				m.message = fmt.Sprintf("Failed to save provider: %v", err)
-				return
+				return nil
 			}
 			m.buildModelItems()
 			m.buildToolItems()
@@ -378,7 +443,7 @@ func (m *settingsModel) selectCurrent() {
 			if field != nil {
 				if err := config.SetAndSave(key, model); err != nil {
 					m.message = fmt.Sprintf("Failed to save model: %v", err)
-					return
+					return nil
 				}
 				*field = model
 			}
@@ -386,7 +451,7 @@ func (m *settingsModel) selectCurrent() {
 		}
 	case sectionTools:
 		if m.cursor >= len(m.toolItems) {
-			return
+			return nil
 		}
 		key := "voice_tools_enabled"
 		value := !m.cfg.VoiceToolsEnabled
@@ -394,7 +459,7 @@ func (m *settingsModel) selectCurrent() {
 		if m.cursor == 1 {
 			if !strings.EqualFold(m.cfg.BrainProvider, "ollama") {
 				m.message = "Agent Skills apply only when brain provider is Ollama"
-				return
+				return nil
 			}
 			key = "skills_enabled"
 			value = !m.cfg.SkillsEnabled
@@ -406,7 +471,7 @@ func (m *settingsModel) selectCurrent() {
 		}
 		if err := saveConfig(key, value); err != nil {
 			m.message = fmt.Sprintf("Failed to save %s: %v", label, err)
-			return
+			return nil
 		}
 		if key == "voice_tools_enabled" {
 			m.cfg.VoiceToolsEnabled = value
@@ -418,27 +483,57 @@ func (m *settingsModel) selectCurrent() {
 	case sectionTTS:
 		if m.cursor < len(m.ttsItems) {
 			provider := m.ttsItems[m.cursor].provider
+			if provider == managedqwen.ProviderName && managedqwen.UseManaged(m.cfg.QwenTTSBinary, m.cfg.QwenTTSModel) && !m.qwenStatus.Installed {
+				if m.qwenInstalling {
+					return nil
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				m.qwenInstallCancel = cancel
+				m.qwenInstalling = true
+				m.qwenInstallEvents = newEventBridge(16)
+				m.message = "Installing the managed Qwen runtime and preset voices; this is a large first-time download…"
+				m.buildTTSItems()
+				return tea.Batch(m.qwenInstallEvents.wait(), m.installManagedQwen(ctx))
+			}
 			saveConfig := m.saveConfig
 			if saveConfig == nil {
 				saveConfig = config.SetAndSave
 			}
+			if provider == managedqwen.ProviderName && managedqwen.UseManaged(m.cfg.QwenTTSBinary, m.cfg.QwenTTSModel) && m.qwenStatus.Installed {
+				if err := m.saveManagedQwenDefaults(); err != nil {
+					m.message = fmt.Sprintf("Failed to save Qwen voice defaults: %v", err)
+					return nil
+				}
+			}
 			if err := saveConfig("tts_provider", provider); err != nil {
 				m.message = fmt.Sprintf("Failed to save TTS provider: %v", err)
-				return
+				return nil
 			}
 			m.cfg.TTSProvider = provider
 			m.buildTTSItems()
 			m.buildVoiceItems()
-			m.message = fmt.Sprintf("TTS provider set to %s; restart to apply", provider)
+			m.message = fmt.Sprintf("TTS provider set to %s; new conversations use it immediately", provider)
 		}
 	case sectionVoice:
 		if m.cursor < len(m.voiceItems) {
 			voice := m.voiceItems[m.cursor]
-			if err := config.SetAndSave("tts_voice", voice.Name); err != nil {
-				m.message = fmt.Sprintf("Failed to save voice: %v", err)
-				return
+			key := "tts_voice"
+			if strings.EqualFold(activeTTSProvider(m.cfg), managedqwen.ProviderName) {
+				key = "qwen_tts_voice"
 			}
-			m.cfg.TTSVoice = voice.Name
+			saveConfig := m.saveConfig
+			if saveConfig == nil {
+				saveConfig = config.SetAndSave
+			}
+			if err := saveConfig(key, voice.Name); err != nil {
+				m.message = fmt.Sprintf("Failed to save voice: %v", err)
+				return nil
+			}
+			if key == "qwen_tts_voice" {
+				m.cfg.QwenTTSVoice = voice.Name
+			} else {
+				m.cfg.TTSVoice = voice.Name
+			}
 			m.message = fmt.Sprintf("Voice set to %s", voice.Name)
 		}
 	case sectionInput:
@@ -446,7 +541,7 @@ func (m *settingsModel) selectCurrent() {
 			name := m.inputItems[m.cursor]
 			if err := config.SetAndSave("input_device", name); err != nil {
 				m.message = fmt.Sprintf("Failed to save input device: %v", err)
-				return
+				return nil
 			}
 			m.cfg.InputDevice = name
 			m.message = "Microphone set to " + deviceLabel(name)
@@ -458,13 +553,97 @@ func (m *settingsModel) selectCurrent() {
 			name := m.outputItems[m.cursor]
 			if err := config.SetAndSave("output_device", name); err != nil {
 				m.message = fmt.Sprintf("Failed to save output device: %v", err)
-				return
+				return nil
 			}
 			m.closePreview()
 			m.cfg.OutputDevice = name
 			m.message = "Speaker set to " + deviceLabel(name)
 		}
 	}
+	return nil
+}
+
+type qwenInstallDoneMsg struct {
+	status managedqwen.Status
+	err    error
+}
+
+type qwenInstallProgressMsg struct {
+	stage string
+	pct   float64
+}
+
+type qwenInstallProgressClosedMsg struct{}
+
+func (m settingsModel) installManagedQwen(ctx context.Context) tea.Cmd {
+	ensure := m.ensureQwen
+	if ensure == nil {
+		ensure = managedqwen.Ensure
+	}
+	modelsDir := config.ModelsDirFrom(m.cfg)
+	events := m.qwenInstallEvents
+	return func() tea.Msg {
+		status, err := ensure(ctx, modelsDir, func(stage string, pct float64) {
+			if events != nil {
+				events.send(qwenInstallProgressMsg{stage: stage, pct: pct})
+			}
+		})
+		if events != nil {
+			events.send(qwenInstallProgressClosedMsg{})
+		}
+		return qwenInstallDoneMsg{status: status, err: err}
+	}
+}
+
+func (m *settingsModel) activateManagedQwen() error {
+	if err := m.saveManagedQwenDefaults(); err != nil {
+		return err
+	}
+	save := m.saveConfig
+	if save == nil {
+		save = config.SetAndSave
+	}
+	if err := save("tts_provider", managedqwen.ProviderName); err != nil {
+		return err
+	}
+	m.cfg.TTSProvider = managedqwen.ProviderName
+	return nil
+}
+
+func (m *settingsModel) saveManagedQwenDefaults() error {
+	save := m.saveConfig
+	if save == nil {
+		save = config.SetAndSave
+	}
+	mode := strings.TrimSpace(m.cfg.QwenTTSMode)
+	if mode == "" || mode == string(tts.VoiceModeStatic) {
+		mode = string(tts.VoiceModeCustomVoice)
+	}
+	voice := strings.TrimSpace(m.cfg.QwenTTSVoice)
+	if voice == "" || strings.EqualFold(voice, "default") {
+		voice = "Vivian"
+	}
+	language := strings.TrimSpace(m.cfg.QwenTTSLanguage)
+	if language == "" {
+		language = "Auto"
+	}
+	values := []struct {
+		key   string
+		value string
+	}{
+		{"qwen_tts_mode", mode},
+		{"qwen_tts_voice", voice},
+		{"qwen_tts_language", language},
+	}
+	for _, item := range values {
+		if err := save(item.key, item.value); err != nil {
+			return err
+		}
+	}
+	m.cfg.QwenTTSMode = mode
+	m.cfg.QwenTTSVoice = voice
+	m.cfg.QwenTTSLanguage = language
+	return nil
 }
 
 func deviceLabel(name string) string {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
+	managedqwen "github.com/lancekrogers/samantha/internal/qwen"
 	"github.com/lancekrogers/samantha/internal/tts"
 )
 
@@ -227,39 +228,85 @@ func TestSettingsToolsSkillsRowOllamaOnly(t *testing.T) {
 func TestSettingsSelectTTSProviderPersistsAndRefreshesVoices(t *testing.T) {
 	cfg := &config.Config{TTSProvider: "kokoro"}
 	m := newSettings(cfg, nil)
+	m.qwenStatus = managedqwen.Status{Installed: true, RuntimeReady: true, ModelReady: true}
+	m.buildTTSItems()
 	m.section = sectionTTS
 	m.cursor = 1 // qwen3-tts
-	var savedKey string
-	var savedValue any
+	saved := map[string]any{}
 	m.saveConfig = func(key string, value any) error {
-		savedKey, savedValue = key, value
+		saved[key] = value
 		return nil
 	}
 
 	m.selectCurrent()
 
-	if savedKey != "tts_provider" || savedValue != "qwen3-tts" {
-		t.Fatalf("saved TTS config = %q/%v, want tts_provider/qwen3-tts", savedKey, savedValue)
+	if saved["tts_provider"] != "qwen3-tts" || saved["qwen_tts_mode"] != "customvoice" || saved["qwen_tts_voice"] != "Vivian" {
+		t.Fatalf("saved Qwen config = %v", saved)
 	}
 	if cfg.TTSProvider != "qwen3-tts" {
 		t.Fatalf("config TTS provider = %q, want qwen3-tts", cfg.TTSProvider)
 	}
-	if len(m.voiceItems) != 0 {
-		t.Fatalf("Qwen voice items = %d, want no static voices", len(m.voiceItems))
+	if len(m.voiceItems) != 9 {
+		t.Fatalf("Qwen voice items = %d, want 9 model presets", len(m.voiceItems))
 	}
-	if !strings.Contains(m.message, "restart") {
-		t.Fatalf("selection message = %q, want restart guidance", m.message)
+	if !strings.Contains(m.message, "immediately") {
+		t.Fatalf("selection message = %q, want immediate-activation guidance", m.message)
+	}
+}
+
+func TestSettingsInstallsQwenBeforeActivatingProvider(t *testing.T) {
+	// qwen3-tts-cli with no model was the old persisted default. It now follows
+	// the managed setup path so existing users are not stranded after upgrade.
+	cfg := &config.Config{TTSProvider: "kokoro", QwenTTSBinary: "qwen3-tts-cli", ModelsDir: t.TempDir()}
+	m := newSettings(cfg, nil)
+	m.section = sectionTTS
+	m.cursor = 1
+	saved := map[string]any{}
+	m.saveConfig = func(key string, value any) error {
+		saved[key] = value
+		return nil
+	}
+	m.ensureQwen = func(context.Context, string, managedqwen.ProgressFunc) (managedqwen.Status, error) {
+		return managedqwen.Status{Installed: true, RuntimeReady: true, ModelReady: true}, nil
+	}
+
+	cmd := m.selectCurrent()
+	if cmd == nil || !m.qwenInstalling {
+		t.Fatal("selecting an uninstalled Qwen provider did not start managed setup")
+	}
+	if cfg.TTSProvider != "kokoro" || len(saved) != 0 {
+		t.Fatalf("provider changed before setup completed: cfg=%q saved=%v", cfg.TTSProvider, saved)
+	}
+	// Execute the install command directly; selectCurrent returns it batched
+	// with the progress-feed listener used by the live Bubble Tea program.
+	m, _ = m.Update(m.installManagedQwen(context.Background())())
+	if cfg.TTSProvider != "qwen3-tts" || saved["tts_provider"] != "qwen3-tts" {
+		t.Fatalf("successful setup did not activate Qwen: cfg=%q saved=%v", cfg.TTSProvider, saved)
+	}
+	if len(m.voiceItems) != 9 || m.voiceItems[0].Name != "Vivian" {
+		t.Fatalf("installed voices = %+v, want Qwen presets", m.voiceItems)
+	}
+}
+
+func TestSettingsReportsQwenInstallProgress(t *testing.T) {
+	m := settingsModel{qwenInstalling: true, qwenInstallEvents: newEventBridge(2)}
+	m, cmd := m.Update(qwenInstallProgressMsg{stage: "Qwen CustomVoice model", pct: 55})
+	if !strings.Contains(m.message, "Qwen CustomVoice model") || !strings.Contains(m.message, "55%") {
+		t.Fatalf("progress message = %q", m.message)
+	}
+	if cmd == nil {
+		t.Fatal("progress listener was not re-armed")
 	}
 }
 
 func TestSettingsQwenVoiceSectionExplainsUnavailableModes(t *testing.T) {
-	m := newSettings(&config.Config{TTSProvider: "qwen3-tts", QwenTTSModel: "/models/qwen"}, nil)
+	m := newSettings(&config.Config{TTSProvider: "qwen3-tts", ModelsDir: t.TempDir()}, nil)
 	m.section = sectionVoice
 	m.width, m.height = 100, 20
 
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "not verified") || !strings.Contains(view, "model-native default") || !strings.Contains(view, "leave") {
-		t.Fatalf("Qwen voice section = %q, want actionable capability explanation", view)
+	if !strings.Contains(view, "not installed") || !strings.Contains(view, "press enter") {
+		t.Fatalf("Qwen voice section = %q, want managed-install guidance", view)
 	}
 }
 

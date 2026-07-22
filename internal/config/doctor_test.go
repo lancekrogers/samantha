@@ -134,6 +134,9 @@ func TestDiagnoseQwenNativeWorker(t *testing.T) {
 	if diags["qwen3-tts-voice-controls"].Severity != SeverityOK {
 		t.Errorf("baseline qwen voice controls = %+v, want ok", diags["qwen3-tts-voice-controls"])
 	}
+	if !strings.Contains(diags["tts-provider"].Detail, "external") {
+		t.Errorf("external Qwen provider detail = %q", diags["tts-provider"].Detail)
+	}
 	if HasErrors([]Diagnostic{diags["tts-provider"], diags["qwen3-tts-binary"], diags["qwen3-tts-model"]}) {
 		t.Fatalf("healthy qwen setup reported errors: %+v", diags)
 	}
@@ -168,6 +171,16 @@ func TestDiagnoseQwenUnsupportedVoiceControls(t *testing.T) {
 	d := diagByName(Diagnose(cfg, t.TempDir(), okLookPath))["qwen3-tts-voice-controls"]
 	if d.Severity != SeverityError || !strings.Contains(d.Detail, "clear unsupported settings") || d.Remediation == "" {
 		t.Fatalf("unsupported qwen controls diagnostic = %+v, want actionable error", d)
+	}
+}
+
+func TestValidateQwenExternalWorkerRejectsManagedSpeaker(t *testing.T) {
+	err := ValidateQwenTTSConfig(&Config{
+		QwenTTSBinary: "/opt/qwen/worker", QwenTTSModel: "/opt/qwen/model",
+		QwenTTSMode: "customvoice", QwenTTSVoice: "Vivian",
+	})
+	if err == nil || !strings.Contains(err.Error(), "external") {
+		t.Fatalf("external worker validation = %v, want unsupported-controls error", err)
 	}
 }
 

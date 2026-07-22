@@ -129,7 +129,11 @@ func (m settingsModel) sectionListLines() []string {
 		for i := start; i < end; i++ {
 			v := m.voiceItems[i]
 			active := ""
-			if v.Name == m.cfg.TTSVoice {
+			activeVoice := m.cfg.TTSVoice
+			if strings.EqualFold(activeTTSProvider(m.cfg), "qwen3-tts") {
+				activeVoice = m.cfg.QwenTTSVoice
+			}
+			if strings.EqualFold(v.Name, activeVoice) {
 				active = " ✓"
 			}
 			preview := ""

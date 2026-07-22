@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/lancekrogers/samantha/internal/config"
+	managedqwen "github.com/lancekrogers/samantha/internal/qwen"
 )
 
 var (
@@ -70,6 +73,19 @@ func runModelsStatus(cmd *cobra.Command, cfg *config.Config, modelsDir string, r
 		return err
 	}
 	statuses := manifest.Status(modelsDir)
+	if req.NeedTTS && cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), managedqwen.ProviderName) &&
+		managedqwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
+		qwenStatus := managedqwen.Inspect(modelsDir)
+		missing := []string(nil)
+		if !qwenStatus.Installed {
+			missing = []string{qwenStatus.Root}
+		}
+		statuses = append(statuses, config.AssetStatus{
+			ID: "tts.qwen3.customvoice-0.6b", Name: "Qwen3-TTS CustomVoice 0.6B",
+			Provider: managedqwen.ProviderName, Mode: "customvoice", Kind: config.AssetKindTTS,
+			Installed: qwenStatus.Installed, Missing: missing,
+		})
+	}
 
 	out := cmd.OutOrStdout()
 	if asJSON {
@@ -173,6 +189,19 @@ func runModelsClean(cmd *cobra.Command, cfg *config.Config, modelsDir string, un
 	candidates, err := manifest.CleanCandidates(cmd.Context(), modelsDir)
 	if err != nil {
 		return err
+	}
+	if cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), managedqwen.ProviderName) &&
+		managedqwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
+		qwenRoot := managedqwen.ManagedPaths(modelsDir).Root
+		kept := candidates[:0]
+		for _, candidate := range candidates {
+			rel, relErr := filepath.Rel(qwenRoot, candidate.Path)
+			if relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				continue
+			}
+			kept = append(kept, candidate)
+		}
+		candidates = kept
 	}
 
 	out := cmd.OutOrStdout()
