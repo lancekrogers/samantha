@@ -154,11 +154,12 @@ func TestMeetingFixtureDiarizationPipeline(t *testing.T) {
 	defer cancel()
 
 	dir := t.TempDir()
-	meetingPath := filepath.Join(dir, "native-meeting.log")
-	writer, err := meetinglog.Create(meetingPath, "Native speaker integration", "fixture")
+	bundlePath := filepath.Join(dir, "native-meeting.meeting")
+	writer, err := meetinglog.CreateBundle(bundlePath, "Native speaker integration", "fixture")
 	if err != nil {
 		t.Fatal(err)
 	}
+	meetingPath := writer.Path()
 	if err := writer.OnUtterance(listen.Utterance{
 		Text: "fixture transcript turn", At: writer.StartedAt().Add(10 * time.Second),
 	}); err != nil {
@@ -239,6 +240,17 @@ func TestMeetingFixtureDiarizationPipeline(t *testing.T) {
 	}
 	if _, err := os.Stat(result.Artifact); err != nil {
 		t.Fatalf("speaker sidecar: %v", err)
+	}
+	wantArtifact := filepath.Join(bundlePath, meetinglog.BundleInternalDirName, meetinglog.BundleSpeakerAnalysisName)
+	if result.Artifact != wantArtifact {
+		t.Fatalf("speaker artifact = %q, want bundled %q", result.Artifact, wantArtifact)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(bundlePath) || !entries[0].IsDir() {
+		t.Fatalf("meetings root should contain one bundle, got %#v", entries)
 	}
 
 	out := filepath.Join(t.TempDir(), "speaker-analysis.json")

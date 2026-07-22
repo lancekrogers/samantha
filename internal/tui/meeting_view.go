@@ -78,11 +78,9 @@ func (m meetingModel) View() string {
 	)
 	header = ansi.Truncate(header, w, "…")
 
-	paths := m.opts.Path
-	if m.opts.Writer != nil {
-		paths = m.opts.Writer.Path() + "  +  " + m.opts.Writer.JSONLPath()
-	}
-	pathLine := dimStyle.Render(ansi.Truncate("  "+paths, w, "…"))
+	// Present one meeting-level artifact. Machine sidecars live inside the
+	// bundle and should not compete for attention in the recording UI.
+	pathLine := dimStyle.Render(ansi.Truncate("  Bundle: "+m.opts.Path, w, "…"))
 	speakerLine := dimStyle.Render(ansi.Truncate("  "+meetingSpeakerStatus(m.opts.SpeakerStatus, m.opts.SpeakerError), w, "…"))
 	rule := lipgloss.NewStyle().Foreground(m.meterBorderColor()).Render(strings.Repeat("─", w))
 

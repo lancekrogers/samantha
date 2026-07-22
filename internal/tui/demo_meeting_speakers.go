@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -11,6 +12,8 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/listen"
 	"github.com/lancekrogers/samantha/internal/meeting"
+	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
+	"github.com/lancekrogers/samantha/internal/speaker"
 	"github.com/lancekrogers/samantha/internal/stt"
 )
 
@@ -127,4 +130,68 @@ func demoMeetingSpeakerStatusCmds() tea.Cmd {
 			}
 		}),
 	)
+}
+
+// demoMeetingSpeakerFinalizer turns the scripted labels into the same
+// post-capture event contract as native diarization, so VHS exercises the real
+// results screen without loading a model or microphone.
+func demoMeetingSpeakerFinalizer(writer *meetinglog.Writer, bundlePath string) func(context.Context) (meeting.AnalysisResult, error) {
+	if writer == nil {
+		return nil
+	}
+	return func(ctx context.Context) (meeting.AnalysisResult, error) {
+		if err := ctx.Err(); err != nil {
+			return meeting.AnalysisResult{Status: meeting.AnalysisError, Error: err.Error()}, err
+		}
+		analysis := meetinglog.SpeakerAnalysis{Status: string(meeting.AnalysisComplete)}
+		result := meeting.AnalysisResult{Status: meeting.AnalysisComplete}
+		labels := make(map[string]struct{})
+		for i, record := range writer.Transcripts() {
+			label, text := demoSpeakerLabel(record.Text)
+			if label == "" {
+				continue
+			}
+			labels[label] = struct{}{}
+			id := fmt.Sprintf("demo-diarization-%d", i+1)
+			result.Timeline.Observations = append(result.Timeline.Observations, speaker.Observation{
+				SegmentID: id, StartMS: record.StartMS, EndMS: record.EndMS,
+				Label: label, Confidence: 1, State: speaker.StateStable,
+				Source: speaker.SourceRecording, ModelRev: "vhs-demo",
+			})
+			analysis.Segments = append(analysis.Segments, meetinglog.SpeakerSegment{
+				ID: id, StartMS: record.StartMS, EndMS: record.EndMS,
+				Label: label, Confidence: 1, State: string(speaker.StateStable),
+			})
+			analysis.Utterances = append(analysis.Utterances, meetinglog.SpeakerUtterance{
+				TranscriptRecord: meetinglog.TranscriptRecord{
+					ID: record.ID, StartMS: record.StartMS, EndMS: record.EndMS, Text: text,
+				},
+				Speaker: label, Confidence: 1, State: string(speaker.StateStable),
+			})
+		}
+		result.SpeakerCount = len(labels)
+		if bundlePath != "" {
+			result.Artifact = filepath.Join(bundlePath, meetinglog.BundleInternalDirName, meetinglog.BundleSpeakerAnalysisName)
+			analysis.Artifact = result.Artifact
+			if err := meeting.WriteAnalysis(result.Artifact, result); err != nil {
+				return meeting.AnalysisResult{Status: meeting.AnalysisError, Error: err.Error()}, err
+			}
+		}
+		if err := writer.WriteSpeakerAnalysis(analysis); err != nil {
+			return meeting.AnalysisResult{Status: meeting.AnalysisError, Error: err.Error()}, err
+		}
+		return result, nil
+	}
+}
+
+func demoSpeakerLabel(text string) (string, string) {
+	text = strings.TrimSpace(text)
+	if !strings.HasPrefix(text, "[speaker-") {
+		return "", text
+	}
+	end := strings.Index(text, "]")
+	if end < 0 {
+		return "", text
+	}
+	return text[1:end], strings.TrimSpace(text[end+1:])
 }

@@ -274,16 +274,41 @@ func TestMeetingDoneShowsCompletedSpeakerAnalysis(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Meeting.Route.Mode = meeting.ModeOff
 	app := NewApp(cfg)
+	app.width, app.height = 80, 24
 	app.launcher.width, app.launcher.height = 80, 24
 	app.meetingRT = &MeetingRuntime{Writer: w, Cleanup: func() {}}
 	app.screen = screenMeeting
+	if err := w.OnUtterance(listen.Utterance{Text: "review the launch plan", At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteSpeakerAnalysis(meetinglog.SpeakerAnalysis{
+		Status:   "complete",
+		Segments: []meetinglog.SpeakerSegment{{Label: "speaker-1", StartMS: 0, EndMS: 2000}},
+		Utterances: []meetinglog.SpeakerUtterance{{
+			TranscriptRecord: meetinglog.TranscriptRecord{ID: "utterance-1", Text: "review the launch plan"},
+			Speaker:          "speaker-1",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	updated, _ := app.Update(meetingDoneMsg{Analysis: meeting.AnalysisResult{
 		Status: meeting.AnalysisComplete, SpeakerCount: 3, Artifact: "/tmp/done.speaker-analysis.json",
 	}})
 	a := updated.(App)
-	if a.screen != screenLauncher || !strings.Contains(a.launcher.View(), "3 speakers") {
-		t.Fatalf("launcher did not report analysis:\n%s", a.launcher.View())
+	if a.screen != screenMeetingResults {
+		t.Fatalf("screen = %v, want meeting results", a.screen)
+	}
+	view := a.meetingResults.View()
+	for _, want := range []string{"Meeting complete", "Speaker-attributed transcript", "speaker-1:", "review the launch plan"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("results missing %q:\n%s", want, view)
+		}
+	}
+	updated, _ = a.Update(meetingResultsDoneMsg{summary: a.meetingResults.summary})
+	a = updated.(App)
+	if a.screen != screenLauncher || !strings.Contains(a.launcher.View(), "Meeting saved") {
+		t.Fatalf("results did not continue to launcher:\n%s", a.launcher.View())
 	}
 }
 

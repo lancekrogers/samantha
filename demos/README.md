@@ -131,9 +131,9 @@ just demo-meeting-route-speaker
 
 ## meeting-speakers.gif — multi-voice meeting + diarization status
 
-Scripts a multi-person product marketing conversation and shows speaker
-analysis status moving **queued → running → complete**, with labeled turns
-(`[speaker-1] …`, `[speaker-2] …`).
+Scripts a multi-person product marketing conversation, shows speaker analysis
+status moving **queued → running → complete**, then stops on the post-meeting
+results screen with labeled turns (`speaker-1`, `speaker-2`, …) before routing.
 
 No live mic. Uses `SAMANTHA_DEMO_MEETING_SPEAKERS=1`.
 

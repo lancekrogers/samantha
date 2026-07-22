@@ -157,6 +157,11 @@ func TestLoadSummaryAndResolveMostRecent(t *testing.T) {
 	if _, err := w2.Close(); err != nil {
 		t.Fatal(err)
 	}
+	// Routing mutates the old event file but must not make it the latest
+	// recording; discovery is ordered by session_start, not mtime.
+	if err := AppendRoutedEvent(w.JSONLPath(), Receipt{Outcome: OutcomeSkipped, At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
 
 	jsonl, err := ResolveMeetingFile(dir, "")
 	if err != nil {
@@ -180,6 +185,59 @@ func TestLoadSummaryAndResolveMostRecent(t *testing.T) {
 	}
 	if !strings.HasSuffix(j2, "a.jsonl") {
 		t.Fatalf("from log = %s", j2)
+	}
+}
+
+func TestResolveMeetingBundleAndLegacyLayouts(t *testing.T) {
+	dir := t.TempDir()
+	legacyPath := filepath.Join(dir, "legacy.log")
+	legacy, err := meetinglog.Create(legacyPath, "Legacy", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	bundlePath := filepath.Join(dir, "new-20260722-090000.meeting")
+	bundled, err := meetinglog.CreateBundle(bundlePath, "Bundled", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bundled.WriteSpeakerAnalysis(meetinglog.SpeakerAnalysis{
+		Status:   "complete",
+		Segments: []meetinglog.SpeakerSegment{{Label: "speaker-1"}, {Label: "speaker-2"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bundled.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	wantEvents := filepath.Join(bundlePath, meetinglog.BundleInternalDirName, meetinglog.BundleEventsName)
+	for _, input := range []string{bundlePath, filepath.Join(bundlePath, meetinglog.BundleDocumentName)} {
+		got, err := ResolveMeetingFile(dir, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != wantEvents {
+			t.Fatalf("ResolveMeetingFile(%q) = %q, want %q", input, got, wantEvents)
+		}
+	}
+	latest, err := ResolveMeetingFile(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest != wantEvents {
+		t.Fatalf("latest = %q, want bundled %q", latest, wantEvents)
+	}
+	summary, err := LoadSummaryFromJSONL(latest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Bundle != bundlePath || summary.File != filepath.Join(bundlePath, meetinglog.BundleDocumentName) || summary.SpeakerCount != 2 {
+		t.Fatalf("summary = %+v", summary)
 	}
 }
 

@@ -92,6 +92,45 @@ func TestWriterLifecycle(t *testing.T) {
 	}
 }
 
+func TestCreateBundleGroupsMeetingArtifacts(t *testing.T) {
+	bundle := filepath.Join(t.TempDir(), "standup-20260722-090000.meeting")
+	w, err := CreateBundle(bundle, "Standup", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.OnUtterance(listen.Utterance{Text: "hello team", At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := w.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDocument := filepath.Join(bundle, BundleDocumentName)
+	wantEvents := filepath.Join(bundle, BundleInternalDirName, BundleEventsName)
+	if summary.Bundle != bundle || summary.File != wantDocument || summary.JSONLFile != wantEvents {
+		t.Fatalf("bundle summary = %+v", summary)
+	}
+	entries, err := os.ReadDir(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[0].Name() != BundleInternalDirName || entries[1].Name() != BundleDocumentName {
+		t.Fatalf("bundle entries = %#v", entries)
+	}
+	for _, path := range []string{bundle, filepath.Join(bundle, BundleInternalDirName)} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm()&0o077 != 0 {
+			t.Fatalf("%s mode = %04o", path, info.Mode().Perm())
+		}
+	}
+	if _, err := CreateBundle(bundle, "collision", "fake"); err == nil {
+		t.Fatal("existing bundle must not be reused")
+	}
+}
+
 func readJSONL(t *testing.T, path string) []Event {
 	t.Helper()
 	f, err := os.Open(path)
