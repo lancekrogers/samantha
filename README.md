@@ -351,12 +351,12 @@ samantha meeting record --description "Standup" --out-dir ~/notes/meetings --jso
 samantha meeting record --description "CI log" --no-tui
 ```
 
-Files default to `~/.obey/agents/voice/samantha/meetings/<slug>-<timestamp>.{log,jsonl}`.
+Files default to `~/.obey/agents/voice/festival-voice/meetings/<slug>-<timestamp>.{log,jsonl}`.
 `--json` also emits one JSON line per utterance plus a final summary on stdout.
 
 ## Configuration
 
-Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be overridden with environment variables where listed.
+Config lives at `~/.obey/agents/voice/festival-voice/config.yaml`. Values can also be overridden with environment variables where listed.
 
 | Key | Default | Environment | Description |
 |-----|---------|-------------|-------------|
@@ -394,7 +394,7 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `whisper_quantized` | `true` | | Prefer quantized Whisper models |
 | `whispercpp_binary` | `whisper-cli` | `WHISPERCPP_BINARY` | whisper.cpp CLI executable |
 | `whispercpp_model` | `base.en` | `WHISPERCPP_MODEL` | Downloadable whisper.cpp model name |
-| `whispercpp_model_path` | `~/.cache/samantha/models/whispercpp/ggml-base.en.bin` | `WHISPERCPP_MODEL_PATH` | whisper.cpp model path |
+| `whispercpp_model_path` | `~/.cache/festival-voice/models/whispercpp/ggml-base.en.bin` | `WHISPERCPP_MODEL_PATH` | whisper.cpp model path |
 | `vad_enabled` | `true` | | Enable voice activity detection |
 | `vad_silence_duration` | `0.8` | | Seconds of silence before ending speech (raise to stop being cut off) |
 | `vad_threshold` | `0.6` | `VAD_THRESHOLD` | Speech-detection confidence (raise to ignore background noise) |
@@ -402,10 +402,10 @@ Config lives at `~/.obey/agents/voice/samantha/config.yaml`. Values can also be 
 | `voice_frontend_enabled` | `false` | `VOICE_FRONTEND_ENABLED` | Local AEC/NS/AGC on mic input (off by default: the noise suppressor currently over-suppresses normal-volume speech; enable only with barge-in) |
 | `agent_name` | `Samantha` | | Display name |
 | `persona` | `samantha` | `PERSONA` | Prompt document name for the interactive persona |
-| `prompts_dir` | empty | `PROMPTS_DIR` | Prompt document directory; defaults to `~/.obey/agents/voice/samantha/prompts` when unset |
+| `prompts_dir` | empty | `PROMPTS_DIR` | Prompt document directory; defaults to `~/.obey/agents/voice/festival-voice/prompts` when unset |
 | `skills_enabled` | `false` (auto-`true` for local Ollama when unset) | `SKILLS_ENABLED` | Enable Agent Skills (`SKILL.md`) for the Ollama provider. Ollama enables discovery automatically unless you set the key or env explicitly to `false`. Discovers project/workspace/user skill frontmatter into the system prompt; not a pre-activation sandbox. Claude/Grok already discover skills via their CLIs. |
-| `skills_dir` | empty | `SKILLS_DIR` | Extra Samantha skills root (after project/workspace/user harness dirs); defaults to `~/.obey/agents/voice/samantha/skills` when unset. |
-| `models_dir` | `~/.cache/samantha/models` | `MODELS_DIR` | Model download directory |
+| `skills_dir` | empty | `SKILLS_DIR` | Extra Samantha skills root (after project/workspace/user harness dirs); defaults to `~/.obey/agents/voice/festival-voice/skills` when unset. |
+| `models_dir` | `~/.cache/festival-voice/models` | `MODELS_DIR` | Model download directory |
 | `language` | `en-US` | | Recognition language |
 | `max_history` | `10` | | Saved conversation history length |
 | `listen_timeout` | `10` | | Listen timeout in seconds |
@@ -422,7 +422,7 @@ cross-client **`.agents/skills`** convention
 1. `<cwd>/.agents/skills/*/SKILL.md` — project skills (shared with Codex, VS Code, camp, …)
 2. `<nearest ancestor>/.agents/skills/*/SKILL.md` — workspace/project-root skills
 3. `~/.agents/skills/*/SKILL.md` — user skills
-4. `skills_dir` (default `~/.obey/agents/voice/samantha/skills`) — Samantha-only
+4. `skills_dir` (default `~/.obey/agents/voice/festival-voice/skills`) — Samantha-only
 
 Ollama does **not** scan `.claude/skills`; the Claude Code provider owns that
 path, and dual-scanning would duplicate skills when both trees are projected.
@@ -462,7 +462,7 @@ effect when the conversation runtime is re-entered or restarted.
 ~/.agents/skills/hello/SKILL.md
 
 # Samantha config root
-~/.obey/agents/voice/samantha/skills/hello/SKILL.md
+~/.obey/agents/voice/festival-voice/skills/hello/SKILL.md
 ```
 
 ```markdown

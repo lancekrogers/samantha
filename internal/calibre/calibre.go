@@ -20,6 +20,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/lancekrogers/samantha/internal/config"
 )
 
 // Sentinel errors for common resolution outcomes.
@@ -546,7 +548,7 @@ func (c Client) conversionCacheDir() (string, error) {
 		if err != nil {
 			return "", err
 		}
-		dir = filepath.Join(base, "samantha", "calibre")
+		dir = filepath.Join(base, config.AppSlug, "calibre")
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err

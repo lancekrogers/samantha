@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/lancekrogers/samantha/internal/config"
 )
 
 // syllabicN is eSpeak's syllabic-n marker (U+0329). Kokoro's stock tokens.txt
@@ -149,7 +151,7 @@ func cacheSidecarPath(modelsDir string) string {
 	if key == "" || key == "." || key == string(filepath.Separator) {
 		key = "default"
 	}
-	return filepath.Join(base, "samantha", "kokoro-tokens", key, sidecarName)
+	return filepath.Join(base, config.AppSlug, "kokoro-tokens", key, sidecarName)
 }
 
 func tokenDefined(tokensText string, r rune) bool {

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -91,7 +92,7 @@ func NewSharedContainer() (*TestContainer, error) {
 
 	// Create working directories.
 	exitCode, _, err = container.Exec(ctx, []string{
-		"mkdir", "-p", "/test", "/root/.obey/agents/voice/samantha",
+		"mkdir", "-p", "/test", filepath.Join("/root/.obey/agents/voice", config.AppSlug),
 	})
 	if err != nil || exitCode != 0 {
 		container.Terminate(ctx)
@@ -136,7 +137,7 @@ func (tc *TestContainer) Reset() error {
 	exitCode, _, err := tc.container.Exec(tc.ctx, []string{
 		"sh", "-c",
 		"rm -rf /test /root/.obey 2>/dev/null; " +
-			"mkdir -p /test /root/.obey/agents/voice/samantha; sync",
+			"mkdir -p /test /root/.obey/agents/voice/" + config.AppSlug + "; sync",
 	})
 	if err != nil {
 		return fmt.Errorf("failed to reset container: %w", err)

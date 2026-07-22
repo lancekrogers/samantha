@@ -32,7 +32,7 @@ speaker pipeline and write a speaker-analysis JSON timeline.
 
 Example (YouTube multi-voice fixture, shared cache):
   just fetch-meeting-fixture
-  samantha meeting analyze ~/.cache/samantha/fixtures/meetings/product-marketing-meeting-90s.wav
+  samantha meeting analyze ~/.cache/festival-voice/fixtures/meetings/product-marketing-meeting-90s.wav
 
 Notes:
   - Requires speaker analysis enabled (or passes --speakers N).

@@ -36,7 +36,7 @@ samantha serve --tailscale
 ```
 
 Binds the node’s Tailscale IPv4, prefers a cert via `tailscale cert` under
-`~/.obey/agents/voice/samantha/serve/tls/`, mutes the host speaker by default,
+`~/.obey/agents/voice/festival-voice/serve/tls/`, mutes the host speaker by default,
 and prints the MagicDNS URL (e.g. `https://mac.tailnet.ts.net:7262/`).
 
 If `tailscale cert` fails (or LAN self-signed is used), serve stays up in
@@ -66,7 +66,7 @@ Requires for `--tailscale`: Tailscale CLI logged in and MagicDNS on.
 | `?token=` query | **Only** `GET /v1/stream` (browser WebSocket cannot set headers) |
 | Pairing code | `POST /v1/pair` (public, rate-limited) |
 
-Primary token file: `~/.obey/agents/voice/samantha/serve/token` (0600).  
+Primary token file: `~/.obey/agents/voice/festival-voice/serve/token` (0600).  
 Per-device tokens (D2): `…/serve/tokens/<id>.json` (0600 each).  
 Revoke all: `samantha serve --revoke-tokens` (primary + all devices).  
 Revoke one device: `DELETE /v1/devices/{id}`.

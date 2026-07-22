@@ -120,15 +120,13 @@ func lookupPython3() (string, error) {
 	return "", fmt.Errorf("python3 not found on PATH (install python3 with numpy and onnx to enable Kokoro v1.0 English pack)")
 }
 
-// localKokoroV1Onnx returns a cached thewh1teagle ONNX if present (Python samantha-cli path).
+// localKokoroV1Onnx returns a cached thewh1teagle ONNX if present (legacy CLI path).
 func localKokoroV1Onnx() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".cache", "samantha", "models", kokoroV1OnnxName)
+	return filepath.Join(DefaultModelsDir(), kokoroV1OnnxName)
 }
 
 func localKokoroV1Voices() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".cache", "samantha", "models", kokoroV1VoicesName)
+	return filepath.Join(DefaultModelsDir(), kokoroV1VoicesName)
 }
 
 // fetchOrReuse copies localPath when present, otherwise downloads url to dest.
