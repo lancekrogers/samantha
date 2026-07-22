@@ -224,6 +224,15 @@ func (c *turnConductor) finish(terminal TurnState) {
 	c.p.emit(m)
 }
 
+// StopPlayback aborts audible TTS immediately. Used by the TUI when the user
+// types to barge in so speech does not continue until the turn context drains.
+func (p *Pipeline) StopPlayback() {
+	if p == nil || p.Player == nil {
+		return
+	}
+	p.Player.Stop()
+}
+
 // RunTurn executes one conversational turn with streaming TTS.
 // Returns the user's input text, or empty string if no speech was detected.
 func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
