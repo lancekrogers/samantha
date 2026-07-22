@@ -421,7 +421,7 @@ func (m meetingModel) handleListenMsg(msg tea.Msg) (meetingModel, tea.Cmd) {
 		m.appendLine(fmt.Sprintf("%s  %s %s",
 			dimStyle.Render(u.At.Format("15:04:05")),
 			headerStyle.Render("🎤"),
-			normalStyle.Render(u.Text),
+			renderLiveMeetingUtterance(u.Text),
 		))
 	case meetingErrorMsg:
 		m.errors++

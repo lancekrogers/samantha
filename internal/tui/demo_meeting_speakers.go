@@ -151,7 +151,7 @@ func demoMeetingSpeakerFinalizer(writer *meetinglog.Writer, bundlePath string) f
 		result := meeting.AnalysisResult{Status: meeting.AnalysisComplete}
 		labels := make(map[string]struct{})
 		for i, record := range writer.Transcripts() {
-			label, text := demoSpeakerLabel(record.Text)
+			label, text := splitSpeakerLabel(record.Text)
 			if label == "" {
 				continue
 			}
@@ -184,16 +184,4 @@ func demoMeetingSpeakerFinalizer(writer *meetinglog.Writer, bundlePath string) f
 		}
 		return result, nil
 	}
-}
-
-func demoSpeakerLabel(text string) (string, string) {
-	text = strings.TrimSpace(text)
-	if !strings.HasPrefix(text, "[speaker-") {
-		return "", text
-	}
-	end := strings.Index(text, "]")
-	if end < 0 {
-		return "", text
-	}
-	return text[1:end], strings.TrimSpace(text[end+1:])
 }

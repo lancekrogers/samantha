@@ -363,9 +363,11 @@ pyannote segmentation and NeMo TitaNet models, then captures 16 kHz PCM through
 a non-blocking subscriber while STT continues normally. When recording stops,
 the recorder visibly moves from `queued` to `running` to `complete` (or
 `error`) and opens a review screen with anonymous `speaker-1…N` labels beside
-attributed turns. Each speaker label has a stable, distinct color throughout
-the review. These are voice clusters, not enrolled names or identity claims.
-Continue from the review screen to the configured routing flow.
+attributed turns. Each speaker label has a stable, distinct color in labeled
+live turns and throughout the review. Live conversation voice bubbles and the
+current-speaker footer use the same palette. These are voice clusters, not
+enrolled names or identity claims. Continue from the review screen to the
+configured routing flow.
 
 The meetings directory contains one visible item per recording:
 

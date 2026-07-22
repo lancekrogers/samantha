@@ -2,8 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"hash/fnv"
-	"strconv"
 	"strings"
 	"time"
 
@@ -152,20 +150,6 @@ func (m meetingResultsModel) content() string {
 		}
 	}
 	return lipgloss.NewStyle().Width(max(m.view.Width, 1)).Render(b.String())
-}
-
-func speakerLabelStyle(label string) lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(speakerColor(label)).Bold(true)
-}
-
-func speakerColor(label string) lipgloss.Color {
-	normalized := strings.ToLower(strings.TrimSpace(label))
-	if number, err := strconv.Atoi(strings.TrimPrefix(normalized, "speaker-")); err == nil && number > 0 {
-		return speakerColors[(number-1)%len(speakerColors)]
-	}
-	hash := fnv.New32a()
-	_, _ = hash.Write([]byte(normalized))
-	return speakerColors[int(hash.Sum32()%uint32(len(speakerColors)))]
 }
 
 func resultOffset(ms int64) string {
