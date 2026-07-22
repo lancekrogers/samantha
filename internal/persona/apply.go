@@ -147,3 +147,30 @@ func Use(cfg *config.Config, id string) error {
 	Apply(cfg, p)
 	return nil
 }
+
+// UpdateActiveTTS persists a Settings provider/voice choice into the active
+// persona as well as the compatibility config keys. Without this, the next
+// config.Load would re-apply the old persona voice and undo a live TUI change.
+func UpdateActiveTTS(cfg *config.Config, provider, voice string) error {
+	if cfg == nil {
+		return fmt.Errorf("persona: config is nil")
+	}
+	p, err := Load(ActiveID(cfg))
+	if err != nil {
+		return err
+	}
+	if provider = strings.TrimSpace(provider); provider != "" {
+		p.TTS.Provider = provider
+	}
+	if voice = strings.TrimSpace(voice); voice != "" {
+		p.TTS.Voice = voice
+	}
+	if err := Write(p, false); err != nil {
+		return fmt.Errorf("saving active persona TTS: %w", err)
+	}
+	if err := PersistTTS(p); err != nil {
+		return fmt.Errorf("saving active persona TTS config: %w", err)
+	}
+	applyTTS(cfg, p.TTS)
+	return nil
+}

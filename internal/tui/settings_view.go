@@ -15,7 +15,7 @@ func (m settingsModel) View() string {
 	var parts []string
 	parts = append(parts, headerStyle.Render("  Settings"))
 
-	tabs := []string{"Brain", "Brain model", "Tools", "TTS", "Voice", "Input", "Output", "Meeting"}
+	tabs := []string{"Brain", "Brain model", "Tools", "TTS", "Voice", "Language", "Input", "Output", "Meeting"}
 	var tabLine strings.Builder
 	for i, tab := range tabs {
 		style := dimStyle
@@ -142,6 +142,23 @@ func (m settingsModel) sectionListLines() []string {
 			}
 			label := fmt.Sprintf("%-16s %s / %s%s%s", v.Name, v.Gender, v.Locale, active, preview)
 			lines = append(lines, m.itemLine(i, label))
+		}
+		return lines
+
+	case sectionLanguage:
+		if len(m.languageItems) == 0 {
+			return []string{dimStyle.Render("  Language selection is available for managed Qwen3-TTS")}
+		}
+		start, end := m.visibleRange(len(m.languageItems))
+		lines := make([]string, 0, end-start)
+		for i := start; i < end; i++ {
+			language := m.languageItems[i]
+			active := ""
+			if strings.EqualFold(language, m.cfg.QwenTTSLanguage) ||
+				(m.cfg.QwenTTSLanguage == "" && language == "Auto") {
+				active = " ✓"
+			}
+			lines = append(lines, m.itemLine(i, language+active))
 		}
 		return lines
 

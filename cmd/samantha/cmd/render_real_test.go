@@ -287,4 +287,14 @@ func TestApplyVoiceOverridesRecordsEffectiveValues(t *testing.T) {
 	if opts.Voice != "bm_fable" || opts.Speed != 0.9 {
 		t.Fatalf("opts = %q/%v, want CLI values", opts.Voice, opts.Speed)
 	}
+
+	cfg = &config.Config{TTSProvider: "qwen3-tts", QwenTTSVoice: "Vivian", QwenTTSLanguage: "Auto"}
+	opts = render.Options{Voice: "Ryan", Language: "English"}
+	applyVoiceOverrides(cfg, &opts)
+	if cfg.QwenTTSVoice != "Ryan" || cfg.QwenTTSLanguage != "English" {
+		t.Fatalf("Qwen cfg = voice %q language %q, want Ryan/English", cfg.QwenTTSVoice, cfg.QwenTTSLanguage)
+	}
+	if opts.Voice != "Ryan" || opts.Language != "English" {
+		t.Fatalf("Qwen opts = voice %q language %q, want Ryan/English", opts.Voice, opts.Language)
+	}
 }

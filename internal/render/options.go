@@ -28,13 +28,14 @@ const (
 
 // Options describes one `samantha render` invocation.
 type Options struct {
-	Input  string  // positional input path or URL (empty with Stdin)
-	Stdin  bool    // read input text from stdin
-	Format Format  // input format (auto-detected when FormatAuto)
-	Out    string  // single-file output path
-	OutDir string  // multi-file output directory (with a manifest)
-	Voice  string  // override the configured TTS voice
-	Speed  float64 // override the configured speech speed (0 = use config)
+	Input    string  // positional input path or URL (empty with Stdin)
+	Stdin    bool    // read input text from stdin
+	Format   Format  // input format (auto-detected when FormatAuto)
+	Out      string  // single-file output path
+	OutDir   string  // multi-file output directory (with a manifest)
+	Voice    string  // override the configured TTS voice
+	Language string  // override the configured Qwen synthesis language
+	Speed    float64 // override the configured speech speed (0 = use config)
 	// TTS* fields are resolved provider metadata populated by the command
 	// layer. They are written to manifests without storing private reference
 	// audio or transcript content.

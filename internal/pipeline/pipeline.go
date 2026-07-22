@@ -45,6 +45,7 @@ type Pipeline struct {
 	// affected sentence when the selected provider fails before playback.
 	// Kokoro is constructed here when voice_fallback_provider=kokoro.
 	TTSFallback       tts.Provider
+	ttsMu             sync.RWMutex
 	Player            audio.Engine
 	Capture           captureMonitor
 	VAD               voiceDetector
@@ -99,6 +100,33 @@ func (p *Pipeline) SetOutputMuted(muted bool) {
 
 // OutputMuted reports whether spoken responses are currently disabled.
 func (p *Pipeline) OutputMuted() bool { return p.outputMuted.Load() }
+
+// ReplaceTTS atomically changes the providers used by subsequent synthesis
+// calls. Callers own provider cleanup and must keep retired providers alive
+// until any already-started utterance has drained.
+func (p *Pipeline) ReplaceTTS(primary, fallback tts.Provider) {
+	p.ttsMu.Lock()
+	p.TTS = primary
+	p.TTSFallback = fallback
+	p.ttsMu.Unlock()
+}
+
+// HasTTS reports whether a primary voice provider is configured.
+func (p *Pipeline) HasTTS() bool {
+	primary, _ := p.ttsProviders()
+	return primary != nil
+}
+
+func (p *Pipeline) ttsProviders() (tts.Provider, tts.Provider) {
+	p.ttsMu.RLock()
+	defer p.ttsMu.RUnlock()
+	return p.TTS, p.TTSFallback
+}
+
+func (p *Pipeline) ttsReady() bool {
+	primary, _ := p.ttsProviders()
+	return primary != nil && primary.Available()
+}
 
 type playbackEventType int
 
@@ -334,7 +362,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 		Elapsed:  time.Since(thinkingStarted),
 	})
 
-	if !p.OutputMuted() && p.TTS != nil && p.Player != nil && p.TTS.Available() {
+	if !p.OutputMuted() && p.Player != nil && p.ttsReady() {
 		turn.to(TurnSpeaking)
 		if metrics.firstSegment.IsZero() {
 			metrics.firstSegment = time.Now()
@@ -610,7 +638,7 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 			}
 			fullResponse.WriteString(sentence)
 
-			if interrupted || p.OutputMuted() || p.TTS == nil || p.Player == nil || !p.TTS.Available() {
+			if interrupted || p.OutputMuted() || p.Player == nil || !p.ttsReady() {
 				continue
 			}
 
@@ -728,30 +756,35 @@ func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct
 // configured fallback. A Qwen worker failure is surfaced by PlayStream instead
 // and is handled by playFallback below because Player owns that stream.
 func (p *Pipeline) synthesizeWithFallback(ctx context.Context, text string) (*audio.PCMStream, bool, error) {
-	stream, err := p.TTS.Synthesize(ctx, text)
+	primary, fallback := p.ttsProviders()
+	if primary == nil {
+		return nil, false, errors.New("TTS provider is not configured")
+	}
+	stream, err := primary.Synthesize(ctx, text)
 	if err == nil {
 		return stream, false, nil
 	}
-	if !p.canUseFallback(ctx) || !shouldFallback(err) {
+	if !p.canUseFallback(ctx, primary, fallback) || !shouldFallback(err) {
 		return nil, false, err
 	}
 	p.emit(events.Error{Stage: "tts-fallback", Message: fmt.Sprintf("primary TTS failed; retrying with Kokoro: %v", err)})
-	fallback, fallbackErr := p.TTSFallback.Synthesize(ctx, text)
+	fallbackStream, fallbackErr := fallback.Synthesize(ctx, text)
 	if fallbackErr != nil {
 		return nil, true, fmt.Errorf("primary TTS: %v; Kokoro fallback: %w", err, fallbackErr)
 	}
-	return fallback, true, nil
+	return fallbackStream, true, nil
 }
 
 // playFallback retries an error returned after Player takes ownership of the
 // primary stream. This covers file-oriented native workers whose failure is
 // reported when the stream becomes ready.
 func (p *Pipeline) playFallback(ctx context.Context, text string, primaryErr error) (*audio.Playback, bool, error) {
-	if !p.canUseFallback(ctx) || !shouldFallback(primaryErr) {
+	primary, fallback := p.ttsProviders()
+	if !p.canUseFallback(ctx, primary, fallback) || !shouldFallback(primaryErr) {
 		return nil, false, primaryErr
 	}
 	p.emit(events.Error{Stage: "tts-fallback", Message: fmt.Sprintf("primary playback TTS failed; retrying with Kokoro: %v", primaryErr)})
-	stream, err := p.TTSFallback.Synthesize(ctx, text)
+	stream, err := fallback.Synthesize(ctx, text)
 	if err != nil {
 		return nil, true, fmt.Errorf("primary playback TTS: %v; Kokoro fallback: %w", primaryErr, err)
 	}
@@ -772,8 +805,8 @@ func shouldFallback(err error) bool {
 		tts.IsProviderErrorKind(err, tts.ProviderErrorMalformed)
 }
 
-func (p *Pipeline) canUseFallback(ctx context.Context) bool {
-	return ctx.Err() == nil && !p.OutputMuted() && p.TTSFallback != nil && p.TTSFallback != p.TTS && p.TTSFallback.Available()
+func (p *Pipeline) canUseFallback(ctx context.Context, primary, fallback tts.Provider) bool {
+	return ctx.Err() == nil && !p.OutputMuted() && fallback != nil && fallback != primary && fallback.Available()
 }
 
 // applyPlaybackEvent applies one playback lifecycle event (produced by the

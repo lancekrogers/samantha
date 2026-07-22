@@ -66,6 +66,20 @@ demo-qwen-voices: build
     just _optimize-demo-gif demos/qwen-voices.gif
     ls -lh demos/qwen-voices.gif
 
+# Opt-in live managed-Qwen gate. Requires the managed model to have already
+# been installed with `samantha models ensure --tts`; outputs remain available
+# for listening instead of disappearing with the Go test temp directory.
+qwen-live:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cache="${XDG_CACHE_HOME:-$HOME/.cache}"
+    out="${SAMANTHA_QWEN_SMOKE_DIR:-$cache/samantha/smoke/qwen}"
+    mkdir -p "$out"
+    SAMANTHA_QWEN_REAL_MODEL=1 SAMANTHA_QWEN_SMOKE_DIR="$out" \
+        go test -tags=integration -count=1 -timeout 30m -v ./internal/tts \
+        -run '^TestLiveManagedQwenVoiceMatrix$'
+    echo "Qwen smoke WAVs: $out"
+
 # Main launcher + Meeting recorder (notes, ★ bookmarks, voice EQ). Full color.
 demo-meeting: build
     #!/usr/bin/env bash

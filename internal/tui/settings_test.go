@@ -164,6 +164,39 @@ func TestSettingsTTSSectionShowsActiveProviderAndModel(t *testing.T) {
 	}
 }
 
+func TestSettingsQwenLanguageSelectionPersists(t *testing.T) {
+	cfg := &config.Config{
+		TTSProvider: "qwen3-tts", QwenTTSMode: "customvoice",
+		QwenTTSVoice: "Vivian", QwenTTSLanguage: "Auto",
+		ModelsDir: t.TempDir(),
+	}
+	m := newSettings(cfg, nil)
+	m.section = sectionLanguage
+	m.width, m.height = 100, 24
+	if len(m.languageItems) < 3 || m.languageItems[0] != "Auto" {
+		t.Fatalf("Qwen language items = %v", m.languageItems)
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Language") || !strings.Contains(view, "Auto ✓") {
+		t.Fatalf("Qwen language view missing active language:\n%s", view)
+	}
+
+	var savedKey string
+	var savedValue any
+	m.saveConfig = func(key string, value any) error {
+		savedKey, savedValue = key, value
+		return nil
+	}
+	m.cursor = 2 // English in the pinned language registry.
+	m.selectCurrent()
+	if savedKey != "qwen_tts_language" || savedValue != "English" {
+		t.Fatalf("saved language = %q/%v, want qwen_tts_language/English", savedKey, savedValue)
+	}
+	if cfg.QwenTTSLanguage != "English" {
+		t.Fatalf("live config language = %q, want English", cfg.QwenTTSLanguage)
+	}
+}
+
 func TestSettingsTabCycleIncludesTools(t *testing.T) {
 	m := settingsModel{cfg: &config.Config{}, section: sectionModel}
 	m, _ = updateSettingsWithKey(t, m, "tab")
@@ -251,6 +284,33 @@ func TestSettingsSelectTTSProviderPersistsAndRefreshesVoices(t *testing.T) {
 	}
 	if !strings.Contains(m.message, "immediately") {
 		t.Fatalf("selection message = %q, want immediate-activation guidance", m.message)
+	}
+}
+
+func TestSettingsSelectTTSProviderUpdatesActivePersona(t *testing.T) {
+	cfg := &config.Config{
+		ActivePersona: "reader", TTSProvider: "kokoro", TTSVoice: "af_heart",
+		QwenTTSMode: "customvoice", QwenTTSVoice: "Ryan",
+	}
+	m := newSettings(cfg, nil)
+	m.qwenStatus = managedqwen.Status{Installed: true, RuntimeReady: true, ModelReady: true}
+	m.buildTTSItems()
+	m.section = sectionTTS
+	m.cursor = 1 // qwen3-tts
+	var gotProvider, gotVoice string
+	m.savePersonaTTS = func(_ *config.Config, provider, voice string) error {
+		gotProvider, gotVoice = provider, voice
+		return nil
+	}
+	m.saveConfig = func(string, any) error { return nil }
+
+	m.selectCurrent()
+
+	if gotProvider != "qwen3-tts" || gotVoice != "Ryan" {
+		t.Fatalf("active persona TTS = %q/%q, want qwen3-tts/Ryan", gotProvider, gotVoice)
+	}
+	if cfg.TTSProvider != "qwen3-tts" {
+		t.Fatalf("live config provider = %q, want qwen3-tts", cfg.TTSProvider)
 	}
 }
 

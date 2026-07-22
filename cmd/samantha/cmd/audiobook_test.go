@@ -36,6 +36,15 @@ func fixedConfig(voice string, speed float64) configLoader {
 	}
 }
 
+func fixedQwenConfig() configLoader {
+	return func() (*config.Config, error) {
+		return &config.Config{
+			TTSProvider: "qwen3-tts", QwenTTSMode: "customvoice",
+			QwenTTSVoice: "Vivian", QwenTTSLanguage: "Auto",
+		}, nil
+	}
+}
+
 // forbidRender returns a renderRunner that fails the test if invoked; preview
 // must stay read-only.
 func forbidRender(t *testing.T) renderRunner {
@@ -99,6 +108,23 @@ func TestAudiobookCreateMapsToRenderOptions(t *testing.T) {
 	}
 	if got != want {
 		t.Errorf("mapped options = %+v, want %+v", got, want)
+	}
+}
+
+func TestAudiobookCreateMapsQwenVoiceAndLanguage(t *testing.T) {
+	var got render.Options
+	capture := func(_ *cobra.Command, opts render.Options) error {
+		got = opts
+		return nil
+	}
+	_, err := runAudiobook(t, capture, fixedQwenConfig(),
+		"create", "book.epub", "--out-dir", "out/book",
+		"--voice", "Ryan", "--language", "English")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Voice != "Ryan" || got.Language != "English" {
+		t.Fatalf("Qwen render options = voice %q language %q, want Ryan/English", got.Voice, got.Language)
 	}
 }
 
@@ -176,6 +202,7 @@ func TestAudiobookPreviewJSONEmitsStableFields(t *testing.T) {
 		"output_dir":     "out/book",
 		"manifest":       "out/book/manifest.json",
 		"voice":          "bf_alice",
+		"language":       "",
 		"speed":          1.0,
 		"resume":         false,
 		"audio_format":   "",

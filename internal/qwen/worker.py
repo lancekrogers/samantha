@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stdout
 import json
 import os
 import sys
@@ -61,23 +62,28 @@ def capabilities(args: argparse.Namespace) -> None:
 
 
 def load_model(path: str):
-    import torch
-    from qwen_tts import Qwen3TTSModel
+    # Third-party model imports print optional dependency and accelerator
+    # notices. Keep stdout reserved for Samantha's JSONL protocol so those
+    # diagnostics cannot be mistaken for a handshake or response.
+    with redirect_stdout(sys.stderr):
+        import torch
+        from qwen_tts import Qwen3TTSModel
 
-    if torch.cuda.is_available():
-        device_map = "cuda:0"
-        dtype = torch.bfloat16
-    elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-        device_map = "mps"
-        dtype = torch.float32
-    else:
-        device_map = "cpu"
-        dtype = torch.float32
-    return Qwen3TTSModel.from_pretrained(
-        path,
-        device_map=device_map,
-        dtype=dtype,
-    )
+        if torch.cuda.is_available():
+            device_map = "cuda:0"
+            dtype = torch.bfloat16
+        elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            device_map = "mps"
+            dtype = torch.float32
+        else:
+            device_map = "cpu"
+            dtype = torch.float32
+        model = Qwen3TTSModel.from_pretrained(
+            path,
+            device_map=device_map,
+            dtype=dtype,
+        )
+    return model
 
 
 def synthesize(args: argparse.Namespace) -> None:

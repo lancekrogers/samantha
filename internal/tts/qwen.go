@@ -74,6 +74,8 @@ type Qwen3TTS struct {
 	consent             bool
 	managed             bool
 	workerScript        string
+	startupTimeout      time.Duration
+	sessionMu           sync.Mutex
 	session             *managedQwenSession
 }
 
@@ -144,10 +146,14 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 			q.mode = VoiceModeCustomVoice
 		}
 		if q.voice == "" || strings.EqualFold(q.voice, "default") {
-			q.voice = "Vivian"
+			q.voice = managedqwen.DefaultVoice
+		} else if voice, ok := managedqwen.CanonicalVoice(q.voice); ok {
+			q.voice = voice
 		}
 		if q.language == "" {
-			q.language = "Auto"
+			q.language = managedqwen.DefaultLanguage
+		} else if language, ok := managedqwen.CanonicalLanguage(q.language); ok {
+			q.language = language
 		}
 	}
 	q.alive.Store(true)
@@ -158,6 +164,7 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 			q.alive.Store(false)
 			return nil, fmt.Errorf("qwen3-tts: %w", err)
 		}
+		q.startupTimeout = startupTimeout
 		q.session = session
 	}
 	return q, nil
@@ -211,6 +218,12 @@ func (q *Qwen3TTS) SynthesizeRequest(ctx context.Context, req SynthesisRequest) 
 		}
 		if strings.TrimSpace(req.Language) == "" {
 			req.Language = q.language
+		}
+		if voice, ok := managedqwen.CanonicalVoice(req.Voice); ok {
+			req.Voice = voice
+		}
+		if language, ok := managedqwen.CanonicalLanguage(req.Language); ok {
+			req.Language = language
 		}
 		if req.Speed != 0 {
 			return SynthesisResult{}, qwenUnsupported("speech speed", "the managed CustomVoice worker does not expose speed control")
@@ -291,17 +304,10 @@ func (q *Qwen3TTS) synthesize(ctx context.Context, req SynthesisRequest, stream 
 
 	outputPath := filepath.Join(tmpDir, "speech.wav")
 	textPath := filepath.Join(tmpDir, "text.txt")
-	if q.managed && q.session == nil {
-		if err := os.WriteFile(textPath, []byte(req.Text), 0o600); err != nil {
-			stream.CloseWithError(fmt.Errorf("qwen3-tts: write synthesis input: %w", err))
-			return
-		}
-	}
 	runCtx, cancel := context.WithTimeout(ctx, q.timeout)
 	defer cancel()
-	if q.session != nil {
-		if err := q.session.Synthesize(runCtx, req, outputPath); err != nil {
-			q.alive.Store(false)
+	if q.managed {
+		if err := q.synthesizeManaged(runCtx, req, outputPath); err != nil {
 			stream.CloseWithError(managedWorkerError(err))
 			return
 		}
@@ -348,6 +354,66 @@ func (q *Qwen3TTS) synthesize(ctx context.Context, req SynthesisRequest, stream 
 	}
 
 	q.streamWorkerWAV(ctx, outputPath, stream)
+}
+
+// synthesizeManaged serializes access to the persistent model worker and owns
+// its recovery policy. Cancellation invalidates only the worker process; the
+// provider remains available and starts a fresh worker on the next request.
+// Unexpected worker/protocol failures receive one immediate restart + retry so
+// conversational callers reach their configured fallback only after Qwen has
+// had a chance to recover itself.
+func (q *Qwen3TTS) synthesizeManaged(ctx context.Context, req SynthesisRequest, outputPath string) error {
+	q.sessionMu.Lock()
+	defer q.sessionMu.Unlock()
+
+	if !q.alive.Load() {
+		return &ProviderError{Provider: qwen3TTSProviderName, Operation: "synthesize", Kind: ProviderErrorUnavailable, Err: errors.New("provider is closed")}
+	}
+	if err := q.ensureManagedSessionLocked(ctx); err != nil {
+		return err
+	}
+
+	err := q.session.Synthesize(ctx, req, outputPath)
+	if err == nil {
+		return nil
+	}
+	q.discardManagedSessionLocked()
+	if ctx.Err() != nil || !managedWorkerRestartable(err) {
+		return err
+	}
+
+	if restartErr := q.ensureManagedSessionLocked(ctx); restartErr != nil {
+		return fmt.Errorf("managed worker failed (%v); restart failed: %w", err, restartErr)
+	}
+	if retryErr := q.session.Synthesize(ctx, req, outputPath); retryErr != nil {
+		q.discardManagedSessionLocked()
+		return fmt.Errorf("managed worker failed after one restart: %w", retryErr)
+	}
+	return nil
+}
+
+func (q *Qwen3TTS) ensureManagedSessionLocked(ctx context.Context) error {
+	if q.session != nil {
+		return nil
+	}
+	timeout := q.startupTimeout
+	if timeout <= 0 {
+		timeout = max(q.timeout, 10*time.Minute)
+	}
+	session, err := startManagedQwenSessionContext(ctx, q.binary, q.workerScript, q.model, timeout)
+	if err != nil {
+		return fmt.Errorf("start managed worker: %w", err)
+	}
+	q.session = session
+	return nil
+}
+
+func (q *Qwen3TTS) discardManagedSessionLocked() {
+	if q.session == nil {
+		return
+	}
+	q.session.Close()
+	q.session = nil
 }
 
 func (q *Qwen3TTS) streamWorkerWAV(ctx context.Context, outputPath string, stream *audio.PCMStream) {
@@ -512,6 +578,8 @@ func (q *Qwen3TTS) Capabilities() ProviderCapabilities {
 	if !q.managed {
 		return caps
 	}
+	q.sessionMu.Lock()
+	defer q.sessionMu.Unlock()
 	registry := managedqwen.CustomVoices()
 	voiceNames := make([]string, 0, len(registry))
 	if q.session != nil && len(q.session.voices) > 0 {
@@ -555,6 +623,13 @@ func (q *Qwen3TTS) Status() ProviderStatus {
 	}
 	if !available {
 		detail = "provider is closed"
+	} else if q.managed {
+		q.sessionMu.Lock()
+		workerReady := q.session != nil
+		q.sessionMu.Unlock()
+		if !workerReady {
+			detail = "managed worker stopped; it will restart on the next request"
+		}
 	}
 	return ProviderStatus{Provider: qwen3TTSProviderName, Available: available, ModelReady: q.model != "" && available, Detail: detail}
 }
@@ -563,7 +638,7 @@ func (q *Qwen3TTS) Status() ProviderStatus {
 // request context; callers should cancel that context during shutdown.
 func (q *Qwen3TTS) Delete() {
 	q.alive.Store(false)
-	if q.session != nil {
-		q.session.Close()
-	}
+	q.sessionMu.Lock()
+	defer q.sessionMu.Unlock()
+	q.discardManagedSessionLocked()
 }

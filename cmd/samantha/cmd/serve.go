@@ -24,7 +24,6 @@ import (
 	"github.com/lancekrogers/samantha/internal/pipeline"
 	"github.com/lancekrogers/samantha/internal/session"
 	"github.com/lancekrogers/samantha/internal/stt"
-	"github.com/lancekrogers/samantha/internal/tts"
 	"github.com/lancekrogers/samantha/internal/ui"
 )
 
@@ -359,14 +358,15 @@ func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus
 		return nil, nil, nil, nil, err
 	}
 
-	ttsProvider, ttsCleanup, err := tts.NewProvider(cfg)
+	ttsSet, err := newTTSProviderSet(cfg)
 	if err != nil {
 		return fail(fmt.Errorf("init TTS: %w", err))
 	}
-	if ttsCleanup != nil {
-		cleanups = append(cleanups, ttsCleanup)
+	cleanups = append(cleanups, ttsSet.Close)
+	p.ReplaceTTS(ttsSet.Primary, ttsSet.Fallback)
+	if ttsSet.FallbackWarning != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", ttsSet.FallbackWarning)
 	}
-	p.TTS = ttsProvider
 
 	var local audio.Engine
 	if !muteHost {

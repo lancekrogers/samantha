@@ -79,6 +79,7 @@ type App struct {
 	// Keep the origin so Esc/q returns to the screen the user came from.
 	settingsReturnScreen screen
 	settingsResumeVoice  bool
+	settingsVoiceState   string
 
 	// startInConversation skips the launcher (resume/continue).
 	startInConversation bool
@@ -183,6 +184,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if target == screenSettings {
 			a.settingsReturnScreen = a.screen
 			a.settingsResumeVoice = a.screen == screenConversation && a.conversation.voiceEnabled
+			a.settingsVoiceState = voiceSettingsState(a.cfg)
 			if a.settingsReturnScreen == screenConversation {
 				pauseVoice = a.conversation.setInputMuted(true)
 			}
@@ -367,7 +369,24 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Unstick cancel/response state if turn-done msgs were dropped while
 		// Settings was active (conversation is not the focused screen).
 		a.conversation.recoverTurnState()
+		voiceChanged := a.settingsVoiceState != voiceSettingsState(a.cfg)
+		a.settingsVoiceState = ""
+		if target == screenConversation && voiceChanged && a.runtime != nil && a.runtime.ReloadVoice != nil {
+			a.conversation.setStatus("Applying voice settings…", false)
+			return a, reloadVoice(a.runCtx, a.runtime.ReloadVoice, resumeVoice)
+		}
 		if resumeVoice {
+			return a, a.conversation.setInputMuted(false)
+		}
+		return a, nil
+
+	case voiceReloadedMsg:
+		if msg.err != nil {
+			a.conversation.setStatus("Voice settings: "+msg.err.Error(), true)
+		} else {
+			a.conversation.setStatus("Voice settings applied", false)
+		}
+		if msg.resumeVoice {
 			return a, a.conversation.setInputMuted(false)
 		}
 		return a, nil
@@ -498,6 +517,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return a, cmd
+}
+
+func voiceSettingsState(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%s",
+		cfg.TTSProvider, cfg.TTSFallbackProvider, cfg.TTSVoice,
+		cfg.QwenTTSMode, cfg.QwenTTSVoice, cfg.QwenTTSLanguage)
 }
 
 func (a App) View() string {
