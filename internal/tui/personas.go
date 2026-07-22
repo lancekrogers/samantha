@@ -7,17 +7,12 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	ansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/persona"
 )
 
-const (
-	personasCreateLabel = "+ Create new persona…"
-	personaFormName     = 0
-	personaFormPrompt   = 1
-)
+const personasCreateLabel = "+ Create new persona…"
 
 // personasModel is the main-menu screen for listing, switching, creating, and
 // editing voice agent personas (including system prompts).
@@ -65,14 +60,40 @@ func newPersonas(cfg *config.Config) personasModel {
 	return m
 }
 
-func newPersonaPromptArea() textarea.Model {
-	ta := textarea.New()
-	ta.Placeholder = "System prompt / personality for this voice agent…"
-	ta.CharLimit = 8000
-	ta.SetWidth(60)
-	ta.SetHeight(8)
-	ta.ShowLineNumbers = false
-	return ta
+// newPersonaCreateInput builds the name field for the create/edit form.
+func newPersonaCreateInput() textinput.Model {
+	ti := textinput.New()
+	ti.Placeholder = "Research buddy"
+	ti.CharLimit = 64
+	ti.Width = 40
+	ti.Prompt = "  Name: "
+	return ti
+}
+
+// personaListLabel formats one row for the Personas list.
+func personaListLabel(p *persona.Profile) string {
+	if p == nil {
+		return ""
+	}
+	label := p.DisplayName
+	if label == "" {
+		label = p.ID
+	}
+	if p.ID != "" && p.DisplayName != "" && !strings.EqualFold(p.DisplayName, p.ID) {
+		label = fmt.Sprintf("%s (%s)", p.DisplayName, p.ID)
+	}
+	detail := strings.TrimSpace(p.TTS.Provider)
+	if v := strings.TrimSpace(p.TTS.Voice); v != "" {
+		if detail != "" {
+			detail += " · " + v
+		} else {
+			detail = v
+		}
+	}
+	if detail != "" {
+		label += " — " + detail
+	}
+	return label
 }
 
 func (m *personasModel) reload() {
@@ -120,18 +141,6 @@ func (m personasModel) visibleRows() int {
 	return max(h-6, 1)
 }
 
-func (m *personasModel) resizeForm() {
-	w := max(m.width-8, 24)
-	m.nameInput.Width = max(w-8, 20)
-	m.promptTA.SetWidth(w)
-	// Prompt area uses most of the body after labels.
-	h := max(m.height-12, 4)
-	if h > 14 {
-		h = 14
-	}
-	m.promptTA.SetHeight(h)
-}
-
 func (m personasModel) Update(msg tea.Msg) (personasModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -172,183 +181,6 @@ func (m personasModel) Update(msg tea.Msg) (personasModel, tea.Cmd) {
 	return m, nil
 }
 
-func (m personasModel) updateForm(msg tea.KeyMsg) (personasModel, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		m.cancelForm()
-		m.message = "Edit cancelled"
-		return m, nil
-	case "ctrl+s":
-		return m.submitForm()
-	case "tab":
-		if m.formStep == personaFormName {
-			return m.focusPromptStep()
-		}
-		return m.focusNameStep()
-	case "shift+tab":
-		if m.formStep == personaFormPrompt {
-			return m.focusNameStep()
-		}
-		return m.focusPromptStep()
-	case "enter":
-		if m.formStep == personaFormName {
-			return m.focusPromptStep()
-		}
-		// Enter inserts newline in the prompt textarea.
-	}
-
-	var cmd tea.Cmd
-	if m.formStep == personaFormName {
-		m.nameInput, cmd = m.nameInput.Update(msg)
-	} else {
-		m.promptTA, cmd = m.promptTA.Update(msg)
-	}
-	return m, cmd
-}
-
-func (m *personasModel) cancelForm() {
-	m.formMode = ""
-	m.formStep = personaFormName
-	m.editID = ""
-	m.nameInput.Blur()
-	m.nameInput.SetValue("")
-	m.promptTA.Blur()
-	m.promptTA.SetValue("")
-}
-
-func (m personasModel) focusNameStep() (personasModel, tea.Cmd) {
-	m.formStep = personaFormName
-	m.promptTA.Blur()
-	m.nameInput.Focus()
-	return m, textinput.Blink
-}
-
-func (m personasModel) focusPromptStep() (personasModel, tea.Cmd) {
-	if strings.TrimSpace(m.nameInput.Value()) == "" {
-		m.message = "Enter a display name first"
-		return m, nil
-	}
-	m.formStep = personaFormPrompt
-	m.nameInput.Blur()
-	m.promptTA.Focus()
-	return m, textarea.Blink
-}
-
-func (m *personasModel) beginCreate() tea.Cmd {
-	m.formMode = "create"
-	m.formStep = personaFormName
-	m.editID = ""
-	m.message = ""
-	m.resizeForm()
-	m.nameInput.SetValue("")
-	m.nameInput.Focus()
-	def := ""
-	if m.defaultPrompt != nil {
-		if text, err := m.defaultPrompt(); err == nil {
-			def = text
-		}
-	}
-	m.promptTA.SetValue(def)
-	m.promptTA.Blur()
-	return textinput.Blink
-}
-
-func (m *personasModel) beginEdit() tea.Cmd {
-	if m.loadErr != "" || m.cursor < 0 || m.cursor >= len(m.items) {
-		return nil
-	}
-	p := m.items[m.cursor]
-	if p == nil {
-		return nil
-	}
-	m.formMode = "edit"
-	m.formStep = personaFormName
-	m.editID = p.ID
-	m.message = ""
-	m.resizeForm()
-	m.nameInput.SetValue(p.DisplayName)
-	m.nameInput.Focus()
-	promptName := p.Prompts.Persona
-	if promptName == "" {
-		promptName = p.ID
-	}
-	text := ""
-	if m.loadPrompt != nil {
-		if got, err := m.loadPrompt(promptName); err == nil {
-			text = got
-		}
-	}
-	if text == "" && m.defaultPrompt != nil {
-		text, _ = m.defaultPrompt()
-	}
-	m.promptTA.SetValue(text)
-	m.promptTA.Blur()
-	return textinput.Blink
-}
-
-func (m personasModel) submitForm() (personasModel, tea.Cmd) {
-	name := strings.TrimSpace(m.nameInput.Value())
-	if name == "" {
-		m.message = "Enter a display name"
-		m.formStep = personaFormName
-		m.nameInput.Focus()
-		return m, nil
-	}
-	prompt := strings.TrimSpace(m.promptTA.Value())
-	if prompt == "" {
-		m.message = "Enter a system prompt (or paste the default and edit it)"
-		m.formStep = personaFormPrompt
-		m.promptTA.Focus()
-		return m, textarea.Blink
-	}
-
-	switch m.formMode {
-	case "create":
-		create := m.createPersona
-		if create == nil {
-			create = persona.CreateAndUseWithOpts
-		}
-		p, err := create(m.cfg, persona.CreateOpts{DisplayName: name, SystemPrompt: prompt})
-		if err != nil {
-			m.message = fmt.Sprintf("Failed to create: %v", err)
-			return m, nil
-		}
-		m.cancelForm()
-		m.reload()
-		for i, item := range m.items {
-			if item != nil && item.ID == p.ID {
-				m.cursor = i
-				break
-			}
-		}
-		m.message = fmt.Sprintf("Created and activated %s (%s) with custom system prompt", p.DisplayName, p.ID)
-	case "edit":
-		if m.saveName != nil {
-			if _, err := m.saveName(m.editID, name); err != nil {
-				m.message = fmt.Sprintf("Failed to save name: %v", err)
-				return m, nil
-			}
-		}
-		if m.savePrompt != nil {
-			if _, err := m.savePrompt(m.editID, prompt); err != nil {
-				m.message = fmt.Sprintf("Failed to save prompt: %v", err)
-				return m, nil
-			}
-		}
-		// If this is the active persona, refresh display name / prompt ref on cfg.
-		if m.cfg != nil && persona.ActiveID(m.cfg) == m.editID {
-			if m.usePersona != nil {
-				_ = m.usePersona(m.cfg, m.editID)
-			}
-		}
-		id := m.editID
-		m.cancelForm()
-		m.reload()
-		m.message = fmt.Sprintf("Updated %s (system prompt saved)", id)
-	}
-	return m, nil
-}
-
 func (m *personasModel) selectCurrent() tea.Cmd {
 	if m.loadErr != "" {
 		return nil
@@ -378,131 +210,4 @@ func (m *personasModel) selectCurrent() tea.Cmd {
 	}
 	m.message = fmt.Sprintf("Active persona: %s · press e to edit name/prompt", name)
 	return nil
-}
-
-func (m personasModel) View() string {
-	width := m.width
-	if width <= 0 {
-		width = 80
-	}
-	var b strings.Builder
-	b.WriteString(headerStyle.Render("  Personas"))
-	b.WriteString("\n")
-	b.WriteString(dimStyle.Render(ansi.Truncate("  Switch, create, or edit voice agents (system prompt included)", width, "…")))
-	b.WriteString("\n")
-	if m.height == 0 || m.height >= 10 {
-		b.WriteString(dimStyle.Render(strings.Repeat("─", max(width, 1))))
-		b.WriteString("\n")
-	}
-
-	listRows := m.visibleRows()
-	if m.formMode != "" {
-		for _, line := range m.formLines(listRows) {
-			b.WriteString(line)
-			b.WriteString("\n")
-		}
-	} else {
-		for _, line := range m.listLines(listRows) {
-			b.WriteString(line)
-			b.WriteString("\n")
-		}
-	}
-
-	if m.message != "" {
-		b.WriteString(ansi.Truncate("  "+statusStyle.Render(m.message), width, "…"))
-		b.WriteString("\n")
-	} else {
-		b.WriteString("\n")
-	}
-	help := "  ↑/↓ navigate • enter switch/create • e edit • esc back"
-	if m.formMode != "" {
-		help = "  tab fields • ctrl+s save & activate • enter next field (name) / newline (prompt) • esc cancel"
-	}
-	b.WriteString(dimStyle.Render(ansi.Truncate(help, width, "…")))
-	return b.String()
-}
-
-func (m personasModel) listLines(listRows int) []string {
-	if m.loadErr != "" {
-		return padLines([]string{"  error loading personas: " + m.loadErr}, listRows)
-	}
-	active := ""
-	if m.cfg != nil {
-		active = persona.ActiveID(m.cfg)
-	}
-	total := m.listLen()
-	start := m.offset
-	end := min(start+listRows, total)
-	lines := make([]string, 0, listRows)
-	for i := start; i < end; i++ {
-		if i == len(m.items) {
-			lines = append(lines, m.row(i, personasCreateLabel))
-			continue
-		}
-		p := m.items[i]
-		mark := ""
-		if p != nil && p.ID == active {
-			mark = " ✓"
-		}
-		lines = append(lines, m.row(i, personaListLabel(p)+mark))
-	}
-	return padLines(lines, listRows)
-}
-
-func (m personasModel) formLines(listRows int) []string {
-	title := "  Create a new voice agent"
-	if m.formMode == "edit" {
-		title = "  Edit persona " + m.editID
-	}
-	slug := persona.Slugify(m.nameInput.Value())
-	if slug == "" {
-		slug = "persona"
-	}
-	nameMark, promptMark := " ", " "
-	if m.formStep == personaFormName {
-		nameMark = "▸"
-	} else {
-		promptMark = "▸"
-	}
-	lines := []string{
-		title,
-		"",
-		fmt.Sprintf("%s Name", nameMark),
-		m.nameInput.View(),
-	}
-	if m.formMode == "create" {
-		lines = append(lines, dimStyle.Render(fmt.Sprintf("  id will be: %s", slug)))
-	}
-	lines = append(lines,
-		"",
-		fmt.Sprintf("%s System prompt  (supports {agent_name})", promptMark),
-		m.promptTA.View(),
-		"",
-		dimStyle.Render("  ctrl+s save · tab switch fields · esc cancel"),
-	)
-	return padLines(lines, listRows)
-}
-
-func (m personasModel) row(i int, label string) string {
-	width := m.width
-	if width <= 0 {
-		width = 80
-	}
-	prefix := "  "
-	style := dimStyle
-	if i == m.cursor {
-		prefix = "▸ "
-		style = selectedStyle
-	}
-	return style.Render(ansi.Truncate(prefix+label, width, "…"))
-}
-
-func padLines(lines []string, n int) []string {
-	for len(lines) < n {
-		lines = append(lines, "")
-	}
-	if len(lines) > n {
-		return lines[:n]
-	}
-	return lines
 }
