@@ -54,7 +54,7 @@ Environment:
 - Working directory: %s
 - Hostname: %s
 - OS: %s/%s
-- You have tools available: list_files, read_file, write_file, run_command
+- You have tools available: list_files, read_file, write_file, run_command, web_search, fetch_url
 - All file paths are relative to the working directory unless absolute`, user, workDir, hostname, runtime.GOOS, runtime.GOARCH)
 }
 

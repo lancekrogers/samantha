@@ -422,7 +422,7 @@ Prompt bodies stay in `prompts/` (see `samantha prompts`).
 | `brain_provider` | `claude` | `BRAIN_PROVIDER` | Brain backend: `claude`, `grok`, or `ollama` |
 | `ollama_model` | empty | `OLLAMA_MODEL` | Ollama model name |
 | `ollama_host` | `http://localhost:11434` | `OLLAMA_HOST` | Ollama server URL |
-| `voice_tools_enabled` | `false` (auto-`true` for Ollama when unset) | `VOICE_TOOLS_ENABLED` | Enable local tool calls (`list_files` / `read_file` / `write_file` / `run_command` for Ollama). Ollama enables this automatically unless you set the key or env explicitly to `false`. Remote `samantha serve` still uses `remote_tools_enabled` (default off). |
+| `voice_tools_enabled` | `false` (auto-`true` for Ollama when unset) | `VOICE_TOOLS_ENABLED` | Enable tool calls (`list_files` / `read_file` / `write_file` / `run_command` / `web_search` / `fetch_url` for Ollama). Ollama enables this automatically unless you set the key or env explicitly to `false`. Remote `samantha serve` still uses `remote_tools_enabled` (default off). |
 | `tool_command_timeout` | `30` (clamped 1–120) | `TOOL_COMMAND_TIMEOUT` | Maximum seconds for one local `run_command` invocation. The whole brain turn has its own timeout. |
 | `remote_tools_enabled` | `false` | | Allow network-triggered turns from `samantha serve` to invoke tools; keep off unless remote clients are trusted. |
 | `calibre_enabled` | `false` | `CALIBRE_ENABLED` | Opt in to Calibre library browse/search, TUI Library + picker, and `--from-library` |
@@ -495,7 +495,8 @@ available so the model can discover and load the relevant skill. After
 activation, **only the listed tools are advertised and every call outside the
 list is rejected — including `read_skill`**, so a restricted skill cannot be
 escaped by loading another. Tokens use common aliases (`Read` → `read_file`,
-`Bash` / `Bash(…)` → `run_command`). If `allowed-tools` maps to no Samantha
+`Bash` / `Bash(…)` → `run_command`, `WebSearch` → `web_search`, and
+`WebFetch` → `fetch_url`). If `allowed-tools` maps to no Samantha
 tools, activation fails with an error instead of soft-bricking the turn.
 The global safety gates still apply: `voice_tools_enabled` /
 `remote_tools_enabled` must allow tools before any skill policy can grant a call.

@@ -96,6 +96,14 @@ func toolArgSummary(call api.ToolCall) string {
 			}
 			return c
 		}
+	case "web_search":
+		if q, _ := args["query"].(string); q != "" {
+			return q
+		}
+	case "fetch_url":
+		if u, _ := args["url"].(string); u != "" {
+			return u
+		}
 	case "read_skill":
 		if n, _ := args["name"].(string); n != "" {
 			return n
@@ -243,6 +251,40 @@ func voiceAssistantTools(catalog []skills.Skill) api.Tools {
 				},
 			},
 		},
+		{
+			Type: "function",
+			Function: api.ToolFunction{
+				Name:        "web_search",
+				Description: "Search the public web and return result titles, URLs, and snippets. Use this for current information instead of inventing a shell search command.",
+				Parameters: api.ToolFunctionParameters{
+					Type:     "object",
+					Required: []string{"query"},
+					Properties: props(map[string]api.ToolProperty{
+						"query": {
+							Type:        api.PropertyType{"string"},
+							Description: "Search query.",
+						},
+					}),
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: api.ToolFunction{
+				Name:        "fetch_url",
+				Description: "Fetch an HTTP or HTTPS web page and return readable text. Use it to inspect a URL returned by web_search.",
+				Parameters: api.ToolFunctionParameters{
+					Type:     "object",
+					Required: []string{"url"},
+					Properties: props(map[string]api.ToolProperty{
+						"url": {
+							Type:        api.PropertyType{"string"},
+							Description: "Absolute HTTP or HTTPS URL to read.",
+						},
+					}),
+				},
+			},
+		},
 	}
 
 	if len(catalog) > 0 {
@@ -286,6 +328,10 @@ func executeToolWithTimeout(ctx context.Context, workDir string, call api.ToolCa
 		return toolWriteFile(workDir, args)
 	case "run_command":
 		return toolRunCommandWithTimeout(ctx, workDir, args, commandTimeout)
+	case "web_search":
+		return toolWebSearch(ctx, args)
+	case "fetch_url":
+		return toolFetchURL(ctx, args)
 	case "read_skill":
 		// Without a session, activation is not tracked (tests / legacy).
 		return toolReadSkill(catalog, args)

@@ -257,6 +257,10 @@ func normalizeToolName(name string) string {
 		return "list_files"
 	case "read_skill", "readskill", "skill":
 		return "read_skill"
+	case "websearch", "web_search", "search_web", "searchweb":
+		return "web_search"
+	case "webfetch", "web_fetch", "fetch_url", "fetchurl", "fetch":
+		return "fetch_url"
 	default:
 		return strings.ToLower(name)
 	}

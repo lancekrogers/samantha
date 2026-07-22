@@ -375,7 +375,7 @@ func TestToolSessionRejectsSkillWithUnmappedAllowedTools(t *testing.T) {
 		Description:  "bad allow-list",
 		Body:         "body",
 		Dir:          "/s",
-		AllowedTools: []string{"WebSearch", "Browser"},
+		AllowedTools: []string{"Browser"},
 	}}
 	sess := &toolSession{catalog: catalog}
 	got := sess.execute(context.Background(), "/work", skillCall("webonly"))
@@ -427,7 +427,7 @@ func TestToolSessionUnrestrictedWhenNoAllowedTools(t *testing.T) {
 		t.Fatal("expected activation")
 	}
 	tools := sess.tools()
-	for _, name := range []string{"list_files", "read_file", "write_file", "run_command", "read_skill"} {
+	for _, name := range []string{"list_files", "read_file", "write_file", "run_command", "web_search", "fetch_url", "read_skill"} {
 		if !hasTool(tools, name) {
 			t.Fatalf("unrestricted skill missing %s", name)
 		}
@@ -471,6 +471,9 @@ func TestVoiceAssistantToolsReadSkillGating(t *testing.T) {
 	}
 	if !hasTool(tools, "list_files") {
 		t.Fatal("base tools missing")
+	}
+	if !hasTool(tools, "web_search") || !hasTool(tools, "fetch_url") {
+		t.Fatal("web tools missing")
 	}
 
 	// Catalog present → read_skill offered when tools are enabled.
