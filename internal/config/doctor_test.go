@@ -58,6 +58,22 @@ func TestDiagnoseMissingAssetsAreWarnings(t *testing.T) {
 	}
 }
 
+func TestDiagnoseReportsEnabledMeetingSpeakerAssets(t *testing.T) {
+	cfg := &Config{STTProvider: "none", TTSProvider: "none"}
+	cfg.Speaker.Enabled = true
+	cfg.Speaker.Meeting.Enabled = true
+	byName := diagByName(Diagnose(cfg, t.TempDir(), okLookPath))
+	for _, name := range []string{
+		"asset:speaker.segmentation.pyannote-3.0",
+		"asset:speaker.embedding.nemo-titanet-small",
+	} {
+		diagnostic, ok := byName[name]
+		if !ok || diagnostic.Severity != SeverityWarn || !strings.Contains(diagnostic.Remediation, "models ensure") {
+			t.Fatalf("speaker diagnostic %q = %+v", name, diagnostic)
+		}
+	}
+}
+
 func TestDiagnoseUnsupportedProviderIsError(t *testing.T) {
 	cfg := &Config{STTProvider: "bogus", TTSProvider: "kokoro"}
 	diags := Diagnose(cfg, t.TempDir(), okLookPath)

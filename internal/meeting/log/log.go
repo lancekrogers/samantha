@@ -6,7 +6,8 @@
 //
 //	import meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 //
-// JSONL event types: session_start, utterance, note, bookmark, error, session_end, routed.
+// JSONL event types: session_start, utterance, note, bookmark, error,
+// speaker_analysis, speaker_segment, speaker_utterance, session_end, routed.
 // Notes and bookmarks carry offset_ms from session start so they can be
 // aligned with the transcript later (Plaude-style important moments).
 package log
@@ -25,39 +26,93 @@ import (
 
 // Event kinds written to the JSONL sidecar.
 const (
-	TypeSessionStart = "session_start"
-	TypeUtterance    = "utterance"
-	TypeNote         = "note"
-	TypeBookmark     = "bookmark"
-	TypeError        = "error"
-	TypeSessionEnd   = "session_end"
+	TypeSessionStart     = "session_start"
+	TypeUtterance        = "utterance"
+	TypeNote             = "note"
+	TypeBookmark         = "bookmark"
+	TypeError            = "error"
+	TypeSpeakerAnalysis  = "speaker_analysis"
+	TypeSpeakerSegment   = "speaker_segment"
+	TypeSpeakerUtterance = "speaker_utterance"
+	TypeSessionEnd       = "session_end"
 )
 
 // Event is one JSONL record. OffsetMs is milliseconds since session start.
 type Event struct {
-	Type     string `json:"type"`
-	TS       string `json:"ts"`                // RFC3339
-	OffsetMs int64  `json:"offset_ms"`         // from session start
-	Text     string `json:"text,omitempty"`    // utterance / note body
-	Label    string `json:"label,omitempty"`   // bookmark label (default "important")
-	Message  string `json:"message,omitempty"` // error text
-	STT      string `json:"stt,omitempty"`     // session_start only
-	Desc     string `json:"description,omitempty"`
+	Type         string  `json:"type"`
+	TS           string  `json:"ts"`                // RFC3339
+	OffsetMs     int64   `json:"offset_ms"`         // from session start
+	ID           string  `json:"id,omitempty"`      // stable within this meeting
+	Text         string  `json:"text,omitempty"`    // utterance / note body
+	Label        string  `json:"label,omitempty"`   // bookmark or speaker label
+	Message      string  `json:"message,omitempty"` // error text
+	STT          string  `json:"stt,omitempty"`     // session_start only
+	Desc         string  `json:"description,omitempty"`
+	Status       string  `json:"status,omitempty"`
+	Artifact     string  `json:"artifact,omitempty"`
+	AudioFile    string  `json:"audio_file,omitempty"`
+	StartMS      int64   `json:"start_ms,omitempty"`
+	EndMS        int64   `json:"end_ms,omitempty"`
+	Confidence   float32 `json:"confidence,omitempty"`
+	State        string  `json:"state,omitempty"`
+	Timing       string  `json:"timing,omitempty"`
+	SpeakerCount int     `json:"speaker_count,omitempty"`
+}
+
+// TranscriptRecord is the timestamp estimate retained for post-capture
+// attribution. It contains text only; no PCM or embeddings are persisted.
+type TranscriptRecord struct {
+	ID      string
+	StartMS int64
+	EndMS   int64
+	Text    string
+}
+
+// SpeakerSegment and SpeakerUtterance are persistence-only projections of the
+// analysis domain, keeping this log package independent from meeting policy.
+type SpeakerSegment struct {
+	ID         string
+	StartMS    int64
+	EndMS      int64
+	Label      string
+	Confidence float32
+	State      string
+}
+
+type SpeakerUtterance struct {
+	TranscriptRecord
+	Speaker    string
+	Confidence float32
+	State      string
+}
+
+type SpeakerAnalysis struct {
+	Status     string
+	Error      string
+	Artifact   string
+	AudioFile  string
+	Segments   []SpeakerSegment
+	Utterances []SpeakerUtterance
 }
 
 // Summary describes a finished recording, for the file trailer and the
 // command's console/JSON summaries.
 type Summary struct {
-	Description     string    `json:"description"`
-	File            string    `json:"file"`       // plain-text .log
-	JSONLFile       string    `json:"jsonl_file"` // structured .jsonl
-	StartedAt       time.Time `json:"started_at"`
-	EndedAt         time.Time `json:"ended_at"`
-	DurationSeconds int64     `json:"duration_seconds"`
-	Utterances      int       `json:"utterances"`
-	Notes           int       `json:"notes"`
-	Bookmarks       int       `json:"bookmarks"`
-	Errors          int       `json:"errors"`
+	Description         string    `json:"description"`
+	File                string    `json:"file"`       // plain-text .log
+	JSONLFile           string    `json:"jsonl_file"` // structured .jsonl
+	StartedAt           time.Time `json:"started_at"`
+	EndedAt             time.Time `json:"ended_at"`
+	DurationSeconds     int64     `json:"duration_seconds"`
+	Utterances          int       `json:"utterances"`
+	Notes               int       `json:"notes"`
+	Bookmarks           int       `json:"bookmarks"`
+	Errors              int       `json:"errors"`
+	SpeakerStatus       string    `json:"speaker_status,omitempty"`
+	SpeakerCount        int       `json:"speaker_count,omitempty"`
+	SpeakerAnalysisFile string    `json:"speaker_analysis_file,omitempty"`
+	AudioFile           string    `json:"audio_file,omitempty"`
+	SpeakerError        string    `json:"speaker_error,omitempty"`
 }
 
 // Duration reports the recording length.
@@ -65,20 +120,24 @@ func (s Summary) Duration() time.Duration { return s.EndedAt.Sub(s.StartedAt) }
 
 // Writer is the dual-file sink for one meeting recording.
 type Writer struct {
-	mu          sync.Mutex
-	log         *os.File
-	jsonl       *os.File
-	path        string
-	jsonlPath   string
-	description string
-	sttLabel    string
-	started     time.Time
-	utterances  int
-	notes       int
-	bookmarks   int
-	errors      int
-	closed      bool
-	summary     Summary // last Close result; returned again on idempotent Close
+	mu                 sync.Mutex
+	log                *os.File
+	jsonl              *os.File
+	path               string
+	jsonlPath          string
+	description        string
+	sttLabel           string
+	started            time.Time
+	utterances         int
+	notes              int
+	bookmarks          int
+	errors             int
+	transcripts        []TranscriptRecord
+	lastUtteranceEndMS int64
+	speakerAnalysis    SpeakerAnalysis
+	speakerCount       int
+	closed             bool
+	summary            Summary // last Close result; returned again on idempotent Close
 }
 
 // Create opens path (.log) exclusively and a sibling .jsonl file. Path must
@@ -153,18 +212,65 @@ func (w *Writer) StartedAt() time.Time {
 	return w.started
 }
 
+// Transcripts returns an owned snapshot for post-capture speaker attribution.
+func (w *Writer) Transcripts() []TranscriptRecord {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]TranscriptRecord(nil), w.transcripts...)
+}
+
 // OnUtterance implements listen.Sink.
 func (w *Writer) OnUtterance(u listen.Utterance) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	endMS := u.At.Sub(w.started).Milliseconds()
+	if endMS < 0 {
+		endMS = 0
+	}
+	startMS := endMS - estimatedSpeechDuration(u.Text).Milliseconds()
+	if startMS < w.lastUtteranceEndMS {
+		startMS = w.lastUtteranceEndMS
+	}
+	if startMS < 0 {
+		startMS = 0
+	}
+	if endMS <= startMS {
+		endMS = startMS + 1
+	}
+	record := TranscriptRecord{
+		ID:      fmt.Sprintf("utterance-%d", w.utterances+1),
+		StartMS: startMS,
+		EndMS:   endMS,
+		Text:    u.Text,
+	}
 	if err := w.writeLog(fmt.Sprintf("[%s] %s\n", u.At.Format("15:04:05"), u.Text)); err != nil {
 		return err
 	}
-	if err := w.writeEvent(Event{Type: TypeUtterance, Text: u.Text, TS: u.At.Format(time.RFC3339)}); err != nil {
+	if err := w.writeEvent(Event{
+		Type: TypeUtterance, ID: record.ID, Text: u.Text,
+		TS: u.At.Format(time.RFC3339), StartMS: startMS, EndMS: endMS, Timing: "estimated",
+	}); err != nil {
 		return err
 	}
+	w.transcripts = append(w.transcripts, record)
+	w.lastUtteranceEndMS = endMS
 	w.utterances++
 	return nil
+}
+
+func estimatedSpeechDuration(text string) time.Duration {
+	words := len(strings.Fields(text))
+	if words < 1 {
+		words = 1
+	}
+	d := time.Duration(words) * 350 * time.Millisecond
+	if d < 800*time.Millisecond {
+		return 800 * time.Millisecond
+	}
+	if d > 15*time.Second {
+		return 15 * time.Second
+	}
+	return d
 }
 
 // OnTimeout implements listen.Sink. Silence writes nothing.
@@ -235,6 +341,105 @@ func (w *Writer) AddBookmark(label, text string) error {
 	return nil
 }
 
+// WriteSpeakerAnalysis appends post-capture status, timeline, and attributed
+// utterances. Historical transcript lines remain untouched; the additive
+// section and event types make fallback/reprocessing explicit.
+func (w *Writer) WriteSpeakerAnalysis(analysis SpeakerAnalysis) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return fmt.Errorf("meetinglog: writer closed before speaker analysis")
+	}
+
+	speakers := make(map[string]struct{})
+	for _, segment := range analysis.Segments {
+		if segment.Label != "" && segment.Label != "unknown" {
+			speakers[segment.Label] = struct{}{}
+		}
+	}
+	w.speakerAnalysis = analysis
+	w.speakerCount = len(speakers)
+
+	var section strings.Builder
+	section.WriteString("\n# Speaker analysis: ")
+	section.WriteString(analysis.Status)
+	if len(speakers) > 0 {
+		noun := "speakers"
+		if len(speakers) == 1 {
+			noun = "speaker"
+		}
+		fmt.Fprintf(&section, " (%d %s)", len(speakers), noun)
+	}
+	if analysis.Error != "" {
+		section.WriteString(" — ")
+		section.WriteString(analysis.Error)
+	}
+	section.WriteString("\n")
+	if analysis.Artifact != "" {
+		fmt.Fprintf(&section, "# Speaker analysis file: %s\n", analysis.Artifact)
+	}
+	if analysis.AudioFile != "" {
+		fmt.Fprintf(&section, "# Meeting audio: %s\n", analysis.AudioFile)
+	}
+	if len(analysis.Segments) > 0 {
+		section.WriteString("# Speaker timeline\n")
+		for _, segment := range analysis.Segments {
+			fmt.Fprintf(&section, "[%s] %s\n", formatOffsetRange(segment.StartMS, segment.EndMS), segment.Label)
+		}
+	}
+	if len(analysis.Utterances) > 0 {
+		section.WriteString("# Speaker-attributed transcript\n")
+		for _, utterance := range analysis.Utterances {
+			fmt.Fprintf(&section, "[%s] %s: %s\n",
+				formatOffsetRange(utterance.StartMS, utterance.EndMS), utterance.Speaker, utterance.Text)
+		}
+	}
+	if err := w.writeLog(section.String()); err != nil {
+		return err
+	}
+
+	statusEvent := Event{
+		Type: TypeSpeakerAnalysis, Status: analysis.Status, Message: analysis.Error,
+		Artifact: analysis.Artifact, AudioFile: analysis.AudioFile, SpeakerCount: len(speakers),
+	}
+	if err := w.writeEvent(statusEvent); err != nil {
+		return err
+	}
+	for _, segment := range analysis.Segments {
+		if err := w.writeEvent(Event{
+			Type: TypeSpeakerSegment, ID: segment.ID, Label: segment.Label,
+			StartMS: segment.StartMS, EndMS: segment.EndMS,
+			Confidence: segment.Confidence, State: segment.State,
+			TS: w.started.Add(time.Duration(segment.StartMS) * time.Millisecond).Format(time.RFC3339),
+		}); err != nil {
+			return err
+		}
+	}
+	for _, utterance := range analysis.Utterances {
+		if err := w.writeEvent(Event{
+			Type: TypeSpeakerUtterance, ID: utterance.ID, Text: utterance.Text,
+			Label: utterance.Speaker, StartMS: utterance.StartMS, EndMS: utterance.EndMS,
+			Confidence: utterance.Confidence, State: utterance.State, Timing: "estimated",
+			TS: w.started.Add(time.Duration(utterance.EndMS) * time.Millisecond).Format(time.RFC3339),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func formatOffsetRange(startMS, endMS int64) string {
+	format := func(ms int64) string {
+		if ms < 0 {
+			ms = 0
+		}
+		d := time.Duration(ms) * time.Millisecond
+		return fmt.Sprintf("%02d:%02d:%02d.%03d",
+			int(d.Hours()), int(d.Minutes())%60, int(d.Seconds())%60, int(d.Milliseconds())%1000)
+	}
+	return format(startMS) + "–" + format(endMS)
+}
+
 // Close writes the trailer / session_end and closes both files.
 // Safe to call more than once: later calls return the first Summary and a nil
 // error so embedded teardown and the CLI summary path can both Close.
@@ -245,15 +450,20 @@ func (w *Writer) Close() (Summary, error) {
 		return w.summary, nil
 	}
 	s := Summary{
-		Description: w.description,
-		File:        w.path,
-		JSONLFile:   w.jsonlPath,
-		StartedAt:   w.started,
-		EndedAt:     time.Now(),
-		Utterances:  w.utterances,
-		Notes:       w.notes,
-		Bookmarks:   w.bookmarks,
-		Errors:      w.errors,
+		Description:         w.description,
+		File:                w.path,
+		JSONLFile:           w.jsonlPath,
+		StartedAt:           w.started,
+		EndedAt:             time.Now(),
+		Utterances:          w.utterances,
+		Notes:               w.notes,
+		Bookmarks:           w.bookmarks,
+		Errors:              w.errors,
+		SpeakerStatus:       w.speakerAnalysis.Status,
+		SpeakerCount:        w.speakerCount,
+		SpeakerAnalysisFile: w.speakerAnalysis.Artifact,
+		AudioFile:           w.speakerAnalysis.AudioFile,
+		SpeakerError:        w.speakerAnalysis.Error,
 	}
 	s.DurationSeconds = int64(s.Duration().Round(time.Second) / time.Second)
 	trailer := fmt.Sprintf("\n# Ended: %s (duration %s, %d utterances, %d notes, %d bookmarks, %d errors)\n",

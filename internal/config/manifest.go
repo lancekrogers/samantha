@@ -11,14 +11,21 @@ import (
 const AssetSchema = "samantha.assets.v1"
 
 // Canonical asset facts shared by the manifest builder and the legacy download
-// adapters so URLs and check files have a single source of truth. Checksums for
-// these two come from the GitHub release asset digests (sha256).
+// adapters so URLs and check files have a single source of truth. VAD/Kokoro
+// checksums come from GitHub release asset digests; the speaker release predates
+// GitHub digests, so those sha256 values are pinned from the downloaded release
+// bytes and guarded by manifest tests.
 const (
-	sileroVADURL        = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
-	sileroVADSHA256     = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"
-	sileroVADSize       = 643854
-	kokoroArchiveURL    = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2"
-	kokoroArchiveSHA256 = "c133d26353d776da730870dac7da07dbfc9a5e3bc80cc5e8e83ab6e823be7046"
+	sileroVADURL                    = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
+	sileroVADSHA256                 = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"
+	sileroVADSize                   = 643854
+	kokoroArchiveURL                = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2"
+	kokoroArchiveSHA256             = "c133d26353d776da730870dac7da07dbfc9a5e3bc80cc5e8e83ab6e823be7046"
+	speakerSegmentationURL          = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
+	speakerSegmentationSHA256       = "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488"
+	speakerEmbeddingURL             = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx"
+	speakerEmbeddingSHA256          = "ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e"
+	speakerEmbeddingSize      int64 = 40257283
 )
 
 var kokoroCheckFiles = []string{"model.onnx", "voices.bin", "tokens.txt", "espeak-ng-data"}
@@ -31,9 +38,10 @@ func sherpaWhisperOfflineURL(model string) string {
 type AssetKind string
 
 const (
-	AssetKindVAD AssetKind = "vad"
-	AssetKindSTT AssetKind = "stt"
-	AssetKindTTS AssetKind = "tts"
+	AssetKindVAD     AssetKind = "vad"
+	AssetKindSTT     AssetKind = "stt"
+	AssetKindTTS     AssetKind = "tts"
+	AssetKindSpeaker AssetKind = "speaker"
 )
 
 // AssetFile is one downloadable file belonging to an asset. Path is relative to
@@ -88,7 +96,7 @@ func (a Asset) Validate() error {
 		return fmt.Errorf("asset %q: missing provider", a.ID)
 	}
 	switch a.Kind {
-	case AssetKindVAD, AssetKindSTT, AssetKindTTS:
+	case AssetKindVAD, AssetKindSTT, AssetKindTTS, AssetKindSpeaker:
 	default:
 		return fmt.Errorf("asset %q: invalid kind %q", a.ID, a.Kind)
 	}
@@ -183,6 +191,32 @@ func ManifestFor(cfg *Config, req AssetRequest) (AssetManifest, error) {
 		})
 	}
 
+	if req.NeedSpeaker && cfg != nil && cfg.Speaker.Enabled && cfg.Speaker.Meeting.Enabled {
+		if strings.TrimSpace(cfg.Speaker.Models.Segmentation) == "" {
+			m.Assets = append(m.Assets, Asset{
+				ID:         "speaker.segmentation.pyannote-3.0",
+				Provider:   "sherpa",
+				Kind:       AssetKindSpeaker,
+				Name:       "pyannote speaker segmentation",
+				TargetDir:  "speaker/pyannote-segmentation-3.0",
+				Archive:    &AssetArchive{URL: speakerSegmentationURL, SHA256: speakerSegmentationSHA256},
+				CheckFiles: []string{"model.int8.onnx"},
+			})
+		}
+		if strings.TrimSpace(cfg.Speaker.Models.Embedding) == "" {
+			m.Assets = append(m.Assets, Asset{
+				ID:       "speaker.embedding.nemo-titanet-small",
+				Provider: "sherpa",
+				Kind:     AssetKindSpeaker,
+				Name:     "NeMo TitaNet speaker embedding",
+				Files: []AssetFile{{
+					Path: "speaker/nemo_en_titanet_small.onnx", URL: speakerEmbeddingURL,
+					SHA256: speakerEmbeddingSHA256, Size: speakerEmbeddingSize,
+				}},
+			})
+		}
+	}
+
 	return m, nil
 }
 
@@ -256,9 +290,10 @@ func (m AssetManifest) ModelFiles() []ModelFile {
 
 // AssetScope selects which asset kinds a request should cover.
 type AssetScope struct {
-	STT bool
-	TTS bool
-	VAD bool
+	STT     bool
+	TTS     bool
+	VAD     bool
+	Speaker bool
 }
 
 // ScopedAssetRequest returns the asset request for cfg narrowed to the kinds
@@ -273,16 +308,17 @@ func ScopedAssetRequest(cfg *Config, scope AssetScope) AssetRequest {
 	// mode error surfaces in ManifestFor instead of silently skipping assets.
 	_, sttOK := NormalizeSTT(cfg.STTProvider)
 	return AssetRequest{
-		NeedSTT: scope.STT && sttOK,
-		NeedTTS: scope.TTS && ManagedTTS(cfg),
-		NeedVAD: scope.VAD && cfg.VADEnabled,
+		NeedSTT:     scope.STT && sttOK,
+		NeedTTS:     scope.TTS && ManagedTTS(cfg),
+		NeedVAD:     scope.VAD && cfg.VADEnabled,
+		NeedSpeaker: scope.Speaker && cfg.Speaker.Enabled && cfg.Speaker.Meeting.Enabled,
 	}
 }
 
 // DefaultAssetRequest returns the asset request the default setup/startup path
 // uses for cfg — the same provider selection EnsureModels applies.
 func DefaultAssetRequest(cfg *Config) AssetRequest {
-	return ScopedAssetRequest(cfg, AssetScope{STT: true, TTS: true, VAD: true})
+	return ScopedAssetRequest(cfg, AssetScope{STT: true, TTS: true, VAD: true, Speaker: true})
 }
 
 // AssetStatus reports the on-disk installation state of one asset.

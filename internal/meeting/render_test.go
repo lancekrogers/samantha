@@ -55,6 +55,24 @@ func TestRenderEventsNotesScope(t *testing.T) {
 	}
 }
 
+func TestRenderEventsPrefersSpeakerAttributedTranscript(t *testing.T) {
+	summary := meetinglog.Summary{Description: "sync", Utterances: 1, SpeakerStatus: "complete", SpeakerCount: 2}
+	events := []meetinglog.Event{
+		{Type: meetinglog.TypeUtterance, Text: "original", OffsetMs: 1200},
+		{Type: meetinglog.TypeSpeakerUtterance, Text: "original", Label: "speaker-2", OffsetMs: 1200},
+	}
+	note := RenderEvents(summary, events, BodyFull)
+	if !strings.Contains(note.Body, "**speaker-2:** original") {
+		t.Fatalf("attributed transcript missing:\n%s", note.Body)
+	}
+	if !strings.Contains(note.Body, "**Speaker analysis:** complete") || !strings.Contains(note.Body, "**Detected speakers:** 2") {
+		t.Fatalf("speaker summary missing:\n%s", note.Body)
+	}
+	if strings.Count(note.Body, "original") != 1 {
+		t.Fatalf("raw + attributed transcript duplicated:\n%s", note.Body)
+	}
+}
+
 func TestRenderFromJSONLFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "m.log")

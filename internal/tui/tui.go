@@ -284,15 +284,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Child cancel stops the listen loop without ending the whole App.
 		mctx, mcancel := context.WithCancel(a.runCtx)
 		cmd := a.meeting.beginRecording(MeetingOpts{
-			Ctx:         mctx,
-			Cancel:      mcancel,
-			Capture:     msg.rt.Capture,
-			Provider:    msg.rt.Provider,
-			Writer:      msg.rt.Writer,
-			Description: msg.rt.Description,
-			Path:        msg.rt.Path,
-			StopPhrases: msg.rt.StopPhrases,
-			Embedded:    true,
+			Ctx:              mctx,
+			Cancel:           mcancel,
+			Capture:          msg.rt.Capture,
+			Provider:         msg.rt.Provider,
+			Writer:           msg.rt.Writer,
+			Description:      msg.rt.Description,
+			Path:             msg.rt.Path,
+			StopPhrases:      msg.rt.StopPhrases,
+			SpeakerStatus:    msg.rt.SpeakerStatus,
+			SpeakerError:     msg.rt.SpeakerError,
+			FinalizeSpeakers: msg.rt.FinalizeSpeakers,
+			Embedded:         true,
 		})
 		return a, cmd
 
@@ -314,6 +317,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.screen = screenLauncher
+		if msg.Analysis.Status != "" && msg.Analysis.Status != meeting.AnalysisDisabled {
+			a.launcher = a.launcher.withBanner(
+				"Speaker analysis: "+meetingAnalysisDetail(msg.Analysis),
+				msg.Analysis.Status == meeting.AnalysisError,
+			)
+		}
 		return a, nil
 
 	case meetingRouteReadyMsg:

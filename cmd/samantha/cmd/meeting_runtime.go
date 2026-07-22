@@ -20,6 +20,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/listen"
 	"github.com/lancekrogers/samantha/internal/meeting"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
+	"github.com/lancekrogers/samantha/internal/speaker"
 	"github.com/lancekrogers/samantha/internal/stt"
 	appTUI "github.com/lancekrogers/samantha/internal/tui"
 )
@@ -67,6 +68,15 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 	if err != nil {
 		return err
 	}
+	speakerSession, speakerSetupErr := prepareMeetingSpeakers(ctx, &cfgCopy, capture, writer, path, progress)
+	if speakerSession != nil {
+		defer speakerSession.Close()
+	}
+	if speakerSetupErr != nil {
+		_ = writer.WriteSpeakerAnalysis(meetinglog.SpeakerAnalysis{
+			Status: string(meeting.AnalysisError), Error: speakerSetupErr.Error(),
+		})
+	}
 
 	out := cmd.OutOrStdout()
 	useTUI := useMeetingRecordTUI(opts)
@@ -74,14 +84,17 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 	var loopErr error
 	if useTUI {
 		loopErr = appTUI.RunMeeting(appTUI.MeetingOpts{
-			Ctx:         ctx,
-			Cancel:      cancel,
-			Capture:     capture,
-			Provider:    provider,
-			Writer:      writer,
-			Description: opts.Description,
-			Path:        path,
-			StopPhrases: stopPhraseSet(opts.StopPhrases),
+			Ctx:              ctx,
+			Cancel:           cancel,
+			Capture:          capture,
+			Provider:         provider,
+			Writer:           writer,
+			Description:      opts.Description,
+			Path:             path,
+			StopPhrases:      stopPhraseSet(opts.StopPhrases),
+			SpeakerStatus:    speakerInitialStatus(speakerSession, speakerSetupErr),
+			SpeakerError:     speakerInitialDetail(speakerSession, speakerSetupErr),
+			FinalizeSpeakers: speakerFinalizer(speakerSession),
 		})
 	} else {
 		var sinks []listen.Sink
@@ -102,6 +115,13 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 		loopErr = listen.Loop(ctx, capture, provider, sink)
 	}
 
+	var speakerResult meeting.AnalysisResult
+	if speakerSession != nil {
+		analysisCtx, analysisCancel := context.WithTimeout(context.Background(), 2*time.Hour)
+		speakerResult, _ = speakerSession.Finalize(analysisCtx)
+		analysisCancel()
+	}
+
 	summary, closeErr := writer.Close()
 
 	var outputErr error
@@ -119,6 +139,11 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 		fmt.Fprintf(out, "  Utterances:  %d\n", summary.Utterances)
 		fmt.Fprintf(out, "  Notes:       %d\n", summary.Notes)
 		fmt.Fprintf(out, "  Bookmarks:   %d\n", summary.Bookmarks)
+		if speakerSetupErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "  Speaker analysis unavailable: %v (recording preserved)\n", speakerSetupErr)
+		} else if speakerResult.Status != "" {
+			fmt.Fprintf(out, "  Speakers:    %s\n", meetingAnalysisSummary(speakerResult))
+		}
 	}
 
 	// Post-meeting routing (additive; never deletes local .log/.jsonl).
@@ -188,16 +213,91 @@ func meetingRuntimeBuilder() appTUI.MeetingBuilder {
 			cleanup()
 			return nil, err
 		}
+		speakerSession, speakerSetupErr := prepareMeetingSpeakers(ctx, cfg, capture, writer, path, progress)
+		if speakerSetupErr != nil {
+			_ = writer.WriteSpeakerAnalysis(meetinglog.SpeakerAnalysis{
+				Status: string(meeting.AnalysisError), Error: speakerSetupErr.Error(),
+			})
+		}
+		runtimeCleanup := cleanup
+		cleanup = func() {
+			if speakerSession != nil {
+				_ = speakerSession.Close()
+			}
+			runtimeCleanup()
+		}
 		return &appTUI.MeetingRuntime{
-			Capture:     capture,
-			Provider:    provider,
-			Writer:      writer,
-			Description: description,
-			Path:        path,
-			StopPhrases: stopPhraseSet(nil),
-			Cleanup:     cleanup,
+			Capture:          capture,
+			Provider:         provider,
+			Writer:           writer,
+			FinalizeSpeakers: speakerFinalizer(speakerSession),
+			SpeakerStatus:    speakerInitialStatus(speakerSession, speakerSetupErr),
+			SpeakerError:     speakerInitialDetail(speakerSession, speakerSetupErr),
+			Description:      description,
+			Path:             path,
+			StopPhrases:      stopPhraseSet(nil),
+			Cleanup:          cleanup,
 		}, nil
 	}
+}
+
+func prepareMeetingSpeakers(ctx context.Context, cfg *config.Config, capture *audio.Capture, writer *meetinglog.Writer, path string, progress func(string, float64)) (*meeting.SpeakerSession, error) {
+	sp := speaker.FromAppConfig(cfg)
+	if !sp.MeetingActive() {
+		return nil, nil
+	}
+	if err := config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedSpeaker: true}, progress); err != nil {
+		return nil, fmt.Errorf("prepare speaker models: %w", err)
+	}
+	engine, err := speaker.NewSherpaEngine(sp, config.ModelsDirFrom(cfg))
+	if err != nil {
+		return nil, err
+	}
+	analyzer, err := speaker.NewAnalyzer(sp, engine)
+	if err != nil {
+		_ = engine.Close()
+		return nil, err
+	}
+	session, err := meeting.NewSpeakerSession(capture, analyzer, writer, path, sp.Meeting.RecordAudio)
+	if err != nil {
+		_ = analyzer.Close()
+		return nil, err
+	}
+	return session, nil
+}
+
+func speakerFinalizer(session *meeting.SpeakerSession) func(context.Context) (meeting.AnalysisResult, error) {
+	if session == nil {
+		return nil
+	}
+	return session.Finalize
+}
+
+func speakerInitialStatus(session *meeting.SpeakerSession, setupErr error) meeting.AnalysisStatus {
+	if setupErr != nil {
+		return meeting.AnalysisError
+	}
+	if session != nil {
+		return meeting.AnalysisQueued
+	}
+	return meeting.AnalysisDisabled
+}
+
+func speakerInitialDetail(session *meeting.SpeakerSession, setupErr error) string {
+	if setupErr != nil {
+		return setupErr.Error() + " (recording unaffected)"
+	}
+	if session != nil {
+		return "collecting audio; diarizes when recording stops"
+	}
+	return ""
+}
+
+func meetingAnalysisSummary(result meeting.AnalysisResult) string {
+	if result.Error != "" {
+		return string(result.Status) + " — " + result.Error
+	}
+	return fmt.Sprintf("%s — %d detected · %s", result.Status, result.SpeakerCount, result.Artifact)
 }
 
 // noopResetter/provider satisfy the MeetingRuntime fields for demo builds.

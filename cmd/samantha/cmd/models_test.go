@@ -88,6 +88,15 @@ func TestModelsScopeRequests(t *testing.T) {
 	}
 }
 
+func TestModelsScopeRequestsEnabledSpeakerAssets(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Speaker.Enabled = true
+	cfg.Speaker.Meeting.Enabled = true
+	if got := (scopeFlags{speaker: true}).request(cfg); got != (config.AssetRequest{NeedSpeaker: true}) {
+		t.Fatalf("speaker scope = %+v", got)
+	}
+}
+
 func TestModelsStatusScoped(t *testing.T) {
 	cases := []struct {
 		name    string
