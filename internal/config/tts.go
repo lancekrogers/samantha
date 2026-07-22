@@ -62,26 +62,12 @@ func ValidateQwenTTSConfig(cfg *Config) error {
 		unsupported = append(unsupported, "qwen_tts_mode")
 	}
 	if voice := strings.TrimSpace(cfg.QwenTTSVoice); voice != "" && !strings.EqualFold(voice, "default") {
-		found := false
-		for _, candidate := range qwen.CustomVoices() {
-			if strings.EqualFold(candidate.Name, voice) {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if _, found := qwen.CanonicalVoice(voice); !found {
 			return fmt.Errorf("unsupported qwen_tts_voice %q for the managed CustomVoice model", voice)
 		}
 	}
 	if language := strings.TrimSpace(cfg.QwenTTSLanguage); language != "" {
-		found := false
-		for _, candidate := range qwen.SupportedLanguages() {
-			if strings.EqualFold(candidate, language) {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if _, found := qwen.CanonicalLanguage(language); !found {
 			return fmt.Errorf("unsupported qwen_tts_language %q", language)
 		}
 	}

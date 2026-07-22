@@ -1,4 +1,4 @@
-# Managed Qwen preset voices in the real Samantha Settings TUI.
+# Managed Qwen preset voices in Settings and per-book Audiobook controls.
 #
 # Deterministic: creates the same completion-marker/file layout inspected by
 # production code, without downloading the multi-GB model for a visual demo.
@@ -28,10 +28,10 @@ Type "export MODELS=$HOME/.cache/samantha/models" Enter
 Type "export QWEN_ROOT=$MODELS/qwen3-tts" Enter
 Type "export QWEN_REV=85e237c12c027371202489a0ec509ded67b5e4b5" Enter
 Type "export QWEN_MODEL=$QWEN_ROOT/models/customvoice-0.6b/$QWEN_REV" Enter
-Type "rm -rf $HOME && mkdir -p $HOME/.obey/agents/voice/samantha/sessions $QWEN_ROOT/runtime/qwen-tts-0.1.1/bin $QWEN_ROOT/worker $QWEN_MODEL/speech_tokenizer" Enter
+Type "rm -rf $HOME && mkdir -p $HOME/.obey/agents/voice/festival-voice/sessions $QWEN_ROOT/runtime/qwen-tts-0.1.1/bin $QWEN_ROOT/worker $QWEN_MODEL/speech_tokenizer" Enter
 Type "touch $QWEN_ROOT/runtime/qwen-tts-0.1.1/bin/python $QWEN_ROOT/runtime/qwen-tts-0.1.1/.qwen-tts-0.1.1 $QWEN_ROOT/worker/qwen_worker.py $QWEN_MODEL/config.json $QWEN_MODEL/model.safetensors $QWEN_MODEL/speech_tokenizer/model.safetensors" Enter
-Type "echo eyJzY2hlbWEiOiJzYW1hbnRoYS5xd2VuLmluc3RhbGwudjEiLCJwYWNrYWdlIjoiMC4xLjEiLCJ3b3JrZXIiOiIxIiwibW9kZWxfaWQiOiJRd2VuL1F3ZW4zLVRUUy0xMkh6LTAuNkItQ3VzdG9tVm9pY2UiLCJtb2RlbF9yZXZpc2lvbiI6Ijg1ZTIzN2MxMmMwMjczNzEyMDI0ODlhMGVjNTA5ZGVkNjdiNWU0YjUiLCJpbnN0YWxsZWRfYXQiOiIyMDI2LTA3LTIxVDAwOjAwOjAwWiJ9 | base64 -d > $QWEN_ROOT/install.json" Enter
-Type "cat > $HOME/.obey/agents/voice/samantha/config.yaml <<EOF" Enter
+Type "echo eyJzY2hlbWEiOiJzYW1hbnRoYS5xd2VuLmluc3RhbGwudjEiLCJwYWNrYWdlIjoiMC4xLjEiLCJ3b3JrZXIiOiIyIiwibW9kZWxfaWQiOiJRd2VuL1F3ZW4zLVRUUy0xMkh6LTAuNkItQ3VzdG9tVm9pY2UiLCJtb2RlbF9yZXZpc2lvbiI6Ijg1ZTIzN2MxMmMwMjczNzEyMDI0ODlhMGVjNTA5ZGVkNjdiNWU0YjUiLCJpbnN0YWxsZWRfYXQiOiIyMDI2LTA3LTIxVDAwOjAwOjAwWiJ9 | base64 -d > $QWEN_ROOT/install.json" Enter
+Type "cat > $HOME/.obey/agents/voice/festival-voice/config.yaml <<EOF" Enter
 Type "brain_provider: ollama" Enter
 Type "ollama_host: http://localhost:11434" Enter
 Type "ollama_model: demo-model" Enter
@@ -93,6 +93,25 @@ Sleep 1800ms
 
 # Return to the launcher: the status badge reflects Qwen + CustomVoice + Ryan.
 Escape
-Sleep 2300ms
+Sleep 1800ms
+
+# Open Create audiobook and prove Qwen voice/language are per-book choices.
+Up
+Sleep 300ms
+Enter
+Sleep 1500ms
+Down
+Down
+Down
+Down
+Sleep 700ms
+Right
+Sleep 900ms
+Down
+Right
+Sleep 1200ms
+Down
+Right
+Sleep 1500ms
 Type "q"
 Sleep 400ms

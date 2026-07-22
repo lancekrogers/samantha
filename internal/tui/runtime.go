@@ -29,8 +29,9 @@ type ConversationRuntime struct {
 	InputDevice  string
 	OutputDevice string
 	LiveSpeaker  LiveSpeakerController
-	Seed         []brain.Turn // resumed history to pre-populate the viewport
-	Cleanup      func()       // tears down pipeline resources and saves the session
+	Seed         []brain.Turn                // resumed history to pre-populate the viewport
+	ReloadVoice  func(context.Context) error // applies Settings to subsequent utterances
+	Cleanup      func()                      // tears down pipeline resources and saves the session
 }
 
 // RuntimeBuilder constructs the runtime when the user enters the
@@ -123,6 +124,17 @@ type progressClosedMsg struct{}
 type runtimeReadyMsg struct {
 	rt  *ConversationRuntime
 	err error
+}
+
+type voiceReloadedMsg struct {
+	err         error
+	resumeVoice bool
+}
+
+func reloadVoice(ctx context.Context, reload func(context.Context) error, resumeVoice bool) tea.Cmd {
+	return func() tea.Msg {
+		return voiceReloadedMsg{err: reload(ctx), resumeVoice: resumeVoice}
+	}
 }
 
 // buildRuntime runs the builder off the update loop, streaming progress

@@ -101,6 +101,21 @@ func TestCustomVoiceRegistryIsStable(t *testing.T) {
 	}
 }
 
+func TestCanonicalManagedSelections(t *testing.T) {
+	if got, ok := CanonicalVoice(" rYaN "); !ok || got != "Ryan" {
+		t.Fatalf("CanonicalVoice() = %q, %v; want Ryan, true", got, ok)
+	}
+	if got, ok := CanonicalLanguage(" english "); !ok || got != "English" {
+		t.Fatalf("CanonicalLanguage() = %q, %v; want English, true", got, ok)
+	}
+	if _, ok := CanonicalVoice("not-a-voice"); ok {
+		t.Fatal("CanonicalVoice accepted an unknown voice")
+	}
+	if _, ok := CanonicalLanguage("Klingon"); ok {
+		t.Fatal("CanonicalLanguage accepted an unknown language")
+	}
+}
+
 func TestUseManagedMigratesLegacyDefault(t *testing.T) {
 	tests := []struct {
 		name   string

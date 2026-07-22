@@ -196,10 +196,12 @@ the static voice picker. Selecting an uninstalled **Qwen3-TTS** row installs a
 Samantha-owned Python runtime, the pinned official `qwen-tts` package, and the
 recommended CustomVoice 0.6B model. After setup, the **Voice** section lists
 Qwen's nine model-native preset speakers; press `p` to preview and `Enter` to
-select one. Provider and voice changes are persisted for the next conversation
-without restarting Samantha. The launcher and conversation header show the
-active TTS provider/model/mode/voice badge. An empty device config value follows
-the current operating-system default.
+select one. The **Language** section selects Qwen's synthesis language (use
+**Auto** unless a book or conversation needs an explicit language). Returning
+from Settings replaces the provider used by subsequent utterances in an
+already-running conversation; no Samantha restart is required. The launcher
+and conversation header show the active TTS provider/model/mode/voice badge.
+An empty device config value follows the current operating-system default.
 
 The first Qwen installation is a large download. It is isolated below
 `models_dir/qwen3-tts`, can be inspected with `samantha models status --tts`,
@@ -248,7 +250,9 @@ samantha render article.md --out-dir out/article \
 runtime for EPUB books and digital PDFs: one WAV per chapter (EPUB spine) or
 page (PDF) plus a manifest under `--out-dir` (required). It accepts render's
 pass-through flags (`--resume`, `--voice`, `--speed`, `--audio-format`,
-`--encoder`, `--json`, `--manifest`, `--overwrite`). Use `samantha render` for
+`--language`, `--encoder`, `--json`, `--manifest`, `--overwrite`). Qwen accepts
+`--voice` and `--language`; its pinned CustomVoice model does not support
+`--speed`. Use `samantha render` for
 markdown, HTML, URL (including sectioned `--out-dir`), and text sources.
 
 Before synthesis, build a reviewable production plan. This writes the
@@ -269,6 +273,7 @@ the current `create` command remains the direct raw-spine compatibility path.
 
 ```bash
 samantha audiobook create book.epub --out-dir out/book
+samantha audiobook create book.epub --out-dir out/book --voice Ryan --language English
 samantha audiobook create book.epub --out-dir out/book --audio-format m4b --resume --json
 # From Calibre library (requires calibre_enabled=true and Calibre installed):
 samantha config calibre_enabled true
@@ -562,6 +567,7 @@ go test ./internal/stt ./internal/endpoint ./internal/audio
 
 # Real-provider smoke (needs models + whisper.cpp binary for that provider):
 go test -tags integration ./tests/voiceflow      # fixture-driven pipeline flow
+just qwen-live                                   # real managed voices + cancel/restart WAVs
 samantha listen                                  # manual: speak a short command
 ```
 

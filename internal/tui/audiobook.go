@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/lancekrogers/samantha/internal/config"
+	managedqwen "github.com/lancekrogers/samantha/internal/qwen"
 	"github.com/lancekrogers/samantha/internal/tts"
 )
 
@@ -29,6 +30,7 @@ const (
 	abFieldPickLibrary
 	abFieldOutDir
 	abFieldVoice
+	abFieldLanguage
 	abFieldSpeed
 	abFieldResume
 	abFieldAudioFormat
@@ -45,6 +47,7 @@ type audiobookModel struct {
 	input    string
 	outDir   string
 	voice    string
+	language string
 	speed    string
 	resume   bool
 	audioFmt string
@@ -63,14 +66,27 @@ type audiobookModel struct {
 
 func newAudiobook(cfg *config.Config) audiobookModel {
 	voice := ""
-	if cfg != nil && !strings.EqualFold(activeTTSProvider(cfg), "qwen3-tts") {
-		voice = cfg.TTSVoice
+	language := ""
+	if cfg != nil {
+		if strings.EqualFold(activeTTSProvider(cfg), "qwen3-tts") {
+			voice = cfg.QwenTTSVoice
+			language = cfg.QwenTTSLanguage
+			if canonical, ok := managedqwen.CanonicalVoice(voice); ok {
+				voice = canonical
+			}
+			if canonical, ok := managedqwen.CanonicalLanguage(language); ok {
+				language = canonical
+			}
+		} else {
+			voice = cfg.TTSVoice
+		}
 	}
 	return audiobookModel{
-		cfg:    cfg,
-		voice:  voice,
-		speed:  "1",
-		resume: true,
+		cfg:      cfg,
+		voice:    voice,
+		language: language,
+		speed:    "1",
+		resume:   true,
 		persistCalibre: func(enabled bool) error {
 			return config.SetAndSave("calibre_enabled", enabled)
 		},
@@ -90,13 +106,9 @@ func (m audiobookModel) Update(msg tea.Msg) (audiobookModel, tea.Cmd) {
 		}
 		switch key {
 		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
+			m.moveCursor(-1)
 		case "down", "j":
-			if m.cursor < abFieldCount-1 {
-				m.cursor++
-			}
+			m.moveCursor(1)
 		case "left", "h":
 			if m.cycleChoice(-1) {
 				return m, nil
@@ -116,17 +128,27 @@ func (m audiobookModel) Update(msg tea.Msg) (audiobookModel, tea.Cmd) {
 	return m, nil
 }
 
+func (m *audiobookModel) moveCursor(delta int) {
+	for next := m.cursor + delta; next >= 0 && next < abFieldCount; next += delta {
+		if next == abFieldLanguage && !m.usesQwenModelNativeControls() {
+			continue
+		}
+		m.cursor = next
+		return
+	}
+}
+
 // cycleChoice advances Voice / Speed / Audio format options. Returns true when
 // the focused field is a choice field.
 func (m *audiobookModel) cycleChoice(delta int) bool {
 	switch m.cursor {
 	case abFieldVoice:
-		if m.usesQwenModelNativeControls() {
-			m.message = "Qwen voice is configured in Settings; the native worker does not accept --voice"
-			m.errText = ""
-			return true
-		}
 		m.voice = cycleString(m.voiceOptions(), m.voice, delta)
+	case abFieldLanguage:
+		if !m.usesQwenModelNativeControls() {
+			return false
+		}
+		m.language = cycleString(m.languageOptions(), m.language, delta)
 	case abFieldSpeed:
 		if m.usesQwenModelNativeControls() {
 			m.message = "Qwen speed is model-native; the native worker does not accept --speed"
@@ -152,7 +174,14 @@ func (m audiobookModel) usesQwenModelNativeControls() bool {
 // voiceOptions is the cycle list for Voice: empty = config default, then catalog
 // names. A configured voice missing from the catalog is kept so it stays selectable.
 func (m audiobookModel) voiceOptions() []string {
-	names := tts.VoiceNames()
+	var names []string
+	if m.usesQwenModelNativeControls() {
+		for _, voice := range managedqwen.CustomVoices() {
+			names = append(names, voice.Name)
+		}
+	} else {
+		names = tts.VoiceNames()
+	}
 	opts := make([]string, 0, len(names)+2)
 	opts = append(opts, "") // config default / omit --voice
 	seen := map[string]bool{"": true}
@@ -160,22 +189,38 @@ func (m audiobookModel) voiceOptions() []string {
 		// Keep an unknown/custom voice in the list so it is not lost when cycling.
 		found := false
 		for _, n := range names {
-			if n == m.voice {
+			if strings.EqualFold(n, m.voice) {
 				found = true
 				break
 			}
 		}
 		if !found {
 			opts = append(opts, m.voice)
-			seen[m.voice] = true
+			seen[strings.ToLower(m.voice)] = true
 		}
 	}
 	for _, n := range names {
-		if seen[n] {
+		if seen[strings.ToLower(n)] {
 			continue
 		}
 		opts = append(opts, n)
-		seen[n] = true
+		seen[strings.ToLower(n)] = true
+	}
+	return opts
+}
+
+func (m audiobookModel) languageOptions() []string {
+	opts := []string{""}
+	seen := map[string]bool{"": true}
+	if m.language != "" {
+		opts = append(opts, m.language)
+		seen[strings.ToLower(m.language)] = true
+	}
+	for _, language := range managedqwen.SupportedLanguages() {
+		if !seen[strings.ToLower(language)] {
+			opts = append(opts, language)
+			seen[strings.ToLower(language)] = true
+		}
 	}
 	return opts
 }
@@ -512,7 +557,7 @@ func (m audiobookModel) activate() (audiobookModel, tea.Cmd) {
 		m.editing = true
 		m.editBuf = m.fieldValue(m.cursor)
 		m.clearPathCompletion()
-	case abFieldVoice, abFieldSpeed, abFieldAudioFormat:
+	case abFieldVoice, abFieldLanguage, abFieldSpeed, abFieldAudioFormat:
 		m.cycleChoice(1)
 	case abFieldCalibre:
 		return m.toggleCalibre()
@@ -582,6 +627,8 @@ func (m audiobookModel) fieldValue(i int) string {
 		return m.outDir
 	case abFieldVoice:
 		return m.voice
+	case abFieldLanguage:
+		return m.language
 	case abFieldSpeed:
 		return m.speed
 	case abFieldAudioFormat:
@@ -594,6 +641,12 @@ func (m audiobookModel) fieldValue(i int) string {
 // GenerateAudiobookCommand builds a shell-quoted samantha audiobook create line.
 // It never executes the command.
 func GenerateAudiobookCommand(input, outDir, voice, speed string, resume bool, audioFormat string) (string, error) {
+	return GenerateAudiobookCommandWithLanguage(input, outDir, voice, "", speed, resume, audioFormat)
+}
+
+// GenerateAudiobookCommandWithLanguage adds the Qwen-only synthesis language
+// while retaining the original helper for callers that do not need it.
+func GenerateAudiobookCommandWithLanguage(input, outDir, voice, language, speed string, resume bool, audioFormat string) (string, error) {
 	if strings.TrimSpace(input) == "" {
 		return "", fmt.Errorf("input path is required")
 	}
@@ -612,6 +665,9 @@ func GenerateAudiobookCommand(input, outDir, voice, speed string, resume bool, a
 	if v := strings.TrimSpace(voice); v != "" {
 		parts = append(parts, "--voice", shellQuote(v))
 	}
+	if language := strings.TrimSpace(language); language != "" {
+		parts = append(parts, "--language", shellQuote(language))
+	}
 	if s := strings.TrimSpace(speed); s != "" {
 		if f, err := strconv.ParseFloat(s, 64); err == nil && f > 0 {
 			parts = append(parts, "--speed", shellQuote(s))
@@ -624,11 +680,11 @@ func GenerateAudiobookCommand(input, outDir, voice, speed string, resume bool, a
 }
 
 func (m audiobookModel) generateCommand() (string, error) {
-	voice, speed := m.voice, m.speed
+	voice, language, speed := m.voice, "", m.speed
 	if m.usesQwenModelNativeControls() {
-		voice, speed = "", ""
+		language, speed = m.language, ""
 	}
-	return GenerateAudiobookCommand(m.input, m.outDir, voice, speed, m.resume, m.audioFmt)
+	return GenerateAudiobookCommandWithLanguage(m.input, m.outDir, voice, language, speed, m.resume, m.audioFmt)
 }
 
 // shellQuote quotes s for POSIX shells when needed.
@@ -661,13 +717,18 @@ func (m audiobookModel) View() string {
 		{abFieldPickLibrary, "Pick from library", pickLibraryHint(m.calibreEnabled())},
 		{abFieldOutDir, "Output dir", displayOr(m.outDir, "(required)")},
 		{abFieldVoice, "Voice", m.audiobookVoiceValue()},
-		{abFieldSpeed, "Speed", m.audiobookSpeedValue()},
-		{field: -1, label: "TTS", value: ttsBadgeLabel(m.cfg)},
-		{abFieldResume, "Resume", map[bool]string{true: "on", false: "off"}[m.resume]},
-		{abFieldAudioFormat, "Audio format", displayOr(m.audioFmt, "(wav only)") + choiceHint(m.cursor == abFieldAudioFormat)},
-		{abFieldGenerate, "Generate command", ""},
-		{abFieldBack, "Back to launcher", ""},
 	}
+	if m.usesQwenModelNativeControls() {
+		rows = append(rows, row{abFieldLanguage, "Language", m.audiobookLanguageValue()})
+	}
+	rows = append(rows,
+		row{abFieldSpeed, "Speed", m.audiobookSpeedValue()},
+		row{field: -1, label: "TTS", value: ttsBadgeLabel(m.cfg)},
+		row{abFieldResume, "Resume", map[bool]string{true: "on", false: "off"}[m.resume]},
+		row{abFieldAudioFormat, "Audio format", displayOr(m.audioFmt, "(wav only)") + choiceHint(m.cursor == abFieldAudioFormat)},
+		row{abFieldGenerate, "Generate command", ""},
+		row{abFieldBack, "Back to launcher", ""},
+	)
 	for _, r := range rows {
 		cursor := "  "
 		style := normalStyle
@@ -713,10 +774,11 @@ func (m audiobookModel) View() string {
 }
 
 func (m audiobookModel) audiobookVoiceValue() string {
-	if m.usesQwenModelNativeControls() {
-		return "model config (see Settings)"
-	}
 	return displayOr(m.voice, "(config default)") + choiceHint(m.cursor == abFieldVoice)
+}
+
+func (m audiobookModel) audiobookLanguageValue() string {
+	return displayOr(m.language, "(config default)") + choiceHint(m.cursor == abFieldLanguage)
 }
 
 func (m audiobookModel) audiobookSpeedValue() string {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -48,9 +49,26 @@ type managedQwenMessage struct {
 	SampleRate  int      `json:"sample_rate,omitempty"`
 }
 
+type managedQwenResponseError struct {
+	kind    string
+	message string
+}
+
+func (e *managedQwenResponseError) Error() string {
+	return fmt.Sprintf("managed worker %s: %s", e.kind, e.message)
+}
+
 func startManagedQwenSession(binary, workerScript, model string, timeout time.Duration) (*managedQwenSession, error) {
+	return startManagedQwenSessionContext(context.Background(), binary, workerScript, model, timeout)
+}
+
+func startManagedQwenSessionContext(ctx context.Context, binary, workerScript, model string, timeout time.Duration) (*managedQwenSession, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	cmd := exec.CommandContext(context.Background(), binary, workerScript, "serve", "--model", model)
 	configureQwenCommand(cmd)
+	cmd.Env = append(os.Environ(), "JOBLIB_MULTIPROCESSING=0")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("create managed worker stdin: %w", err)
@@ -75,13 +93,9 @@ func startManagedQwenSession(binary, workerScript, model string, timeout time.Du
 
 	ready := make(chan managedQwenMessage, 1)
 	go func() {
-		var msg managedQwenMessage
-		if s.scanner.Scan() {
-			if err := json.Unmarshal(s.scanner.Bytes(), &msg); err != nil {
-				msg.Message = "invalid ready response: " + err.Error()
-			}
-		} else {
-			msg.Message = "worker exited before ready"
+		msg, err := scanManagedQwenMessage(s.scanner)
+		if err != nil {
+			msg.Message = "worker exited before ready: " + err.Error()
 		}
 		ready <- msg
 	}()
@@ -104,6 +118,9 @@ func startManagedQwenSession(binary, workerScript, model string, timeout time.Du
 	case <-timer.C:
 		s.kill()
 		return nil, fmt.Errorf("managed worker startup timed out after %s%s", timeout, workerOutputSuffix(stderr.String(), ""))
+	case <-ctx.Done():
+		s.kill()
+		return nil, ctx.Err()
 	}
 }
 
@@ -131,13 +148,9 @@ func (s *managedQwenSession) Synthesize(ctx context.Context, req SynthesisReques
 
 	response := make(chan managedQwenMessage, 1)
 	go func() {
-		var msg managedQwenMessage
-		if s.scanner.Scan() {
-			if err := json.Unmarshal(s.scanner.Bytes(), &msg); err != nil {
-				msg.Message = "invalid synthesis response: " + err.Error()
-			}
-		} else {
-			msg.Message = "worker exited without a synthesis response"
+		msg, err := scanManagedQwenMessage(s.scanner)
+		if err != nil {
+			msg.Message = "worker exited without a synthesis response: " + err.Error()
 		}
 		response <- msg
 	}()
@@ -150,7 +163,7 @@ func (s *managedQwenSession) Synthesize(ctx context.Context, req SynthesisReques
 		case "complete":
 			return nil
 		case "error":
-			return fmt.Errorf("managed worker %s: %s", msg.ErrorKind, msg.Message)
+			return &managedQwenResponseError{kind: msg.ErrorKind, message: msg.Message}
 		default:
 			return fmt.Errorf("unexpected managed worker response type %q", msg.Type)
 		}
@@ -161,6 +174,46 @@ func (s *managedQwenSession) Synthesize(ctx context.Context, req SynthesisReques
 	case err := <-s.wait:
 		s.closed = true
 		return fmt.Errorf("managed worker exited: %v%s", err, workerOutputSuffix(s.stderr.String(), ""))
+	}
+}
+
+// scanManagedQwenMessage ignores non-protocol chatter from transitive model
+// libraries. The worker redirects those diagnostics to stderr as well, but the
+// reader remains defensive so one upstream print cannot corrupt a long-lived
+// JSONL session.
+func scanManagedQwenMessage(scanner *bufio.Scanner) (managedQwenMessage, error) {
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(strings.TrimSpace(string(line))) == 0 {
+			continue
+		}
+		var msg managedQwenMessage
+		if err := json.Unmarshal(line, &msg); err != nil {
+			continue
+		}
+		if msg.Protocol == managedQwenProtocol && strings.TrimSpace(msg.Type) != "" {
+			return msg, nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return managedQwenMessage{}, err
+	}
+	return managedQwenMessage{}, io.EOF
+}
+
+func managedWorkerRestartable(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var responseErr *managedQwenResponseError
+	if !errors.As(err, &responseErr) {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(responseErr.kind)) {
+	case "unsupported_input", "invalid_request", "canceled", "cancelled":
+		return false
+	default:
+		return true
 	}
 }
 
@@ -195,6 +248,15 @@ func managedWorkerError(err error) error {
 	}
 	if errors.Is(err, context.Canceled) {
 		return &ProviderError{Provider: qwen3TTSProviderName, Operation: "run managed worker", Kind: ProviderErrorCanceled, Err: err}
+	}
+	var responseErr *managedQwenResponseError
+	if errors.As(err, &responseErr) {
+		switch strings.ToLower(strings.TrimSpace(responseErr.kind)) {
+		case "unsupported_input", "invalid_request":
+			return &ProviderError{Provider: qwen3TTSProviderName, Operation: "run managed worker", Kind: ProviderErrorInput, Err: err}
+		case "canceled", "cancelled":
+			return &ProviderError{Provider: qwen3TTSProviderName, Operation: "run managed worker", Kind: ProviderErrorCanceled, Err: err}
+		}
 	}
 	kind := ProviderErrorWorker
 	if strings.Contains(err.Error(), "malformed") {

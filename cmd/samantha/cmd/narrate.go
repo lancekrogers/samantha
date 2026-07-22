@@ -132,6 +132,7 @@ func newNarrateRenderCmd() *cobra.Command {
 		resume, asJSON bool
 		audioFormat    string
 		voice          string
+		language       string
 		speed          float64
 	)
 	cmd := &cobra.Command{
@@ -153,6 +154,7 @@ Examples:
 				JSON:        asJSON,
 				AudioFormat: audioFormat,
 				Voice:       voice,
+				Language:    language,
 				Speed:       speed,
 			})
 		},
@@ -161,6 +163,7 @@ Examples:
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Print a machine-readable summary")
 	cmd.Flags().StringVar(&audioFormat, "audio-format", "", "Also encode to mp3|m4a|m4b|aac|opus")
 	cmd.Flags().StringVar(&voice, "voice", "", "Override plan/config TTS voice")
+	cmd.Flags().StringVar(&language, "language", "", "Override the configured Qwen synthesis language")
 	cmd.Flags().Float64Var(&speed, "speed", 0, "Override plan/config speech speed")
 	return cmd
 }

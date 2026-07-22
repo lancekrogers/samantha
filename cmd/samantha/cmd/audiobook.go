@@ -216,6 +216,7 @@ func writeAudiobookPreview(out io.Writer, opts render.Options) error {
 			"output_dir":     opts.OutDir,
 			"manifest":       opts.ManifestPath(),
 			"voice":          opts.Voice,
+			"language":       opts.Language,
 			"speed":          opts.Speed,
 			"resume":         opts.Resume,
 			"audio_format":   opts.AudioFormat,
@@ -231,6 +232,9 @@ func writeAudiobookPreview(out io.Writer, opts render.Options) error {
 	fmt.Fprintf(out, "    manifest: %s\n", opts.ManifestPath())
 	if opts.Voice != "" {
 		fmt.Fprintf(out, "    voice:    %s\n", opts.Voice)
+	}
+	if opts.Language != "" {
+		fmt.Fprintf(out, "    language: %s\n", opts.Language)
 	}
 	if opts.Speed > 0 {
 		fmt.Fprintf(out, "    speed:    %s\n", formatSpeed(opts.Speed))
@@ -250,6 +254,9 @@ func renderCommandLine(opts render.Options) string {
 	parts := []string{"samantha", "render", shellQuote(opts.Input), "--out-dir", shellQuote(opts.OutDir)}
 	if opts.Voice != "" {
 		parts = append(parts, "--voice", shellQuote(opts.Voice))
+	}
+	if opts.Language != "" {
+		parts = append(parts, "--language", shellQuote(opts.Language))
 	}
 	if opts.Speed > 0 {
 		parts = append(parts, "--speed", formatSpeed(opts.Speed))

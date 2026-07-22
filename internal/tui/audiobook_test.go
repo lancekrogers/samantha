@@ -68,20 +68,21 @@ func TestAudiobookScreenGenerateShowsCommand(t *testing.T) {
 
 func TestAudiobookQwenUsesModelNativeControls(t *testing.T) {
 	m := newAudiobook(&config.Config{
-		TTSProvider:  "qwen3-tts",
-		QwenTTSModel: "/models/customvoice",
-		QwenTTSMode:  "customvoice",
-		QwenTTSVoice: "vivian",
+		TTSProvider:     "qwen3-tts",
+		QwenTTSModel:    "/models/customvoice",
+		QwenTTSMode:     "customvoice",
+		QwenTTSVoice:    "Vivian",
+		QwenTTSLanguage: "Auto",
 	})
 	m.input = "book.epub"
 	m.outDir = "out/book"
 	m.cursor = abFieldGenerate
 	m, _ = m.activate()
-	if strings.Contains(m.command, "--voice") || strings.Contains(m.command, "--speed") {
-		t.Fatalf("Qwen audiobook command = %q, must omit Kokoro-only controls", m.command)
+	if !strings.Contains(m.command, "--voice Vivian") || !strings.Contains(m.command, "--language Auto") || strings.Contains(m.command, "--speed") {
+		t.Fatalf("Qwen audiobook command = %q, want managed voice/language and no unsupported speed", m.command)
 	}
 	view := m.View()
-	for _, want := range []string{"tts qwen3-tts", "mode customvoice", "model config (see Settings)", "model native"} {
+	for _, want := range []string{"tts qwen3-tts", "mode customvoice", "Vivian", "Language", "Auto", "model native"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("Qwen audiobook view missing %q:\n%s", want, view)
 		}
@@ -89,14 +90,28 @@ func TestAudiobookQwenUsesModelNativeControls(t *testing.T) {
 
 	m.cursor = abFieldVoice
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
-	if !strings.Contains(m.message, "configured in Settings") {
-		t.Fatalf("Qwen voice cycle message = %q, want configuration guidance", m.message)
+	if m.voice == "Vivian" || !strings.Contains(m.generateCommandMust(t), "--voice") {
+		t.Fatalf("Qwen voice did not cycle: voice=%q command=%q", m.voice, m.command)
+	}
+	m.cursor = abFieldLanguage
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if m.language == "Auto" {
+		t.Fatalf("Qwen language did not cycle from Auto")
 	}
 	m.cursor = abFieldSpeed
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
 	if !strings.Contains(m.message, "model-native") {
 		t.Fatalf("Qwen speed cycle message = %q, want model-native guidance", m.message)
 	}
+}
+
+func (m audiobookModel) generateCommandMust(t *testing.T) string {
+	t.Helper()
+	command, err := m.generateCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return command
 }
 
 func TestAudiobookChoiceFieldsCycleWithoutTyping(t *testing.T) {

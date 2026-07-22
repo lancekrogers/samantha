@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/charmbracelet/fang"
 	"github.com/mattn/go-isatty"
@@ -23,7 +22,6 @@ import (
 	"github.com/lancekrogers/samantha/internal/session"
 	"github.com/lancekrogers/samantha/internal/speaker"
 	"github.com/lancekrogers/samantha/internal/stt"
-	"github.com/lancekrogers/samantha/internal/tts"
 	appTUI "github.com/lancekrogers/samantha/internal/tui"
 	"github.com/lancekrogers/samantha/internal/ui"
 )
@@ -178,6 +176,7 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 			p.Brain.LoadHistory(sess.Turns)
 		}
 		liveSpeaker := speaker.NewLiveAdapter(ctx, nil, 4)
+		liveTTS := &liveTTSManager{}
 
 		p.OnTurn = func() {
 			if err := sess.Save(p.Brain.History()); err != nil {
@@ -189,16 +188,44 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 			Pipeline:     p,
 			Bus:          bus,
 			Voice:        p.STT != nil,
-			Output:       p.TTS != nil && p.Player != nil,
+			Output:       p.HasTTS() && p.Player != nil,
 			SessionID:    sess.ID,
 			InputDevice:  cfg.InputDevice,
 			OutputDevice: cfg.OutputDevice,
 			LiveSpeaker:  liveSpeaker,
+			ReloadVoice: func(reloadCtx context.Context) error {
+				if noVoice {
+					return nil
+				}
+				reloaded, err := config.Load()
+				if err != nil {
+					return fmt.Errorf("reload config: %w", err)
+				}
+				if err := config.EnsureRuntimeAssets(reloadCtx, reloaded, config.AssetRequest{NeedTTS: true}, nil); err != nil {
+					return fmt.Errorf("ensure TTS assets: %w", err)
+				}
+				set, err := newTTSProviderSet(reloaded)
+				if err != nil {
+					return fmt.Errorf("init TTS: %w", err)
+				}
+				if reloadCtx.Err() != nil || !liveTTS.install(p, set) {
+					set.Close()
+					if err := reloadCtx.Err(); err != nil {
+						return err
+					}
+					return fmt.Errorf("conversation is shutting down")
+				}
+				if set.FallbackWarning != nil {
+					bus.Emit(events.Error{Stage: "tts-fallback", Message: set.FallbackWarning.Error()})
+				}
+				return nil
+			},
 			Cleanup: func() {
 				_ = liveSpeaker.Close()
 				if err := sess.Save(p.Brain.History()); err != nil {
 					fmt.Fprintf(os.Stderr, "  warning: failed to save session %s: %v\n", sess.ID, err)
 				}
+				liveTTS.Close()
 				cleanup()
 			},
 		}
@@ -298,29 +325,15 @@ func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, tex
 		cleanups = append(cleanups, func() { _ = player.Close() })
 		p.Player = player
 
-		ttsProvider, ttsCleanup, err := tts.NewProvider(cfg)
+		ttsSet, err := newTTSProviderSet(cfg)
 		if err != nil {
 			cleanup()
 			return nil, nil, fmt.Errorf("init TTS: %w", err)
 		}
-		if ttsCleanup != nil {
-			cleanups = append(cleanups, ttsCleanup)
-		}
-		p.TTS = ttsProvider
-
-		if strings.EqualFold(strings.TrimSpace(cfg.TTSFallbackProvider), "kokoro") &&
-			!strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), "kokoro") {
-			fallbackCfg := *cfg
-			fallbackCfg.TTSProvider = "kokoro"
-			fallbackProvider, fallbackCleanup, fallbackErr := tts.NewProvider(&fallbackCfg)
-			if fallbackErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: Kokoro TTS fallback unavailable: %v\n", fallbackErr)
-			} else {
-				p.TTSFallback = fallbackProvider
-				if fallbackCleanup != nil {
-					cleanups = append(cleanups, fallbackCleanup)
-				}
-			}
+		cleanups = append(cleanups, ttsSet.Close)
+		p.ReplaceTTS(ttsSet.Primary, ttsSet.Fallback)
+		if ttsSet.FallbackWarning != nil {
+			fmt.Fprintf(os.Stderr, "warning: %v\n", ttsSet.FallbackWarning)
 		}
 	}
 

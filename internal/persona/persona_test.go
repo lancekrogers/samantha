@@ -109,6 +109,35 @@ func TestFromConfigCapturesQwenVoice(t *testing.T) {
 	}
 }
 
+func TestUpdateActiveTTSPersistsProviderAndVoice(t *testing.T) {
+	dir := t.TempDir()
+	setConfigDir(t, dir)
+	if err := Write(&Profile{
+		Schema: Schema, ID: "samantha", DisplayName: "Samantha",
+		TTS:     TTS{Provider: "kokoro", Voice: "af_heart"},
+		Prompts: PromptRefs{Persona: "samantha"},
+	}, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		ActivePersona: "samantha", TTSProvider: "kokoro",
+		TTSVoice: "af_heart", QwenTTSVoice: "Vivian",
+	}
+	if err := UpdateActiveTTS(cfg, "qwen3-tts", "Ryan"); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := Load("samantha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.TTS.Provider != "qwen3-tts" || profile.TTS.Voice != "Ryan" {
+		t.Fatalf("persisted TTS = %+v, want qwen3-tts/Ryan", profile.TTS)
+	}
+	if cfg.TTSProvider != "qwen3-tts" || cfg.QwenTTSVoice != "Ryan" {
+		t.Fatalf("live config = provider %q voice %q", cfg.TTSProvider, cfg.QwenTTSVoice)
+	}
+}
+
 func TestEnsureAndApplyMigratesFromLegacy(t *testing.T) {
 	dir := t.TempDir()
 	setConfigDir(t, dir)

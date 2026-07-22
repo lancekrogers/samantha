@@ -92,6 +92,7 @@ Scripting:
 func addRenderPassthroughFlags(cmd *cobra.Command, opts *render.Options) {
 	f := cmd.Flags()
 	f.StringVar(&opts.Voice, "voice", "", "Override the configured TTS voice")
+	f.StringVar(&opts.Language, "language", "", "Override the configured Qwen synthesis language")
 	f.Float64Var(&opts.Speed, "speed", 0, "Override the configured speech speed")
 	f.StringVar(&opts.Manifest, "manifest", "", "Write the render manifest to PATH (default OUT_DIR/manifest.json for --out-dir)")
 	f.BoolVar(&opts.JSON, "json", false, "Print a machine-readable summary")
@@ -114,6 +115,10 @@ func applyVoiceOverrides(cfg *config.Config, opts *render.Options) {
 			cfg.QwenTTSVoice = opts.Voice
 		}
 		opts.Voice = cfg.QwenTTSVoice
+		if opts.Language != "" {
+			cfg.QwenTTSLanguage = opts.Language
+		}
+		opts.Language = cfg.QwenTTSLanguage
 	} else {
 		if opts.Voice != "" {
 			cfg.TTSVoice = opts.Voice
@@ -153,6 +158,9 @@ func runRenderPlan(cmd *cobra.Command, opts render.Options) error {
 	fmt.Fprintf(out, "    output: %s\n", output)
 	if opts.Voice != "" {
 		fmt.Fprintf(out, "    voice:  %s\n", opts.Voice)
+	}
+	if opts.Language != "" {
+		fmt.Fprintf(out, "    language: %s\n", opts.Language)
 	}
 	fmt.Fprintln(out, "  (render runtime is wired in the next task; no audio produced yet)")
 	return nil

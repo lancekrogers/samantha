@@ -17,6 +17,7 @@ type RenderOptions struct {
 	JSON        bool
 	AudioFormat string
 	Voice       string
+	Language    string
 	Speed       float64
 	// OutDir overrides the audio directory (default: <plan-dir>/audio).
 	OutDir string
@@ -59,6 +60,7 @@ func RenderPlanOptions(plan *Plan, opts RenderOptions, baseDir string) render.Op
 		AudioFormat: opts.AudioFormat,
 		JSON:        opts.JSON,
 		Title:       filepath.Base(plan.Source.Path),
+		Language:    opts.Language,
 	}
 	if plan.Render != nil {
 		if opts.Voice == "" {

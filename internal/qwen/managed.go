@@ -19,11 +19,13 @@ import (
 const (
 	ProviderName         = "qwen3-tts"
 	PackageVersion       = "0.1.1"
-	WorkerRevision       = "1"
+	WorkerRevision       = "2"
 	UVVersion            = "0.11.30"
 	PythonVersion        = "3.12"
 	DefaultModelID       = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
 	DefaultModelRevision = "85e237c12c027371202489a0ec509ded67b5e4b5"
+	DefaultVoice         = "Vivian"
+	DefaultLanguage      = "Auto"
 	managedSchema        = "samantha.qwen.install.v1"
 	installerTimeout     = 30 * time.Minute
 )
@@ -62,10 +64,34 @@ func CustomVoices() []Voice {
 	return out
 }
 
+// CanonicalVoice resolves a case-insensitive user/config value to the exact
+// model-native speaker name expected by the managed worker.
+func CanonicalVoice(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	for _, voice := range customVoices {
+		if strings.EqualFold(voice.Name, value) {
+			return voice.Name, true
+		}
+	}
+	return "", false
+}
+
 func SupportedLanguages() []string {
 	out := make([]string, len(supportedLanguages))
 	copy(out, supportedLanguages)
 	return out
+}
+
+// CanonicalLanguage resolves a case-insensitive user/config value to the exact
+// language label expected by the managed worker.
+func CanonicalLanguage(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	for _, language := range supportedLanguages {
+		if strings.EqualFold(language, value) {
+			return language, true
+		}
+	}
+	return "", false
 }
 
 // UseManaged reports whether Qwen configuration selects Samantha's managed
@@ -292,6 +318,7 @@ func managedEnv(p Paths) []string {
 		"UV_NO_MODIFY_PATH=1",
 		"UV_NO_CONFIG=1",
 		"HF_HUB_DISABLE_TELEMETRY=1",
+		"JOBLIB_MULTIPROCESSING=0",
 	)
 }
 

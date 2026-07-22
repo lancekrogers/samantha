@@ -249,7 +249,7 @@ func newRenderSynth(ctx context.Context, opts *render.Options) (render.Synthesiz
 	if err != nil {
 		return nil, nil, err
 	}
-	cliVoice, cliSpeed := opts.Voice, opts.Speed
+	cliVoice, cliLanguage, cliSpeed := opts.Voice, opts.Language, opts.Speed
 	applyVoiceOverrides(cfg, opts)
 	if strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), "qwen3-tts") {
 		if cliSpeed > 0 {
@@ -264,9 +264,31 @@ func newRenderSynth(ctx context.Context, opts *render.Options) (render.Synthesiz
 			cfg.QwenTTSVoice = cliVoice
 			opts.Voice = cliVoice
 		}
+		if strings.TrimSpace(cfg.QwenTTSVoice) == "" {
+			cfg.QwenTTSVoice = managedqwen.DefaultVoice
+			opts.Voice = cfg.QwenTTSVoice
+		}
+		if cliLanguage != "" {
+			cfg.QwenTTSLanguage = cliLanguage
+			opts.Language = cliLanguage
+		}
+		if strings.TrimSpace(cfg.QwenTTSLanguage) == "" {
+			cfg.QwenTTSLanguage = managedqwen.DefaultLanguage
+			opts.Language = cfg.QwenTTSLanguage
+		}
 		if err := config.ValidateQwenTTSConfig(cfg); err != nil {
 			return nil, nil, fmt.Errorf("render: qwen3-tts configuration: %w", err)
 		}
+		if voice, ok := managedqwen.CanonicalVoice(cfg.QwenTTSVoice); ok {
+			cfg.QwenTTSVoice = voice
+			opts.Voice = voice
+		}
+		if language, ok := managedqwen.CanonicalLanguage(cfg.QwenTTSLanguage); ok {
+			cfg.QwenTTSLanguage = language
+			opts.Language = language
+		}
+	} else if cliLanguage != "" {
+		return nil, nil, errors.New("render: --language is supported only by qwen3-tts")
 	}
 	populateTTSMetadata(opts, cfg)
 	if err := config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {

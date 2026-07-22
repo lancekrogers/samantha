@@ -40,7 +40,8 @@ The managed CustomVoice model exposes its nine model-native speakers:
 Vivian  Serena  Uncle_Fu  Dylan  Eric  Ryan  Aiden  Ono_Anna  Sohee
 ```
 
-Settings → Voice lists only voices belonging to the active provider. Preview
+Settings → Voice lists only voices belonging to the active provider, and
+Settings → Language exposes the model's supported language list. Preview
 and normal synthesis send the selected Qwen speaker and language to the
 official `generate_custom_voice` API. The pinned 0.6B tier does not advertise
 instruction control. Batch rendering
@@ -55,10 +56,26 @@ Each request writes a validated WAV into a Samantha-owned temporary directory;
 Go validates its sample rate, duration, and content before streaming PCM into
 the existing playback pipeline.
 
-Context cancellation and timeouts terminate a wedged worker process group.
-Worker stdout is reserved for protocol messages and stderr is bounded before it
-is attached to provider errors. A runtime failure remains eligible for the
-configured one-sentence Kokoro fallback.
+Context cancellation and timeouts terminate a wedged worker process group but
+leave the provider usable; the next request starts a fresh worker. An
+unexpected crash receives one supervised restart and one retry before the
+configured one-sentence Kokoro fallback is considered. Local conversation and
+remote serving use the same fallback construction. Preview, speaker tests, and
+batch narration remain fail-closed so Samantha cannot disguise a broken Qwen
+speaker or produce a mixed-voice audiobook. Worker stdout is reserved for
+protocol messages and stderr is bounded before it is attached to provider
+errors.
+
+Run `just qwen-live` after installing the managed model to write real Vivian,
+Ryan, and cancellation-recovery WAVs under the Samantha cache for listening.
+The embedded worker redirects third-party import diagnostics away from its
+JSONL stdout channel, while the Go reader defensively skips non-protocol lines.
+This is required because the pinned Python stack can print optional SoX,
+joblib, or accelerator notices during model import.
+
+The 2026-07-21 macOS run passed with distinct Vivian/Ryan output and successful
+post-cancellation recovery. The preset CustomVoice path did not require a
+system SoX installation.
 
 ## External-worker compatibility
 

@@ -12,6 +12,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/discovery"
 	"github.com/lancekrogers/samantha/internal/meeting"
+	"github.com/lancekrogers/samantha/internal/persona"
 	managedqwen "github.com/lancekrogers/samantha/internal/qwen"
 	"github.com/lancekrogers/samantha/internal/tts"
 )
@@ -24,6 +25,7 @@ const (
 	sectionTools
 	sectionTTS
 	sectionVoice
+	sectionLanguage
 	sectionInput
 	sectionOutput
 	sectionMeeting
@@ -46,6 +48,7 @@ type settingsModel struct {
 	toolItems      []string
 	ttsItems       []ttsSettingItem
 	voiceItems     []tts.Voice
+	languageItems  []string
 	inputItems     []string
 	outputItems    []string
 	devicesLoading bool
@@ -66,6 +69,7 @@ type settingsModel struct {
 	ensureTTSAssets  func(context.Context, *config.Config) error
 	newTTSProvider   func(*config.Config) (tts.Provider, func(), error)
 	saveConfig       func(string, any) error
+	savePersonaTTS   func(*config.Config, string, string) error
 	message          string
 
 	qwenStatus        managedqwen.Status
@@ -88,6 +92,7 @@ func newSettings(cfg *config.Config, providers []discovery.ProviderInfo) setting
 		},
 		newTTSProvider: tts.NewProvider,
 		saveConfig:     config.SetAndSave,
+		savePersonaTTS: persona.UpdateActiveTTS,
 		ensureQwen:     managedqwen.Ensure,
 	}
 	m.qwenStatus = managedqwen.Inspect(config.ModelsDirFrom(cfg))
@@ -96,6 +101,7 @@ func newSettings(cfg *config.Config, providers []discovery.ProviderInfo) setting
 	m.buildToolItems()
 	m.buildTTSItems()
 	m.buildVoiceItems()
+	m.buildLanguageItems()
 	m.inputItems = []string{""}
 	m.outputItems = []string{""}
 	return m
@@ -213,6 +219,14 @@ func (m *settingsModel) buildVoiceItems() {
 	m.voiceItems = append(m.voiceItems, voices...)
 }
 
+func (m *settingsModel) buildLanguageItems() {
+	m.languageItems = nil
+	if strings.EqualFold(activeTTSProvider(m.cfg), managedqwen.ProviderName) &&
+		managedqwen.UseManaged(m.cfg.QwenTTSBinary, m.cfg.QwenTTSModel) {
+		m.languageItems = managedqwen.SupportedLanguages()
+	}
+}
+
 func (m settingsModel) activeModel() string {
 	switch m.cfg.BrainProvider {
 	case "ollama":
@@ -313,6 +327,7 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 		}
 		m.buildTTSItems()
 		m.buildVoiceItems()
+		m.buildLanguageItems()
 		m.message = "Qwen preset voices installed and activated; open Voice to preview and select"
 
 	case qwenInstallProgressMsg:
@@ -403,6 +418,8 @@ func (m *settingsModel) currentListLen() int {
 		return len(m.ttsItems)
 	case sectionVoice:
 		return len(m.voiceItems)
+	case sectionLanguage:
+		return len(m.languageItems)
 	case sectionInput:
 		return len(m.inputItems)
 	case sectionOutput:
@@ -505,14 +522,28 @@ func (m *settingsModel) selectCurrent() tea.Cmd {
 					return nil
 				}
 			}
-			if err := saveConfig("tts_provider", provider); err != nil {
+			voice := m.cfg.TTSVoice
+			if provider == managedqwen.ProviderName {
+				voice = m.cfg.QwenTTSVoice
+			}
+			if strings.TrimSpace(m.cfg.ActivePersona) != "" {
+				savePersonaTTS := m.savePersonaTTS
+				if savePersonaTTS == nil {
+					savePersonaTTS = persona.UpdateActiveTTS
+				}
+				if err := savePersonaTTS(m.cfg, provider, voice); err != nil {
+					m.message = fmt.Sprintf("Failed to save persona TTS provider: %v", err)
+					return nil
+				}
+			} else if err := saveConfig("tts_provider", provider); err != nil {
 				m.message = fmt.Sprintf("Failed to save TTS provider: %v", err)
 				return nil
 			}
 			m.cfg.TTSProvider = provider
 			m.buildTTSItems()
 			m.buildVoiceItems()
-			m.message = fmt.Sprintf("TTS provider set to %s; new conversations use it immediately", provider)
+			m.buildLanguageItems()
+			m.message = fmt.Sprintf("TTS provider set to %s; applies immediately when you return to conversation", provider)
 		}
 	case sectionVoice:
 		if m.cursor < len(m.voiceItems) {
@@ -525,7 +556,16 @@ func (m *settingsModel) selectCurrent() tea.Cmd {
 			if saveConfig == nil {
 				saveConfig = config.SetAndSave
 			}
-			if err := saveConfig(key, voice.Name); err != nil {
+			if strings.TrimSpace(m.cfg.ActivePersona) != "" {
+				savePersonaTTS := m.savePersonaTTS
+				if savePersonaTTS == nil {
+					savePersonaTTS = persona.UpdateActiveTTS
+				}
+				if err := savePersonaTTS(m.cfg, activeTTSProvider(m.cfg), voice.Name); err != nil {
+					m.message = fmt.Sprintf("Failed to save persona voice: %v", err)
+					return nil
+				}
+			} else if err := saveConfig(key, voice.Name); err != nil {
 				m.message = fmt.Sprintf("Failed to save voice: %v", err)
 				return nil
 			}
@@ -535,6 +575,20 @@ func (m *settingsModel) selectCurrent() tea.Cmd {
 				m.cfg.TTSVoice = voice.Name
 			}
 			m.message = fmt.Sprintf("Voice set to %s", voice.Name)
+		}
+	case sectionLanguage:
+		if m.cursor < len(m.languageItems) {
+			language := m.languageItems[m.cursor]
+			saveConfig := m.saveConfig
+			if saveConfig == nil {
+				saveConfig = config.SetAndSave
+			}
+			if err := saveConfig("qwen_tts_language", language); err != nil {
+				m.message = fmt.Sprintf("Failed to save language: %v", err)
+				return nil
+			}
+			m.cfg.QwenTTSLanguage = language
+			m.message = fmt.Sprintf("Qwen language set to %s", language)
 		}
 	case sectionInput:
 		if m.cursor < len(m.inputItems) {
@@ -621,11 +675,11 @@ func (m *settingsModel) saveManagedQwenDefaults() error {
 	}
 	voice := strings.TrimSpace(m.cfg.QwenTTSVoice)
 	if voice == "" || strings.EqualFold(voice, "default") {
-		voice = "Vivian"
+		voice = managedqwen.DefaultVoice
 	}
 	language := strings.TrimSpace(m.cfg.QwenTTSLanguage)
 	if language == "" {
-		language = "Auto"
+		language = managedqwen.DefaultLanguage
 	}
 	values := []struct {
 		key   string

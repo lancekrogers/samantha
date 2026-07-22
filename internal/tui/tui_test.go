@@ -103,6 +103,39 @@ func TestSettingsReturnsToConversationAndRestoresVoice(t *testing.T) {
 	}
 }
 
+func TestSettingsReloadsLiveVoiceBeforeResumingInput(t *testing.T) {
+	reloaded := false
+	app := App{cfg: &config.Config{}, screen: screenConversation, runCtx: context.Background()}
+	app.runtime = &ConversationRuntime{ReloadVoice: func(context.Context) error {
+		reloaded = true
+		return nil
+	}}
+	app.conversation = newConversation("Samantha")
+	app.conversation.deps.voice = true
+	app.conversation.voiceEnabled = true
+
+	model, _ := app.Update(switchScreenMsg(screenSettings))
+	app = model.(App)
+	app.cfg.TTSVoice = "af_bella"
+	model, cmd := app.Update(settingsDoneMsg{})
+	app = model.(App)
+	if cmd == nil {
+		t.Fatal("returning from Settings did not schedule live voice reload")
+	}
+	if app.conversation.voiceEnabled {
+		t.Fatal("voice input resumed before provider reload completed")
+	}
+
+	model, _ = app.Update(cmd())
+	app = model.(App)
+	if !reloaded {
+		t.Fatal("live voice reload was not invoked")
+	}
+	if !app.conversation.voiceEnabled {
+		t.Fatal("voice input was not restored after provider reload")
+	}
+}
+
 func TestSwitchToTailscaleStartsManagedServerScreen(t *testing.T) {
 	app := App{cfg: &config.Config{}, runCtx: context.Background()}
 	model, cmd := app.Update(switchScreenMsg(screenRemote))
