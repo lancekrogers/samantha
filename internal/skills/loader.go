@@ -103,7 +103,7 @@ func catalogDir(ctx context.Context, dir string, byName map[string]Skill) error 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if !e.IsDir() {
+		if !skillEntryIsDir(dir, e) {
 			continue
 		}
 		// Skip hidden dirs (e.g. .git) under a skills root.
@@ -122,6 +122,21 @@ func catalogDir(ctx context.Context, dir string, byName map[string]Skill) error 
 		byName[skill.Name] = skill
 	}
 	return nil
+}
+
+// skillEntryIsDir accepts ordinary directories and directory symlinks. Campaign
+// workspaces project their shared skills into .agents/skills with symlinks, and
+// DirEntry.IsDir reports false for those entries because it describes the link
+// itself rather than its target. Broken links and links to files are skipped.
+func skillEntryIsDir(root string, entry os.DirEntry) bool {
+	if entry.IsDir() {
+		return true
+	}
+	if entry.Type()&os.ModeSymlink == 0 {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(root, entry.Name()))
+	return err == nil && info.IsDir()
 }
 
 func loadSkill(path string) (Skill, error) {

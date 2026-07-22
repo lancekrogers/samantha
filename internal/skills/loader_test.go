@@ -143,6 +143,32 @@ func TestCatalogOnlyImmediateChildren(t *testing.T) {
 	}
 }
 
+func TestCatalogFollowsSkillDirectorySymlinks(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	target := filepath.Join(t.TempDir(), "campaign-skill")
+	writeSkill(t, target, "campaign-skill", "projected campaign skill", "follow the link")
+	if err := os.Symlink(target, filepath.Join(root, "campaign-skill")); err != nil {
+		t.Skipf("creating directory symlink: %v", err)
+	}
+	// A broken directory projection must remain fail-safe and be ignored.
+	if err := os.Symlink(filepath.Join(root, "missing"), filepath.Join(root, "broken")); err != nil {
+		t.Skipf("creating broken symlink: %v", err)
+	}
+
+	got, err := Loader{Dir: root}.Catalog(context.Background())
+	if err != nil {
+		t.Fatalf("Catalog() error = %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "campaign-skill" {
+		t.Fatalf("got %v, want projected campaign-skill only", names(got))
+	}
+	if got[0].Dir != filepath.Join(root, "campaign-skill") {
+		t.Fatalf("skill Dir = %q, want projected path %q", got[0].Dir, filepath.Join(root, "campaign-skill"))
+	}
+}
+
 func TestCatalogTruncatesLongDescription(t *testing.T) {
 	t.Parallel()
 
