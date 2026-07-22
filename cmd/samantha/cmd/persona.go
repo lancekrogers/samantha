@@ -164,9 +164,9 @@ var personaCreateCmd = &cobra.Command{
 	Short: "Create a new persona and make it active",
 	Long: `Create a user persona under personas/<id>/persona.yaml.
 
-The id is derived from the display name (kebab-case). TTS provider/voice and
-prompt refs are cloned from the current config so the new agent starts with
-your active voice stack. Switch TTS/Voice in Settings afterward if needed.`,
+The id is derived from the display name (kebab-case). TTS provider/voice are
+cloned from the current config. Pass --prompt to write a custom system prompt
+document under prompts/persona/<id>.yaml (supports {agent_name}).`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
@@ -174,7 +174,11 @@ your active voice stack. Switch TTS/Voice in Settings afterward if needed.`,
 			return err
 		}
 		name := strings.TrimSpace(strings.Join(args, " "))
-		p, err := persona.CreateAndUse(cfg, name)
+		prompt, _ := cmd.Flags().GetString("prompt")
+		p, err := persona.CreateAndUseWithOpts(cfg, persona.CreateOpts{
+			DisplayName:  name,
+			SystemPrompt: prompt,
+		})
 		if err != nil {
 			return err
 		}
@@ -182,7 +186,10 @@ your active voice stack. Switch TTS/Voice in Settings afterward if needed.`,
 		if p.TTS.Provider != "" || p.TTS.Voice != "" {
 			fmt.Fprintf(cmd.OutOrStdout(), "  TTS: %s %s\n", p.TTS.Provider, p.TTS.Voice)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "  Active now. Edit prompts under %s\n", persona.Dir())
+		if strings.TrimSpace(prompt) != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "  System prompt: prompts/persona/%s.yaml\n", p.ID)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "  Active now. Edit in TUI (Personas → e) or under %s\n", persona.Dir())
 		return nil
 	},
 }
@@ -190,4 +197,5 @@ your active voice stack. Switch TTS/Voice in Settings afterward if needed.`,
 func init() {
 	personaListCmd.Flags().Bool("json", false, "Emit JSON")
 	personaShowCmd.Flags().Bool("json", false, "Emit JSON")
+	personaCreateCmd.Flags().String("prompt", "", "Custom system prompt body (writes prompts/persona/<id>.yaml)")
 }
