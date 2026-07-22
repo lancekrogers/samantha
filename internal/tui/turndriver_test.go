@@ -322,31 +322,59 @@ func TestMuteWhileListeningCancelsWithoutRedispatch(t *testing.T) {
 	}
 }
 
-// Enter while the voice turn is already responding must not cancel it; the
-// draft stays in the input box.
-func TestSubmitWhileRespondingKeepsDraft(t *testing.T) {
-	runner := &fakeTurnRunner{}
+// Enter while the voice turn is responding (speaking/thinking) barges in:
+// cancel the voice turn and park the draft as pending text.
+func TestSubmitWhileRespondingBargesIn(t *testing.T) {
+	runner := &fakeTurnRunner{voiceQueue: []voiceScript{{block: true}}}
 	m, _ := startedConversation(t, runner, true)
-	m.handleEvent(events.UserInput{Text: "spoken words"}) // listening -> responding
+	voiceCmd := m.dispatchVoiceTurn()
+	voiceDone := make(chan tea.Msg, 1)
+	go func() { voiceDone <- voiceCmd() }()
 
+	m.handleEvent(events.UserInput{Text: "spoken words"}) // listening -> responding
 	if m.turnState != turnVoiceResponding {
 		t.Fatalf("turnState = %d, want responding after UserInput event", m.turnState)
 	}
 
 	m, cmd := typeAndEnter(m, "my draft")
 	if cmd != nil {
-		t.Fatal("submit while responding must not dispatch")
+		t.Fatal("barge-in submit should wait for voiceTurnDone, not dispatch immediately")
 	}
-	if m.input.Value() != "my draft" {
-		t.Errorf("draft lost: input = %q", m.input.Value())
+	if m.turnState != turnVoiceCanceling {
+		t.Fatalf("turnState = %d, want canceling after text barge-in", m.turnState)
+	}
+	if m.pendingText != "my draft" {
+		t.Fatalf("pendingText = %q, want my draft", m.pendingText)
+	}
+	if m.input.Value() != "" {
+		t.Errorf("composer should clear after barge-in: %q", m.input.Value())
+	}
+
+	// Drain the canceled voice turn; handleVoiceTurnDone should dispatch text.
+	select {
+	case msg := <-voiceDone:
+		m, cmd = m.Update(msg)
+	case <-time.After(2 * time.Second):
+		t.Fatal("voice turn was not canceled by barge-in")
+	}
+	if m.pendingText != "" {
+		t.Fatalf("pendingText still set after drain: %q", m.pendingText)
+	}
+	if cmd == nil && m.turnState != turnTextRunning && m.turnState != turnIdle {
+		// dispatchTextTurn returns a Cmd; if fake runner is sync it may complete.
+		t.Logf("after barge drain: state=%d cmd=%v", m.turnState, cmd != nil)
 	}
 }
 
 // UserInput can clear the cancel gate on the pipeline goroutine before the
 // bridge delivers the event into Update — turnState may still be listening.
-func TestSubmitAfterTranscriptGateKeepsDraft(t *testing.T) {
+// Text barge-in must still cancel (same as responding) when turnCancel is set.
+func TestSubmitAfterTranscriptGateBargesIn(t *testing.T) {
 	runner := &fakeTurnRunner{voiceQueue: []voiceScript{{block: true}}}
 	m, bus := startedConversation(t, runner, true)
+	voiceCmd := m.dispatchVoiceTurn()
+	voiceDone := make(chan tea.Msg, 1)
+	go func() { voiceDone <- voiceCmd() }()
 
 	if m.turnState != turnVoiceListening {
 		t.Fatalf("turnState = %d, want listening", m.turnState)
@@ -366,13 +394,23 @@ func TestSubmitAfterTranscriptGateKeepsDraft(t *testing.T) {
 
 	m, cmd := typeAndEnter(m, "my draft")
 	if cmd != nil {
-		t.Fatal("submit after transcript gate must not cancel/dispatch")
+		t.Fatal("barge-in should wait for cancel drain")
 	}
-	if m.input.Value() != "my draft" {
-		t.Errorf("draft lost: input = %q", m.input.Value())
+	if m.turnState != turnVoiceCanceling {
+		t.Fatalf("turnState = %d, want canceling after barge-in past transcript gate", m.turnState)
 	}
-	if m.turnState == turnVoiceCanceling {
-		t.Fatal("voice turn was canceled after transcript gate closed")
+	if m.pendingText != "my draft" {
+		t.Fatalf("pendingText = %q", m.pendingText)
+	}
+	if m.input.Value() != "" {
+		t.Errorf("composer should clear: %q", m.input.Value())
+	}
+
+	select {
+	case msg := <-voiceDone:
+		m, _ = m.Update(msg)
+	case <-time.After(2 * time.Second):
+		t.Fatal("voice turn was not canceled")
 	}
 }
 

@@ -28,7 +28,7 @@ type turnState int
 const (
 	turnIdle            turnState = iota
 	turnVoiceListening            // voice turn in flight, no final transcript yet — cancelable
-	turnVoiceResponding           // voice turn past transcription — a submit must wait
+	turnVoiceResponding           // voice turn past transcription — text Enter barges in (cancels TTS/brain)
 	turnVoiceCanceling            // canceled for a text submit, awaiting voiceTurnDoneMsg
 	turnTextRunning               // text turn in flight
 )
@@ -265,8 +265,9 @@ func (m *conversationModel) recoverTurnState() tea.Cmd {
 	return nil
 }
 
-// handleSubmit routes an Enter press by turn state: idle submits, a listening
-// voice turn is canceled first (D1), anything else keeps the text in the box.
+// handleSubmit routes an Enter press by turn state: idle submits; a listening
+// or responding voice turn is canceled first so typed text can barge in; a
+// text turn keeps the draft until the pipeline is free.
 //
 // Slash commands are local (never need the brain). They run immediately in
 // any turn state so a long STT cancel or in-flight response cannot freeze
@@ -297,31 +298,56 @@ func (m *conversationModel) handleSubmit() tea.Cmd {
 	case turnVoiceListening:
 		// Prefer the synchronous cancel gate over turnState: UserInput can
 		// already have been emitted (brain thinking) while the bridge has
-		// not yet delivered it into handleEvent.
+		// not yet delivered it into handleEvent. After the gate closes,
+		// turnState becomes turnVoiceResponding on the next UserInput event
+		// and text barge-in is handled there instead.
 		if m.canCancelVoice != nil && !m.canCancelVoice.Load() {
+			// Transcript already final; treat as responding barge-in if we
+			// still hold a turn cancel (brain/TTS may be in flight).
+			if m.turnCancel != nil {
+				return m.beginTextBargeIn(text)
+			}
 			return nil
 		}
-		m.pendingText = text
-		previous := m.input.Value()
-		m.input.Reset()
-		m.editor.sync("", 0)
-		m.editor.resetUndo()
-		m.syncComposer(previous)
-		// Show the bubble immediately — cancel + text dispatch can take a
-		// full STT shutdown, and clearing the composer otherwise looks like
-		// the message was dropped.
-		if !isNonChatSubmit(text) {
-			m.echoUserTurn(text)
-		}
-		m.turnState = turnVoiceCanceling
-		if m.turnCancel != nil {
-			m.turnCancel()
-		}
-		return nil
+		return m.beginTextBargeIn(text)
+	case turnVoiceResponding:
+		// "Speaking — type to barge in": cancel TTS/brain and run the draft.
+		return m.beginTextBargeIn(text)
 	default:
-		// A response or text turn owns the pipeline; leave the draft alone.
+		// Text turn owns the pipeline; leave the draft alone.
 		return nil
 	}
+}
+
+// beginTextBargeIn parks the draft, echoes it, and cancels the in-flight voice
+// turn. handleVoiceTurnDone dispatches the text when the cancel drains.
+func (m *conversationModel) beginTextBargeIn(text string) tea.Cmd {
+	m.pendingText = text
+	previous := m.input.Value()
+	m.input.Reset()
+	m.editor.sync("", 0)
+	m.editor.resetUndo()
+	m.syncComposer(previous)
+	// Show the bubble immediately — cancel + text dispatch can take a
+	// full STT/TTS shutdown, and clearing the composer otherwise looks like
+	// the message was dropped.
+	if !isNonChatSubmit(text) {
+		m.echoUserTurn(text)
+	}
+	m.turnState = turnVoiceCanceling
+	if m.canCancelVoice != nil {
+		m.canCancelVoice.Store(false)
+	}
+	if m.turnCancel != nil {
+		m.turnCancel()
+	}
+	// Stop audible playback ASAP when the pipeline exposes a player stop.
+	if m.deps.runner != nil {
+		if stopper, ok := m.deps.runner.(interface{ StopPlayback() }); ok {
+			stopper.StopPlayback()
+		}
+	}
+	return nil
 }
 
 // expandPaletteSelection replaces an incomplete slash prefix with the
