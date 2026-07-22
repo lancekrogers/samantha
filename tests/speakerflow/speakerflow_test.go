@@ -12,10 +12,16 @@
 //   - AttributeTranscript labels utterances from the timeline
 //   - analysis JSON is written beside the fixture
 //
-// Fetch the fixture first:
+// Fixture (shared across worktrees — not re-downloaded every run):
 //
 //	just fetch-meeting-fixture
 //	just test speakerflow
+//
+// Cache path (first hit wins):
+//  1. $SAMANTHA_MEETING_FIXTURE (explicit file)
+//  2. $SAMANTHA_FIXTURE_CACHE/product-marketing-meeting-90s.wav
+//  3. $XDG_CACHE_HOME/samantha/fixtures/meetings/… or ~/.cache/samantha/…
+//  4. <module>/tests/fixtures/meetings/… (legacy per-tree path)
 package speakerflow
 
 import (
@@ -23,6 +29,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,31 +39,66 @@ import (
 )
 
 const (
-	fixtureRel   = "tests/fixtures/meetings/product-marketing-meeting-90s.wav"
+	fixtureName  = "product-marketing-meeting-90s.wav"
 	fixtureRate  = 16000
 	wantSpeakers = 2
 )
 
+// sharedFixtureCandidates returns search paths for the multi-voice meeting clip.
+// Prefer the user-level cache so every git worktree reuses one download.
+func sharedFixtureCandidates() []string {
+	var paths []string
+	if p := os.Getenv("SAMANTHA_MEETING_FIXTURE"); p != "" {
+		paths = append(paths, p)
+	}
+	cacheDir := os.Getenv("SAMANTHA_FIXTURE_CACHE")
+	if cacheDir == "" {
+		if xdg := os.Getenv("XDG_CACHE_HOME"); xdg != "" {
+			cacheDir = filepath.Join(xdg, "samantha", "fixtures", "meetings")
+		} else if home, err := os.UserHomeDir(); err == nil {
+			cacheDir = filepath.Join(home, ".cache", "samantha", "fixtures", "meetings")
+		}
+	}
+	if cacheDir != "" {
+		paths = append(paths, filepath.Join(cacheDir, fixtureName))
+	}
+	// Legacy in-tree location (gitignored) still works if present.
+	dir, err := os.Getwd()
+	if err == nil {
+		for i := 0; i < 6; i++ {
+			paths = append(paths, filepath.Join(dir, "tests", "fixtures", "meetings", fixtureName))
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+	}
+	return paths
+}
+
 func fixturePath(t *testing.T) string {
 	t.Helper()
-	// Walk up from this package to the module root.
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 6; i++ {
-		candidate := filepath.Join(dir, fixtureRel)
-		if st, err := os.Stat(candidate); err == nil && st.Size() > 0 {
+	for _, candidate := range sharedFixtureCandidates() {
+		if st, err := os.Stat(candidate); err == nil && st.Size() > 100_000 {
+			t.Logf("using fixture %s (%.1f MiB)", candidate, float64(st.Size())/(1<<20))
 			return candidate
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
 	}
-	t.Skipf("meeting fixture missing (%s) — run: just fetch-meeting-fixture", fixtureRel)
+	t.Skipf("meeting fixture missing — run: just fetch-meeting-fixture\n  looked in:\n  - %s",
+		joinLines(sharedFixtureCandidates()))
 	return ""
+}
+
+func joinLines(ss []string) string {
+	if len(ss) == 0 {
+		return "(none)"
+	}
+	out := ss[0]
+	for _, s := range ss[1:] {
+		out += "\n  - " + s
+	}
+	return out
 }
 
 func TestMeetingFixtureDiarizationPipeline(t *testing.T) {
@@ -72,10 +114,10 @@ func TestMeetingFixtureDiarizationPipeline(t *testing.T) {
 	if len(samples) < fixtureRate { // < 1s is suspicious for a 90s clip
 		t.Fatalf("samples = %d, want at least 1s of audio", len(samples))
 	}
-	// Clip is ~90s; allow some slack for section extract.
+	// Clip is ~90s of the YouTube meeting (not the full ~43 min video).
 	dur := float64(len(samples)) / float64(rate)
 	if dur < 30 || dur > 120 {
-		t.Fatalf("duration = %.1fs, want ~90s multi-voice meeting clip", dur)
+		t.Fatalf("duration = %.1fs, want ~90s multi-voice meeting clip (section extract)", dur)
 	}
 
 	cfg := speaker.Config{
@@ -169,8 +211,26 @@ func TestMeetingFixtureDiarizationPipeline(t *testing.T) {
 
 func TestMeetingFixtureMissingIsSkippedNotFailed(t *testing.T) {
 	// Sanity: when the fixture path is forced missing, tests must Skip, not Fail.
-	// This test always passes; the real skip path is in fixturePath.
 	if _, err := os.Stat("/nonexistent/product-marketing-meeting-90s.wav"); err == nil {
 		t.Fatal("expected missing path")
+	}
+}
+
+func TestSharedFixtureCachePathHelpers(t *testing.T) {
+	cands := sharedFixtureCandidates()
+	if len(cands) == 0 {
+		t.Fatal("expected at least one cache candidate")
+	}
+	// Prefer a user cache path so worktrees share one download.
+	foundCache := false
+	for _, c := range cands {
+		if strings.Contains(c, filepath.Join("samantha", "fixtures", "meetings")) ||
+			strings.Contains(c, ".cache"+string(filepath.Separator)+"samantha") {
+			foundCache = true
+			break
+		}
+	}
+	if !foundCache && os.Getenv("SAMANTHA_FIXTURE_CACHE") == "" {
+		t.Logf("no default cache path in candidates (unusual): %v", cands)
 	}
 }
