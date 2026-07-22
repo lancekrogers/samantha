@@ -15,7 +15,7 @@ type ProviderSpec struct {
 
 var providerSpecs = []ProviderSpec{
 	{Name: "kokoro", Description: "Local Kokoro TTS"},
-	{Name: "qwen3-tts", Description: "Optional native Qwen3-TTS CLI"},
+	{Name: "qwen3-tts", Description: "Managed Qwen3-TTS preset voices"},
 }
 
 // Providers returns the list of implemented TTS providers.

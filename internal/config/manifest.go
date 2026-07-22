@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // AssetSchema identifies the asset manifest schema version.
@@ -171,7 +172,7 @@ func ManifestFor(cfg *Config, req AssetRequest) (AssetManifest, error) {
 		}
 	}
 
-	if req.NeedTTS && ManagedTTS(cfg) {
+	if req.NeedTTS && cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), "kokoro") {
 		m.Assets = append(m.Assets, Asset{
 			ID:         "tts.kokoro.multi-lang-v1_0",
 			Provider:   "kokoro",

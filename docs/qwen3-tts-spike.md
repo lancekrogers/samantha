@@ -1,50 +1,89 @@
-# Qwen3-TTS native provider spike
+# Qwen3-TTS managed provider
 
-This branch adds an optional `qwen3-tts` provider alongside Kokoro. Kokoro
-remains Samantha's default and fallback; selecting Qwen is an explicit local
-configuration choice.
+Samantha supports Qwen3-TTS as an optional local provider while keeping Kokoro
+as the default and fallback. The normal product path is fully managed: select
+Qwen3-TTS in TUI Settings and Samantha installs the runtime and recommended
+CustomVoice model below `models_dir/qwen3-tts`.
 
-Samantha does not ship Python, model weights, or a Qwen runtime. The provider
-starts an externally installed native worker once per synthesis request, using
-the small file-based contract currently exposed by `qwen3-tts.cpp`:
+## Managed setup
+
+Settings installs pinned components:
+
+- uv `0.11.30`, isolated below the Samantha model directory;
+- uv-managed Python `3.12`;
+- official `qwen-tts==0.1.1`;
+- `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` at revision
+  `85e237c12c027371202489a0ec509ded67b5e4b5`;
+- Samantha's versioned worker adapter.
+
+uv is installed with its official versioned installer in unmanaged mode, so it
+does not modify shell profiles. uv's Python, package cache, worker, model, and
+installation marker all remain under Samantha's configured model directory.
+The Hugging Face snapshot is public and revision-pinned.
+
+The equivalent CLI setup, after configuring `tts_provider: qwen3-tts`, is:
+
+```text
+samantha models ensure --tts
+samantha models status --tts
+samantha doctor
+samantha voices
+```
+
+No system Python or manually installed Qwen executable is required.
+
+## Preset voices
+
+The managed CustomVoice model exposes its nine model-native speakers:
+
+```text
+Vivian  Serena  Uncle_Fu  Dylan  Eric  Ryan  Aiden  Ono_Anna  Sohee
+```
+
+Settings → Voice lists only voices belonging to the active provider. Preview
+and normal synthesis send the selected Qwen speaker and language to the
+official `generate_custom_voice` API. The pinned 0.6B tier does not advertise
+instruction control. Batch rendering
+also records the model revision, worker version, mode, language, and speaker in
+its synthesis identity and manifest.
+
+## Worker lifecycle
+
+Samantha starts one isolated Python worker and loads the selected model once.
+The worker and Go provider communicate over a versioned JSON-lines protocol.
+Each request writes a validated WAV into a Samantha-owned temporary directory;
+Go validates its sample rate, duration, and content before streaming PCM into
+the existing playback pipeline.
+
+Context cancellation and timeouts terminate a wedged worker process group.
+Worker stdout is reserved for protocol messages and stderr is bounded before it
+is attached to provider errors. A runtime failure remains eligible for the
+configured one-sentence Kokoro fallback.
+
+## External-worker compatibility
+
+Advanced users may set both fields below to keep using the earlier
+qwen3-tts.cpp-compatible contract:
+
+```yaml
+tts_provider: qwen3-tts
+qwen_tts_binary: qwen3-tts-cli
+qwen_tts_model: /path/to/native/model
+```
+
+That adapter invokes:
 
 ```text
 qwen3-tts-cli -m <model-directory> -t <text> -o <temporary-wav>
 ```
 
-The WAV is read into float32 samples and emitted in chunks through the existing
-`audio.PCMStream`. The child process is owned by a context with a configured
-timeout, so cancellation kills the native process and closes the stream with a
-useful error.
+Because that contract exposes no verified speaker or language flags, it remains
+limited to the external model's default voice. Named CustomVoice speakers are a
+feature of Samantha's managed official worker.
 
-Configuration:
+## Current mode boundary
 
-```yaml
-tts_provider: kokoro          # unchanged default
-qwen_tts_binary: qwen3-tts-cli
-qwen_tts_model: /path/to/qwen3-tts.cpp/models
-qwen_tts_timeout: 120
-voice_fallback_provider: kokoro
-```
-
-This is intentionally a provider seam, not a complete Qwen product feature.
-The current upstream CLI is file-oriented and loads model/runtime state for each
-request. Cold-start cost can be substantial, especially on CPU, so the default
-120-second timeout is intentionally conservative and can be tuned with
-`qwen_tts_timeout` for longer render segments. The provider places each worker
-in its own process group on Unix so cancellation also cleans up forked helpers.
-
-The native CLI currently does not expose Samantha's static voice or speed
-controls. Qwen requests therefore use the model-native default voice/speed;
-batch render rejects explicit `--voice`/`--speed` overrides and keeps those
-unused fields out of manifests and resume identities. This spike does not add a
-persistent worker, streaming-token protocol, static voice picker, or cloning
-UI. Those can be added behind the same provider boundary after the native
-worker contract and latency are validated. Voice cloning is therefore a
-follow-up integration, not a reason to replace Kokoro.
-
-When Qwen is selected, `voice_fallback_provider: kokoro` enables one bounded
-retry of a sentence when Qwen fails before playback. Startup still reports a
-missing Qwen worker/model instead of silently changing the configured provider;
-the fallback is a runtime recovery path and is observable as a `tts-fallback`
-event. Set the field empty to disable it.
+This release installs and exposes CustomVoice preset speakers. The provider
+contract already carries VoiceDesign and approved-clone fields, but those modes
+remain unavailable until their separate model installers and consent-aware TUI
+flows land. Reference-audio validation and consent gates remain in place.

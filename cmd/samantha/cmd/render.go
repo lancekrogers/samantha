@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -108,13 +109,20 @@ func addRenderPassthroughFlags(cmd *cobra.Command, opts *render.Options) {
 // resolved effective values back into opts, so manifests and resume keys record
 // the voice/speed actually used even when they came from config.
 func applyVoiceOverrides(cfg *config.Config, opts *render.Options) {
-	if opts.Voice != "" {
-		cfg.TTSVoice = opts.Voice
+	if strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), "qwen3-tts") {
+		if opts.Voice != "" {
+			cfg.QwenTTSVoice = opts.Voice
+		}
+		opts.Voice = cfg.QwenTTSVoice
+	} else {
+		if opts.Voice != "" {
+			cfg.TTSVoice = opts.Voice
+		}
+		opts.Voice = cfg.TTSVoice
 	}
 	if opts.Speed > 0 {
 		cfg.SpeechSpeed = opts.Speed
 	}
-	opts.Voice = cfg.TTSVoice
 	opts.Speed = cfg.SpeechSpeed
 }
 
