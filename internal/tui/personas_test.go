@@ -156,3 +156,115 @@ func TestLauncherOffersPersonas(t *testing.T) {
 	}
 	t.Fatal("launcher missing Personas action")
 }
+
+func TestPersonasCreateViaNKey(t *testing.T) {
+	cfg := &config.Config{ActivePersona: "samantha", AgentName: "Samantha"}
+	m := newPersonas(cfg)
+	m.listPersonas = func() ([]*persona.Profile, error) {
+		return []*persona.Profile{{ID: "samantha", DisplayName: "Samantha"}}, nil
+	}
+	m.defaultPrompt = func() (string, error) { return "You are {agent_name}.", nil }
+	m.reload()
+	m.width, m.height = 80, 24
+	// Cursor still on first persona — n must open create without scrolling.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if m.formMode != "create" {
+		t.Fatalf("formMode = %q, want create", m.formMode)
+	}
+	if !strings.Contains(m.promptTA.Value(), "agent_name") {
+		t.Fatalf("default system prompt not loaded: %q", m.promptTA.Value())
+	}
+}
+
+func TestPersonasFormSavesWithoutRelyingOnCtrlS(t *testing.T) {
+	// Regression: many terminals swallow ctrl+s (XOFF). Save must also work via
+	// keys that Bubble Tea actually receives (ctrl+j, alt+s, f2).
+	cases := []struct {
+		name string
+		msg  tea.KeyMsg
+	}{
+		{"ctrl+j", tea.KeyMsg{Type: tea.KeyCtrlJ}},
+		{"alt+s", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}, Alt: true}},
+		{"f2", tea.KeyMsg{Type: tea.KeyF2}},
+		{"ctrl+s", tea.KeyMsg{Type: tea.KeyCtrlS}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.msg.String(); got != tc.name {
+				t.Fatalf("KeyMsg.String() = %q, want %q", got, tc.name)
+			}
+			cfg := &config.Config{ActivePersona: "samantha", AgentName: "Samantha"}
+			m := newPersonas(cfg)
+			m.listPersonas = func() ([]*persona.Profile, error) {
+				return []*persona.Profile{{ID: "samantha", DisplayName: "Samantha"}}, nil
+			}
+			m.defaultPrompt = func() (string, error) { return "You are {agent_name}.", nil }
+			var gotOpts persona.CreateOpts
+			m.createPersona = func(c *config.Config, opts persona.CreateOpts) (*persona.Profile, error) {
+				gotOpts = opts
+				return &persona.Profile{ID: "buddy", DisplayName: opts.DisplayName}, nil
+			}
+			m.reload()
+			m.width, m.height = 80, 24
+			m.beginCreate()
+			m.nameInput.SetValue("Buddy")
+			m.promptTA.SetValue("You are {agent_name}, buddy.")
+			m.formStep = personaFormPrompt
+			m, _ = m.updateForm(tc.msg)
+			if m.formMode != "" {
+				t.Fatalf("form still open after %s (save not handled)", tc.name)
+			}
+			if gotOpts.DisplayName != "Buddy" {
+				t.Fatalf("name = %q", gotOpts.DisplayName)
+			}
+			if !strings.Contains(gotOpts.SystemPrompt, "buddy") {
+				t.Fatalf("prompt = %q", gotOpts.SystemPrompt)
+			}
+		})
+	}
+}
+
+func TestPersonasFormKeepsSystemPromptVisibleOnShortHeight(t *testing.T) {
+	cfg := &config.Config{ActivePersona: "samantha", AgentName: "Samantha"}
+	m := newPersonas(cfg)
+	m.listPersonas = func() ([]*persona.Profile, error) {
+		return []*persona.Profile{{ID: "samantha", DisplayName: "Samantha"}}, nil
+	}
+	m.defaultPrompt = func() (string, error) { return "You are {agent_name}.", nil }
+	m.reload()
+	// Short terminal used to pad-truncate the form and hide the prompt field.
+	m.width, m.height = 80, 14
+	m.beginCreate()
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "System prompt") {
+		t.Fatalf("system prompt field missing at height 14:\n%s", view)
+	}
+	if !strings.Contains(view, "ctrl+j") && !strings.Contains(view, "alt+s") {
+		t.Fatalf("save help missing:\n%s", view)
+	}
+}
+
+func TestPersonasCreateNameOnlyUsesDefaultPrompt(t *testing.T) {
+	cfg := &config.Config{ActivePersona: "samantha", AgentName: "Samantha"}
+	m := newPersonas(cfg)
+	m.listPersonas = func() ([]*persona.Profile, error) {
+		return []*persona.Profile{{ID: "samantha", DisplayName: "Samantha"}}, nil
+	}
+	m.defaultPrompt = func() (string, error) { return "You are {agent_name}, default.", nil }
+	var gotOpts persona.CreateOpts
+	m.createPersona = func(c *config.Config, opts persona.CreateOpts) (*persona.Profile, error) {
+		gotOpts = opts
+		return &persona.Profile{ID: "named", DisplayName: opts.DisplayName}, nil
+	}
+	m.reload()
+	m.beginCreate()
+	m.nameInput.SetValue("Named Only")
+	m.promptTA.SetValue("") // empty — should fall back to default
+	m, _ = m.submitForm()
+	if m.formMode != "" {
+		t.Fatal("form should close")
+	}
+	if !strings.Contains(gotOpts.SystemPrompt, "default") {
+		t.Fatalf("expected default prompt, got %q", gotOpts.SystemPrompt)
+	}
+}

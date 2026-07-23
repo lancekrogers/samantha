@@ -163,6 +163,9 @@ func (m personasModel) Update(msg tea.Msg) (personasModel, tea.Cmd) {
 			}
 		case "enter":
 			return m, m.selectCurrent()
+		case "n", "c":
+			// Create without scrolling to the trailing "+ Create" row.
+			return m, m.beginCreate()
 		case "e":
 			return m, m.beginEdit()
 		case "esc", "q":
