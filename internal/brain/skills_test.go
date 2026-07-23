@@ -42,6 +42,9 @@ func TestSkillContextAdvertise(t *testing.T) {
 	if !strings.Contains(got, "read_skill") {
 		t.Fatalf("missing read_skill instruction: %q", got)
 	}
+	if !strings.Contains(got, "semantically matches") || !strings.Contains(got, "discovery fallback") {
+		t.Fatalf("missing semantic skill-routing policy: %q", got)
+	}
 	if !strings.Contains(got, "- hello: A friendly greeting skill for tests.") {
 		t.Fatalf("missing skill line: %q", got)
 	}
@@ -56,7 +59,7 @@ func TestSkillContextTruncatesLongDescription(t *testing.T) {
 	long := strings.Repeat("z", skills.MaxDescriptionRunes+80)
 	got := SkillContext([]skills.Skill{{Name: "big", Description: long}})
 	// Description in the menu line should be capped.
-	line := strings.TrimPrefix(strings.TrimSpace(got), "## Available skills (call read_skill(\"<name>\") to load full instructions)")
+	line := got[strings.LastIndex(got, "- big: "):]
 	line = strings.TrimSpace(line)
 	if !strings.HasPrefix(line, "- big: ") {
 		t.Fatalf("unexpected line: %q", line)
@@ -85,6 +88,22 @@ func TestBuildMessagesIncludesSkillsWhenLoaded(t *testing.T) {
 	}
 	if strings.Contains(sys, "Say hello warmly") {
 		t.Fatal("system prompt must not embed full skill body")
+	}
+}
+
+func TestBuildMessagesInjectsSemanticallyActivatedSkillBodies(t *testing.T) {
+	t.Parallel()
+
+	o := &OllamaBrain{
+		workDir:            "/work",
+		cfg:                &config.Config{AgentName: "Samantha", MaxHistory: 10},
+		systemPrompt:       "You are Samantha.",
+		skills:             fixtureCatalog(),
+		activeSkillContext: ActivatedSkillContext(fixtureCatalog()),
+	}
+	sys := o.buildMessages()[0].Content
+	if !strings.Contains(sys, "<activated_skills>") || !strings.Contains(sys, "Say hello warmly") {
+		t.Fatalf("system prompt missing activated skill body: %q", sys)
 	}
 }
 
@@ -295,7 +314,7 @@ func TestToolRunCommandUsesConfiguredTimeout(t *testing.T) {
 	}
 }
 
-func TestToolSessionEnforcesAllowedToolsAfterActivation(t *testing.T) {
+func TestToolSessionKeepsAllToolsAfterSkillLoad(t *testing.T) {
 	t.Parallel()
 
 	catalog := []skills.Skill{
@@ -315,34 +334,25 @@ func TestToolSessionEnforcesAllowedToolsAfterActivation(t *testing.T) {
 		t.Fatalf("pre-activation tools incomplete: %#v", toolNames(before))
 	}
 
-	// Activate via read_skill — body + enforceable policy.
+	// Load via read_skill. allowed-tools metadata must not shrink a general
+	// Ollama harness or prevent another relevant skill from being loaded.
 	got := sess.execute(context.Background(), "/work", skillCall("restricted"))
 	if !strings.Contains(got, "prefer read_file") {
-		t.Fatalf("activation body missing: %q", got)
+		t.Fatalf("skill body missing: %q", got)
 	}
-	if !strings.Contains(got, "skill policy: only these tools") {
-		t.Fatalf("activation should report enforced allow-list: %q", got)
-	}
-	if strings.Contains(got, "skill hint") {
-		t.Fatalf("activation should not describe an enforced policy as a hint: %q", got)
-	}
-	if sess.active == nil || sess.active.Name != "restricted" {
-		t.Fatal("expected active skill after read_skill")
+	if strings.Contains(got, "only these tools") {
+		t.Fatalf("skill load still reports a restrictive tool policy: %q", got)
 	}
 
-	// After activation: only the normalized allow-list remains available.
+	// Every implemented tool remains available despite allowed-tools: Read.
 	after := sess.tools()
-	if !hasTool(after, "read_file") {
-		t.Fatalf("after skill load, read_file missing: %#v", toolNames(after))
-	}
-	for _, name := range []string{"list_files", "write_file", "run_command", "read_skill"} {
-		if hasTool(after, name) {
-			t.Fatalf("after skill load, disallowed tool %s still offered: %#v", name, toolNames(after))
+	for _, name := range []string{"list_files", "read_file", "write_file", "run_command", "web_search", "fetch_url", "read_skill"} {
+		if !hasTool(after, name) {
+			t.Fatalf("after skill load, tool %s missing: %#v", name, toolNames(after))
 		}
 	}
 
-	// Runtime enforcement still applies even if a model sends a stale or
-	// deliberately disallowed call that is no longer in the advertised schema.
+	// A tool outside allowed-tools executes normally.
 	dir := t.TempDir()
 	write := sess.execute(context.Background(), dir, api.ToolCall{
 		Function: api.ToolCallFunction{
@@ -350,44 +360,31 @@ func TestToolSessionEnforcesAllowedToolsAfterActivation(t *testing.T) {
 			Arguments: mustArgs(map[string]any{"path": "out.txt", "content": "ok"}),
 		},
 	})
-	if !strings.Contains(write, "not allowed") {
-		t.Fatalf("write_file should be rejected by allow-list: %q", write)
+	if !strings.Contains(write, "wrote") {
+		t.Fatalf("write_file should remain available: %q", write)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "out.txt")); !os.IsNotExist(err) {
-		t.Fatalf("disallowed write_file created a file: %v", err)
-	}
-
-	run := sess.execute(context.Background(), dir, api.ToolCall{
-		Function: api.ToolCallFunction{
-			Name:      "run_command",
-			Arguments: mustArgs(map[string]any{"command": "echo pwned"}),
-		},
-	})
-	if !strings.Contains(run, "not allowed") {
-		t.Fatalf("run_command should be rejected by allow-list: %q", run)
+	if _, err := os.Stat(filepath.Join(dir, "out.txt")); err != nil {
+		t.Fatalf("write_file did not create file: %v", err)
 	}
 }
 
-func TestToolSessionRejectsSkillWithUnmappedAllowedTools(t *testing.T) {
+func TestToolSessionIgnoresUnmappedAllowedTools(t *testing.T) {
 	t.Parallel()
 	catalog := []skills.Skill{{
 		Name:         "webonly",
 		Description:  "bad allow-list",
 		Body:         "body",
 		Dir:          "/s",
-		AllowedTools: []string{"WebSearch", "Browser"},
+		AllowedTools: []string{"Browser"},
 	}}
 	sess := &toolSession{catalog: catalog}
 	got := sess.execute(context.Background(), "/work", skillCall("webonly"))
-	if !strings.Contains(got, "match no Samantha tools") {
-		t.Fatalf("activation = %q, want unmapped allow-list error", got)
-	}
-	if sess.active != nil {
-		t.Fatal("skill with unmapped allowed-tools must not activate")
+	if !strings.Contains(got, "body") {
+		t.Fatalf("skill with unknown allowed-tools should still load: %q", got)
 	}
 }
 
-func TestToolSessionReadSkillEscapeBlocked(t *testing.T) {
+func TestToolSessionCanLoadMultipleSkills(t *testing.T) {
 	t.Parallel()
 	catalog := []skills.Skill{
 		{
@@ -407,11 +404,8 @@ func TestToolSessionReadSkillEscapeBlocked(t *testing.T) {
 	sess := &toolSession{catalog: catalog}
 	_ = sess.execute(context.Background(), "/work", skillCall("restricted"))
 	got := sess.execute(context.Background(), "/work", skillCall("open"))
-	if !strings.Contains(got, "not allowed") {
-		t.Fatalf("skill switch via read_skill = %q, want not allowed", got)
-	}
-	if sess.active.Name != "restricted" {
-		t.Fatalf("active = %q, want restricted", sess.active.Name)
+	if !strings.Contains(got, "go") {
+		t.Fatalf("second relevant skill did not load: %q", got)
 	}
 }
 
@@ -423,11 +417,8 @@ func TestToolSessionUnrestrictedWhenNoAllowedTools(t *testing.T) {
 	}}
 	sess := &toolSession{catalog: catalog}
 	_ = sess.execute(context.Background(), "/work", skillCall("open"))
-	if sess.active == nil {
-		t.Fatal("expected activation")
-	}
 	tools := sess.tools()
-	for _, name := range []string{"list_files", "read_file", "write_file", "run_command", "read_skill"} {
+	for _, name := range []string{"list_files", "read_file", "write_file", "run_command", "web_search", "fetch_url", "read_skill"} {
 		if !hasTool(tools, name) {
 			t.Fatalf("unrestricted skill missing %s", name)
 		}
@@ -471,6 +462,9 @@ func TestVoiceAssistantToolsReadSkillGating(t *testing.T) {
 	}
 	if !hasTool(tools, "list_files") {
 		t.Fatal("base tools missing")
+	}
+	if !hasTool(tools, "web_search") || !hasTool(tools, "fetch_url") {
+		t.Fatal("web tools missing")
 	}
 
 	// Catalog present → read_skill offered when tools are enabled.

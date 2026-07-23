@@ -216,6 +216,12 @@ func TestToolAllowed(t *testing.T) {
 	if !ToolAllowed("run_command", []string{"Bash(git:*)"}) {
 		t.Fatal("Bash(...) should match run_command")
 	}
+	if !ToolAllowed("web_search", []string{"WebSearch"}) {
+		t.Fatal("WebSearch alias should match web_search")
+	}
+	if !ToolAllowed("fetch_url", []string{"WebFetch"}) {
+		t.Fatal("WebFetch alias should match fetch_url")
+	}
 	if ToolAllowed("write_file", []string{"Read"}) {
 		t.Fatal("write_file must not be allowed when only Read is listed")
 	}

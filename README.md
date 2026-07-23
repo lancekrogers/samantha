@@ -424,8 +424,10 @@ Prompt bodies stay in `prompts/` (see `samantha prompts`).
 | `persona` | `samantha` | `PERSONA` | Prompt document name for kind=persona (overlaid from active persona) |
 | `brain_provider` | `claude` | `BRAIN_PROVIDER` | Brain backend: `claude`, `grok`, or `ollama` |
 | `ollama_model` | empty | `OLLAMA_MODEL` | Ollama model name |
+| `ollama_embedding_model` | `nomic-embed-text` | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model used to match each user prompt to relevant Agent Skills. Set empty to disable semantic routing and retain model-driven `read_skill` fallback. |
+| `skills_similarity_threshold` | `0.55` | `SKILLS_SIMILARITY_THRESHOLD` | Minimum cosine similarity for automatic skill activation. Tune when using an embedding model with a different score distribution. |
 | `ollama_host` | `http://localhost:11434` | `OLLAMA_HOST` | Ollama server URL |
-| `voice_tools_enabled` | `false` (auto-`true` for Ollama when unset) | `VOICE_TOOLS_ENABLED` | Enable local tool calls (`list_files` / `read_file` / `write_file` / `run_command` for Ollama). Ollama enables this automatically unless you set the key or env explicitly to `false`. Remote `samantha serve` still uses `remote_tools_enabled` (default off). |
+| `voice_tools_enabled` | `false` (auto-`true` for Ollama when unset) | `VOICE_TOOLS_ENABLED` | Enable tool calls (`list_files` / `read_file` / `write_file` / `run_command` / `web_search` / `fetch_url` for Ollama). Ollama enables this automatically unless you set the key or env explicitly to `false`. Remote `samantha serve` still uses `remote_tools_enabled` (default off). |
 | `tool_command_timeout` | `30` (clamped 1–120) | `TOOL_COMMAND_TIMEOUT` | Maximum seconds for one local `run_command` invocation. The whole brain turn has its own timeout. |
 | `remote_tools_enabled` | `false` | | Allow network-triggered turns from `samantha serve` to invoke tools; keep off unless remote clients are trusted. |
 | `calibre_enabled` | `false` | `CALIBRE_ENABLED` | Opt in to Calibre library browse/search, TUI Library + picker, and `--from-library` |
@@ -492,19 +494,22 @@ Duplicate skill names resolve with **project first**. Ollama advertises each
 skill's name and description in the system prompt and offers a `read_skill` tool
 to load full instructions on demand (progressive disclosure).
 
-Optional frontmatter `allowed-tools` (Agent Skills experimental field) is
-enforced after a skill is loaded. Before activation, the base tools remain
-available so the model can discover and load the relevant skill. After
-activation, **only the listed tools are advertised and every call outside the
-list is rejected — including `read_skill`**, so a restricted skill cannot be
-escaped by loading another. Tokens use common aliases (`Read` → `read_file`,
-`Bash` / `Bash(…)` → `run_command`). If `allowed-tools` maps to no Samantha
-tools, activation fails with an error instead of soft-bricking the turn.
-The global safety gates still apply: `voice_tools_enabled` /
-`remote_tools_enabled` must allow tools before any skill policy can grant a call.
+Samantha also performs harness-side semantic activation. At startup it batches
+each skill's name and description through `ollama_embedding_model` and caches
+the vectors. Before every turn it embeds the user prompt, selects the closest
+skills above the relevance threshold, and injects only those full `SKILL.md`
+bodies into an `<activated_skills>` block. This keeps Tier 1 discovery compact
+while making Tier 2 activation reliable for local models. Pull the default
+embedding model once with `ollama pull nomic-embed-text`. If the embedding model
+is unavailable, Samantha logs a warning and falls back to the catalog plus
+model-driven or explicit `read_skill`; the conversation still runs.
 
-Allow-lists are **not** a pre-activation sandbox: until `read_skill` succeeds,
-full base tools apply whenever tools are enabled.
+Optional frontmatter `allowed-tools` (Agent Skills experimental field) is
+retained as catalog metadata but does not restrict Samantha's Ollama runtime.
+Skills add instructions rather than capabilities, all implemented tools remain
+available after a skill is loaded, and the model may load multiple skills in one
+turn. The global safety gates still apply: `voice_tools_enabled` /
+`remote_tools_enabled` must allow tools before any tool call can run.
 
 Claude and Grok pick up skills via their own CLIs. Remote `samantha serve` still
 gates all tools (including `read_skill`) behind `remote_tools_enabled`.

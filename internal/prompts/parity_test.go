@@ -2,6 +2,7 @@ package prompts_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/lancekrogers/samantha/internal/prompts"
@@ -18,8 +19,9 @@ func TestDefaultPersonaGolden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading golden: %v", err)
 	}
-	if got != string(want) {
-		t.Errorf("assembled persona diverges from golden at byte %d:\ngot:  %q\nwant: %q", firstDiff(got, string(want)), got, string(want))
+	wantText := strings.TrimSuffix(string(want), "\n")
+	if got != wantText {
+		t.Errorf("assembled persona diverges from golden at byte %d:\ngot:  %q\nwant: %q", firstDiff(got, wantText), got, wantText)
 	}
 }
 
