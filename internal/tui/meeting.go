@@ -31,7 +31,7 @@ type MeetingOpts struct {
 	Provider         stt.Provider
 	Writer           *meetinglog.Writer
 	Description      string
-	Path             string // meeting bundle path (or legacy document path)
+	Path             string // .meeting bundle path
 	StopPhrases      map[string]bool
 	SpeakerStatus    meeting.AnalysisStatus
 	SpeakerError     string
@@ -421,7 +421,7 @@ func (m meetingModel) handleListenMsg(msg tea.Msg) (meetingModel, tea.Cmd) {
 		m.appendLine(fmt.Sprintf("%s  %s %s",
 			dimStyle.Render(u.At.Format("15:04:05")),
 			headerStyle.Render("🎤"),
-			normalStyle.Render(u.Text),
+			renderLiveMeetingUtterance(u.Text),
 		))
 	case meetingErrorMsg:
 		m.errors++

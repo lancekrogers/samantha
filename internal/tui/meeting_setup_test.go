@@ -11,6 +11,14 @@ import (
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 )
 
+func bundledMeetingSummary() meetinglog.Summary {
+	return meetinglog.Summary{
+		Bundle:    "/tmp/a.meeting",
+		File:      "/tmp/a.meeting/meeting.md",
+		JSONLFile: "/tmp/a.meeting/.samantha/events.jsonl",
+	}
+}
+
 func TestMeetingSetupAdvancesToRouteStep(t *testing.T) {
 	m := newMeetingSetup(&config.Config{})
 	m.width, m.height = 80, 24
@@ -135,7 +143,7 @@ func TestBeginMeetingRouteHonorsLocalPlan(t *testing.T) {
 	app.meetingRoutePlan = meetingRoutePlan{Kind: routePlanLocal}
 	app.launcher = newLauncher(&config.Config{}, nil, nil)
 
-	cmd := app.beginMeetingRoute(meetinglog.Summary{File: "/tmp/a.log", JSONLFile: "/tmp/a.jsonl"})
+	cmd := app.beginMeetingRoute(bundledMeetingSummary())
 	if cmd != nil {
 		t.Fatal("local plan should not return a route cmd")
 	}
@@ -156,7 +164,7 @@ func TestBeginMeetingRouteDestPlanReturnsCmd(t *testing.T) {
 		Kind: routePlanDest,
 		Dest: meeting.Destination{ID: "docs", Type: meeting.TypeFile, Path: t.TempDir()},
 	}
-	cmd := app.beginMeetingRoute(meetinglog.Summary{File: "/tmp/a.log", JSONLFile: "/tmp/a.jsonl"})
+	cmd := app.beginMeetingRoute(bundledMeetingSummary())
 	if cmd == nil {
 		t.Fatal("dest plan should return async route cmd")
 	}
@@ -170,7 +178,7 @@ func TestOpenMeetingRoutePickerIsAsync(t *testing.T) {
 		height:   24,
 	}
 	cmd := app.openMeetingRoutePicker(
-		meetinglog.Summary{File: "/tmp/a.log", JSONLFile: "/tmp/a.jsonl"},
+		bundledMeetingSummary(),
 		meeting.Config{Mode: meeting.ModeAsk},
 	)
 	if cmd == nil {
@@ -181,7 +189,7 @@ func TestOpenMeetingRoutePickerIsAsync(t *testing.T) {
 	}
 	// Simulate empty discovery result.
 	app.applyMeetingRouteReady(meetingRouteReadyMsg{
-		summary: meetinglog.Summary{File: "/tmp/a.log"},
+		summary: bundledMeetingSummary(),
 		dests:   nil,
 	})
 	if app.screen == screenMeetingRoute {
@@ -192,7 +200,7 @@ func TestOpenMeetingRoutePickerIsAsync(t *testing.T) {
 func TestApplyMeetingRouteReadyOpensPicker(t *testing.T) {
 	app := App{width: 80, height: 24, launcher: newLauncher(&config.Config{}, nil, nil)}
 	app.applyMeetingRouteReady(meetingRouteReadyMsg{
-		summary:  meetinglog.Summary{File: "/tmp/a.log", JSONLFile: "/tmp/a.jsonl"},
+		summary:  bundledMeetingSummary(),
 		routeCfg: meeting.Config{Mode: meeting.ModeAsk, Body: meeting.BodyNotes},
 		dests: []meeting.Destination{
 			{ID: "camp:My_Tools", Type: meeting.TypeCampaign, Campaign: "My_Tools"},

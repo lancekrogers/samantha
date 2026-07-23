@@ -3,12 +3,30 @@ package tui
 import (
 	"testing"
 
+	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/speaker"
 )
 
 type tuiLiveSpeakerFake struct {
 	stats   speaker.LiveStats
 	enabled []bool
+}
+
+func TestConversationVoiceTurnUsesCurrentSpeakerColor(t *testing.T) {
+	m := sizedConversation(t, 100, 24)
+	fake := &tuiLiveSpeakerFake{stats: speaker.LiveStats{
+		Status: speaker.LiveHealthy, LastLabel: "speaker-2",
+	}}
+	m.liveSpeaker = fake
+	m.handleEvent(events.UserInput{Text: "the launch is ready"})
+
+	view := stripANSI(m.View())
+	if !contains(view, "speaker-2") || !contains(view, "the launch is ready") {
+		t.Fatalf("conversation did not colorize the live speaker turn:\n%s", view)
+	}
+	if contains(view, "› You") {
+		t.Fatalf("voice turn used generic user label:\n%s", view)
+	}
 }
 
 func (f *tuiLiveSpeakerFake) Stats() speaker.LiveStats { return f.stats }

@@ -19,8 +19,8 @@ func TestFileSinkRoutesAndKeepsOriginal(t *testing.T) {
 	if err := os.MkdirAll(meetDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(meetDir, "standup.log")
-	w, err := meetinglog.Create(path, "Standup", "fake")
+	bundle := filepath.Join(meetDir, "standup.meeting")
+	w, err := meetinglog.CreateBundle(bundle, "Standup", "fake")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,8 +136,8 @@ func TestAvailableDestinationsHidesCampaignWithoutCamp(t *testing.T) {
 
 func TestLoadSummaryAndResolveMostRecent(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "a.log")
-	w, err := meetinglog.Create(path, "A", "fake")
+	bundleA := filepath.Join(dir, "a.meeting")
+	w, err := meetinglog.CreateBundle(bundleA, "A", "fake")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,10 +147,10 @@ func TestLoadSummaryAndResolveMostRecent(t *testing.T) {
 	if _, err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// Ensure mtime ordering: second file later.
+	// Ensure the second session starts later.
 	time.Sleep(10 * time.Millisecond)
-	path2 := filepath.Join(dir, "b.log")
-	w2, err := meetinglog.Create(path2, "B", "fake")
+	bundleB := filepath.Join(dir, "b.meeting")
+	w2, err := meetinglog.CreateBundle(bundleB, "B", "fake")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,8 +167,8 @@ func TestLoadSummaryAndResolveMostRecent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(jsonl, "b.jsonl") {
-		t.Fatalf("most recent = %s", jsonl)
+	if jsonl != w2.JSONLPath() {
+		t.Fatalf("most recent = %s, want %s", jsonl, w2.JSONLPath())
 	}
 	s, err := LoadSummaryFromJSONL(jsonl)
 	if err != nil {
@@ -178,28 +178,25 @@ func TestLoadSummaryAndResolveMostRecent(t *testing.T) {
 		t.Fatalf("desc = %s", s.Description)
 	}
 
-	// Resolve from .log
-	j2, err := ResolveMeetingFile(dir, path)
+	// Resolve from the bundle and its canonical document.
+	j2, err := ResolveMeetingFile(dir, bundleA)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(j2, "a.jsonl") {
-		t.Fatalf("from log = %s", j2)
+	if j2 != w.JSONLPath() {
+		t.Fatalf("from bundle = %s", j2)
+	}
+	j2, err = ResolveMeetingFile(dir, w.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j2 != w.JSONLPath() {
+		t.Fatalf("from meeting.md = %s", j2)
 	}
 }
 
-func TestResolveMeetingBundleAndLegacyLayouts(t *testing.T) {
+func TestResolveMeetingBundleRejectsFlatArtifacts(t *testing.T) {
 	dir := t.TempDir()
-	legacyPath := filepath.Join(dir, "legacy.log")
-	legacy, err := meetinglog.Create(legacyPath, "Legacy", "fake")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := legacy.Close(); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(10 * time.Millisecond)
-
 	bundlePath := filepath.Join(dir, "new-20260722-090000.meeting")
 	bundled, err := meetinglog.CreateBundle(bundlePath, "Bundled", "fake")
 	if err != nil {
@@ -239,15 +236,30 @@ func TestResolveMeetingBundleAndLegacyLayouts(t *testing.T) {
 	if summary.Bundle != bundlePath || summary.File != filepath.Join(bundlePath, meetinglog.BundleDocumentName) || summary.SpeakerCount != 2 {
 		t.Fatalf("summary = %+v", summary)
 	}
+	for _, name := range []string{"old.log", "old.jsonl"} {
+		flat := filepath.Join(dir, name)
+		if err := os.WriteFile(flat, []byte("test artifact"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ResolveMeetingFile(dir, flat); err == nil {
+			t.Fatalf("flat artifact %s must be rejected", flat)
+		}
+	}
+	if _, err := LoadSummaryFromJSONL(filepath.Join(dir, "old.jsonl")); err == nil {
+		t.Fatal("flat event stream must be rejected")
+	}
 }
 
 func TestAppendRoutedEvent(t *testing.T) {
-	dir := t.TempDir()
-	jsonl := filepath.Join(dir, "m.jsonl")
-	if err := os.WriteFile(jsonl, []byte("{\"type\":\"session_end\"}\n"), 0o600); err != nil {
+	w, err := meetinglog.CreateBundle(filepath.Join(t.TempDir(), "m.meeting"), "M", "fake")
+	if err != nil {
 		t.Fatal(err)
 	}
-	err := AppendRoutedEvent(jsonl, Receipt{
+	summary, err := w.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = AppendRoutedEvent(summary.JSONLFile, Receipt{
 		DestinationID: "docs",
 		Type:          TypeFile,
 		Outcome:       OutcomeRouted,
@@ -257,7 +269,7 @@ func TestAppendRoutedEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, _ := os.ReadFile(jsonl)
+	data, _ := os.ReadFile(summary.JSONLFile)
 	var last map[string]any
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &last); err != nil {

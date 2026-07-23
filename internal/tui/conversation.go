@@ -648,7 +648,7 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		m.pendingUserEcho = ""
 		m.activityFocused = false
 		m.followChat = true
-		m.appendTranscript(renderUserTurn(e.Text))
+		m.appendTranscript(renderSpeakerUserTurn(m.currentLiveSpeakerLabel(), e.Text))
 
 	case events.ThinkingStarted:
 		// Start a fresh streaming buffer; a prior turn's leftover (e.g. after an
@@ -884,8 +884,7 @@ func (m conversationModel) View() string {
 	}
 	footerLeft := "  " + micChip + " " + outChip
 	if m.liveSpeakerStatsKnown {
-		label := liveSpeakerFooterLabel(m.liveSpeakerStats)
-		footerLeft += " " + liveSpeakerStatusStyle(m.liveSpeakerStats.Status).Render(label)
+		footerLeft += " " + renderLiveSpeakerFooter(m.liveSpeakerStats)
 	}
 	activeViewport := m.activeViewport()
 	if activeViewport.TotalLineCount() > activeViewport.VisibleLineCount() {

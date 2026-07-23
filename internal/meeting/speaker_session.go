@@ -29,7 +29,7 @@ type SpeakerSession struct {
 	analyzer    SpeakerAnalyzer
 	closer      interface{ Close() error }
 	writer      *meetinglog.Writer
-	meetingPath string
+	bundlePath  string
 	recordAudio bool
 
 	mu      sync.Mutex
@@ -42,20 +42,20 @@ type SpeakerSession struct {
 	err      error
 }
 
-func NewSpeakerSession(capture captureSubscriber, analyzer SpeakerAnalyzer, writer *meetinglog.Writer, meetingPath string, recordAudio bool) (*SpeakerSession, error) {
+func NewSpeakerSession(capture captureSubscriber, analyzer SpeakerAnalyzer, writer *meetinglog.Writer, bundlePath string, recordAudio bool) (*SpeakerSession, error) {
 	if capture == nil {
 		return nil, fmt.Errorf("meeting: speaker capture is required")
 	}
 	if analyzer == nil {
 		return nil, fmt.Errorf("meeting: speaker analyzer is required")
 	}
-	if strings.TrimSpace(meetingPath) == "" {
-		return nil, fmt.Errorf("meeting: path is required for speaker analysis")
+	if !strings.HasSuffix(strings.ToLower(filepath.Base(strings.TrimSpace(bundlePath))), ".meeting") {
+		return nil, fmt.Errorf("meeting: .meeting bundle path is required for speaker analysis")
 	}
 	id, chunks := capture.Subscribe(speakerCaptureQueue)
 	s := &SpeakerSession{
 		capture: capture, subID: id, analyzer: analyzer, writer: writer,
-		meetingPath: meetingPath, recordAudio: recordAudio,
+		bundlePath: bundlePath, recordAudio: recordAudio,
 	}
 	if closer, ok := analyzer.(interface{ Close() error }); ok {
 		s.closer = closer
@@ -105,12 +105,12 @@ func (s *SpeakerSession) Finalize(ctx context.Context) (AnalysisResult, error) {
 	}
 	s.finalize.Do(func() {
 		samples := s.stopCapture()
-		artifact := speakerArtifactPath(s.meetingPath)
+		artifact := speakerArtifactPath(s.bundlePath)
 		audioFile := ""
 		var persistErr error
 
 		if s.recordAudio {
-			audioFile = speakerAudioPath(s.meetingPath)
+			audioFile = speakerAudioPath(s.bundlePath)
 			if err := audio.WriteWAVFloat32(audioFile, audio.SampleRate, samples); err != nil {
 				persistErr = errors.Join(persistErr, fmt.Errorf("write meeting audio: %w", err))
 			} else if err := os.Chmod(audioFile, 0o600); err != nil {
@@ -204,31 +204,12 @@ func distinctSpeakerCount(timeline speaker.Timeline) int {
 	return len(labels)
 }
 
-func speakerArtifactPath(meetingPath string) string {
-	if bundle := bundleDirForDocument(meetingPath); bundle != "" {
-		return filepath.Join(bundle, meetinglog.BundleInternalDirName, meetinglog.BundleSpeakerAnalysisName)
-	}
-	ext := filepath.Ext(meetingPath)
-	return strings.TrimSuffix(meetingPath, ext) + ".speaker-analysis.json"
+func speakerArtifactPath(bundlePath string) string {
+	return filepath.Join(bundlePath, meetinglog.BundleInternalDirName, meetinglog.BundleSpeakerAnalysisName)
 }
 
-func speakerAudioPath(meetingPath string) string {
-	if bundle := bundleDirForDocument(meetingPath); bundle != "" {
-		return filepath.Join(bundle, meetinglog.BundleAudioName)
-	}
-	ext := filepath.Ext(meetingPath)
-	return strings.TrimSuffix(meetingPath, ext) + ".wav"
-}
-
-func bundleDirForDocument(meetingPath string) string {
-	if filepath.Base(meetingPath) != meetinglog.BundleDocumentName {
-		return ""
-	}
-	bundle := filepath.Dir(meetingPath)
-	if !strings.HasSuffix(strings.ToLower(filepath.Base(bundle)), ".meeting") {
-		return ""
-	}
-	return bundle
+func speakerAudioPath(bundlePath string) string {
+	return filepath.Join(bundlePath, meetinglog.BundleAudioName)
 }
 
 // Close stops collection and releases native resources when a meeting exits

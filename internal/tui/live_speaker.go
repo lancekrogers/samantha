@@ -71,3 +71,24 @@ func liveSpeakerStatusStyle(status speaker.LiveStatus) lipgloss.Style {
 		return statusStyle
 	}
 }
+
+func renderLiveSpeakerFooter(stats speaker.LiveStats) string {
+	rendered := liveSpeakerStatusStyle(stats.Status).Render(liveSpeakerStatusLabel(stats.Status))
+	if stats.LastLabel != "" && (stats.Status == speaker.LiveHealthy || stats.Status == speaker.LiveRunning) {
+		rendered += dimStyle.Render(" · ") + speakerLabelStyle(stats.LastLabel).Render(stats.LastLabel)
+	}
+	return rendered
+}
+
+func (m *conversationModel) currentLiveSpeakerLabel() string {
+	if m.liveSpeaker == nil {
+		return ""
+	}
+	stats := m.liveSpeaker.Stats()
+	m.liveSpeakerStats = stats
+	m.liveSpeakerStatsKnown = true
+	if stats.Status != speaker.LiveHealthy && stats.Status != speaker.LiveRunning {
+		return ""
+	}
+	return stats.LastLabel
+}

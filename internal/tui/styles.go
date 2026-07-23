@@ -28,6 +28,18 @@ var (
 	colorHearing = lipgloss.Color("#FEBC2E") // amber → bright yellow
 	colorSpeak   = lipgloss.Color("#BD93F9") // purple → bright magenta
 	colorThink   = lipgloss.Color("#A4F0FF") // ice cyan
+
+	// speakerColors gives diarized speakers a stable visual identity. The first
+	// six map cleanly to distinct bright ANSI colors for VHS and limited
+	// terminals; larger meetings cycle predictably.
+	speakerColors = []lipgloss.Color{
+		colorUser,
+		colorAgent,
+		colorSelect,
+		colorHearing,
+		colorSpeak,
+		colorAccent,
+	}
 )
 
 func init() {

@@ -14,8 +14,8 @@ import (
 )
 
 func TestWriterLifecycle(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "standup-20260710-093000.log")
-	w, err := Create(path, "Standup", "sherpa (offline)")
+	bundle := filepath.Join(t.TempDir(), "standup-20260710-093000.meeting")
+	w, err := CreateBundle(bundle, "Standup", "sherpa (offline)")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,11 +45,11 @@ func TestWriterLifecycle(t *testing.T) {
 	if sum.Utterances != 2 || sum.Errors != 1 || sum.Notes != 1 || sum.Bookmarks != 1 || sum.Description != "Standup" {
 		t.Fatalf("summary = %+v", sum)
 	}
-	if sum.JSONLFile == "" || sum.File != path {
-		t.Fatalf("paths: file=%q jsonl=%q", sum.File, sum.JSONLFile)
+	if sum.Bundle != bundle || sum.JSONLFile == "" || sum.File != w.Path() {
+		t.Fatalf("paths: bundle=%q file=%q jsonl=%q", sum.Bundle, sum.File, sum.JSONLFile)
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(w.Path())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func readJSONL(t *testing.T, path string) []Event {
 }
 
 func TestSummaryJSONIncludesDurationSeconds(t *testing.T) {
-	w, err := Create(filepath.Join(t.TempDir(), "standup.log"), "Standup", "fake")
+	w, err := CreateBundle(filepath.Join(t.TempDir(), "standup.meeting"), "Standup", "fake")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,23 +180,27 @@ func TestSummaryJSONIncludesDurationSeconds(t *testing.T) {
 	}
 }
 
-func TestCreateRefusesToOverwrite(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "x.log")
-	if err := os.WriteFile(path, []byte("existing"), 0o644); err != nil {
+func TestCreateBundleRefusesToOverwrite(t *testing.T) {
+	bundle := filepath.Join(t.TempDir(), "x.meeting")
+	if err := os.Mkdir(bundle, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Create(path, "d", "stt"); err == nil {
+	sentinel := filepath.Join(bundle, "keep.txt")
+	if err := os.WriteFile(sentinel, []byte("existing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateBundle(bundle, "d", "stt"); err == nil {
 		t.Fatal("expected O_EXCL collision error")
 	}
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(sentinel)
 	if string(data) != "existing" {
 		t.Fatal("existing file must be untouched")
 	}
 }
 
 func TestCloseIsIdempotent(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "once.log")
-	w, err := Create(path, "Once", "fake")
+	bundle := filepath.Join(t.TempDir(), "once.meeting")
+	w, err := CreateBundle(bundle, "Once", "fake")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +219,7 @@ func TestCloseIsIdempotent(t *testing.T) {
 		t.Fatalf("summaries = %+v / %+v", sum1, sum2)
 	}
 	// Must not double-append trailer.
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(w.Path())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,11 +228,11 @@ func TestCloseIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestCreateUsesOwnerOnlyPermissions(t *testing.T) {
+func TestCreateBundleUsesOwnerOnlyPermissions(t *testing.T) {
 	// Meeting transcripts are private (personal speech / credentials spoken
-	// aloud). Create must not leave world-readable logs.
-	path := filepath.Join(t.TempDir(), "private.log")
-	w, err := Create(path, "Private", "fake")
+	// aloud). CreateBundle must not leave world-readable artifacts.
+	bundle := filepath.Join(t.TempDir(), "private.meeting")
+	w, err := CreateBundle(bundle, "Private", "fake")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +240,7 @@ func TestCreateUsesOwnerOnlyPermissions(t *testing.T) {
 	if _, err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []string{path, jsonl} {
+	for _, p := range []string{w.Path(), jsonl} {
 		st, err := os.Stat(p)
 		if err != nil {
 			t.Fatal(err)
@@ -252,8 +256,7 @@ func TestCreateUsesOwnerOnlyPermissions(t *testing.T) {
 }
 
 func TestWriterReportsFailedUtteranceWithoutCountingIt(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "failed.log")
-	w, err := Create(path, "Failure test", "fake")
+	w, err := CreateBundle(filepath.Join(t.TempDir(), "failed.meeting"), "Failure test", "fake")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,17 +273,8 @@ func TestWriterReportsFailedUtteranceWithoutCountingIt(t *testing.T) {
 	}
 }
 
-func TestJSONLPathFor(t *testing.T) {
-	if got := jsonlPathFor("/tmp/a.log"); got != "/tmp/a.jsonl" {
-		t.Fatalf("got %q", got)
-	}
-	if got := jsonlPathFor("/tmp/a"); got != "/tmp/a.jsonl" {
-		t.Fatalf("got %q", got)
-	}
-}
-
 func TestAddNoteEmptyIsNoop(t *testing.T) {
-	w, err := Create(filepath.Join(t.TempDir(), "n.log"), "n", "fake")
+	w, err := CreateBundle(filepath.Join(t.TempDir(), "n.meeting"), "n", "fake")
 	if err != nil {
 		t.Fatal(err)
 	}

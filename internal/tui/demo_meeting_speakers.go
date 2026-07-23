@@ -143,11 +143,15 @@ func demoMeetingSpeakerFinalizer(writer *meetinglog.Writer, bundlePath string) f
 		if err := ctx.Err(); err != nil {
 			return meeting.AnalysisResult{Status: meeting.AnalysisError, Error: err.Error()}, err
 		}
+		if !strings.HasSuffix(strings.ToLower(filepath.Base(bundlePath)), ".meeting") {
+			err := fmt.Errorf("demo meeting: .meeting bundle path is required")
+			return meeting.AnalysisResult{Status: meeting.AnalysisError, Error: err.Error()}, err
+		}
 		analysis := meetinglog.SpeakerAnalysis{Status: string(meeting.AnalysisComplete)}
 		result := meeting.AnalysisResult{Status: meeting.AnalysisComplete}
 		labels := make(map[string]struct{})
 		for i, record := range writer.Transcripts() {
-			label, text := demoSpeakerLabel(record.Text)
+			label, text := splitSpeakerLabel(record.Text)
 			if label == "" {
 				continue
 			}
@@ -170,28 +174,14 @@ func demoMeetingSpeakerFinalizer(writer *meetinglog.Writer, bundlePath string) f
 			})
 		}
 		result.SpeakerCount = len(labels)
-		if bundlePath != "" {
-			result.Artifact = filepath.Join(bundlePath, meetinglog.BundleInternalDirName, meetinglog.BundleSpeakerAnalysisName)
-			analysis.Artifact = result.Artifact
-			if err := meeting.WriteAnalysis(result.Artifact, result); err != nil {
-				return meeting.AnalysisResult{Status: meeting.AnalysisError, Error: err.Error()}, err
-			}
+		result.Artifact = filepath.Join(bundlePath, meetinglog.BundleInternalDirName, meetinglog.BundleSpeakerAnalysisName)
+		analysis.Artifact = result.Artifact
+		if err := meeting.WriteAnalysis(result.Artifact, result); err != nil {
+			return meeting.AnalysisResult{Status: meeting.AnalysisError, Error: err.Error()}, err
 		}
 		if err := writer.WriteSpeakerAnalysis(analysis); err != nil {
 			return meeting.AnalysisResult{Status: meeting.AnalysisError, Error: err.Error()}, err
 		}
 		return result, nil
 	}
-}
-
-func demoSpeakerLabel(text string) (string, string) {
-	text = strings.TrimSpace(text)
-	if !strings.HasPrefix(text, "[speaker-") {
-		return "", text
-	}
-	end := strings.Index(text, "]")
-	if end < 0 {
-		return "", text
-	}
-	return text[1:end], strings.TrimSpace(text[end+1:])
 }

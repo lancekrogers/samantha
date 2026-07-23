@@ -159,14 +159,13 @@ func TestMeetingFixtureDiarizationPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	meetingPath := writer.Path()
 	if err := writer.OnUtterance(listen.Utterance{
 		Text: "fixture transcript turn", At: writer.StartedAt().Add(10 * time.Second),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	capture := &fixtureCapture{}
-	session, err := meeting.NewSpeakerSession(capture, analyzer, writer, meetingPath, false)
+	session, err := meeting.NewSpeakerSession(capture, analyzer, writer, bundlePath, false)
 	if err != nil {
 		t.Fatal(err)
 	}

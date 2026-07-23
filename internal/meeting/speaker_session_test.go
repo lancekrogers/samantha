@@ -53,8 +53,8 @@ func (a *recordingSpeakerAnalyzer) Finalize(_ context.Context, samples []float32
 
 func TestSpeakerSessionCollectsFinalizesAndPersists(t *testing.T) {
 	dir := t.TempDir()
-	logPath := filepath.Join(dir, "planning.log")
-	writer, err := meetinglog.Create(logPath, "Planning", "fake")
+	bundlePath := filepath.Join(dir, "planning.meeting")
+	writer, err := meetinglog.CreateBundle(bundlePath, "Planning", "fake")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestSpeakerSessionCollectsFinalizesAndPersists(t *testing.T) {
 		SegmentID: "diarization-1", StartMS: 0, EndMS: 4000,
 		Label: "speaker-1", State: speaker.StateStable, Source: speaker.SourceRecording,
 	}}}}
-	session, err := NewSpeakerSession(capture, analyzer, writer, logPath, true)
+	session, err := NewSpeakerSession(capture, analyzer, writer, bundlePath, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestSpeakerSessionCollectsFinalizesAndPersists(t *testing.T) {
 	if summary.SpeakerStatus != string(AnalysisComplete) || summary.SpeakerCount != 1 || summary.SpeakerAnalysisFile != result.Artifact {
 		t.Fatalf("summary speaker metadata = %+v", summary)
 	}
-	logData, err := os.ReadFile(logPath)
+	logData, err := os.ReadFile(writer.Path())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,13 +141,19 @@ func TestAnalyzeRecordingEnabledWithoutPCMIsVisibleError(t *testing.T) {
 
 func TestSpeakerArtifactsStayInsideMeetingBundle(t *testing.T) {
 	bundle := filepath.Join(t.TempDir(), "planning-20260722-090000.meeting")
-	document := filepath.Join(bundle, meetinglog.BundleDocumentName)
 	wantAnalysis := filepath.Join(bundle, meetinglog.BundleInternalDirName, meetinglog.BundleSpeakerAnalysisName)
-	if got := speakerArtifactPath(document); got != wantAnalysis {
+	if got := speakerArtifactPath(bundle); got != wantAnalysis {
 		t.Fatalf("speakerArtifactPath = %q, want %q", got, wantAnalysis)
 	}
 	wantAudio := filepath.Join(bundle, meetinglog.BundleAudioName)
-	if got := speakerAudioPath(document); got != wantAudio {
+	if got := speakerAudioPath(bundle); got != wantAudio {
 		t.Fatalf("speakerAudioPath = %q, want %q", got, wantAudio)
+	}
+}
+
+func TestSpeakerSessionRequiresMeetingBundle(t *testing.T) {
+	_, err := NewSpeakerSession(&fakeCaptureSubscriber{}, &recordingSpeakerAnalyzer{}, nil, "/tmp/flat.log", false)
+	if err == nil || !strings.Contains(err.Error(), ".meeting bundle") {
+		t.Fatalf("expected bundle validation error, got %v", err)
 	}
 }

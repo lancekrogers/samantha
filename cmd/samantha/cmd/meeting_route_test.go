@@ -14,11 +14,11 @@ import (
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 )
 
-// finishedMeeting builds a closed meeting pair under dir for routing tests.
+// finishedMeeting builds a closed meeting bundle under dir for routing tests.
 func finishedMeeting(t *testing.T, dir, desc string) meetinglog.Summary {
 	t.Helper()
-	path := filepath.Join(dir, "session.log")
-	w, err := meetinglog.Create(path, desc, "fake")
+	bundle := filepath.Join(dir, "session.meeting")
+	w, err := meetinglog.CreateBundle(bundle, desc, "fake")
 	if err != nil {
 		t.Fatal(err)
 	}

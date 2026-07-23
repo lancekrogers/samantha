@@ -142,7 +142,7 @@ func (m meetingResultsModel) content() string {
 		for _, event := range transcript {
 			b.WriteString(resultOffset(event.OffsetMs))
 			if event.Type == meetinglog.TypeSpeakerUtterance && event.Label != "" {
-				b.WriteString(selectedStyle.Render(event.Label + ":"))
+				b.WriteString(speakerLabelStyle(event.Label).Render(event.Label + ":"))
 				b.WriteString(" ")
 			}
 			b.WriteString(event.Text)
@@ -181,11 +181,7 @@ func (m meetingResultsModel) View() string {
 			stats += fmt.Sprintf(" (%d)", m.summary.SpeakerCount)
 		}
 	}
-	path := m.summary.Bundle
-	if path == "" {
-		path = m.summary.File
-	}
-	pathLine := ansi.Truncate("  Saved: "+path, w, "…")
+	pathLine := ansi.Truncate("  Saved: "+m.summary.Bundle, w, "…")
 	rule := lipgloss.NewStyle().Foreground(colorAccent).Render(strings.Repeat("─", w))
 	footer := ansi.Truncate("  ↑/↓/pgup/pgdown review  •  enter/esc continue to routing", w, "…")
 	analysisError := ""
