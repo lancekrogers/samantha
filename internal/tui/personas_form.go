@@ -23,6 +23,8 @@ func newPersonaPromptArea() textarea.Model {
 	ta.SetWidth(60)
 	ta.SetHeight(8)
 	ta.ShowLineNumbers = false
+	// Match conversation: insert newline with ctrl+j / ctrl+enter variants only if
+	// we route those to the textarea. We intercept save keys before Update.
 	return ta
 }
 
@@ -30,37 +32,54 @@ func (m *personasModel) resizeForm() {
 	w := max(m.width-8, 24)
 	m.nameInput.Width = max(w-8, 20)
 	m.promptTA.SetWidth(w)
-	// Prompt area uses most of the body after labels.
-	h := max(m.height-12, 4)
-	if h > 14 {
-		h = 14
+	// Leave room for chrome (title, name field, labels, help) so the prompt
+	// textarea is never clipped out of the form body.
+	h := max(m.height-14, 3)
+	if h > 12 {
+		h = 12
 	}
 	m.promptTA.SetHeight(h)
 }
 
+// isPersonaFormSaveKey reports keys that commit the create/edit form.
+// ctrl+s alone is unreliable: many terminals still implement software flow
+// control (XOFF) and swallow it before Bubble Tea sees it. Prefer ctrl+j /
+// ctrl+enter / alt+s / f2 — those actually reach the program.
+func isPersonaFormSaveKey(key string) bool {
+	switch key {
+	case "ctrl+s", "ctrl+j", "ctrl+enter", "alt+enter", "alt+s", "f2":
+		return true
+	default:
+		return false
+	}
+}
+
 func (m personasModel) updateForm(msg tea.KeyMsg) (personasModel, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
+	key := msg.String()
+	switch {
+	case key == "esc":
 		m.cancelForm()
 		m.message = "Edit cancelled"
 		return m, nil
-	case "ctrl+s":
+	case isPersonaFormSaveKey(key):
 		return m.submitForm()
-	case "tab":
+	case key == "tab":
 		if m.formStep == personaFormName {
 			return m.focusPromptStep()
 		}
 		return m.focusNameStep()
-	case "shift+tab":
+	case key == "shift+tab":
 		if m.formStep == personaFormPrompt {
 			return m.focusNameStep()
 		}
 		return m.focusPromptStep()
-	case "enter":
+	case key == "enter":
 		if m.formStep == personaFormName {
+			// Name done → prompt. Save is intentionally not Enter (multi-line
+			// prompt needs Enter for newlines).
 			return m.focusPromptStep()
 		}
-		// Enter inserts newline in the prompt textarea.
+		// Enter inserts newline in the prompt textarea (fall through).
 	}
 
 	var cmd tea.Cmd
@@ -96,25 +115,37 @@ func (m personasModel) focusPromptStep() (personasModel, tea.Cmd) {
 	}
 	m.formStep = personaFormPrompt
 	m.nameInput.Blur()
+	// Ensure a usable draft: empty prompt body gets the default identity.
+	if strings.TrimSpace(m.promptTA.Value()) == "" {
+		if text := m.resolveDefaultPrompt(); text != "" {
+			m.promptTA.SetValue(text)
+		}
+	}
 	m.promptTA.Focus()
+	m.message = "Edit the system prompt · ctrl+j / alt+s / f2 to save (ctrl+s if your terminal allows)"
 	return m, textarea.Blink
+}
+
+func (m *personasModel) resolveDefaultPrompt() string {
+	if m.defaultPrompt == nil {
+		return ""
+	}
+	text, err := m.defaultPrompt()
+	if err != nil {
+		return ""
+	}
+	return text
 }
 
 func (m *personasModel) beginCreate() tea.Cmd {
 	m.formMode = "create"
 	m.formStep = personaFormName
 	m.editID = ""
-	m.message = ""
+	m.message = "Name the agent, then edit the system prompt · save with ctrl+j / alt+s / f2"
 	m.resizeForm()
 	m.nameInput.SetValue("")
 	m.nameInput.Focus()
-	def := ""
-	if m.defaultPrompt != nil {
-		if text, err := m.defaultPrompt(); err == nil {
-			def = text
-		}
-	}
-	m.promptTA.SetValue(def)
+	m.promptTA.SetValue(m.resolveDefaultPrompt())
 	m.promptTA.Blur()
 	return textinput.Blink
 }
@@ -130,7 +161,7 @@ func (m *personasModel) beginEdit() tea.Cmd {
 	m.formMode = "edit"
 	m.formStep = personaFormName
 	m.editID = p.ID
-	m.message = ""
+	m.message = "Edit name + system prompt (used by the brain as the real persona system prompt)"
 	m.resizeForm()
 	m.nameInput.SetValue(p.DisplayName)
 	m.nameInput.Focus()
@@ -144,8 +175,8 @@ func (m *personasModel) beginEdit() tea.Cmd {
 			text = got
 		}
 	}
-	if text == "" && m.defaultPrompt != nil {
-		text, _ = m.defaultPrompt()
+	if text == "" {
+		text = m.resolveDefaultPrompt()
 	}
 	m.promptTA.SetValue(text)
 	m.promptTA.Blur()
@@ -158,11 +189,15 @@ func (m personasModel) submitForm() (personasModel, tea.Cmd) {
 		m.message = "Enter a display name"
 		m.formStep = personaFormName
 		m.nameInput.Focus()
-		return m, nil
+		return m, textinput.Blink
 	}
 	prompt := strings.TrimSpace(m.promptTA.Value())
 	if prompt == "" {
-		m.message = "Enter a system prompt (or paste the default and edit it)"
+		// Name-only create/edit still needs a real identity document for the brain.
+		prompt = strings.TrimSpace(m.resolveDefaultPrompt())
+	}
+	if prompt == "" {
+		m.message = "Enter a system prompt (this is the persona identity the brain loads)"
 		m.formStep = personaFormPrompt
 		m.promptTA.Focus()
 		return m, textarea.Blink
@@ -187,7 +222,8 @@ func (m personasModel) submitForm() (personasModel, tea.Cmd) {
 				break
 			}
 		}
-		m.message = fmt.Sprintf("Created and activated %s (%s) with custom system prompt", p.DisplayName, p.ID)
+		m.ensureVisible()
+		m.message = fmt.Sprintf("Created %s (%s) · system prompt → prompts/persona/%s.yaml · restart chat to apply", p.DisplayName, p.ID, p.ID)
 	case "edit":
 		if m.saveName != nil {
 			if _, err := m.saveName(m.editID, name); err != nil {
@@ -210,7 +246,7 @@ func (m personasModel) submitForm() (personasModel, tea.Cmd) {
 		id := m.editID
 		m.cancelForm()
 		m.reload()
-		m.message = fmt.Sprintf("Updated %s (system prompt saved)", id)
+		m.message = fmt.Sprintf("Updated %s · prompts/persona/%s.yaml · start a new chat for the brain to load it", id, id)
 	}
 	return m, nil
 }

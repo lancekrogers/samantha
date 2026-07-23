@@ -17,20 +17,22 @@ func (m personasModel) View() string {
 	var b strings.Builder
 	b.WriteString(headerStyle.Render("  Personas"))
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render(ansi.Truncate("  Switch, create, or edit voice agents (system prompt included)", width, "…")))
+	b.WriteString(dimStyle.Render(ansi.Truncate("  Switch agents · create/edit system prompts the brain actually loads", width, "…")))
 	b.WriteString("\n")
 	if m.height == 0 || m.height >= 10 {
 		b.WriteString(dimStyle.Render(strings.Repeat("─", max(width, 1))))
 		b.WriteString("\n")
 	}
 
-	listRows := m.visibleRows()
 	if m.formMode != "" {
-		for _, line := range m.formLines(listRows) {
-			b.WriteString(line)
+		// Form is never pad-truncated: the prompt field was easy to clip when we
+		// reused the list body height budget.
+		for _, line := range m.formLines() {
+			b.WriteString(ansi.Truncate(line, width, "…"))
 			b.WriteString("\n")
 		}
 	} else {
+		listRows := m.visibleRows()
 		for _, line := range m.listLines(listRows) {
 			b.WriteString(line)
 			b.WriteString("\n")
@@ -43,9 +45,9 @@ func (m personasModel) View() string {
 	} else {
 		b.WriteString("\n")
 	}
-	help := "  ↑/↓ navigate • enter switch/create • e edit • esc back"
+	help := "  ↑/↓ navigate • enter switch • n create • e edit • esc back"
 	if m.formMode != "" {
-		help = "  tab fields • ctrl+s save & activate • enter next field (name) / newline (prompt) • esc cancel"
+		help = "  tab fields • enter name→prompt • ctrl+j / alt+s / f2 save • esc cancel"
 	}
 	b.WriteString(dimStyle.Render(ansi.Truncate(help, width, "…")))
 	return b.String()
@@ -78,7 +80,7 @@ func (m personasModel) listLines(listRows int) []string {
 	return padPersonasLines(lines, listRows)
 }
 
-func (m personasModel) formLines(listRows int) []string {
+func (m personasModel) formLines() []string {
 	title := "  Create a new voice agent"
 	if m.formMode == "edit" {
 		title = "  Edit persona " + m.editID
@@ -104,12 +106,18 @@ func (m personasModel) formLines(listRows int) []string {
 	}
 	lines = append(lines,
 		"",
-		fmt.Sprintf("%s System prompt  (supports {agent_name})", promptMark),
-		m.promptTA.View(),
-		"",
-		dimStyle.Render("  ctrl+s save · tab switch fields · esc cancel"),
+		fmt.Sprintf("%s System prompt  (real brain identity · supports {agent_name})", promptMark),
 	)
-	return padPersonasLines(lines, listRows)
+	// Expand textarea to one visual line per row so truncation never hides it
+	// as a single multi-line blob counted as one list slot.
+	for _, row := range strings.Split(m.promptTA.View(), "\n") {
+		lines = append(lines, row)
+	}
+	lines = append(lines,
+		"",
+		dimStyle.Render("  save: ctrl+j · alt+s · f2  (ctrl+s if terminal allows)  ·  tab fields  ·  esc cancel"),
+	)
+	return lines
 }
 
 func (m personasModel) row(i int, label string) string {
