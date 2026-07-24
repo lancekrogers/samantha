@@ -124,6 +124,11 @@ func TestPersonasScreenEditSystemPrompt(t *testing.T) {
 		savedPrompt = systemPrompt
 		return &persona.Profile{ID: id, Prompts: persona.PromptRefs{Persona: id}}, nil
 	}
+	// Edit submits always persist the stack too; stub so the test never
+	// touches a real personas dir (absent on CI, present on dev machines).
+	m.saveStack = func(id string, b persona.Brain, tt persona.TTS) (*persona.Profile, error) {
+		return &persona.Profile{ID: id, Brain: b, TTS: tt}, nil
+	}
 	m.promptTA.SetValue("You are {agent_name}, revised.")
 	m, _ = m.submitForm()
 	if !strings.Contains(savedPrompt, "revised") {
