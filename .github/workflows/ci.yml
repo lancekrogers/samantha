@@ -27,10 +27,9 @@ jobs:
       - name: Test
         run: go test -race ./...
 
-  # Advisory until the pipeline VAD race is fixed (PR #27's interrupt
-  # controller); make the run's exit code count after that lands. The step
-  # swallows failure itself because a job-level continue-on-error still
-  # renders a red X and leaves the PR UNSTABLE.
+  # Enforcing: the pipeline barge-in VAD race (interrupt controller) is fixed
+  # and this -race suite is its deterministic regression guard, so a failure
+  # must fail the job rather than only warn.
   voiceflow:
     runs-on: macos-latest
     steps:
@@ -39,8 +38,5 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Voiceflow (advisory)
-        run: |
-          if ! go test -race -tags integration ./tests/voiceflow/...; then
-            echo "::warning::voiceflow suite failed (advisory until PR #27 merges)"
-          fi
+      - name: Voiceflow
+        run: go test -race -tags integration ./tests/voiceflow/... -count=1 -timeout 5m

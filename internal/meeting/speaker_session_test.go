@@ -139,6 +139,47 @@ func TestAnalyzeRecordingEnabledWithoutPCMIsVisibleError(t *testing.T) {
 	}
 }
 
+// record_audio off: the streamed PCM is still diarized (re-read from the
+// transient working file) but no audio is retained in the bundle afterward.
+func TestSpeakerSessionDiscardsAudioWhenNotRecording(t *testing.T) {
+	bundlePath := filepath.Join(t.TempDir(), "planning.meeting")
+	writer, err := meetinglog.CreateBundle(bundlePath, "Planning", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture := &fakeCaptureSubscriber{}
+	analyzer := &recordingSpeakerAnalyzer{timeline: speaker.Timeline{Observations: []speaker.Observation{{
+		SegmentID: "diarization-1", StartMS: 0, EndMS: 4000,
+		Label: "speaker-1", State: speaker.StateStable, Source: speaker.SourceRecording,
+	}}}}
+	session, err := NewSpeakerSession(capture, analyzer, writer, bundlePath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture.publish([]float32{0.1, 0.2})
+	capture.publish([]float32{0.3})
+
+	result, err := session.Finalize(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != AnalysisComplete || analyzer.sampleCount != 3 {
+		t.Fatalf("diarization did not run on streamed audio: result=%+v samples=%d", result, analyzer.sampleCount)
+	}
+	if result.AudioFile != "" {
+		t.Fatalf("record_audio off must not retain audio, got %q", result.AudioFile)
+	}
+	// Neither the bundle audio nor the transient working file should remain.
+	for _, p := range []string{
+		speakerAudioPath(bundlePath),
+		filepath.Join(bundlePath, meetinglog.BundleInternalDirName, workingAudioPartName),
+	} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("expected %s absent, stat err = %v", p, err)
+		}
+	}
+}
+
 func TestSpeakerArtifactsStayInsideMeetingBundle(t *testing.T) {
 	bundle := filepath.Join(t.TempDir(), "planning-20260722-090000.meeting")
 	wantAnalysis := filepath.Join(bundle, meetinglog.BundleInternalDirName, meetinglog.BundleSpeakerAnalysisName)

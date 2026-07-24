@@ -16,6 +16,11 @@ import (
 
 const speakerCaptureQueue = 1024
 
+// workingAudioPartName is the transient streamed-PCM file used when the meeting
+// is diarized but audio retention (record_audio) is off. It lives inside the
+// bundle's hidden internal dir and is removed once diarization has read it.
+const workingAudioPartName = "audio.wav.part"
+
 type captureSubscriber interface {
 	Subscribe(int) (int, <-chan []float32)
 	Unsubscribe(int)
@@ -23,6 +28,11 @@ type captureSubscriber interface {
 
 // SpeakerSession owns the optional meeting PCM subscriber and post-capture
 // analysis. It never runs model work on the capture callback or STT goroutine.
+//
+// Captured PCM is streamed straight to a WAV file on disk rather than buffered
+// in memory for the whole meeting: a multi-hour recording keeps process memory
+// flat, a crash leaves a valid partial WAV, and diarization re-reads the file at
+// Finalize instead of retaining a second full copy.
 type SpeakerSession struct {
 	capture     captureSubscriber
 	subID       int
@@ -32,10 +42,16 @@ type SpeakerSession struct {
 	bundlePath  string
 	recordAudio bool
 
-	mu      sync.Mutex
-	samples []float32
-	stop    sync.Once
-	wg      sync.WaitGroup
+	// audioWriter streams capture chunks to workingPath. workingPath is the
+	// final bundle audio.wav when record_audio is on, otherwise a transient
+	// .part file that Finalize/Close remove after diarization.
+	audioWriter *audio.WAVWriter
+	workingPath string
+	writeErr    error
+
+	stop        sync.Once
+	wg          sync.WaitGroup
+	discardOnce sync.Once
 
 	finalize sync.Once
 	result   AnalysisResult
@@ -52,49 +68,56 @@ func NewSpeakerSession(capture captureSubscriber, analyzer SpeakerAnalyzer, writ
 	if !strings.HasSuffix(strings.ToLower(filepath.Base(strings.TrimSpace(bundlePath))), ".meeting") {
 		return nil, fmt.Errorf("meeting: .meeting bundle path is required for speaker analysis")
 	}
+
+	workingPath := speakerAudioPath(bundlePath)
+	if !recordAudio {
+		workingPath = filepath.Join(bundlePath, meetinglog.BundleInternalDirName, workingAudioPartName)
+	}
+	if err := os.MkdirAll(filepath.Dir(workingPath), 0o700); err != nil {
+		return nil, fmt.Errorf("meeting: prepare speaker audio dir: %w", err)
+	}
+	audioWriter, err := audio.NewWAVWriter(workingPath, audio.SampleRate)
+	if err != nil {
+		return nil, fmt.Errorf("meeting: open speaker audio file: %w", err)
+	}
+
 	id, chunks := capture.Subscribe(speakerCaptureQueue)
 	s := &SpeakerSession{
 		capture: capture, subID: id, analyzer: analyzer, writer: writer,
 		bundlePath: bundlePath, recordAudio: recordAudio,
+		audioWriter: audioWriter, workingPath: workingPath,
 	}
 	if closer, ok := analyzer.(interface{ Close() error }); ok {
 		s.closer = closer
 	}
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		for chunk := range chunks {
-			s.mu.Lock()
-			s.samples = append(s.samples, chunk...)
-			s.mu.Unlock()
+			if s.writeErr != nil {
+				continue // drain the subscription but stop writing after an error
+			}
+			if err := s.audioWriter.Write(chunk); err != nil {
+				s.writeErr = err
+			}
 		}
-	}()
+	})
 	return s, nil
 }
 
-// CapturedSamples returns a copy for diagnostics and tests.
-func (s *SpeakerSession) CapturedSamples() []float32 {
+// stopCapture unsubscribes, joins the writer goroutine, and closes the streamed
+// WAV so its size fields are finalized before any re-read. Idempotent.
+func (s *SpeakerSession) stopCapture() {
 	if s == nil {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]float32(nil), s.samples...)
-}
-
-func (s *SpeakerSession) stopCapture() []float32 {
-	if s == nil {
-		return nil
+		return
 	}
 	s.stop.Do(func() {
 		s.capture.Unsubscribe(s.subID)
 		s.wg.Wait()
+		if s.audioWriter != nil {
+			if err := s.audioWriter.Close(); err != nil && s.writeErr == nil {
+				s.writeErr = err
+			}
+		}
 	})
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	samples := s.samples
-	s.samples = nil
-	return samples
 }
 
 // Finalize stops PCM collection, runs offline diarization, and persists an
@@ -104,18 +127,34 @@ func (s *SpeakerSession) Finalize(ctx context.Context) (AnalysisResult, error) {
 		return AnalysisResult{Status: AnalysisDisabled}, nil
 	}
 	s.finalize.Do(func() {
-		samples := s.stopCapture()
+		s.stopCapture()
 		artifact := speakerArtifactPath(s.bundlePath)
-		audioFile := ""
 		var persistErr error
+		if s.writeErr != nil {
+			persistErr = errors.Join(persistErr, fmt.Errorf("record meeting audio: %w", s.writeErr))
+		}
 
+		// Re-read the streamed PCM for offline diarization instead of holding the
+		// whole recording in memory for the meeting's duration.
+		var samples []float32
+		if s.audioWriter != nil && s.audioWriter.Samples() > 0 {
+			got, _, rerr := audio.ReadWAVFloat32(s.workingPath)
+			if rerr != nil {
+				persistErr = errors.Join(persistErr, fmt.Errorf("read meeting audio: %w", rerr))
+			} else {
+				samples = got
+			}
+		}
+
+		audioFile := ""
 		if s.recordAudio {
-			audioFile = speakerAudioPath(s.bundlePath)
-			if err := audio.WriteWAVFloat32(audioFile, audio.SampleRate, samples); err != nil {
-				persistErr = errors.Join(persistErr, fmt.Errorf("write meeting audio: %w", err))
-			} else if err := os.Chmod(audioFile, 0o600); err != nil {
+			audioFile = s.workingPath // the streamed bundle audio.wav
+			if err := os.Chmod(audioFile, 0o600); err != nil {
 				persistErr = errors.Join(persistErr, fmt.Errorf("secure meeting audio: %w", err))
 			}
+		} else {
+			// record_audio is off: keep the diarization result, not the audio.
+			s.discardWorkingAudio()
 		}
 
 		result := AnalyzeRecording(ctx, s.analyzer, samples)
@@ -152,6 +191,15 @@ func (s *SpeakerSession) Finalize(ctx context.Context) (AnalysisResult, error) {
 		}
 	})
 	return s.result, s.err
+}
+
+// discardWorkingAudio removes the streamed PCM when audio retention is off.
+// Safe to call from both Finalize and Close.
+func (s *SpeakerSession) discardWorkingAudio() {
+	if s == nil || s.recordAudio || s.workingPath == "" {
+		return
+	}
+	s.discardOnce.Do(func() { _ = os.Remove(s.workingPath) })
 }
 
 func joinErrorText(existing string, err error) string {
@@ -219,6 +267,9 @@ func (s *SpeakerSession) Close() error {
 		return nil
 	}
 	s.stopCapture()
+	// If the meeting aborted before Finalize and audio was not opted in, do not
+	// leave the streamed PCM behind.
+	s.discardWorkingAudio()
 	if s.closer != nil {
 		return s.closer.Close()
 	}
