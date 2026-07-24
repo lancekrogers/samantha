@@ -14,6 +14,7 @@ func TestEventTypeExposesWireNames(t *testing.T) {
 		{UserInput{}, "user_input"},
 		{ResponseReady{}, "response_ready"},
 		{TurnMetrics{}, "turn_metrics"},
+		{TokenUsage{}, "token_usage"},
 		{TurnInterrupted{}, "turn_interrupted"},
 		{ConversationCleared{}, "conversation_cleared"},
 	}

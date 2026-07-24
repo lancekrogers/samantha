@@ -73,16 +73,10 @@ func TestSkillContextTruncatesLongDescription(t *testing.T) {
 	}
 }
 
-func TestBuildMessagesIncludesSkillsWhenLoaded(t *testing.T) {
+func TestAssembledSystemPromptIncludesSkillsCatalog(t *testing.T) {
 	t.Parallel()
 
-	o := &OllamaBrain{
-		workDir:      "/work",
-		cfg:          &config.Config{AgentName: "Samantha", MaxHistory: 10},
-		systemPrompt: "You are Samantha.",
-		skills:       fixtureCatalog(),
-	}
-	sys := o.buildMessages()[0].Content
+	sys := assembleSystemPrompt("You are Samantha.", "/work", fixtureCatalog())
 	if !strings.Contains(sys, "- hello: A friendly greeting skill for tests.") {
 		t.Fatalf("system prompt missing advertised skill: %q", sys)
 	}
@@ -91,32 +85,35 @@ func TestBuildMessagesIncludesSkillsWhenLoaded(t *testing.T) {
 	}
 }
 
-func TestBuildMessagesInjectsSemanticallyActivatedSkillBodies(t *testing.T) {
+func TestActivatedSkillBodiesRideTheUserMessage(t *testing.T) {
 	t.Parallel()
 
+	// Activated skill bodies are per-turn: they splice onto the latest user
+	// message (the tail), never the system prompt, so the cached prefix
+	// stays byte-identical across turns.
 	o := &OllamaBrain{
-		workDir:            "/work",
-		cfg:                &config.Config{AgentName: "Samantha", MaxHistory: 10},
-		systemPrompt:       "You are Samantha.",
-		skills:             fixtureCatalog(),
-		activeSkillContext: ActivatedSkillContext(fixtureCatalog()),
+		workDir:          "/work",
+		cfg:              &config.Config{AgentName: "Samantha", MaxHistory: 10},
+		fullSystemPrompt: assembleSystemPrompt("You are Samantha.", "/work", fixtureCatalog()),
+		skills:           fixtureCatalog(),
+		history:          []api.Message{{Role: "user", Content: "greet me"}},
 	}
-	sys := o.buildMessages()[0].Content
-	if !strings.Contains(sys, "<activated_skills>") || !strings.Contains(sys, "Say hello warmly") {
-		t.Fatalf("system prompt missing activated skill body: %q", sys)
+	msgs := o.buildMessages(ActivatedSkillContext(fixtureCatalog()))
+	last := msgs[len(msgs)-1]
+	if !strings.Contains(last.Content, "<activated_skills>") || !strings.Contains(last.Content, "Say hello warmly") {
+		t.Fatalf("user message missing activated skill body: %q", last.Content)
+	}
+	// The catalog preamble legitimately names the <activated_skills> tag, so
+	// leak detection keys on the skill body itself.
+	if strings.Contains(msgs[0].Content, "Say hello warmly") {
+		t.Fatal("activated skill body leaked into the system prompt")
 	}
 }
 
-func TestBuildMessagesOmitsSkillsWhenEmpty(t *testing.T) {
+func TestAssembledSystemPromptOmitsSkillsWhenEmpty(t *testing.T) {
 	t.Parallel()
 
-	o := &OllamaBrain{
-		workDir:      "/work",
-		cfg:          &config.Config{AgentName: "Samantha", MaxHistory: 10},
-		systemPrompt: "You are Samantha.",
-		skills:       nil,
-	}
-	sys := o.buildMessages()[0].Content
+	sys := assembleSystemPrompt("You are Samantha.", "/work", nil)
 	if strings.Contains(sys, "Available skills") {
 		t.Fatalf("system prompt should omit skills block when catalog empty: %q", sys)
 	}

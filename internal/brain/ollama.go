@@ -23,12 +23,16 @@ type OllamaBrain struct {
 	history      []api.Message
 	cfg          *config.Config
 	systemPrompt string
-	skills       []skills.Skill
-	skillRouter  *semanticSkillRouter
-	// activeSkillContext is selected from the current user prompt before the
-	// Ollama chat loop begins and remains stable across that turn's tool calls.
-	activeSkillContext string
-	skillRouterWarned  bool
+	// fullSystemPrompt is assembled once at construction (persona prompt +
+	// environment + skills catalog) and sent byte-for-byte on every request,
+	// so Ollama's KV prefix cache survives across turns. Per-turn skill
+	// activations are spliced onto the current user message instead.
+	fullSystemPrompt  string
+	keepAlive         *api.Duration
+	skills            []skills.Skill
+	skillRouter       *semanticSkillRouter
+	skillRouterWarned bool
+	budgetWarned      bool
 }
 
 // NewOllama creates an Ollama brain provider.
@@ -84,12 +88,23 @@ func NewOllama(cfg *config.Config) (*OllamaBrain, error) {
 		fmt.Fprintf(os.Stderr, "samantha: semantic skill routing unavailable (%v); continuing with the Agent Skills catalog\n", routerErr)
 	}
 
+	var keepAlive *api.Duration
+	if s := strings.TrimSpace(cfg.OllamaKeepAlive); s != "" {
+		if d, err := time.ParseDuration(s); err == nil {
+			keepAlive = &api.Duration{Duration: d}
+		} else {
+			fmt.Fprintf(os.Stderr, "samantha: invalid ollama_keep_alive %q (%v); using the server default\n", s, err)
+		}
+	}
+
 	return &OllamaBrain{
 		client:            client,
 		model:             cfg.OllamaModel,
 		workDir:           workDir,
 		cfg:               cfg,
 		systemPrompt:      systemPrompt,
+		fullSystemPrompt:  assembleSystemPrompt(systemPrompt, workDir, catalog),
+		keepAlive:         keepAlive,
 		skills:            catalog,
 		skillRouter:       router,
 		skillRouterWarned: routerErr != nil,
@@ -122,8 +137,9 @@ func loadSkillsCatalog(ctx context.Context, cfg *config.Config, workDir string) 
 // Implements an agent loop: if the model returns tool calls, executes them
 // and re-requests until the model produces a text response.
 func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts StreamOptions) (*Stream, error) {
-	o.activeSkillContext = o.routeSkillContext(ctx, input, opts.OnToolStart, opts.OnToolEnd)
+	skillCtx := o.routeSkillContext(ctx, input, opts.OnToolStart, opts.OnToolEnd)
 	o.history = append(o.history, api.Message{Role: "user", Content: input})
+	o.ensureContextBudget(skillCtx)
 
 	out := make(chan string, 8)
 	done := make(chan StreamResult, 1)
@@ -145,18 +161,12 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 				tools = sess.tools()
 			}
 
-			messages := o.buildMessages()
-			stream := true
-			req := &api.ChatRequest{
-				Model:    o.model,
-				Messages: messages,
-				Tools:    tools,
-				Stream:   &stream,
-			}
+			req := o.newChatRequest(o.buildMessages(skillCtx), tools)
 
 			// Accumulate the full response (text + tool calls).
 			var textBuf strings.Builder
 			var toolCalls []api.ToolCall
+			var prefillTokens, genTokens int
 
 			err := o.chat(ctx, req, func(resp api.ChatResponse) error {
 				if resp.Message.Content != "" {
@@ -172,8 +182,14 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 				if len(resp.Message.ToolCalls) > 0 {
 					toolCalls = append(toolCalls, resp.Message.ToolCalls...)
 				}
+				if resp.Done {
+					prefillTokens, genTokens = resp.Metrics.PromptEvalCount, resp.Metrics.EvalCount
+				}
 				return nil
 			})
+			if opts.OnUsage != nil && prefillTokens+genTokens > 0 {
+				opts.OnUsage(prefillTokens, genTokens)
+			}
 			if err != nil {
 				err = fmt.Errorf("ollama stream: %w", err)
 				// A dead context means shutdown or barge-in — no one is
@@ -257,8 +273,9 @@ func sendChunk(ctx context.Context, out chan<- string, chunk string) error {
 
 // ThinkFull sends input and waits for the complete response.
 func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOptions) (string, error) {
-	o.activeSkillContext = o.routeSkillContext(ctx, input, opts.OnToolStart, opts.OnToolEnd)
+	skillCtx := o.routeSkillContext(ctx, input, opts.OnToolStart, opts.OnToolEnd)
 	o.history = append(o.history, api.Message{Role: "user", Content: input})
+	o.ensureContextBudget(skillCtx)
 
 	sess := &toolSession{
 		catalog:        o.skills,
@@ -273,14 +290,9 @@ func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOp
 			tools = sess.tools()
 		}
 
-		messages := o.buildMessages()
+		req := o.newChatRequest(o.buildMessages(skillCtx), tools)
 		stream := false
-		req := &api.ChatRequest{
-			Model:    o.model,
-			Messages: messages,
-			Tools:    tools,
-			Stream:   &stream,
-		}
+		req.Stream = &stream
 
 		var response api.Message
 		err := o.chat(ctx, req, func(resp api.ChatResponse) error {
@@ -322,6 +334,26 @@ func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOp
 	return "I seem to be going in circles with my tools. Let me just answer directly.", nil
 }
 
+// newChatRequest builds a streaming chat request carrying the session's
+// context policy: an explicit num_ctx so the server never silently truncates
+// at its own default (top truncation eats the system prompt — and the
+// persona — first), and keep_alive so the model stays resident between voice
+// turns (a reload is a multi-second mid-conversation stall).
+func (o *OllamaBrain) newChatRequest(messages []api.Message, tools api.Tools) *api.ChatRequest {
+	stream := true
+	req := &api.ChatRequest{
+		Model:     o.model,
+		Messages:  messages,
+		Tools:     tools,
+		Stream:    &stream,
+		KeepAlive: o.keepAlive,
+	}
+	if o.cfg.OllamaNumCtx > 0 {
+		req.Options = map[string]any{"num_ctx": o.cfg.OllamaNumCtx}
+	}
+	return req
+}
+
 // chat issues a chat request, retrying once without tools if the model reports
 // it doesn't support them — so a non-tool model degrades to plain chat instead
 // of failing the turn. The degradation is logged so "tools silently vanished"
@@ -358,7 +390,6 @@ func (o *OllamaBrain) Warmup(ctx context.Context) {
 // ClearHistory wipes conversation history.
 func (o *OllamaBrain) ClearHistory() {
 	o.history = nil
-	o.activeSkillContext = ""
 }
 
 // History returns conversation history as Turn slices for session persistence.
@@ -384,21 +415,75 @@ func (o *OllamaBrain) LoadHistory(turns []Turn) {
 	}
 }
 
-func (o *OllamaBrain) buildMessages() []api.Message {
-	systemPrompt := o.systemPrompt + "\n" + EnvironmentContext(o.workDir)
-	if sc := SkillContext(o.skills); sc != "" {
-		systemPrompt += sc
+// assembleSystemPrompt builds the session-stable system prompt: persona
+// prompt, environment grounding, and the Tier-1 skills catalog. It runs once
+// per brain — the result must stay byte-identical across a session's requests.
+func assembleSystemPrompt(personaPrompt, workDir string, catalog []skills.Skill) string {
+	full := personaPrompt + "\n" + EnvironmentContext(workDir)
+	if sc := SkillContext(catalog); sc != "" {
+		full += sc
 	}
-	systemPrompt += o.activeSkillContext
+	return full
+}
 
-	msgs := []api.Message{
-		{Role: "system", Content: systemPrompt},
+// buildMessages assembles one chat request: the frozen system prompt, the
+// full retained history (trimHistory owns the bound), and — when skills
+// activated for this turn — their context spliced onto the latest user
+// message. Splicing at the tail keeps every earlier token byte-identical
+// across requests, so the server's prefix cache re-processes only the new
+// turn instead of the whole transcript.
+func (o *OllamaBrain) buildMessages(skillCtx string) []api.Message {
+	msgs := make([]api.Message, 0, len(o.history)+1)
+	msgs = append(msgs, api.Message{Role: "system", Content: o.fullSystemPrompt})
+	msgs = append(msgs, o.history...)
+	if skillCtx != "" {
+		for i := len(msgs) - 1; i > 0; i-- {
+			if msgs[i].Role == "user" {
+				msgs[i].Content += "\n" + skillCtx
+				break
+			}
+		}
 	}
-
-	recent := o.history[historyWindowStart(o.history, o.cfg.MaxHistory*2):]
-
-	msgs = append(msgs, recent...)
 	return msgs
+}
+
+// ensureContextBudget permanently drops the oldest history (user-turn
+// aligned) when the estimated prompt would overflow ollama_num_ctx. An
+// explicit trim beats the server silently truncating from the top, which
+// eats the system prompt — and with it the persona — first. The system
+// prompt itself is never trimmed: if it alone exceeds the budget, the
+// num_ctx setting is what has to change.
+func (o *OllamaBrain) ensureContextBudget(skillCtx string) {
+	budget := o.cfg.OllamaNumCtx
+	if budget <= 0 {
+		return
+	}
+	limit := budget * 9 / 10
+	if o.estimateTokens(skillCtx) <= limit {
+		return
+	}
+	for len(o.history) > 2 && o.estimateTokens(skillCtx) > limit {
+		start := historyWindowStart(o.history, len(o.history)-2)
+		if start <= 0 || start >= len(o.history) {
+			break
+		}
+		o.history = o.history[start:]
+	}
+	if !o.budgetWarned {
+		o.budgetWarned = true
+		fmt.Fprintf(os.Stderr, "samantha: prompt near ollama_num_ctx=%d; dropping oldest history to stay under budget\n", budget)
+	}
+}
+
+// estimateTokens coarsely sizes the next request (≈4 bytes per token plus
+// per-message overhead). It only needs to be accurate enough to trim before
+// the server truncates.
+func (o *OllamaBrain) estimateTokens(skillCtx string) int {
+	n := len(o.fullSystemPrompt) + len(skillCtx)
+	for _, m := range o.history {
+		n += len(m.Content) + 16
+	}
+	return n / 4
 }
 
 func (o *OllamaBrain) routeSkillContext(ctx context.Context, input string, onStart, onEnd func(name, detail string)) string {
@@ -425,8 +510,17 @@ func (o *OllamaBrain) routeSkillContext(ctx context.Context, input string, onSta
 	return ActivatedSkillContext(matched)
 }
 
+// trimHistory bounds retained history with a high/low water mark instead of
+// a per-turn sliding window: nothing is dropped until the count exceeds
+// MaxHistory*2, then it cuts down to MaxHistory (user-turn aligned). Between
+// trims the retained prefix is byte-stable, so the server's KV prefix cache
+// keeps hitting; a slide-per-turn window shifted the prefix every turn and
+// forced a full re-prefill for the rest of the conversation.
 func (o *OllamaBrain) trimHistory() {
-	if start := historyWindowStart(o.history, o.cfg.MaxHistory*2); start > 0 {
+	if len(o.history) <= o.cfg.MaxHistory*2 {
+		return
+	}
+	if start := historyWindowStart(o.history, o.cfg.MaxHistory); start > 0 {
 		o.history = o.history[start:]
 	}
 }

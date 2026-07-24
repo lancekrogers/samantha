@@ -77,6 +77,16 @@ type TurnMetrics struct {
 
 func (e TurnMetrics) eventType() string { return "turn_metrics" }
 
+// TokenUsage reports one model request's prompt/generation token counts.
+// With a warm prefix cache, Prefill should track the size of the new turn —
+// a prefill near the whole transcript means the cache was invalidated.
+type TokenUsage struct {
+	Prefill int
+	Gen     int
+}
+
+func (e TokenUsage) eventType() string { return "token_usage" }
+
 // ResponseStreamingStarted signals the first response chunk has arrived.
 type ResponseStreamingStarted struct {
 	Elapsed time.Duration

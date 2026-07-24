@@ -10,6 +10,11 @@ type StreamOptions struct {
 	OnToolStart func(name, summary string)
 	// OnToolEnd is invoked after a tool returns (optional; for UI).
 	OnToolEnd func(name, preview string)
+	// OnUsage reports one model request's token accounting (optional; for
+	// UI). prefill is the prompt tokens the server actually processed — with
+	// a warm KV prefix cache it should track the size of the new turn, not
+	// the whole transcript — and gen is the tokens generated.
+	OnUsage func(prefill, gen int)
 }
 
 // StreamResult reports the terminal outcome of a streamed response.

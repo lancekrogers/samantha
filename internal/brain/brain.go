@@ -219,9 +219,11 @@ func (b *Brain) buildPrompt() string {
 }
 
 func (b *Brain) trimHistory() {
-	max := b.cfg.MaxHistory * 2
-	if len(b.history) > max {
-		b.history = b.history[len(b.history)-max:]
+	// High/low water trim: drop nothing until MaxHistory*2, then cut to
+	// MaxHistory, so the retained prefix stays stable between trims instead
+	// of sliding every turn.
+	if len(b.history) > b.cfg.MaxHistory*2 {
+		b.history = b.history[len(b.history)-b.cfg.MaxHistory:]
 	}
 }
 

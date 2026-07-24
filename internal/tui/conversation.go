@@ -672,6 +672,9 @@ func (m *conversationModel) handleEvent(e events.Event) {
 	case events.ThinkingComplete:
 		m.appendActivity("model", "complete", e.Elapsed)
 
+	case events.TokenUsage:
+		m.appendActivity("model", fmt.Sprintf("prefill %d tok · gen %d tok", e.Prefill, e.Gen), 0)
+
 	case events.SpeechSegmentReady:
 		m.appendActivity("voice", "segment ready", 0)
 
