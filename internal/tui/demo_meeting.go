@@ -87,15 +87,12 @@ func (demoProvider) Start(ctx context.Context) (stt.Session, error) {
 		if !send(stt.FinalTranscript{Text: "we need a decision on the budget today"}) {
 			return
 		}
-		// Hold the session open with silence timeouts so the UI stays live.
-		for {
-			if !send(stt.PhaseEvent{Phase: "listening"}) {
-				return
-			}
-			if !send(stt.Timeout{}) {
-				return
-			}
-			// Loop restarts a new session after Timeout return; one Timeout ends this session.
+		// Hold the session open with silence timeouts so the UI stays live:
+		// emit one listening phase, then one Timeout that ends this session.
+		if !send(stt.PhaseEvent{Phase: "listening"}) {
+			return
+		}
+		if !send(stt.Timeout{}) {
 			return
 		}
 	}()

@@ -236,8 +236,5 @@ func generateDeviceID() (string, error) {
 // constantTimeTokenMatch compares presented against want without leaking length
 // via early exit on unequal lengths (pad both to equal for subtle).
 func constantTimeTokenMatch(presented, want string) bool {
-	if subtle.ConstantTimeCompare([]byte(presented), []byte(want)) == 1 {
-		return true
-	}
-	return false
+	return subtle.ConstantTimeCompare([]byte(presented), []byte(want)) == 1
 }

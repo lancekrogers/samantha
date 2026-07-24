@@ -39,7 +39,7 @@ func newTTSProviderSet(cfg *config.Config) (*ttsProviderSet, error) {
 		fallbackCfg.TTSProvider = "kokoro"
 		fallback, fallbackCleanup, fallbackErr := tts.NewProvider(&fallbackCfg)
 		if fallbackErr != nil {
-			set.FallbackWarning = fmt.Errorf("Kokoro TTS fallback unavailable: %w", fallbackErr)
+			set.FallbackWarning = fmt.Errorf("fallback TTS (Kokoro) unavailable: %w", fallbackErr)
 		} else {
 			set.Fallback = fallback
 			if fallbackCleanup != nil {

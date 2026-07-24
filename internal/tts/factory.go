@@ -67,7 +67,7 @@ func StaticVoices(providerName, locale, gender string) ([]Voice, error) {
 
 			voices = append(voices, Voice{
 				Name:         name,
-				FriendlyName: fmt.Sprintf("Kokoro %s (%s)", strings.Title(vName), vLocale),
+				FriendlyName: fmt.Sprintf("Kokoro %s (%s)", titleCase(vName), vLocale),
 				Gender:       vGender,
 				Locale:       vLocale,
 			})
@@ -89,4 +89,23 @@ func unsupportedProviderError(configured string) error {
 		names = append(names, spec.Name)
 	}
 	return fmt.Errorf("unsupported tts_provider %q (implemented providers: %s)", configured, strings.Join(names, ", "))
+}
+
+// titleCase upper-cases the first letter of each word — a small ASCII stand-in
+// for the deprecated strings.Title, used only for Kokoro voice display names.
+// Matches strings.Title's word boundaries: letters, digits, and '_' are word
+// characters, so only a letter following a separator (or the start) is raised.
+func titleCase(s string) string {
+	prevIsWord := false
+	return strings.Map(func(r rune) rune {
+		isWord := r == '_' ||
+			(r >= '0' && r <= '9') ||
+			(r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z')
+		if !prevIsWord && r >= 'a' && r <= 'z' {
+			r -= 'a' - 'A'
+		}
+		prevIsWord = isWord
+		return r
+	}, s)
 }

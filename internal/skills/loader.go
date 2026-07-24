@@ -293,9 +293,7 @@ func splitFrontmatter(data []byte) (yamlBlock []byte, body string, err error) {
 	}
 	rest := text[len("---"):]
 	// Optional newline after opening fence.
-	if strings.HasPrefix(rest, "\n") {
-		rest = rest[1:]
-	}
+	rest = strings.TrimPrefix(rest, "\n")
 	end := strings.Index(rest, "\n---")
 	if end < 0 {
 		return nil, "", fmt.Errorf("unclosed YAML frontmatter")

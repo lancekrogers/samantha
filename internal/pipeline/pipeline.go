@@ -863,7 +863,7 @@ func (p *Pipeline) applyPlaybackEvent(event playbackEvent, metrics *turnMetrics,
 }
 
 func (p *Pipeline) handlePlaybackLifecycle(sentence string, synthStarted time.Time, playback *audio.Playback, metrics *turnMetrics) {
-	startedAt := time.Time{}
+	var startedAt time.Time
 
 	select {
 	case <-playback.Started():
@@ -1017,7 +1017,7 @@ func (p *Pipeline) toolEndHook() func(name, preview string) {
 // the loop keeps consuming, so finished events must still be delivered to drain
 // the pending count.
 func watchPlayback(loopDone <-chan struct{}, sentence string, synthStarted time.Time, playback *audio.Playback, started *atomic.Bool, out chan<- playbackEvent) {
-	startedAt := time.Time{}
+	var startedAt time.Time
 
 	select {
 	case <-loopDone:
