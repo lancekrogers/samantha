@@ -244,6 +244,36 @@ worker for the lifetime of the provider. Advanced users can still set both
 `qwen_tts_binary` and `qwen_tts_model` to use the older external CLI contract;
 that compatibility path supports only its model-native default voice.
 
+### Personas (voice agents)
+
+A persona is a complete voice agent: its system prompt, brain provider/model, and
+TTS provider/voice all belong to the persona rather than to global config. TUI
+**Settings** writes global defaults only; to change one agent, edit it under
+**Personas** (or its `personas/<id>/persona.yaml`). Any field a persona leaves
+empty inherits the app default — an empty `brain:` uses the app-level
+`brain_provider`/model, and an empty `tts:` uses the app-level TTS keys.
+
+Starting a new conversation opens a persona picker: the active persona is
+pre-selected, and `+ Create persona…` clones the current global stack into a new
+profile. A conversation binds its identity — name, prompt, brain, and voice — at
+start, so editing a persona or switching the active one never affects a session
+already in flight.
+
+The persona system-prompt editor has a vim mode: `esc` for NORMAL; `i`/`a`/`o`
+to insert; `h`/`j`/`k`/`l`/`0`/`$`/`w`/`b`/`gg`/`G` to move; `x`/`D`/`dd` to
+delete; `:w` saves and `:q` cancels. `ctrl+j`, `alt+s`, and `f2` also save.
+
+### Turn recovery and token usage
+
+A hard tool or brain failure always ends with a spoken recovery reply ("I hit an
+error while working on that…") while the error detail goes to the activity feed;
+the turn is reported as `completed (degraded)` rather than dropped silently.
+
+For Ollama, Activity records per-request `prefill N tok · gen M tok`. Prefill
+tracks the size of your new turn, not the whole transcript, and is bounded by
+`ollama_num_ctx` (default `8192`); `ollama_keep_alive` (default `10m`) keeps the
+model resident between turns.
+
 ### Batch narration (audiobooks)
 
 `samantha render` turns documents into audio files and a manifest without the
@@ -463,6 +493,8 @@ Prompt bodies stay in `prompts/` (see `samantha prompts`).
 | `ollama_embedding_model` | `nomic-embed-text` | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model used to match each user prompt to relevant Agent Skills. Set empty to disable semantic routing and retain model-driven `read_skill` fallback. |
 | `skills_similarity_threshold` | `0.55` | `SKILLS_SIMILARITY_THRESHOLD` | Minimum cosine similarity for automatic skill activation. Tune when using an embedding model with a different score distribution. |
 | `ollama_host` | `http://localhost:11434` | `OLLAMA_HOST` | Ollama server URL |
+| `ollama_num_ctx` | `8192` | `OLLAMA_NUM_CTX` | Context window requested on every chat call. `0` uses the server model default, which silently truncates long prompts from the top (system prompt first). |
+| `ollama_keep_alive` | `10m` | `OLLAMA_KEEP_ALIVE` | How long Ollama keeps the model resident between turns (Go duration; empty = server default). |
 | `voice_tools_enabled` | `false` (auto-`true` for Ollama when unset) | `VOICE_TOOLS_ENABLED` | Enable tool calls (`list_files` / `read_file` / `write_file` / `run_command` / `web_search` / `fetch_url` for Ollama). Ollama enables this automatically unless you set the key or env explicitly to `false`. Remote `samantha serve` still uses `remote_tools_enabled` (default off). |
 | `tool_command_timeout` | `30` (clamped 1–120) | `TOOL_COMMAND_TIMEOUT` | Maximum seconds for one local `run_command` invocation. The whole brain turn has its own timeout. |
 | `remote_tools_enabled` | `false` | | Allow network-triggered turns from `samantha serve` to invoke tools; keep off unless remote clients are trusted. |
