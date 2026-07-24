@@ -52,9 +52,9 @@ linux-artifact:
         echo "linux-artifact builds a native amd64 artifact and must run on x86_64 Linux" >&2
         exit 1
     fi
-    for tool in patchelf readelf ldd sha256sum; do
+    for tool in curl patchelf readelf ldd sha256sum strings; do
         command -v "$tool" >/dev/null || {
-            echo "linux-artifact requires $tool (Arch: sudo pacman -S patchelf binutils; Debian/Ubuntu: sudo apt install patchelf binutils)" >&2
+            echo "linux-artifact requires $tool (Arch: sudo pacman -S curl patchelf binutils; Debian/Ubuntu: sudo apt install curl patchelf binutils)" >&2
             exit 1
         }
     done
@@ -91,6 +91,27 @@ linux-artifact:
     done
     cp LICENSE "$stage/LICENSE"
     cp "$module_dir/LICENSE" "$licensedir/sherpa-onnx-go-linux-LICENSE"
+
+    # sherpa-onnx-go-linux v1.12.29 bundles ONNX Runtime 1.23.2 without its
+    # redistribution files. Pin and verify the upstream license material, and
+    # fail loudly if a future module update changes the bundled runtime.
+    onnxruntime_version="1.23.2"
+    strings "$native_dir/libonnxruntime.so" | grep -Fx "$onnxruntime_version" >/dev/null || {
+        echo "bundled ONNX Runtime version no longer matches license version $onnxruntime_version" >&2
+        exit 1
+    }
+    onnxruntime_base="https://raw.githubusercontent.com/microsoft/onnxruntime/v${onnxruntime_version}"
+    curl -fsSL "$onnxruntime_base/LICENSE" -o "$licensedir/onnxruntime-LICENSE"
+    curl -fsSL "$onnxruntime_base/ThirdPartyNotices.txt" -o "$licensedir/onnxruntime-ThirdPartyNotices.txt"
+    (
+        cd "$licensedir"
+        printf '%s  %s\n' \
+            "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c" \
+            "onnxruntime-LICENSE" \
+            "e9e90971a8e75a9a8ac0c6412e29c1202d079998389915aa485f46c816c3b4cc" \
+            "onnxruntime-ThirdPartyNotices.txt" |
+            sha256sum --check -
+    )
 
     patchelf --set-rpath '$ORIGIN/lib' "$bin"
     runpath="$(patchelf --print-rpath "$bin")"
