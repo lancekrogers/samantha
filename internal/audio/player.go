@@ -57,7 +57,11 @@ type Engine interface {
 
 // Player handles in-process audio playback through miniaudio.
 type Player struct {
-	mu         sync.Mutex
+	mu sync.Mutex
+	// deviceMu serializes native device initialization and teardown. Never hold
+	// mu while calling malgo Start/Stop/Uninit: miniaudio may synchronously call
+	// onData, which also needs mu.
+	deviceMu   sync.Mutex
 	ctx        *malgo.AllocatedContext
 	device     *malgo.Device
 	sampleRate int
@@ -101,7 +105,9 @@ func (p *Player) PlayStream(ctx context.Context, stream *PCMStream) (*Playback, 
 	}
 
 	segment := newPlaybackSegment()
-	go p.pumpSegment(ctx, segment, stream)
+	go runPlaybackWorker(ctx, segment, stream, func() {
+		p.pumpSegment(ctx, segment, stream)
+	})
 
 	if err := segment.waitReady(ctx); err != nil {
 		return nil, err
@@ -145,31 +151,64 @@ func (p *Player) IsPlaying() bool {
 func (p *Player) Close() error {
 	p.Stop()
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.deviceMu.Lock()
+	defer p.deviceMu.Unlock()
 
+	p.mu.Lock()
 	if p.closed {
+		p.mu.Unlock()
 		return nil
 	}
 	p.closed = true
+	device := p.device
+	p.device = nil
+	ctx := p.ctx
+	p.ctx = nil
+	debug := p.debug
+	p.debug = nil
+	p.mu.Unlock()
 
-	if p.device != nil {
-		_ = p.device.Stop()
-		p.device.Uninit()
-		p.device = nil
+	if device != nil {
+		_ = device.Stop()
+		device.Uninit()
 	}
 
-	if p.ctx != nil {
-		_ = p.ctx.Uninit()
-		p.ctx.Free()
-		p.ctx = nil
+	if ctx != nil {
+		_ = ctx.Uninit()
+		ctx.Free()
 	}
-	if p.debug != nil {
-		p.debug.close()
-		p.debug = nil
+	if debug != nil {
+		debug.close()
 	}
 
 	return nil
+}
+
+// runPlaybackWorker keeps an unexpected panic in device initialization or the
+// stream pump from tearing down the TUI while Bubble Tea owns the terminal's
+// raw and alternate-screen state. PlayStream owns stream, so the recovery path
+// also drains it until the producer finishes or the preview is cancelled.
+func runPlaybackWorker(ctx context.Context, segment *playbackSegment, stream *PCMStream, pump func()) {
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			return
+		}
+
+		segment.fail(fmt.Errorf("audio playback worker panic: %v", recovered))
+		for {
+			select {
+			case _, ok := <-stream.Frames():
+				if !ok {
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	pump()
 }
 
 func (p *Player) pumpSegment(ctx context.Context, segment *playbackSegment, stream *PCMStream) {
@@ -236,16 +275,21 @@ func finalizeSegment(segment *playbackSegment, frontend Frontend, debug *playerD
 }
 
 func (p *Player) ensureDevice(sampleRate int) (int, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.deviceMu.Lock()
+	defer p.deviceMu.Unlock()
 
+	p.mu.Lock()
 	if p.closed {
+		p.mu.Unlock()
 		return 0, errors.New("audio player is closed")
 	}
-
 	if p.device != nil {
-		return p.sampleRate, nil
+		rate := p.sampleRate
+		p.mu.Unlock()
+		return rate, nil
 	}
+	debugRoot := p.debugRoot
+	p.mu.Unlock()
 
 	ctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
 	if err != nil {
@@ -258,11 +302,13 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 	// Larger periods reduce callback pressure on multi-channel displays.
 	deviceConfig.PeriodSizeInFrames = 512
 	deviceConfig.Periods = 3
-	if err := selectDevice(ctx.Context, malgo.Playback, p.deviceName, &deviceConfig.Playback); err != nil {
+	releaseDeviceID, err := selectDevice(ctx.Context, malgo.Playback, p.deviceName, &deviceConfig.Playback)
+	if err != nil {
 		_ = ctx.Uninit()
 		ctx.Free()
 		return 0, fmt.Errorf("select playback device: %w", err)
 	}
+	defer releaseDeviceID()
 	actualDeviceName, preferredRate, nativeChannels, err := playbackDeviceDetails(ctx.Context, p.deviceName, sampleRate)
 	if err != nil {
 		_ = ctx.Uninit()
@@ -280,7 +326,7 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 		return 0, err
 	}
 
-	if err := device.Start(); err != nil {
+	if err := p.startPlaybackDevice(openedChannels, device.Start); err != nil {
 		device.Uninit()
 		_ = ctx.Uninit()
 		ctx.Free()
@@ -294,8 +340,9 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 	if deviceChannels <= 0 {
 		deviceChannels = openedChannels
 	}
-	if p.debugRoot != "" {
-		debug, err := newPlayerDebugRecorder(p.debugRoot, actualDeviceName, sampleRate, deviceRate, deviceChannels)
+	var debug *playerDebugRecorder
+	if debugRoot != "" {
+		debug, err = newPlayerDebugRecorder(debugRoot, actualDeviceName, sampleRate, deviceRate, deviceChannels)
 		if err != nil {
 			_ = device.Stop()
 			device.Uninit()
@@ -303,14 +350,34 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 			ctx.Free()
 			return 0, fmt.Errorf("start audio debug capture: %w", err)
 		}
-		p.debug = debug
 	}
 
+	p.mu.Lock()
 	p.ctx = ctx
 	p.device = device
 	p.sampleRate = deviceRate
 	p.channels = deviceChannels
-	return p.sampleRate, nil
+	p.debug = debug
+	p.mu.Unlock()
+	return deviceRate, nil
+}
+
+// startPlaybackDevice publishes callback state before starting miniaudio and
+// never holds p.mu across start. Device.Start primes the playback buffer by
+// invoking onData synchronously on some backends; holding p.mu here would
+// deadlock that callback before Start can return.
+func (p *Player) startPlaybackDevice(openedChannels int, start func() error) error {
+	p.mu.Lock()
+	p.channels = openedChannels
+	p.mu.Unlock()
+
+	if err := start(); err != nil {
+		p.mu.Lock()
+		p.channels = 0
+		p.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // openPlaybackDevice tries client layouts/rates in an order tuned for Studio

@@ -1,8 +1,14 @@
 package audio
 
+/*
+#include <stdlib.h>
+*/
+import "C"
+
 import (
 	"context"
 	"fmt"
+	"sync"
 	"unsafe"
 
 	"github.com/gen2brain/malgo"
@@ -77,30 +83,47 @@ func malgoDeviceNames(kind malgo.DeviceType) ([]string, error) {
 	return names, nil
 }
 
-// selectDevice configures sub with the named device from ctx. An empty name
-// deliberately leaves DeviceID nil so miniaudio follows the operating-system
-// default. Device names are used in config because miniaudio IDs are backend-
-// specific and can change across boots; a missing configured name is reported
-// instead of silently routing private audio to a different device.
-func selectDevice(ctx malgo.Context, kind malgo.DeviceType, name string, sub *malgo.SubConfig) error {
+// selectDevice configures sub with the named device from ctx and returns a
+// release function for the temporary C-owned device ID. The caller must keep
+// the allocation alive until malgo.InitDevice returns; miniaudio copies the ID
+// during initialization.
+//
+// An empty name deliberately leaves DeviceID nil so miniaudio follows the
+// operating-system default. Device names are used in config because miniaudio
+// IDs are backend-specific and can change across boots; a missing configured
+// name is reported instead of silently routing private audio to a different
+// device.
+func selectDevice(ctx malgo.Context, kind malgo.DeviceType, name string, sub *malgo.SubConfig) (func(), error) {
 	if name == "" {
-		return nil
+		return func() {}, nil
 	}
 	infos, err := ctx.Devices(kind)
 	if err != nil {
-		return fmt.Errorf("enumerate devices: %w", err)
+		return nil, fmt.Errorf("enumerate devices: %w", err)
 	}
 	for i := range infos {
 		if infos[i].Name() == name {
-			// DeviceConfig retains this unsafe pointer until InitDevice returns;
-			// the ID is pointer-free Go memory and miniaudio copies it during
-			// initialization. Avoid DeviceID.Pointer here because it allocates C
-			// memory with no matching public release API.
-			sub.DeviceID = unsafe.Pointer(&infos[i].ID[0])
-			return nil
+			ptr, release := copyDeviceIDToC(infos[i].ID)
+			sub.DeviceID = ptr
+			return release, nil
 		}
 	}
-	return fmt.Errorf("audio device %q is not available", name)
+	return nil, fmt.Errorf("audio device %q is not available", name)
+}
+
+// copyDeviceIDToC detaches a miniaudio device ID from DeviceInfo's Go-managed
+// storage. DeviceInfo also owns a Formats slice, so passing &info.ID[0] through
+// malgo's C device config violates cgo's pointer rules and panics at runtime
+// with "Go pointer to unpinned Go pointer". In the pinned malgo version,
+// DeviceID.Pointer uses C.CBytes, whose allocation must be released with C.free.
+func copyDeviceIDToC(id malgo.DeviceID) (unsafe.Pointer, func()) {
+	ptr := id.Pointer()
+	var once sync.Once
+	return ptr, func() {
+		once.Do(func() {
+			C.free(ptr)
+		})
+	}
 }
 
 // playbackDeviceDetails returns the selected device's display name, a preferred

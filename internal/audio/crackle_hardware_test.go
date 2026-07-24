@@ -10,6 +10,29 @@ import (
 	"time"
 )
 
+// TestHardwareNamedDeviceInitialization exercises the exact path Settings
+// previews use when output_device names a non-default device. It starts the
+// device with a silent callback and closes it immediately; no tone is played.
+//
+//	SAMANTHA_HARDWARE_AUDIO=1 SAMANTHA_OUTPUT_DEVICE="Device Name" \
+//	  go test ./internal/audio -run HardwareNamedDeviceInitialization -v
+func TestHardwareNamedDeviceInitialization(t *testing.T) {
+	if os.Getenv("SAMANTHA_HARDWARE_AUDIO") == "" {
+		t.Skip("set SAMANTHA_HARDWARE_AUDIO=1 to run hardware playback tests")
+	}
+	deviceName := strings.TrimSpace(os.Getenv("SAMANTHA_OUTPUT_DEVICE"))
+	if deviceName == "" {
+		t.Skip("set SAMANTHA_OUTPUT_DEVICE to exercise named-device initialization")
+	}
+
+	player := NewPlayerWithDevice(deviceName)
+	t.Cleanup(func() { _ = player.Close() })
+
+	if _, err := player.ensureDevice(24_000); err != nil {
+		t.Fatalf("initialize named playback device %q: %v", deviceName, err)
+	}
+}
+
 // TestHardwarePlayStreamNoSoftwareCrackle is an opt-in integration test that
 // opens the real default playback device, plays a speech-like 24 kHz utterance
 // through PlayStream (full pump + native-rate resample + callback path), and

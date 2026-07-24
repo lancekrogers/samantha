@@ -66,11 +66,13 @@ func (c *Capture) Start(ctx context.Context) error {
 	deviceConfig.Capture.Format = malgo.FormatS16
 	deviceConfig.Capture.Channels = Channels
 	deviceConfig.SampleRate = SampleRate
-	if err := selectDevice(mctx.Context, malgo.Capture, c.deviceName, &deviceConfig.Capture); err != nil {
+	releaseDeviceID, err := selectDevice(mctx.Context, malgo.Capture, c.deviceName, &deviceConfig.Capture)
+	if err != nil {
 		_ = mctx.Uninit()
 		mctx.Free()
 		return fmt.Errorf("select capture device: %w", err)
 	}
+	defer releaseDeviceID()
 
 	onData := func(outputSamples, inputSamples []byte, frameCount uint32) {
 		samples := bytesToFloat32(inputSamples)

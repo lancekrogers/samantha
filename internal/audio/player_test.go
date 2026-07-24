@@ -3,6 +3,7 @@ package audio
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -36,6 +37,55 @@ func TestPlaybackSegmentThresholdReadiness(t *testing.T) {
 	s.append([]int16{3})
 	if !segmentReady(s) {
 		t.Fatal("segment not ready after reaching the frame threshold")
+	}
+}
+
+func TestPlaybackWorkerRecoversPanicAndDrainsStream(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stream := NewPCMStream(ctx)
+	if err := stream.SetSampleRate(SampleRate); err != nil {
+		t.Fatalf("SetSampleRate: %v", err)
+	}
+	if err := stream.Write([]float32{0.25}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	stream.Close()
+
+	segment := newPlaybackSegment()
+	runPlaybackWorker(ctx, segment, stream, func() {
+		panic("device initialization failed")
+	})
+
+	select {
+	case result := <-segment.doneCh:
+		if result.Err == nil || !strings.Contains(result.Err.Error(), "device initialization failed") {
+			t.Fatalf("PlaybackResult.Err = %v, want recovered panic", result.Err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recovered playback worker did not complete the segment")
+	}
+}
+
+func TestPlayerDeviceStartAllowsSynchronousCallback(t *testing.T) {
+	player := NewPlayer()
+	done := make(chan error, 1)
+
+	go func() {
+		done <- player.startPlaybackDevice(2, func() error {
+			player.onData(make([]byte, 512*2*2), nil, 512)
+			return nil
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("startPlaybackDevice: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("device start deadlocked when miniaudio invoked onData synchronously")
 	}
 }
 
