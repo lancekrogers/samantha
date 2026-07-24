@@ -135,9 +135,15 @@ func (m personasModel) stackLines() []string {
 		return " "
 	}
 	brainProvider := stackBrainProviders()[m.brainProviderIdx]
+	brainRow := fmt.Sprintf("  %s Brain: ‹ %s ›", mark(stackRowBrainProvider), brainProvider)
+	if strings.EqualFold(brainProvider, "claude") && strings.TrimSpace(m.brainModelInput.Value()) != "" {
+		// Claude has no app-level model key yet; be honest that the model
+		// string is recorded on the profile but not routed.
+		brainRow += dimStyle.Render("  (model saved, not routed for claude yet)")
+	}
 	ttsProvider := stackTTSProviders()[m.ttsProviderIdx]
 	return []string{
-		fmt.Sprintf("  %s Brain: ‹ %s ›", mark(stackRowBrainProvider), brainProvider),
+		brainRow,
 		fmt.Sprintf("  %s%s", mark(stackRowBrainModel), m.brainModelInput.View()),
 		fmt.Sprintf("  %s TTS:   ‹ %s ›", mark(stackRowTTSProvider), ttsProvider),
 		fmt.Sprintf("  %s%s", mark(stackRowVoice), m.voiceInput.View()),
