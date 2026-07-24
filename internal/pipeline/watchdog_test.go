@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -47,8 +46,8 @@ func TestRunTurnWatchdogRecoversStalledPlayback(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if !errors.Is(err, errPlaybackStalled) {
-			t.Fatalf("RunTurn() error = %v, want errPlaybackStalled", err)
+		if err != nil {
+			t.Fatalf("RunTurn() error = %v, want nil (stall completes degraded)", err)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("watchdog did not recover a stalled turn")

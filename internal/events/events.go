@@ -60,7 +60,10 @@ func (e ThinkingComplete) eventType() string { return "thinking_complete" }
 type TurnMetrics struct {
 	// Outcome is the turn's terminal state as decided by the turn state
 	// machine: completed, interrupted, failed, or timed_out.
-	Outcome                 string
+	Outcome string
+	// Degraded marks a completed turn whose reply is a recovery line after a
+	// hard brain/tool failure rather than a normal model response.
+	Degraded                bool
 	Interrupted             bool
 	STTFinalElapsed         time.Duration
 	FirstModelChunkElapsed  time.Duration
@@ -146,6 +149,9 @@ func (e TurnInterrupted) eventType() string { return "turn_interrupted" }
 type ResponseReady struct {
 	Response    string
 	Interrupted bool
+	// Degraded marks a recovery reply emitted after a hard brain/tool failure;
+	// the error detail is delivered separately as an Error event.
+	Degraded bool
 }
 
 func (e ResponseReady) eventType() string { return "response_ready" }
