@@ -17,6 +17,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/persona"
 	"github.com/lancekrogers/samantha/internal/pipeline"
 	"github.com/lancekrogers/samantha/internal/prompts"
 	"github.com/lancekrogers/samantha/internal/session"
@@ -133,12 +134,21 @@ func modelName(cfg *config.Config) string {
 // progress and the mic goes hot here, not in the launcher (D2). A non-nil
 // resume session seeds both the brain history and the viewport.
 func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBuilder {
-	return func(ctx context.Context, progress func(name string, pct float64), sessionID string) (*appTUI.ConversationRuntime, error) {
+	return func(ctx context.Context, progress func(name string, pct float64), sessionID, personaID string) (*appTUI.ConversationRuntime, error) {
 		// Reload config in case settings changed inside the TUI.
 		cfg, err := config.Load()
 		if err != nil {
 			return nil, fmt.Errorf("reload config: %w", err)
 		}
+
+		// Bind the session's identity now: the runtime is built from this
+		// snapshot, so later persona switches/edits (Settings, Personas, other
+		// sessions) cannot mutate this conversation's prompt, name, or voice.
+		binding, err := persona.ResolveBinding(cfg, personaID)
+		if err != nil {
+			return nil, fmt.Errorf("resolve persona: %w", err)
+		}
+		cfg = binding.Config()
 
 		spCfg := speaker.FromAppConfig(cfg)
 		req := config.AssetRequest{
@@ -199,6 +209,8 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 			Bus:          bus,
 			Voice:        p.STT != nil,
 			Output:       p.HasTTS() && p.Player != nil,
+			PersonaID:    binding.PersonaID,
+			AgentName:    binding.AgentName,
 			SessionID:    sess.ID,
 			InputDevice:  cfg.InputDevice,
 			OutputDevice: cfg.OutputDevice,
@@ -252,6 +264,14 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 func startPipeline(cfg *config.Config, resumeSession *session.Session) error {
 	ctx, cancel := signalContext()
 	defer cancel()
+
+	// Same binding rule as the TUI runtime: the CLI conversation runs on an
+	// identity snapshot, not the live global overlay.
+	binding, err := persona.ResolveBinding(cfg, "")
+	if err != nil {
+		return fmt.Errorf("resolve persona: %w", err)
+	}
+	cfg = binding.Config()
 
 	req := config.AssetRequest{
 		NeedTTS: !noVoice,

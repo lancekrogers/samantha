@@ -50,7 +50,7 @@ func fakeRuntime() *ConversationRuntime {
 // "Start conversation" switches screens in place and kicks off the build —
 // no tea.Quit hop (D2).
 func TestStartPipelineEntersConversationScreen(t *testing.T) {
-	app := wiredApp(func(ctx context.Context, progress func(string, float64), _ string) (*ConversationRuntime, error) {
+	app := wiredApp(func(ctx context.Context, progress func(string, float64), _, _ string) (*ConversationRuntime, error) {
 		return fakeRuntime(), nil
 	})
 
@@ -71,7 +71,7 @@ func TestStartPipelineEntersConversationScreen(t *testing.T) {
 // status updates and the finished runtime wires the conversation model.
 func TestRuntimeBuildProgressAndReady(t *testing.T) {
 	rt := fakeRuntime()
-	build := func(ctx context.Context, progress func(string, float64), _ string) (*ConversationRuntime, error) {
+	build := func(ctx context.Context, progress func(string, float64), _, _ string) (*ConversationRuntime, error) {
 		progress("kokoro-v1", 0)
 		progress("kokoro-v1", 42)
 		return rt, nil
@@ -80,7 +80,7 @@ func TestRuntimeBuildProgressAndReady(t *testing.T) {
 	model, _ := app.Update(startPipelineMsg{})
 	app = model.(App)
 
-	msg := buildRuntime(app.builder, app.runCtx, app.progress, app.slot)()
+	msg := buildRuntime(app.builder, app.runCtx, app.progress, app.slot, "", "")()
 	ready, ok := msg.(runtimeReadyMsg)
 	if !ok || ready.err != nil {
 		t.Fatalf("buildRuntime returned %#v, want clean runtimeReadyMsg", msg)
@@ -110,27 +110,61 @@ func TestRuntimeBuildProgressAndReady(t *testing.T) {
 
 func TestRuntimeBuildReceivesSelectedSession(t *testing.T) {
 	var selected string
-	app := wiredApp(func(_ context.Context, _ func(string, float64), sessionID string) (*ConversationRuntime, error) {
+	app := wiredApp(func(_ context.Context, _ func(string, float64), sessionID, _ string) (*ConversationRuntime, error) {
 		selected = sessionID
 		return fakeRuntime(), nil
 	})
 	model, _ := app.Update(startPipelineMsg{sessionID: "saved-session"})
 	app = model.(App)
-	_ = buildRuntime(app.builder, app.runCtx, app.progress, app.slot, "saved-session")()
+	_ = buildRuntime(app.builder, app.runCtx, app.progress, app.slot, "saved-session", "")()
 	if selected != "saved-session" {
 		t.Fatalf("builder session = %q, want saved-session", selected)
 	}
 }
 
+func TestRuntimeBuildReceivesSelectedPersona(t *testing.T) {
+	var selected string
+	app := wiredApp(func(_ context.Context, _ func(string, float64), _, personaID string) (*ConversationRuntime, error) {
+		selected = personaID
+		return fakeRuntime(), nil
+	})
+	model, _ := app.Update(startPipelineMsg{personaID: "research-buddy"})
+	app = model.(App)
+	_ = buildRuntime(app.builder, app.runCtx, app.progress, app.slot, "", "research-buddy")()
+	if selected != "research-buddy" {
+		t.Fatalf("builder persona = %q, want research-buddy", selected)
+	}
+}
+
+// The conversation renders the binding's agent name for its whole lifetime —
+// a persona switch after start must not relabel an in-flight session.
+func TestRuntimeReadyBindsAgentName(t *testing.T) {
+	rt := fakeRuntime()
+	rt.AgentName = "Research Buddy"
+	app := wiredApp(func(context.Context, func(string, float64), string, string) (*ConversationRuntime, error) {
+		return rt, nil
+	})
+	model, _ := app.Update(startPipelineMsg{})
+	app = model.(App)
+
+	msg := buildRuntime(app.builder, app.runCtx, app.progress, app.slot, "", "")()
+	model, _ = app.Update(msg)
+	app = model.(App)
+
+	if app.conversation.agentName != "Research Buddy" {
+		t.Fatalf("conversation agentName = %q, want binding identity", app.conversation.agentName)
+	}
+}
+
 func TestRuntimeBuildFailureQuitsWithError(t *testing.T) {
-	build := func(ctx context.Context, progress func(string, float64), _ string) (*ConversationRuntime, error) {
+	build := func(ctx context.Context, progress func(string, float64), _, _ string) (*ConversationRuntime, error) {
 		return nil, errors.New("no assets, no pipeline")
 	}
 	app := wiredApp(build)
 	model, _ := app.Update(startPipelineMsg{})
 	app = model.(App)
 
-	msg := buildRuntime(app.builder, app.runCtx, app.progress, app.slot)()
+	msg := buildRuntime(app.builder, app.runCtx, app.progress, app.slot, "", "")()
 	model, cmd := app.Update(msg)
 	app = model.(App)
 
@@ -154,13 +188,13 @@ func TestRuntimeBuildCancelsCleanupViaSlot(t *testing.T) {
 	rt.Cleanup = func() { cleaned = true }
 
 	ctx, cancel := context.WithCancel(context.Background())
-	app := wiredApp(func(context.Context, func(string, float64), string) (*ConversationRuntime, error) {
+	app := wiredApp(func(context.Context, func(string, float64), string, string) (*ConversationRuntime, error) {
 		return rt, nil
 	})
 	app.runCtx = ctx
 	cancel() // simulate quit-during-build before the Cmd finishes
 
-	msg := buildRuntime(app.builder, app.runCtx, app.progress, app.slot)()
+	msg := buildRuntime(app.builder, app.runCtx, app.progress, app.slot, "", "")()
 	ready, ok := msg.(runtimeReadyMsg)
 	if !ok {
 		t.Fatalf("buildRuntime returned %#v", msg)
@@ -183,7 +217,7 @@ func TestRuntimeSeedPopulatesViewport(t *testing.T) {
 		{Role: "assistant", Content: "you locked D1 through D3"},
 		{Role: "tool", Content: "tool output that must not render"},
 	}
-	app := wiredApp(func(ctx context.Context, progress func(string, float64), _ string) (*ConversationRuntime, error) {
+	app := wiredApp(func(ctx context.Context, progress func(string, float64), _, _ string) (*ConversationRuntime, error) {
 		return rt, nil
 	})
 	model, _ := app.Update(startPipelineMsg{})
@@ -191,7 +225,7 @@ func TestRuntimeSeedPopulatesViewport(t *testing.T) {
 	model, _ = app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app = model.(App)
 
-	msg := buildRuntime(app.builder, app.runCtx, app.progress, app.slot)()
+	msg := buildRuntime(app.builder, app.runCtx, app.progress, app.slot, "", "")()
 	model, _ = app.Update(msg)
 	app = model.(App)
 
@@ -208,7 +242,7 @@ func TestRuntimeSeedPopulatesViewport(t *testing.T) {
 
 // resume/continue start the program directly in the conversation screen.
 func TestInitStartsConversationWhenResuming(t *testing.T) {
-	app := wiredApp(func(ctx context.Context, progress func(string, float64), _ string) (*ConversationRuntime, error) {
+	app := wiredApp(func(ctx context.Context, progress func(string, float64), _, _ string) (*ConversationRuntime, error) {
 		return fakeRuntime(), nil
 	})
 	app.startInConversation = true

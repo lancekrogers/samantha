@@ -135,7 +135,12 @@ type settingsDoneMsg struct{}
 
 // startPipelineMsg enters the conversation screen and builds the pipeline
 // there (D2) — the TUI no longer exits to hand off.
-type startPipelineMsg struct{ sessionID string }
+type startPipelineMsg struct {
+	sessionID string
+	// personaID selects the session binding; empty = configured active persona.
+	// The persona picker (launcher "New conversation") sets this.
+	personaID string
+}
 
 // quitMsg signals the app should exit.
 type quitMsg struct{}
@@ -446,7 +451,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.screen = screenConversation
 		a.conversation.setStatus("Preparing...", false)
-		return a, tea.Batch(a.progress.wait(), buildRuntime(a.builder, a.runCtx, a.progress, a.slot, msg.sessionID))
+		return a, tea.Batch(a.progress.wait(), buildRuntime(a.builder, a.runCtx, a.progress, a.slot, msg.sessionID, msg.personaID))
 
 	case assetProgressMsg:
 		a.conversation.setStatus(formatAssetProgress(msg), false)
@@ -466,6 +471,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.runtime = msg.rt
+		// The session's identity comes from its binding, resolved at build:
+		// a later persona switch must not relabel this conversation.
+		if msg.rt.AgentName != "" {
+			a.conversation.agentName = msg.rt.AgentName
+		}
 		a.conversation.setStatus("", false)
 		a.conversation.seedTranscript(msg.rt.Seed)
 		cmd := a.conversation.startConversation(conversationDeps{

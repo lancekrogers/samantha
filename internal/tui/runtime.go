@@ -22,10 +22,15 @@ import (
 // Cleanup runs exactly once, after the program exits and in-flight turns
 // have drained.
 type ConversationRuntime struct {
-	Pipeline     *pipeline.Pipeline
-	Bus          *events.Bus
-	Voice        bool // STT is configured; voice turns may run
-	Output       bool // TTS and playback are configured
+	Pipeline *pipeline.Pipeline
+	Bus      *events.Bus
+	Voice    bool // STT is configured; voice turns may run
+	Output   bool // TTS and playback are configured
+	// PersonaID and AgentName identify the session binding this runtime was
+	// built from. The conversation renders this identity for its lifetime —
+	// later persona switches or edits must not relabel an in-flight session.
+	PersonaID    string
+	AgentName    string
 	SessionID    string
 	InputDevice  string
 	OutputDevice string
@@ -38,8 +43,9 @@ type ConversationRuntime struct {
 // RuntimeBuilder constructs the runtime when the user enters the
 // conversation screen (D2: the mic goes hot here, not in the launcher).
 // Asset download progress is reported through progress and rendered
-// in-screen.
-type RuntimeBuilder func(ctx context.Context, progress func(name string, pct float64), sessionID string) (*ConversationRuntime, error)
+// in-screen. personaID selects the session's persona binding; empty resolves
+// the configured active persona.
+type RuntimeBuilder func(ctx context.Context, progress func(name string, pct float64), sessionID, personaID string) (*ConversationRuntime, error)
 
 // MeetingRuntime holds STT, the bundle writer, and optional speaker finalizer
 // for the embedded meeting screen.
@@ -138,15 +144,11 @@ func reloadVoice(ctx context.Context, reload func(context.Context) error, resume
 
 // buildRuntime runs the builder off the update loop, streaming progress
 // through the feed so the conversation screen can render it.
-func buildRuntime(build RuntimeBuilder, ctx context.Context, feed *eventBridge, slot *runtimeSlot, sessionIDs ...string) tea.Cmd {
-	sessionID := ""
-	if len(sessionIDs) > 0 {
-		sessionID = sessionIDs[0]
-	}
+func buildRuntime(build RuntimeBuilder, ctx context.Context, feed *eventBridge, slot *runtimeSlot, sessionID, personaID string) tea.Cmd {
 	return func() tea.Msg {
 		rt, err := build(ctx, func(name string, pct float64) {
 			feed.send(assetProgressMsg{name: name, pct: pct})
-		}, sessionID)
+		}, sessionID, personaID)
 		feed.send(progressClosedMsg{})
 		if err != nil {
 			return runtimeReadyMsg{err: err}
