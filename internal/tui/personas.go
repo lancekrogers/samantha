@@ -41,31 +41,35 @@ type personasModel struct {
 	brainModelInput  textinput.Model
 	voiceInput       textinput.Model
 
-	listPersonas  func() ([]*persona.Profile, error)
-	usePersona    func(*config.Config, string) error
-	createPersona func(*config.Config, persona.CreateOpts) (*persona.Profile, error)
-	savePrompt    func(id, systemPrompt string) (*persona.Profile, error)
-	saveName      func(id, displayName string) (*persona.Profile, error)
-	saveStack     func(id string, b persona.Brain, t persona.TTS) (*persona.Profile, error)
-	loadPrompt    func(name string) (string, error)
-	defaultPrompt func() (string, error)
+	listPersonas         func() ([]*persona.Profile, error)
+	usePersona           func(*config.Config, string) error
+	createPersona        func(*config.Config, persona.CreateOpts) (*persona.Profile, error)
+	savePrompt           func(id, systemPrompt string) (*persona.Profile, error)
+	saveName             func(id, displayName string) (*persona.Profile, error)
+	saveStack            func(id string, b persona.Brain, t persona.TTS) (*persona.Profile, error)
+	loadPrompt           func(name string) (string, error)
+	loadPromptForProfile func(*persona.Profile) (string, error)
+	defaultPrompt        func() (string, error)
 }
 
 func newPersonas(cfg *config.Config) personasModel {
 	m := personasModel{
-		cfg:             cfg,
-		listPersonas:    persona.List,
-		usePersona:      persona.Use,
-		createPersona:   persona.CreateAndUseWithOpts,
-		savePrompt:      persona.UpdateSystemPrompt,
-		saveName:        persona.UpdateDisplayName,
-		saveStack:       persona.UpdateStack,
-		loadPrompt:      persona.LoadSystemPrompt,
-		defaultPrompt:   persona.DefaultSystemPrompt,
-		nameInput:       newPersonaCreateInput(),
-		promptTA:        newPersonaPromptArea(),
-		brainModelInput: newPersonaStackInput("Model: ", "empty = provider default"),
-		voiceInput:      newPersonaStackInput("Voice: ", "empty = provider default"),
+		cfg:           cfg,
+		listPersonas:  persona.List,
+		usePersona:    persona.Use,
+		createPersona: persona.CreateAndUseWithOpts,
+		savePrompt:    persona.UpdateSystemPrompt,
+		saveName:      persona.UpdateDisplayName,
+		saveStack:     persona.UpdateStack,
+		loadPrompt:    persona.LoadSystemPrompt,
+		// Prefer profile-aware load so a private prompts/persona/<id>.yaml wins
+		// over a stale prompts.persona ref (e.g. TTS voice name as the ref).
+		loadPromptForProfile: persona.LoadSystemPromptForProfile,
+		defaultPrompt:        persona.DefaultSystemPrompt,
+		nameInput:            newPersonaCreateInput(),
+		promptTA:             newPersonaPromptArea(),
+		brainModelInput:      newPersonaStackInput("Model: ", "empty = provider default"),
+		voiceInput:           newPersonaStackInput("Voice: ", "empty = provider default"),
 	}
 	m.reload()
 	return m

@@ -111,6 +111,11 @@ type Config struct {
 	Persona    string `mapstructure:"persona"`
 	PromptsDir string `mapstructure:"prompts_dir"`
 
+	// TurnPrompt is the catalog name for the kind=turn per-reply instruction.
+	// Empty means the embedded shared default. Set at runtime by persona.Apply
+	// from profile prompts.turn; not a user-facing top-level config key.
+	TurnPrompt string `mapstructure:"-"`
+
 	// Skills (Agent Skills / SKILL.md). Ollama loads the catalog by default when
 	// SkillsEnabled is not explicitly disabled. See internal/skills.
 	SkillsEnabled bool   `mapstructure:"skills_enabled"`

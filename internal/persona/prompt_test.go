@@ -62,12 +62,83 @@ func TestCreateWithOptsWritesPrompt(t *testing.T) {
 	if p.Prompts.Persona != p.ID {
 		t.Fatalf("prompt ref = %q, want %q", p.Prompts.Persona, p.ID)
 	}
+	if p.Prompts.Turn != "" {
+		t.Fatalf("turn ref = %q, want empty (shared embedded default)", p.Prompts.Turn)
+	}
 	got, err := LoadSystemPrompt(p.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(got, "love citations") {
 		t.Fatalf("prompt = %q", got)
+	}
+}
+
+func TestCreateAlwaysOwnsPrivatePrompt(t *testing.T) {
+	dir := t.TempDir()
+	setConfigDir(t, dir)
+	cfg := &config.Config{TTSProvider: "kokoro", TTSVoice: "af_heart", Persona: "samantha"}
+	p, err := Create(cfg, "Uncle Fu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.ID != "uncle-fu" {
+		t.Fatalf("id = %q", p.ID)
+	}
+	if p.Prompts.Persona != "uncle-fu" {
+		t.Fatalf("prompts.persona = %q, want uncle-fu (not samantha)", p.Prompts.Persona)
+	}
+	if p.Prompts.Turn != "" {
+		t.Fatalf("prompts.turn = %q, want empty", p.Prompts.Turn)
+	}
+	path := filepath.Join(dir, "prompts", "persona", "uncle-fu.yaml")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("private prompt missing: %v", err)
+	}
+	got, err := LoadSystemPrompt("uncle-fu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == "" {
+		t.Fatal("seeded prompt empty")
+	}
+}
+
+func TestLoadSystemPromptForProfileHealsStaleRef(t *testing.T) {
+	// Real user bug: profile had prompts.persona: Uncle_Fu (TTS voice id) while
+	// the private doc lived at prompts/persona/uncle-fu.yaml. Resolver used to
+	// return the embedded samantha identity for the missing Uncle_Fu name.
+	dir := t.TempDir()
+	setConfigDir(t, dir)
+	if err := WriteSystemPrompt("uncle-fu", "You are Uncle Fu, a private agent."); err != nil {
+		t.Fatal(err)
+	}
+	if err := Write(&Profile{
+		Schema: Schema, ID: "uncle-fu", DisplayName: "uncle fu",
+		TTS:     TTS{Provider: "qwen3-tts", Voice: "Uncle_Fu"},
+		Prompts: PromptRefs{Persona: "Uncle_Fu", Turn: "samantha"},
+	}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := Load("uncle-fu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadSystemPromptForProfile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "Uncle Fu, a private agent") {
+		t.Fatalf("got %q, want private prompt (not samantha)", got)
+	}
+	// Healed on disk.
+	healed, err := Load("uncle-fu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if healed.Prompts.Persona != "uncle-fu" {
+		t.Fatalf("prompts.persona = %q after heal, want uncle-fu", healed.Prompts.Persona)
 	}
 }
 

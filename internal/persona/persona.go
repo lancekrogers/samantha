@@ -70,6 +70,13 @@ type TTS struct {
 }
 
 // PromptRefs names documents in the prompts catalog.
+//
+//	persona: catalog name of the kind=persona system prompt (usually this
+//	         profile's id; private file at prompts/persona/<id>.yaml).
+//	turn:    optional catalog name of the kind=turn per-reply voice instruction
+//	         appended on Claude/Grok paths. Empty = shared embedded default.
+//	         This is NOT a conversation-turn counter and is independent of the
+//	         TTS voice id (e.g. Uncle_Fu).
 type PromptRefs struct {
 	Persona string `yaml:"persona"`
 	Turn    string `yaml:"turn,omitempty"`
@@ -238,7 +245,7 @@ func FromConfig(cfg *config.Config) *Profile {
 		},
 		Prompts: PromptRefs{
 			Persona: promptName,
-			Turn:    promptName,
+			// Empty turn = shared embedded turn instruction.
 		},
 	}
 }
@@ -256,6 +263,9 @@ func Apply(cfg *config.Config, p *Profile) {
 	if ref := strings.TrimSpace(p.Prompts.Persona); ref != "" {
 		cfg.Persona = ref
 	}
+	// Turn prompt is independent of the persona system-prompt name. Empty
+	// means the brain uses the shared embedded turn instruction.
+	cfg.TurnPrompt = strings.TrimSpace(p.Prompts.Turn)
 	if id := strings.TrimSpace(p.ID); id != "" {
 		cfg.ActivePersona = id
 	}

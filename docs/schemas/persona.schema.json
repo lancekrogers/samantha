@@ -39,9 +39,17 @@
       "type": "object",
       "required": ["persona"],
       "additionalProperties": false,
+      "description": "Catalog refs for prompt documents. persona is the system identity; turn is an optional short per-reply voice instruction (empty = shared default). turn is not a conversation counter and is independent of tts.voice.",
       "properties": {
-        "persona": { "type": "string", "minLength": 1 },
-        "turn": { "type": "string" }
+        "persona": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Catalog name of the kind=persona system prompt. Usually the persona id (prompts/persona/<id>.yaml)."
+        },
+        "turn": {
+          "type": "string",
+          "description": "Optional catalog name of the kind=turn per-reply instruction. Empty uses the shared embedded default. Not the conversation turn counter; not a TTS voice id."
+        }
       }
     }
   }

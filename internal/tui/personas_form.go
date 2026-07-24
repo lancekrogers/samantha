@@ -357,23 +357,46 @@ func (m *personasModel) beginEdit() tea.Cmd {
 	m.resizeForm()
 	m.nameInput.SetValue(p.DisplayName)
 	m.nameInput.Focus()
-	promptName := p.Prompts.Persona
-	if promptName == "" {
-		promptName = p.ID
-	}
-	text := ""
-	if m.loadPrompt != nil {
-		if got, err := m.loadPrompt(promptName); err == nil {
-			text = got
-		}
-	}
-	if text == "" {
-		text = m.resolveDefaultPrompt()
-	}
+	text, loadNote := m.loadEditPrompt(p)
 	m.promptTA.SetValue(text)
+	if loadNote != "" {
+		m.message = loadNote
+	}
 	m.promptTA.Blur()
 	m.prefillStack(p)
 	return textinput.Blink
+}
+
+// loadEditPrompt loads the system prompt body for the editor without ever
+// substituting the embedded samantha default for a different persona.
+func (m *personasModel) loadEditPrompt(p *persona.Profile) (text, note string) {
+	if p == nil {
+		return "", "No persona selected"
+	}
+	if m.loadPromptForProfile != nil {
+		if got, err := m.loadPromptForProfile(p); err == nil {
+			return got, ""
+		} else if err != nil {
+			note = fmt.Sprintf("Could not load system prompt: %v · edit and save to create prompts/persona/%s.yaml", err, p.ID)
+		}
+	} else if m.loadPrompt != nil {
+		name := strings.TrimSpace(p.Prompts.Persona)
+		if name == "" {
+			name = p.ID
+		}
+		if got, err := m.loadPrompt(name); err == nil {
+			return got, ""
+		}
+		if p.ID != "" && name != p.ID {
+			if got, err := m.loadPrompt(p.ID); err == nil {
+				return got, ""
+			}
+		}
+		note = fmt.Sprintf("System prompt %q not found · edit and save to create prompts/persona/%s.yaml", name, p.ID)
+	}
+	// Empty body — never inject the default samantha identity into another
+	// persona's editor. Create form still seeds the default via beginCreate.
+	return "", note
 }
 
 func (m personasModel) submitForm() (personasModel, tea.Cmd) {

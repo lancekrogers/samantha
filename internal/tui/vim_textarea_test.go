@@ -130,7 +130,7 @@ func TestPersonasPromptStepVimFlow(t *testing.T) {
 		m.listPersonas = func() ([]*persona.Profile, error) {
 			return []*persona.Profile{{ID: "samantha", DisplayName: "Samantha", Prompts: persona.PromptRefs{Persona: "samantha"}}}, nil
 		}
-		m.loadPrompt = func(string) (string, error) { return "You are Samantha.", nil }
+		m.loadPromptForProfile = func(*persona.Profile) (string, error) { return "You are Samantha.", nil }
 		m.saveName = func(id, d string) (*persona.Profile, error) { return &persona.Profile{ID: id, DisplayName: d}, nil }
 		m.saveStack = func(id string, b persona.Brain, tt persona.TTS) (*persona.Profile, error) {
 			return &persona.Profile{ID: id}, nil

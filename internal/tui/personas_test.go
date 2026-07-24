@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -102,7 +103,7 @@ func TestPersonasScreenEditSystemPrompt(t *testing.T) {
 			{ID: "samantha", DisplayName: "Samantha", Prompts: persona.PromptRefs{Persona: "samantha"}},
 		}, nil
 	}
-	m.loadPrompt = func(name string) (string, error) {
+	m.loadPromptForProfile = func(p *persona.Profile) (string, error) {
 		return "You are {agent_name}, original.", nil
 	}
 	m.reload()
@@ -274,6 +275,38 @@ func TestPersonasCreateNameOnlyUsesDefaultPrompt(t *testing.T) {
 	}
 }
 
+func TestPersonasEditDoesNotInjectSamanthaForWrongRef(t *testing.T) {
+	// Regression: stale prompts.persona (e.g. TTS voice "Uncle_Fu") used to
+	// resolve as a miss and the editor filled in the embedded samantha default.
+	cfg := &config.Config{ActivePersona: "uncle-fu"}
+	m := newPersonas(cfg)
+	m.listPersonas = func() ([]*persona.Profile, error) {
+		return []*persona.Profile{{
+			ID: "uncle-fu", DisplayName: "uncle fu",
+			Prompts: persona.PromptRefs{Persona: "Uncle_Fu", Turn: "samantha"},
+		}}, nil
+	}
+	m.loadPromptForProfile = func(p *persona.Profile) (string, error) {
+		if p.ID == "uncle-fu" {
+			return "You are Uncle Fu, private prompt.", nil
+		}
+		return "", fmt.Errorf("unexpected id %q", p.ID)
+	}
+	m.defaultPrompt = func() (string, error) {
+		return "You are {agent_name}, the samantha default — must not appear.", nil
+	}
+	m.reload()
+	m.width, m.height = 80, 28
+	m.cursor = 0
+	m.beginEdit()
+	if strings.Contains(m.promptTA.Value(), "samantha default") {
+		t.Fatalf("editor injected samantha default: %q", m.promptTA.Value())
+	}
+	if !strings.Contains(m.promptTA.Value(), "Uncle Fu, private") {
+		t.Fatalf("editor missing private prompt: %q", m.promptTA.Value())
+	}
+}
+
 func TestPersonasFormStackRoundTrip(t *testing.T) {
 	// The stack step prefills from the profile's brain/TTS and saves through
 	// UpdateStack — the only write path for a persona's model/voice
@@ -288,7 +321,7 @@ func TestPersonasFormStackRoundTrip(t *testing.T) {
 			Prompts: persona.PromptRefs{Persona: "research"},
 		}}, nil
 	}
-	m.loadPrompt = func(string) (string, error) { return "You are Research.", nil }
+	m.loadPromptForProfile = func(*persona.Profile) (string, error) { return "You are Research.", nil }
 	m.reload()
 	m.width, m.height = 80, 30
 	m.cursor = 0
