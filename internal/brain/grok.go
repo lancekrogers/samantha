@@ -183,9 +183,11 @@ func (g *GrokBrain) buildPrompt() string {
 }
 
 func (g *GrokBrain) trimHistory() {
-	max := g.cfg.MaxHistory * 2
-	if len(g.history) > max {
-		g.history = g.history[len(g.history)-max:]
+	// High/low water trim: drop nothing until MaxHistory*2, then cut to
+	// MaxHistory, so the retained prefix stays stable between trims instead
+	// of sliding every turn.
+	if len(g.history) > g.cfg.MaxHistory*2 {
+		g.history = g.history[len(g.history)-g.cfg.MaxHistory:]
 	}
 }
 

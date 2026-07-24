@@ -339,6 +339,7 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 		ToolsEnabled: p.VoiceToolsEnabled,
 		OnToolStart:  p.toolStartHook(),
 		OnToolEnd:    p.toolEndHook(),
+		OnUsage:      p.usageHook(),
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -417,6 +418,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 		ToolsEnabled: p.VoiceToolsEnabled,
 		OnToolStart:  p.toolStartHook(),
 		OnToolEnd:    p.toolEndHook(),
+		OnUsage:      p.usageHook(),
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -1102,6 +1104,14 @@ func (p *Pipeline) toolStartHook() func(name, summary string) {
 func (p *Pipeline) toolEndHook() func(name, preview string) {
 	return func(name, preview string) {
 		p.emit(events.ToolCallFinished{Name: name, Preview: preview})
+	}
+}
+
+// usageHook emits per-request token accounting so prefix-cache regressions
+// are visible in the activity feed, not vibes.
+func (p *Pipeline) usageHook() func(prefill, gen int) {
+	return func(prefill, gen int) {
+		p.emit(events.TokenUsage{Prefill: prefill, Gen: gen})
 	}
 }
 

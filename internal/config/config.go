@@ -72,7 +72,14 @@ type Config struct {
 	OllamaEmbeddingModel      string  `mapstructure:"ollama_embedding_model"`
 	SkillsSimilarityThreshold float64 `mapstructure:"skills_similarity_threshold"`
 	OllamaHost                string  `mapstructure:"ollama_host"`
-	VoiceToolsEnabled         bool    `mapstructure:"voice_tools_enabled"`
+	// OllamaNumCtx is the context window requested on every chat call. 0
+	// falls back to the server's model default — which silently truncates
+	// long prompts from the top, eating the system prompt first.
+	OllamaNumCtx int `mapstructure:"ollama_num_ctx"`
+	// OllamaKeepAlive keeps the model resident between voice turns
+	// (Go duration string; empty = server default).
+	OllamaKeepAlive   string `mapstructure:"ollama_keep_alive"`
+	VoiceToolsEnabled bool   `mapstructure:"voice_tools_enabled"`
 	// ToolCommandTimeout bounds one local run_command invocation in seconds.
 	// The brain turn timeout remains the outer bound for a complete turn.
 	ToolCommandTimeout int `mapstructure:"tool_command_timeout"`
@@ -256,6 +263,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ollama_embedding_model", "nomic-embed-text")
 	v.SetDefault("skills_similarity_threshold", 0.55)
 	v.SetDefault("ollama_host", "http://localhost:11434")
+	v.SetDefault("ollama_num_ctx", 8192)
+	v.SetDefault("ollama_keep_alive", "10m")
 	v.SetDefault("voice_tools_enabled", false)
 	v.SetDefault("tool_command_timeout", 30)
 	v.SetDefault("remote_tools_enabled", false)
@@ -367,6 +376,8 @@ func loadLocked() (*Config, error) {
 		"ollama_model":             "OLLAMA_MODEL",
 		"ollama_embedding_model":   "OLLAMA_EMBEDDING_MODEL",
 		"ollama_host":              "OLLAMA_HOST",
+		"ollama_num_ctx":           "OLLAMA_NUM_CTX",
+		"ollama_keep_alive":        "OLLAMA_KEEP_ALIVE",
 		"voice_tools_enabled":      "VOICE_TOOLS_ENABLED",
 		"tool_command_timeout":     "TOOL_COMMAND_TIMEOUT",
 		"persona":                  "PERSONA",

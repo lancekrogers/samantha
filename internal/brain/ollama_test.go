@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ollama/ollama/api"
 
@@ -222,21 +224,59 @@ func TestWarmupFiresMinimalRequest(t *testing.T) {
 // as conversation history grows.
 func TestSystemPrefixStableAcrossTurns(t *testing.T) {
 	o := &OllamaBrain{
-		workDir: "/work/dir",
-		cfg:     &config.Config{AgentName: "Samantha", MaxHistory: 10},
+		workDir:          "/work/dir",
+		cfg:              &config.Config{AgentName: "Samantha", MaxHistory: 10},
+		fullSystemPrompt: "frozen system prompt",
 	}
 
 	o.history = append(o.history, api.Message{Role: "user", Content: "first"})
-	firstPrefix := o.buildMessages()[0].Content
+	firstPrefix := o.buildMessages("")[0].Content
 
 	o.history = append(o.history,
 		api.Message{Role: "assistant", Content: "hello there"},
 		api.Message{Role: "user", Content: "second"},
 	)
-	secondPrefix := o.buildMessages()[0].Content
+	// Skill activations must not touch the system message either — they
+	// splice onto the tail.
+	secondPrefix := o.buildMessages("\n<activated_skills>calibre</activated_skills>")[0].Content
 
 	if firstPrefix != secondPrefix {
 		t.Errorf("system prefix changed across turns, defeating KV-cache reuse:\nfirst=%q\nsecond=%q", firstPrefix, secondPrefix)
+	}
+}
+
+// TestBuildMessagesSplicesSkillContextOntoLatestUserMessage guards the tail
+// injection point: activated-skill instructions ride the newest user message,
+// where they cannot invalidate the cached prefix, and the stored history
+// stays clean for session persistence and later requests.
+func TestBuildMessagesSplicesSkillContextOntoLatestUserMessage(t *testing.T) {
+	o := &OllamaBrain{
+		workDir:          "/work/dir",
+		cfg:              &config.Config{MaxHistory: 10},
+		fullSystemPrompt: "sys",
+		history: []api.Message{
+			{Role: "user", Content: "older"},
+			{Role: "assistant", Content: "reply"},
+			{Role: "user", Content: "current"},
+		},
+	}
+	msgs := o.buildMessages("\n<activated_skills>x</activated_skills>")
+
+	last := msgs[len(msgs)-1]
+	if last.Role != "user" || !strings.Contains(last.Content, "<activated_skills>") {
+		t.Fatalf("last message = %+v, want skill context on the latest user message", last)
+	}
+	if !strings.HasPrefix(last.Content, "current") {
+		t.Fatalf("last message content = %q, want original input preserved first", last.Content)
+	}
+	if strings.Contains(msgs[0].Content, "<activated_skills>") {
+		t.Fatal("skill context leaked into the system message")
+	}
+	if strings.Contains(msgs[1].Content, "<activated_skills>") {
+		t.Fatal("skill context landed on an older user message")
+	}
+	if strings.Contains(o.history[2].Content, "<activated_skills>") {
+		t.Fatal("splice mutated stored history; sessions would persist skill blocks")
 	}
 }
 
@@ -304,14 +344,17 @@ func TestHistoryWindowStart(t *testing.T) {
 	}
 }
 
-func TestBuildMessagesNeverStrandsToolResults(t *testing.T) {
+func TestTrimmedHistoryNeverStrandsToolResults(t *testing.T) {
+	// trimHistory owns the retention bound now (buildMessages passes retained
+	// history through unchanged), so the stranding guard applies at trim time.
 	for maxHistory := 1; maxHistory <= 5; maxHistory++ {
 		o := &OllamaBrain{
 			workDir: "/work/dir",
 			cfg:     &config.Config{AgentName: "Samantha", MaxHistory: maxHistory},
 			history: toolGroupHistory(),
 		}
-		msgs := o.buildMessages()
+		o.trimHistory()
+		msgs := o.buildMessages("")
 		if msgs[0].Role != "system" {
 			t.Fatalf("maxHistory=%d: first message role = %q, want system", maxHistory, msgs[0].Role)
 		}
@@ -319,21 +362,57 @@ func TestBuildMessagesNeverStrandsToolResults(t *testing.T) {
 	}
 }
 
-func TestBuildMessagesWithNonPositiveHistoryWindow(t *testing.T) {
+func TestTrimHistoryWithNonPositiveMaxDropsHistory(t *testing.T) {
 	for _, maxHistory := range []int{0, -1} {
 		o := &OllamaBrain{
 			workDir: "/work/dir",
 			cfg:     &config.Config{AgentName: "Samantha", MaxHistory: maxHistory},
 			history: toolGroupHistory(),
 		}
-		msgs := o.buildMessages()
-		if len(msgs) != 1 {
-			t.Fatalf("maxHistory=%d: got %d messages, want system prompt only", maxHistory, len(msgs))
+		o.trimHistory()
+		if len(o.history) != 0 {
+			t.Fatalf("maxHistory=%d: retained %d messages, want 0", maxHistory, len(o.history))
 		}
-		if msgs[0].Role != "system" {
-			t.Fatalf("maxHistory=%d: first message role = %q, want system", maxHistory, msgs[0].Role)
+		if msgs := o.buildMessages(""); len(msgs) != 1 || msgs[0].Role != "system" {
+			t.Fatalf("maxHistory=%d: messages = %+v, want system prompt only", maxHistory, msgs)
 		}
 	}
+}
+
+// TestTrimHistoryBlockTrim guards the high/low water contract: nothing is
+// dropped until the count exceeds MaxHistory*2 (so the prefix — and the
+// server's KV cache — stays byte-stable between trims), then one cut lands
+// the count at or under MaxHistory.
+func TestTrimHistoryBlockTrim(t *testing.T) {
+	turns := func(n int) []api.Message {
+		var h []api.Message
+		for i := 0; i < n; i++ {
+			role := "user"
+			if i%2 == 1 {
+				role = "assistant"
+			}
+			h = append(h, api.Message{Role: role, Content: fmt.Sprintf("m%d", i)})
+		}
+		return h
+	}
+
+	o := &OllamaBrain{cfg: &config.Config{MaxHistory: 4}}
+
+	o.history = turns(8) // exactly at high water: untouched
+	o.trimHistory()
+	if len(o.history) != 8 {
+		t.Fatalf("at high water: retained %d, want 8 (no per-turn slide)", len(o.history))
+	}
+	if o.history[0].Content != "m0" {
+		t.Fatalf("at high water: prefix shifted to %q", o.history[0].Content)
+	}
+
+	o.history = turns(9) // over high water: cut to low water
+	o.trimHistory()
+	if len(o.history) > 4 {
+		t.Fatalf("over high water: retained %d, want <= MaxHistory (4)", len(o.history))
+	}
+	assertNoStrandedTools(t, o.history)
 }
 
 func TestTrimHistoryNeverStrandsToolResults(t *testing.T) {
@@ -351,16 +430,69 @@ func TestTrimHistoryNeverStrandsToolResults(t *testing.T) {
 	assertNoStrandedTools(t, o.history)
 }
 
-func TestTrimHistoryWithNonPositiveHistoryWindow(t *testing.T) {
-	for _, maxHistory := range []int{0, -1} {
-		o := &OllamaBrain{
-			cfg:     &config.Config{MaxHistory: maxHistory},
-			history: toolGroupHistory(),
+func TestChatRequestCarriesContextPolicy(t *testing.T) {
+	d := api.Duration{Duration: 10 * time.Minute}
+	o := &OllamaBrain{
+		model:     "m",
+		cfg:       &config.Config{OllamaNumCtx: 8192},
+		keepAlive: &d,
+	}
+	req := o.newChatRequest([]api.Message{{Role: "system", Content: "s"}}, nil)
+	if got := req.Options["num_ctx"]; got != 8192 {
+		t.Fatalf("num_ctx = %v, want 8192", got)
+	}
+	if req.KeepAlive == nil || req.KeepAlive.Duration != 10*time.Minute {
+		t.Fatalf("KeepAlive = %v, want 10m", req.KeepAlive)
+	}
+
+	// num_ctx 0 defers to the server default: no Options at all.
+	o = &OllamaBrain{model: "m", cfg: &config.Config{}}
+	if req := o.newChatRequest(nil, nil); req.Options != nil {
+		t.Fatalf("Options = %v, want nil when ollama_num_ctx is 0", req.Options)
+	}
+}
+
+// TestEnsureContextBudgetShrinksHistory guards the explicit-budget contract:
+// when the estimated prompt would overflow ollama_num_ctx, the oldest history
+// is dropped (never the system prompt) instead of letting the server truncate
+// from the top.
+func TestEnsureContextBudgetShrinksHistory(t *testing.T) {
+	long := strings.Repeat("x", 2000) // ~500 estimated tokens per message
+	var hist []api.Message
+	for i := 0; i < 10; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
 		}
-		o.trimHistory()
-		if len(o.history) != 0 {
-			t.Fatalf("maxHistory=%d: got %d history messages, want none", maxHistory, len(o.history))
-		}
+		hist = append(hist, api.Message{Role: role, Content: long})
+	}
+	o := &OllamaBrain{
+		cfg:              &config.Config{MaxHistory: 20, OllamaNumCtx: 1000},
+		fullSystemPrompt: "system prompt stays",
+		history:          hist,
+	}
+
+	o.ensureContextBudget("")
+	if len(o.history) >= 10 {
+		t.Fatalf("history not shrunk: %d messages retained over a 1000-token budget", len(o.history))
+	}
+	if len(o.history) < 2 {
+		t.Fatalf("budget shrink dropped the in-flight turn: %d messages", len(o.history))
+	}
+	if o.fullSystemPrompt != "system prompt stays" {
+		t.Fatal("budget shrink touched the system prompt")
+	}
+
+	// Within budget: untouched.
+	o = &OllamaBrain{
+		cfg:              &config.Config{MaxHistory: 20, OllamaNumCtx: 100000},
+		fullSystemPrompt: "s",
+		history:          toolGroupHistory(),
+	}
+	before := len(o.history)
+	o.ensureContextBudget("")
+	if len(o.history) != before {
+		t.Fatalf("budget shrink ran under budget: %d -> %d", before, len(o.history))
 	}
 }
 
