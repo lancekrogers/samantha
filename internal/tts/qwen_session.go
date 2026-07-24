@@ -3,15 +3,20 @@ package tts
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lancekrogers/samantha/internal/audio"
 )
 
 const managedQwenProtocol = "samantha-qwen/v1"
@@ -47,6 +52,10 @@ type managedQwenMessage struct {
 	Voices      []string `json:"voices,omitempty"`
 	Languages   []string `json:"languages,omitempty"`
 	SampleRate  int      `json:"sample_rate,omitempty"`
+	// PCMf32leB64 is a base64-encoded little-endian float32 mono PCM chunk.
+	// Emitted as type=audio_chunk after generate_custom_voice finishes (qwen-tts
+	// does not expose true streaming waveform generation for CustomVoice yet).
+	PCMf32leB64 string `json:"pcm_f32le_b64,omitempty"`
 }
 
 type managedQwenResponseError struct {
@@ -124,6 +133,81 @@ func startManagedQwenSessionContext(ctx context.Context, binary, workerScript, m
 	}
 }
 
+// SynthesizeToStream runs one managed synthesis and writes float32 PCM frames
+// as audio_chunk messages arrive. Generation is still whole-utterance at the
+// model layer; chunks avoid temp-WAV I/O and feed the player immediately after.
+func (s *managedQwenSession) SynthesizeToStream(ctx context.Context, req SynthesisRequest, stream *audio.PCMStream) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("managed worker is closed")
+	}
+	s.request++
+	id := fmt.Sprintf("qwen-%d", s.request)
+	message := managedQwenMessage{
+		Protocol: s.protocol, Type: "synthesize", RequestID: id,
+		Text: req.Text, Mode: string(req.Mode),
+		Voice: req.Voice, Language: req.Language, Instruction: req.Instruction,
+	}
+	data, err := json.Marshal(message)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if _, err := s.stdin.Write(data); err != nil {
+		return fmt.Errorf("write managed worker request: %w", err)
+	}
+
+	rateSet := false
+	for {
+		msg, err := s.readNextResponse(ctx)
+		if err != nil {
+			return err
+		}
+		if msg.Protocol != s.protocol || msg.RequestID != id {
+			return fmt.Errorf("malformed managed worker response: %s", msg.Message)
+		}
+		switch msg.Type {
+		case "audio_chunk":
+			samples, sampleRate, err := decodeManagedPCMChunk(msg)
+			if err != nil {
+				return err
+			}
+			if !rateSet {
+				if sampleRate == 0 {
+					sampleRate = qwen3TTSSampleRate
+				}
+				if sampleRate != qwen3TTSSampleRate {
+					return fmt.Errorf("managed worker returned %d Hz, want %d Hz", sampleRate, qwen3TTSSampleRate)
+				}
+				if err := stream.SetSampleRate(sampleRate); err != nil {
+					return err
+				}
+				rateSet = true
+			}
+			if len(samples) == 0 {
+				continue
+			}
+			if err := stream.Write(samples); err != nil {
+				return err
+			}
+		case "complete":
+			if !rateSet {
+				// Worker may complete without chunks when audio is empty.
+				if err := stream.SetSampleRate(qwen3TTSSampleRate); err != nil {
+					return err
+				}
+			}
+			return nil
+		case "error":
+			return &managedQwenResponseError{kind: msg.ErrorKind, message: msg.Message}
+		default:
+			return fmt.Errorf("unexpected managed worker response type %q", msg.Type)
+		}
+	}
+}
+
+// Synthesize is the legacy whole-file path kept for one-shot CLI / fixtures.
 func (s *managedQwenSession) Synthesize(ctx context.Context, req SynthesisRequest, outputPath string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -146,6 +230,29 @@ func (s *managedQwenSession) Synthesize(ctx context.Context, req SynthesisReques
 		return fmt.Errorf("write managed worker request: %w", err)
 	}
 
+	for {
+		msg, err := s.readNextResponse(ctx)
+		if err != nil {
+			return err
+		}
+		if msg.Protocol != s.protocol || msg.RequestID != id {
+			return fmt.Errorf("malformed managed worker response: %s", msg.Message)
+		}
+		switch msg.Type {
+		case "audio_chunk":
+			// Optional when output_path is set; ignore progressive PCM.
+			continue
+		case "complete":
+			return nil
+		case "error":
+			return &managedQwenResponseError{kind: msg.ErrorKind, message: msg.Message}
+		default:
+			return fmt.Errorf("unexpected managed worker response type %q", msg.Type)
+		}
+	}
+}
+
+func (s *managedQwenSession) readNextResponse(ctx context.Context) (managedQwenMessage, error) {
 	response := make(chan managedQwenMessage, 1)
 	go func() {
 		msg, err := scanManagedQwenMessage(s.scanner)
@@ -156,25 +263,35 @@ func (s *managedQwenSession) Synthesize(ctx context.Context, req SynthesisReques
 	}()
 	select {
 	case msg := <-response:
-		if msg.Protocol != s.protocol || msg.RequestID != id {
-			return fmt.Errorf("malformed managed worker response: %s", msg.Message)
+		if msg.Message != "" && msg.Type == "" {
+			return msg, errors.New(msg.Message)
 		}
-		switch msg.Type {
-		case "complete":
-			return nil
-		case "error":
-			return &managedQwenResponseError{kind: msg.ErrorKind, message: msg.Message}
-		default:
-			return fmt.Errorf("unexpected managed worker response type %q", msg.Type)
-		}
+		return msg, nil
 	case <-ctx.Done():
 		s.closed = true
 		s.kill()
-		return ctx.Err()
+		return managedQwenMessage{}, ctx.Err()
 	case err := <-s.wait:
 		s.closed = true
-		return fmt.Errorf("managed worker exited: %v%s", err, workerOutputSuffix(s.stderr.String(), ""))
+		return managedQwenMessage{}, fmt.Errorf("managed worker exited: %v%s", err, workerOutputSuffix(s.stderr.String(), ""))
 	}
+}
+
+func decodeManagedPCMChunk(msg managedQwenMessage) ([]float32, int, error) {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(msg.PCMf32leB64))
+	if err != nil {
+		return nil, 0, fmt.Errorf("decode pcm chunk: %w", err)
+	}
+	if len(raw)%4 != 0 {
+		return nil, 0, fmt.Errorf("pcm chunk length %d is not a multiple of 4", len(raw))
+	}
+	n := len(raw) / 4
+	samples := make([]float32, n)
+	for i := 0; i < n; i++ {
+		bits := binary.LittleEndian.Uint32(raw[i*4 : i*4+4])
+		samples[i] = math.Float32frombits(bits)
+	}
+	return samples, msg.SampleRate, nil
 }
 
 // scanManagedQwenMessage ignores non-protocol chatter from transitive model

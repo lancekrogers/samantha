@@ -125,6 +125,9 @@ def ready_message(model_path: str, model) -> dict:
 
 
 def serve(args: argparse.Namespace) -> None:
+    import base64
+
+    import numpy as np
     import soundfile as sf
 
     require_model(args.model)
@@ -155,16 +158,43 @@ def serve(args: argparse.Namespace) -> None:
                 "text": request.get("text", ""),
                 "language": canonical_language,
                 "speaker": canonical_speaker,
+                # Official API: false only *simulates* streaming text input; it
+                # does not stream waveform generation. We still pass it so long
+                # utterances use the intended text packing path.
+                "non_streaming_mode": bool(request.get("non_streaming_mode", True)),
             }
             if request.get("instruction"):
                 kwargs["instruct"] = request["instruction"]
+            # generate_custom_voice is blocking and returns the full utterance.
+            # True token/audio streaming is not exposed by qwen-tts 0.1.x for
+            # CustomVoice; Samantha streams PCM after generation to avoid a
+            # temp WAV on disk (and to feed the player ASAP once samples exist).
             wavs, sample_rate = model.generate_custom_voice(**kwargs)
-            sf.write(request["output_path"], wavs[0], sample_rate)
+            pcm = np.asarray(wavs[0], dtype=np.float32).reshape(-1)
+            output_path = request.get("output_path") or ""
+            if output_path:
+                sf.write(output_path, pcm, sample_rate)
+            # Progressive PCM over JSONL (post-generation).
+            chunk = 2048
+            for start in range(0, int(pcm.shape[0]), chunk):
+                piece = pcm[start : start + chunk]
+                print(
+                    json.dumps(
+                        {
+                            "protocol": "samantha-qwen/v1",
+                            "type": "audio_chunk",
+                            "request_id": request_id,
+                            "sample_rate": int(sample_rate),
+                            "pcm_f32le_b64": base64.b64encode(piece.tobytes()).decode("ascii"),
+                        }
+                    ),
+                    flush=True,
+                )
             response = {
                 "protocol": "samantha-qwen/v1",
                 "type": "complete",
                 "request_id": request_id,
-                "sample_rate": sample_rate,
+                "sample_rate": int(sample_rate),
             }
         except Exception as exc:
             response = {
