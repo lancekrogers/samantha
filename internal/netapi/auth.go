@@ -520,9 +520,12 @@ func generateSelfSignedCert(certPath, keyPath string, id CertIdentity) error {
 	if err != nil {
 		return fmt.Errorf("write certificate: %w", err)
 	}
-	defer certOut.Close()
 	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
+		_ = certOut.Close()
 		return fmt.Errorf("encode certificate: %w", err)
+	}
+	if err := certOut.Close(); err != nil {
+		return fmt.Errorf("finalize certificate: %w", err)
 	}
 
 	keyDER, err := x509.MarshalECPrivateKey(key)
@@ -533,9 +536,12 @@ func generateSelfSignedCert(certPath, keyPath string, id CertIdentity) error {
 	if err != nil {
 		return fmt.Errorf("write TLS key: %w", err)
 	}
-	defer keyOut.Close()
 	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}); err != nil {
+		_ = keyOut.Close()
 		return fmt.Errorf("encode TLS key: %w", err)
+	}
+	if err := keyOut.Close(); err != nil {
+		return fmt.Errorf("finalize TLS key: %w", err)
 	}
 
 	return nil
