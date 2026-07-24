@@ -671,7 +671,7 @@ just voice providers
 
 ## License
 
-Samantha is released under the MIT License. See [LICENSE](LICENSE).
+Samantha is released under the Apache License 2.0. Copyright 2026 Obedience Corp. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 ---
 
