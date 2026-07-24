@@ -16,13 +16,14 @@ import (
 // fakeTurnRunner scripts RunTurn results in order; a blockNext entry parks
 // the turn until its context is canceled, like a silent listening session.
 type fakeTurnRunner struct {
-	mu         sync.Mutex
-	voiceQueue []voiceScript
-	voiceCalls int
-	textInputs []string
-	textErr    error
-	blockText  bool // park RunTurnTextMode until ctx cancel (simulates TTS)
-	stopped    int  // StopPlayback call count
+	mu          sync.Mutex
+	voiceQueue  []voiceScript
+	voiceCalls  int
+	textInputs  []string
+	textErr     error
+	blockText   bool          // park RunTurnTextMode until ctx cancel (simulates TTS)
+	textStarted chan struct{} // signaled once per entry into RunTurnTextMode
+	stopped     int           // StopPlayback call count
 }
 
 type voiceScript struct {
@@ -53,7 +54,14 @@ func (f *fakeTurnRunner) RunTurnTextMode(ctx context.Context, input string) erro
 	f.textInputs = append(f.textInputs, input)
 	block := f.blockText
 	err := f.textErr
+	started := f.textStarted
 	f.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
 	if block {
 		<-ctx.Done()
 		return ctx.Err()
@@ -383,7 +391,7 @@ func TestSubmitWhileRespondingBargesIn(t *testing.T) {
 // After the first typed barge-in, the agent reply is a text turn with TTS.
 // Enter during that reply must cancel again — otherwise barge-in only works once.
 func TestSubmitWhileTextTurnBargesInAgain(t *testing.T) {
-	runner := &fakeTurnRunner{blockText: true}
+	runner := &fakeTurnRunner{blockText: true, textStarted: make(chan struct{}, 1)}
 	m, _ := startedConversation(t, runner, true)
 	m.turnState = turnIdle
 
@@ -397,6 +405,14 @@ func TestSubmitWhileTextTurnBargesInAgain(t *testing.T) {
 	}
 	textDone := make(chan tea.Msg, 1)
 	go func() { textDone <- textCmd() }()
+
+	// Wait until the first turn actually records its input; otherwise the second
+	// Enter can cancel the turn before RunTurnTextMode runs, dropping "first barge".
+	select {
+	case <-runner.textStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first text turn never entered RunTurnTextMode")
+	}
 
 	// Second Enter while the agent is still on the text turn.
 	m, cmd := typeAndEnter(m, "second barge")
