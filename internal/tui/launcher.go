@@ -10,6 +10,7 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/discovery"
+	"github.com/lancekrogers/samantha/internal/persona"
 	"github.com/lancekrogers/samantha/internal/session"
 )
 
@@ -26,6 +27,11 @@ const (
 	actionPersonas
 	actionSettings
 	actionQuit
+	// Submenu actions (design WI-c8884d §2.4/§2.6).
+	actionStartPersona    // start a conversation bound to item.personaID
+	actionCreatePersona   // jump to the Personas editor to create one
+	actionMeetingStart    // today's meeting setup → record flow
+	actionMeetingSettings // Settings opened on the Meeting section
 )
 
 type launcherItem struct {
@@ -34,6 +40,7 @@ type launcherItem struct {
 	glyph     string
 	action    launcherAction
 	sessionID string
+	personaID string
 }
 
 type launcherModel struct {
@@ -46,6 +53,14 @@ type launcherModel struct {
 	// banner is a one-shot status line (e.g. meeting close error after return).
 	banner    string
 	bannerErr bool
+
+	// Inline submenu (persona picker / meeting split); nil = main menu.
+	submenu       []launcherItem
+	submenuTitle  string
+	submenuCursor int
+
+	// listPersonas feeds the New-conversation picker (injectable for tests).
+	listPersonas func() ([]*persona.Profile, error)
 }
 
 // withBanner returns a copy carrying a status banner shown above the menu.
@@ -57,8 +72,9 @@ func (m launcherModel) withBanner(text string, isErr bool) launcherModel {
 
 func newLauncher(cfg *config.Config, providers []discovery.ProviderInfo, saved ...[]session.Session) launcherModel {
 	m := launcherModel{
-		cfg:       cfg,
-		providers: providers,
+		cfg:          cfg,
+		providers:    providers,
+		listPersonas: persona.List,
 	}
 	var sessions []session.Session
 	if len(saved) > 0 {
@@ -137,6 +153,9 @@ func (m launcherModel) Update(msg tea.Msg) (launcherModel, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 
 	case tea.KeyMsg:
+		if m.submenu != nil {
+			return m.updateSubmenu(msg)
+		}
 		switch msg.String() {
 		case "up", "k":
 			if m.cursor > 0 {
@@ -152,11 +171,11 @@ func (m launcherModel) Update(msg tea.Msg) (launcherModel, tea.Cmd) {
 			case actionContinue:
 				return m, func() tea.Msg { return startPipelineMsg{sessionID: item.sessionID} }
 			case actionNew:
-				return m, func() tea.Msg { return startPipelineMsg{} }
+				return m.openPersonaPicker()
 			case actionSessions:
 				return m, func() tea.Msg { return switchScreenMsg(screenSessions) }
 			case actionMeeting:
-				return m, func() tea.Msg { return switchScreenMsg(screenMeetingSetup) }
+				return m.openMeetingMenu(), nil
 			case actionRemote:
 				return m, func() tea.Msg { return switchScreenMsg(screenRemote) }
 			case actionLibrary:
@@ -175,6 +194,112 @@ func (m launcherModel) Update(msg tea.Msg) (launcherModel, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// updateSubmenu drives the inline persona picker / meeting split menu.
+func (m launcherModel) updateSubmenu(msg tea.KeyMsg) (launcherModel, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.submenuCursor > 0 {
+			m.submenuCursor--
+		}
+	case "down", "j":
+		if m.submenuCursor < len(m.submenu)-1 {
+			m.submenuCursor++
+		}
+	case "esc", "q":
+		m.closeSubmenu()
+	case "enter":
+		item := m.submenu[m.submenuCursor]
+		m.closeSubmenu()
+		switch item.action {
+		case actionStartPersona:
+			return m, func() tea.Msg { return startPipelineMsg{personaID: item.personaID} }
+		case actionCreatePersona:
+			return m, func() tea.Msg { return switchScreenMsg(screenPersonas) }
+		case actionMeetingStart:
+			return m, func() tea.Msg { return switchScreenMsg(screenMeetingSetup) }
+		case actionMeetingSettings:
+			return m, func() tea.Msg { return openSettingsSectionMsg{section: sectionMeeting} }
+		}
+	}
+	return m, nil
+}
+
+func (m *launcherModel) closeSubmenu() {
+	m.submenu = nil
+	m.submenuTitle = ""
+	m.submenuCursor = 0
+}
+
+// openPersonaPicker builds the New-conversation submenu: every persona (the
+// active one pre-selected as the explicit default), plus a create shortcut.
+// The conversation never starts without a persona choice; a picker failure
+// falls back to the bound default rather than blocking the user.
+func (m launcherModel) openPersonaPicker() (launcherModel, tea.Cmd) {
+	list := m.listPersonas
+	if list == nil {
+		list = persona.List
+	}
+	profiles, err := list()
+	if err != nil || len(profiles) == 0 {
+		return m, func() tea.Msg { return startPipelineMsg{} }
+	}
+	active := ""
+	if m.cfg != nil {
+		active = persona.ActiveID(m.cfg)
+	}
+	m.submenu = nil
+	m.submenuTitle = "New conversation — pick a persona"
+	m.submenuCursor = 0
+	for i, p := range profiles {
+		if p == nil {
+			continue
+		}
+		label := p.DisplayName
+		if label == "" {
+			label = p.ID
+		}
+		hint := strings.TrimSpace(strings.TrimSpace(p.TTS.Provider) + " " + strings.TrimSpace(p.TTS.Voice))
+		glyph := "·"
+		if p.ID == active {
+			glyph = "✓"
+			if hint != "" {
+				hint += " · active"
+			} else {
+				hint = "active"
+			}
+			m.submenuCursor = i
+		}
+		m.submenu = append(m.submenu, launcherItem{
+			label: label, hint: hint, glyph: glyph,
+			action: actionStartPersona, personaID: p.ID,
+		})
+	}
+	m.submenu = append(m.submenu, launcherItem{
+		label: "+ Create persona…", hint: "Name, prompt, model & voice", glyph: "✦",
+		action: actionCreatePersona,
+	})
+	return m, nil
+}
+
+// openMeetingMenu splits Meeting into start vs settings (design §2.6).
+func (m launcherModel) openMeetingMenu() launcherModel {
+	m.submenuTitle = "Meeting"
+	m.submenuCursor = 0
+	m.submenu = []launcherItem{
+		{label: "Start meeting", hint: "Record · notes · ★ bookmarks", glyph: "◉", action: actionMeetingStart},
+		{label: "Meeting settings", hint: "Note routing · destinations", glyph: "⚙", action: actionMeetingSettings},
+	}
+	return m
+}
+
+// visibleItems returns the list and cursor the views should render.
+func (m launcherModel) visibleItems() ([]launcherItem, int) {
+	if m.submenu != nil {
+		return m.submenu, m.submenuCursor
+	}
+	return m.items, m.cursor
 }
 
 func (m launcherModel) View() string {
@@ -258,13 +383,18 @@ func (m launcherModel) fullView(width int) string {
 		Width(menuWidth).
 		PaddingLeft(4)
 
-	for i, item := range m.items {
+	items, cursor := m.visibleItems()
+	if m.submenuTitle != "" && m.submenu != nil {
+		b.WriteString(headerStyle.Render(ansi.Truncate("  "+m.submenuTitle, width, "…")))
+		b.WriteString("\n")
+	}
+	for i, item := range items {
 		g := item.glyph
 		if g == "" {
 			g = "·"
 		}
 		label := fmt.Sprintf("%s  %s", g, item.label)
-		if i == m.cursor {
+		if i == cursor {
 			b.WriteString(sel.Render(ansi.Truncate(label, menuWidth-2, "…")))
 			b.WriteString("\n")
 			if item.hint != "" {
@@ -277,8 +407,12 @@ func (m launcherModel) fullView(width int) string {
 		}
 	}
 
+	help := "  ↑/↓ navigate   enter select   q quit"
+	if m.submenu != nil {
+		help = "  ↑/↓ navigate   enter select   esc back"
+	}
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render(ansi.Truncate("  ↑/↓ navigate   enter select   q quit", width, "…")))
+	b.WriteString(dimStyle.Render(ansi.Truncate(help, width, "…")))
 	b.WriteString("\n")
 	return b.String()
 }
@@ -296,12 +430,13 @@ func (m launcherModel) compactView(width int) string {
 		b.WriteString("\n")
 	}
 
+	items, cursor := m.visibleItems()
 	visible := max(m.height-3, 1)
-	start := min(max(m.cursor-visible/2, 0), max(len(m.items)-visible, 0))
-	end := min(start+visible, len(m.items))
+	start := min(max(cursor-visible/2, 0), max(len(items)-visible, 0))
+	end := min(start+visible, len(items))
 	for i := start; i < end; i++ {
-		item := m.items[i]
-		if i == m.cursor {
+		item := items[i]
+		if i == cursor {
 			line := lipgloss.NewStyle().
 				Bold(true).
 				Foreground(colorBg).
