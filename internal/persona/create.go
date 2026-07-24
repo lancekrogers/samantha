@@ -37,7 +37,14 @@ func Create(cfg *config.Config, displayName string) (*Profile, error) {
 		ID:          id,
 		DisplayName: displayName,
 		Builtin:     false,
-		TTS:         base.TTS,
+		// Clone the current global brain stack at creation time (a snapshot,
+		// not a live link): editing global defaults later must not rewrite
+		// existing personas.
+		Brain: Brain{
+			Provider: strings.TrimSpace(cfg.BrainProvider),
+			Model:    modelForProvider(cfg, cfg.BrainProvider),
+		},
+		TTS: base.TTS,
 		Prompts: PromptRefs{
 			Persona: promptName,
 			Turn:    base.Prompts.Turn,

@@ -126,3 +126,33 @@ func TestResolveBindingUnknownID(t *testing.T) {
 		t.Fatal("ResolveBinding(nil cfg) = nil error, want error")
 	}
 }
+
+func TestResolveBindingCarriesPersonaBrain(t *testing.T) {
+	setConfigDir(t, t.TempDir())
+	p := &Profile{
+		Schema: Schema, ID: "research", DisplayName: "Research",
+		Brain:   Brain{Provider: "ollama", Model: "qwen2.5:14b"},
+		TTS:     TTS{Provider: "kokoro", Voice: "af_heart"},
+		Prompts: PromptRefs{Persona: "research"},
+	}
+	if err := Write(p, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{BrainProvider: "claude", OllamaModel: "llama3"}
+
+	binding, err := ResolveBinding(cfg, "research")
+	if err != nil {
+		t.Fatalf("ResolveBinding() error = %v", err)
+	}
+	if binding.BrainProvider != "ollama" || binding.BrainModel != "qwen2.5:14b" {
+		t.Fatalf("binding brain = %s/%s, want ollama/qwen2.5:14b", binding.BrainProvider, binding.BrainModel)
+	}
+	bcfg := binding.Config()
+	if bcfg.BrainProvider != "ollama" || bcfg.OllamaModel != "qwen2.5:14b" {
+		t.Fatalf("binding config = %s/%s, want persona routing for the runtime build", bcfg.BrainProvider, bcfg.OllamaModel)
+	}
+	// The caller's config keeps the app defaults.
+	if cfg.BrainProvider != "claude" || cfg.OllamaModel != "llama3" {
+		t.Fatalf("caller config mutated: %s/%s", cfg.BrainProvider, cfg.OllamaModel)
+	}
+}

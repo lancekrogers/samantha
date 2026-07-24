@@ -109,7 +109,10 @@ func TestFromConfigCapturesQwenVoice(t *testing.T) {
 	}
 }
 
-func TestUpdateActiveTTSPersistsProviderAndVoice(t *testing.T) {
+func TestUpdateStackPersistsBrainAndTTS(t *testing.T) {
+	// UpdateStack replaces UpdateActiveTTS as the only write path for a
+	// persona's model/voice stack (WI-c8884d §5.2): it targets one profile
+	// by id and never touches live config or global keys.
 	dir := t.TempDir()
 	setConfigDir(t, dir)
 	if err := Write(&Profile{
@@ -119,22 +122,60 @@ func TestUpdateActiveTTSPersistsProviderAndVoice(t *testing.T) {
 	}, false); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{
-		ActivePersona: "samantha", TTSProvider: "kokoro",
-		TTSVoice: "af_heart", QwenTTSVoice: "Vivian",
-	}
-	if err := UpdateActiveTTS(cfg, "qwen3-tts", "Ryan"); err != nil {
+
+	p, err := UpdateStack("samantha",
+		Brain{Provider: "ollama", Model: "qwen2.5:14b"},
+		TTS{Provider: "qwen3-tts", Voice: "Ryan"})
+	if err != nil {
 		t.Fatal(err)
 	}
+	if p.Brain.Provider != "ollama" || p.Brain.Model != "qwen2.5:14b" {
+		t.Fatalf("returned brain = %+v", p.Brain)
+	}
+
 	profile, err := Load("samantha")
 	if err != nil {
 		t.Fatal(err)
 	}
+	if profile.Brain.Provider != "ollama" || profile.Brain.Model != "qwen2.5:14b" {
+		t.Fatalf("persisted brain = %+v, want ollama/qwen2.5:14b", profile.Brain)
+	}
 	if profile.TTS.Provider != "qwen3-tts" || profile.TTS.Voice != "Ryan" {
 		t.Fatalf("persisted TTS = %+v, want qwen3-tts/Ryan", profile.TTS)
 	}
-	if cfg.TTSProvider != "qwen3-tts" || cfg.QwenTTSVoice != "Ryan" {
-		t.Fatalf("live config = provider %q voice %q", cfg.TTSProvider, cfg.QwenTTSVoice)
+
+	// Empty fields clear back to inherit-global.
+	if _, err := UpdateStack("samantha", Brain{}, TTS{}); err != nil {
+		t.Fatal(err)
+	}
+	profile, err = Load("samantha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Brain.Provider != "" || profile.TTS.Provider != "" {
+		t.Fatalf("cleared stack = brain %+v tts %+v, want inherit-global", profile.Brain, profile.TTS)
+	}
+}
+
+func TestApplyRoutesPersonaBrainModel(t *testing.T) {
+	cfg := &config.Config{BrainProvider: "claude", OllamaModel: "llama3"}
+	Apply(cfg, &Profile{
+		Schema: Schema, ID: "research", DisplayName: "Research",
+		Brain:   Brain{Provider: "ollama", Model: "qwen2.5:14b"},
+		Prompts: PromptRefs{Persona: "research"},
+	})
+	if cfg.BrainProvider != "ollama" || cfg.OllamaModel != "qwen2.5:14b" {
+		t.Fatalf("cfg = provider %q model %q, want ollama/qwen2.5:14b", cfg.BrainProvider, cfg.OllamaModel)
+	}
+
+	// Empty brain fields inherit the app defaults untouched.
+	cfg = &config.Config{BrainProvider: "ollama", OllamaModel: "llama3"}
+	Apply(cfg, &Profile{
+		Schema: Schema, ID: "plain", DisplayName: "Plain",
+		Prompts: PromptRefs{Persona: "plain"},
+	})
+	if cfg.BrainProvider != "ollama" || cfg.OllamaModel != "llama3" {
+		t.Fatalf("cfg mutated by empty brain: provider %q model %q", cfg.BrainProvider, cfg.OllamaModel)
 	}
 }
 

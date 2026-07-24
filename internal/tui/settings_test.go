@@ -288,7 +288,9 @@ func TestSettingsSelectTTSProviderPersistsAndRefreshesVoices(t *testing.T) {
 	}
 }
 
-func TestSettingsSelectTTSProviderUpdatesActivePersona(t *testing.T) {
+func TestSettingsSelectTTSProviderWritesGlobalDefaultOnly(t *testing.T) {
+	// WI-c8884d §5.2: Settings writes global defaults even when a persona is
+	// active — persona voice stacks are edited under Personas, never here.
 	cfg := &config.Config{
 		ActivePersona: "reader", TTSProvider: "kokoro", TTSVoice: "af_heart",
 		QwenTTSMode: "customvoice", QwenTTSVoice: "Ryan",
@@ -298,17 +300,16 @@ func TestSettingsSelectTTSProviderUpdatesActivePersona(t *testing.T) {
 	m.buildTTSItems()
 	m.section = sectionTTS
 	m.cursor = 1 // qwen3-tts
-	var gotProvider, gotVoice string
-	m.savePersonaTTS = func(_ *config.Config, provider, voice string) error {
-		gotProvider, gotVoice = provider, voice
+	saved := map[string]any{}
+	m.saveConfig = func(key string, value any) error {
+		saved[key] = value
 		return nil
 	}
-	m.saveConfig = func(string, any) error { return nil }
 
 	m.selectCurrent()
 
-	if gotProvider != "qwen3-tts" || gotVoice != "Ryan" {
-		t.Fatalf("active persona TTS = %q/%q, want qwen3-tts/Ryan", gotProvider, gotVoice)
+	if saved["tts_provider"] != "qwen3-tts" {
+		t.Fatalf("saved keys = %v, want global tts_provider write", saved)
 	}
 	if cfg.TTSProvider != "qwen3-tts" {
 		t.Fatalf("live config provider = %q, want qwen3-tts", cfg.TTSProvider)

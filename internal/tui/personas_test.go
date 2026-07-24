@@ -268,3 +268,59 @@ func TestPersonasCreateNameOnlyUsesDefaultPrompt(t *testing.T) {
 		t.Fatalf("expected default prompt, got %q", gotOpts.SystemPrompt)
 	}
 }
+
+func TestPersonasFormStackRoundTrip(t *testing.T) {
+	// The stack step prefills from the profile's brain/TTS and saves through
+	// UpdateStack — the only write path for a persona's model/voice
+	// (Settings writes global defaults only, WI-c8884d §5.2).
+	cfg := &config.Config{ActivePersona: "research"}
+	m := newPersonas(cfg)
+	m.listPersonas = func() ([]*persona.Profile, error) {
+		return []*persona.Profile{{
+			ID: "research", DisplayName: "Research",
+			Brain:   persona.Brain{Provider: "ollama", Model: "llama3"},
+			TTS:     persona.TTS{Provider: "kokoro", Voice: "af_heart"},
+			Prompts: persona.PromptRefs{Persona: "research"},
+		}}, nil
+	}
+	m.loadPrompt = func(string) (string, error) { return "You are Research.", nil }
+	m.reload()
+	m.width, m.height = 80, 30
+	m.cursor = 0
+	m.beginEdit()
+
+	if got := stackBrainProviders()[m.brainProviderIdx]; got != "ollama" {
+		t.Fatalf("prefilled brain provider = %q, want ollama", got)
+	}
+	if m.brainModelInput.Value() != "llama3" || m.voiceInput.Value() != "af_heart" {
+		t.Fatalf("prefill = model %q voice %q", m.brainModelInput.Value(), m.voiceInput.Value())
+	}
+
+	var gotBrain persona.Brain
+	var gotTTS persona.TTS
+	m.saveName = func(id, display string) (*persona.Profile, error) {
+		return &persona.Profile{ID: id, DisplayName: display}, nil
+	}
+	m.savePrompt = func(id, p string) (*persona.Profile, error) {
+		return &persona.Profile{ID: id}, nil
+	}
+	m.saveStack = func(id string, b persona.Brain, tt persona.TTS) (*persona.Profile, error) {
+		gotBrain, gotTTS = b, tt
+		return &persona.Profile{ID: id, Brain: b, TTS: tt}, nil
+	}
+	m.usePersona = func(*config.Config, string) error { return nil }
+
+	m.brainModelInput.SetValue("qwen2.5:14b")
+	m.voiceInput.SetValue("Ryan")
+	m, _ = m.submitForm()
+
+	if gotBrain.Provider != "ollama" || gotBrain.Model != "qwen2.5:14b" {
+		t.Fatalf("saved brain = %+v", gotBrain)
+	}
+	if gotTTS.Provider != "kokoro" || gotTTS.Voice != "Ryan" {
+		t.Fatalf("saved tts = %+v", gotTTS)
+	}
+	if m.formMode != "" {
+		t.Fatal("form should close after save")
+	}
+}
