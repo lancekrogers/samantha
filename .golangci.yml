@@ -1,24 +1,30 @@
 # golangci-lint configuration (v2 schema).
 #
-# Staged rollout. This enables the bug-catching linters whose findings are
-# already at zero, so `just lint` and the CI lint job are a clean, enforcing
-# gate rather than an advisory wall of noise:
-#
+# Enabled (enforcing gate — findings at zero):
 #   govet       — suspicious constructs the compiler allows
 #   ineffassign — assignments whose value is never read (dead writes / bugs)
 #   unused      — dead functions, types, and vars
+#   errcheck    — unchecked errors. The exclusion below allow-lists best-effort
+#                 cleanup (read-side / deferred Close, malgo Uninit, buffer
+#                 Flush, temp Remove, Fprint to test servers or stdio) whose
+#                 error is not actionable. Meaningful close errors ARE checked
+#                 at the call site (see netapi/auth.go cert/key write). This
+#                 keeps errcheck a forward gate: a future swallowed Unmarshal,
+#                 Write, WalkDir, etc. still fails the build.
 #
-# Deliberately deferred to a dedicated cleanup PR (each is a real change, not a
-# config flip):
-#   errcheck    — ~50 unchecked errors; per the project standard these need real
-#                 handling/wrapping, not a blanket `_ =`.
-#   staticcheck — SA style + QF quickfix + a couple of ambiguous demo/debug
-#                 findings; worth its own focused review.
+# Deferred to a dedicated cleanup PR: staticcheck (SA/QF style + ambiguous
+# demo/debug findings).
 version: "2"
 
 linters:
   default: none
   enable:
+    - errcheck
     - govet
     - ineffassign
     - unused
+  exclusions:
+    rules:
+      - linters:
+          - errcheck
+        source: '(\.Close\(|\.Uninit\(\)|\.Flush\(\)|os\.Remove(All)?\(|fmt\.Fprint)'
