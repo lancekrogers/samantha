@@ -80,7 +80,7 @@ func newPersonaStackInput(prompt, placeholder string) textinput.Model {
 	return ti
 }
 
-func newPersonaPromptArea() textarea.Model {
+func newPersonaPromptArea() vimTextarea {
 	ta := textarea.New()
 	ta.Placeholder = "System prompt / personality for this voice agent…"
 	ta.CharLimit = 8000
@@ -89,7 +89,7 @@ func newPersonaPromptArea() textarea.Model {
 	ta.ShowLineNumbers = false
 	// Match conversation: insert newline with ctrl+j / ctrl+enter variants only if
 	// we route those to the textarea. We intercept save keys before Update.
-	return ta
+	return newVimTextarea(ta)
 }
 
 func (m *personasModel) resizeForm() {
@@ -122,6 +122,11 @@ func (m personasModel) updateForm(msg tea.KeyMsg) (personasModel, tea.Cmd) {
 	key := msg.String()
 	switch {
 	case key == "esc":
+		// The prompt step owns esc: insert→normal first; only a normal-mode
+		// esc (surfacing as vimTAEventCancel below) leaves the form.
+		if m.formStep == personaFormPrompt {
+			break
+		}
 		m.cancelForm()
 		m.message = "Edit cancelled"
 		return m, nil
@@ -165,8 +170,16 @@ func (m personasModel) updateForm(msg tea.KeyMsg) (personasModel, tea.Cmd) {
 	var cmd tea.Cmd
 	if m.formStep == personaFormName {
 		m.nameInput, cmd = m.nameInput.Update(msg)
-	} else {
-		m.promptTA, cmd = m.promptTA.Update(msg)
+		return m, cmd
+	}
+	var ev vimTAEvent
+	m.promptTA, cmd, ev = m.promptTA.Update(msg)
+	switch ev {
+	case vimTAEventSave:
+		return m.submitForm()
+	case vimTAEventCancel:
+		m.cancelForm()
+		m.message = "Edit cancelled"
 	}
 	return m, cmd
 }
@@ -298,8 +311,9 @@ func (m personasModel) focusPromptStep() (personasModel, tea.Cmd) {
 			m.promptTA.SetValue(text)
 		}
 	}
+	m.promptTA.StartInsert()
 	m.promptTA.Focus()
-	m.message = "Edit the system prompt · ctrl+j / alt+s / f2 to save (ctrl+s if your terminal allows)"
+	m.message = "Edit the system prompt · vim: esc normal, :w save, :q cancel · ctrl+j / alt+s / f2 also save"
 	return m, textarea.Blink
 }
 
