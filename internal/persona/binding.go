@@ -22,7 +22,11 @@ type SessionBinding struct {
 	AgentName string
 	// PromptRef is the system prompt doc name the brain resolves at build.
 	PromptRef string
-	TTS       TTS
+	// BrainProvider / BrainModel are the effective routing after applying the
+	// profile over the config (empty profile fields inherit the app default).
+	BrainProvider string
+	BrainModel    string
+	TTS           TTS
 
 	cfg config.Config
 }
@@ -50,12 +54,14 @@ func ResolveBinding(cfg *config.Config, id string) (*SessionBinding, error) {
 	snap := *cfg
 	Apply(&snap, p)
 	return &SessionBinding{
-		PersonaID:   p.ID,
-		DisplayName: p.DisplayName,
-		AgentName:   snap.AgentName,
-		PromptRef:   snap.Persona,
-		TTS:         p.TTS,
-		cfg:         snap,
+		PersonaID:     p.ID,
+		DisplayName:   p.DisplayName,
+		AgentName:     snap.AgentName,
+		PromptRef:     snap.Persona,
+		BrainProvider: snap.BrainProvider,
+		BrainModel:    modelForProvider(&snap, snap.BrainProvider),
+		TTS:           p.TTS,
+		cfg:           snap,
 	}, nil
 }
 

@@ -16,6 +16,10 @@ import (
 type CreateOpts struct {
 	DisplayName  string
 	SystemPrompt string // when set, writes prompts/persona/<id>.yaml and points the profile at it
+	// Brain / TTS override the globals-clone Create seeds. Empty fields keep
+	// the clone, so "(default)" selections still snapshot today's defaults.
+	Brain Brain
+	TTS   TTS
 }
 
 // CreateWithOpts is Create with an optional custom system prompt.
@@ -23,6 +27,21 @@ func CreateWithOpts(cfg *config.Config, opts CreateOpts) (*Profile, error) {
 	p, err := Create(cfg, opts.DisplayName)
 	if err != nil {
 		return nil, err
+	}
+	if stackOverridden(opts) {
+		if provider := strings.TrimSpace(opts.Brain.Provider); provider != "" {
+			p.Brain = Brain{Provider: provider, Model: strings.TrimSpace(opts.Brain.Model)}
+		} else if model := strings.TrimSpace(opts.Brain.Model); model != "" {
+			p.Brain.Model = model // model for the cloned provider
+		}
+		if provider := strings.TrimSpace(opts.TTS.Provider); provider != "" {
+			p.TTS = TTS{Provider: provider, Voice: strings.TrimSpace(opts.TTS.Voice)}
+		} else if voice := strings.TrimSpace(opts.TTS.Voice); voice != "" {
+			p.TTS.Voice = voice
+		}
+		if err := Write(p, false); err != nil {
+			return p, err
+		}
 	}
 	if text := strings.TrimSpace(opts.SystemPrompt); text != "" {
 		if err := WriteSystemPrompt(p.ID, text); err != nil {
@@ -38,6 +57,12 @@ func CreateWithOpts(cfg *config.Config, opts CreateOpts) (*Profile, error) {
 		}
 	}
 	return p, nil
+}
+
+// stackOverridden reports whether opts carries any explicit brain/TTS choice.
+func stackOverridden(opts CreateOpts) bool {
+	return strings.TrimSpace(opts.Brain.Provider) != "" || strings.TrimSpace(opts.Brain.Model) != "" ||
+		strings.TrimSpace(opts.TTS.Provider) != "" || strings.TrimSpace(opts.TTS.Voice) != ""
 }
 
 // CreateAndUseWithOpts creates a persona (with optional system prompt) and activates it.

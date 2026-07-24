@@ -29,32 +29,44 @@ type personasModel struct {
 
 	// formMode: "" | "create" | "edit"
 	formMode  string
-	formStep  int // name | prompt
+	formStep  int // name | prompt | stack
 	editID    string
 	nameInput textinput.Model
 	promptTA  textarea.Model
+
+	// Stack step: per-persona brain provider/model + TTS provider/voice.
+	// Index 0 of the provider lists is "(default)" = inherit the app config.
+	stackRow         int
+	brainProviderIdx int
+	ttsProviderIdx   int
+	brainModelInput  textinput.Model
+	voiceInput       textinput.Model
 
 	listPersonas  func() ([]*persona.Profile, error)
 	usePersona    func(*config.Config, string) error
 	createPersona func(*config.Config, persona.CreateOpts) (*persona.Profile, error)
 	savePrompt    func(id, systemPrompt string) (*persona.Profile, error)
 	saveName      func(id, displayName string) (*persona.Profile, error)
+	saveStack     func(id string, b persona.Brain, t persona.TTS) (*persona.Profile, error)
 	loadPrompt    func(name string) (string, error)
 	defaultPrompt func() (string, error)
 }
 
 func newPersonas(cfg *config.Config) personasModel {
 	m := personasModel{
-		cfg:           cfg,
-		listPersonas:  persona.List,
-		usePersona:    persona.Use,
-		createPersona: persona.CreateAndUseWithOpts,
-		savePrompt:    persona.UpdateSystemPrompt,
-		saveName:      persona.UpdateDisplayName,
-		loadPrompt:    persona.LoadSystemPrompt,
-		defaultPrompt: persona.DefaultSystemPrompt,
-		nameInput:     newPersonaCreateInput(),
-		promptTA:      newPersonaPromptArea(),
+		cfg:             cfg,
+		listPersonas:    persona.List,
+		usePersona:      persona.Use,
+		createPersona:   persona.CreateAndUseWithOpts,
+		savePrompt:      persona.UpdateSystemPrompt,
+		saveName:        persona.UpdateDisplayName,
+		saveStack:       persona.UpdateStack,
+		loadPrompt:      persona.LoadSystemPrompt,
+		defaultPrompt:   persona.DefaultSystemPrompt,
+		nameInput:       newPersonaCreateInput(),
+		promptTA:        newPersonaPromptArea(),
+		brainModelInput: newPersonaStackInput("Model: ", "empty = provider default"),
+		voiceInput:      newPersonaStackInput("Voice: ", "empty = provider default"),
 	}
 	m.reload()
 	return m

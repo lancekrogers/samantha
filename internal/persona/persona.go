@@ -34,9 +34,23 @@ type Profile struct {
 	ID          string     `yaml:"id"`
 	DisplayName string     `yaml:"display_name"`
 	Builtin     bool       `yaml:"builtin,omitempty"`
+	Brain       Brain      `yaml:"brain,omitempty"`
 	TTS         TTS        `yaml:"tts"`
 	Prompts     PromptRefs `yaml:"prompts"`
 	Path        string     `yaml:"-"` // absolute path of persona.yaml when loaded
+}
+
+// Brain holds per-persona model routing.
+//
+//	brain:
+//	  provider: ollama          # or claude, grok; empty = app default
+//	  model: qwen2.5:14b        # provider-specific model id; empty = app default
+//
+// Profiles written before this field existed have the zero value and keep
+// using the app-level brain keys until edited.
+type Brain struct {
+	Provider string `yaml:"provider,omitempty"`
+	Model    string `yaml:"model,omitempty"`
 }
 
 // TTS holds per-persona speech settings. Each persona may choose any supported
@@ -245,7 +259,47 @@ func Apply(cfg *config.Config, p *Profile) {
 	if id := strings.TrimSpace(p.ID); id != "" {
 		cfg.ActivePersona = id
 	}
+	applyBrain(cfg, p.Brain)
 	applyTTS(cfg, p.TTS)
+}
+
+// applyBrain overlays per-persona model routing. Empty fields inherit the
+// app-level keys, so pre-Brain profiles behave exactly as before.
+func applyBrain(cfg *config.Config, b Brain) {
+	provider := strings.TrimSpace(b.Provider)
+	if provider != "" {
+		cfg.BrainProvider = provider
+		// Provider flips change what capabilities make sense (tools, skills);
+		// re-run the ollama auto-enable rules against the new provider.
+		config.ApplyOllamaDefaults(cfg)
+	}
+	model := strings.TrimSpace(b.Model)
+	if model == "" {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.BrainProvider)) {
+	case "ollama":
+		cfg.OllamaModel = model
+	case "grok":
+		cfg.GrokModel = model
+		// claude has no app-level model key today; a persona model for it is
+		// recorded on the profile but not routed.
+	}
+}
+
+// modelForProvider reads the app-level model key for a brain provider.
+func modelForProvider(cfg *config.Config, provider string) string {
+	if cfg == nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "ollama":
+		return strings.TrimSpace(cfg.OllamaModel)
+	case "grok":
+		return strings.TrimSpace(cfg.GrokModel)
+	default:
+		return ""
+	}
 }
 
 // applyTTS writes provider/voice from the profile onto cfg.

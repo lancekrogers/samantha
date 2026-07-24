@@ -89,11 +89,14 @@ func (m personasModel) formLines() []string {
 	if slug == "" {
 		slug = "persona"
 	}
-	nameMark, promptMark := " ", " "
-	if m.formStep == personaFormName {
+	nameMark, promptMark, stackMark := " ", " ", " "
+	switch m.formStep {
+	case personaFormName:
 		nameMark = "▸"
-	} else {
+	case personaFormPrompt:
 		promptMark = "▸"
+	default:
+		stackMark = "▸"
 	}
 	lines := []string{
 		title,
@@ -113,9 +116,32 @@ func (m personasModel) formLines() []string {
 	lines = append(lines, strings.Split(m.promptTA.View(), "\n")...)
 	lines = append(lines,
 		"",
+		fmt.Sprintf("%s Model & voice  ((default) inherits Settings)", stackMark),
+	)
+	lines = append(lines, m.stackLines()...)
+	lines = append(lines,
+		"",
 		dimStyle.Render("  save: ctrl+j · alt+s · f2  (ctrl+s if terminal allows)  ·  tab fields  ·  esc cancel"),
 	)
 	return lines
+}
+
+// stackLines renders the model/voice rows of the form's stack step.
+func (m personasModel) stackLines() []string {
+	mark := func(row int) string {
+		if m.formStep == personaFormStack && m.stackRow == row {
+			return "▸"
+		}
+		return " "
+	}
+	brainProvider := stackBrainProviders()[m.brainProviderIdx]
+	ttsProvider := stackTTSProviders()[m.ttsProviderIdx]
+	return []string{
+		fmt.Sprintf("  %s Brain: ‹ %s ›", mark(stackRowBrainProvider), brainProvider),
+		fmt.Sprintf("  %s%s", mark(stackRowBrainModel), m.brainModelInput.View()),
+		fmt.Sprintf("  %s TTS:   ‹ %s ›", mark(stackRowTTSProvider), ttsProvider),
+		fmt.Sprintf("  %s%s", mark(stackRowVoice), m.voiceInput.View()),
+	}
 }
 
 func (m personasModel) row(i int, label string) string {

@@ -12,7 +12,6 @@ import (
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/discovery"
 	"github.com/lancekrogers/samantha/internal/meeting"
-	"github.com/lancekrogers/samantha/internal/persona"
 	managedqwen "github.com/lancekrogers/samantha/internal/qwen"
 	"github.com/lancekrogers/samantha/internal/tts"
 )
@@ -69,7 +68,6 @@ type settingsModel struct {
 	ensureTTSAssets  func(context.Context, *config.Config) error
 	newTTSProvider   func(*config.Config) (tts.Provider, func(), error)
 	saveConfig       func(string, any) error
-	savePersonaTTS   func(*config.Config, string, string) error
 	message          string
 
 	qwenStatus        managedqwen.Status
@@ -92,7 +90,6 @@ func newSettings(cfg *config.Config, providers []discovery.ProviderInfo) setting
 		},
 		newTTSProvider: tts.NewProvider,
 		saveConfig:     config.SetAndSave,
-		savePersonaTTS: persona.UpdateActiveTTS,
 		ensureQwen:     managedqwen.Ensure,
 	}
 	m.qwenStatus = managedqwen.Inspect(config.ModelsDirFrom(cfg))
@@ -532,20 +529,10 @@ func (m *settingsModel) selectCurrent() tea.Cmd {
 					return nil
 				}
 			}
-			voice := m.cfg.TTSVoice
-			if provider == managedqwen.ProviderName {
-				voice = m.cfg.QwenTTSVoice
-			}
-			if strings.TrimSpace(m.cfg.ActivePersona) != "" {
-				savePersonaTTS := m.savePersonaTTS
-				if savePersonaTTS == nil {
-					savePersonaTTS = persona.UpdateActiveTTS
-				}
-				if err := savePersonaTTS(m.cfg, provider, voice); err != nil {
-					m.message = fmt.Sprintf("Failed to save persona TTS provider: %v", err)
-					return nil
-				}
-			} else if err := saveConfig("tts_provider", provider); err != nil {
+			// Settings writes global defaults only (WI-c8884d §5.2): a
+			// persona with its own tts stack keeps it — edit the persona
+			// under Personas to change a specific agent's voice.
+			if err := saveConfig("tts_provider", provider); err != nil {
 				m.message = fmt.Sprintf("Failed to save TTS provider: %v", err)
 				return nil
 			}
@@ -553,7 +540,7 @@ func (m *settingsModel) selectCurrent() tea.Cmd {
 			m.buildTTSItems()
 			m.buildVoiceItems()
 			m.buildLanguageItems()
-			m.message = fmt.Sprintf("TTS provider set to %s; applies immediately when you return to conversation", provider)
+			m.message = fmt.Sprintf("Default TTS provider set to %s; applies immediately unless the persona has its own voice (edit under Personas)", provider)
 		}
 	case sectionVoice:
 		if m.cursor < len(m.voiceItems) {
@@ -566,16 +553,8 @@ func (m *settingsModel) selectCurrent() tea.Cmd {
 			if saveConfig == nil {
 				saveConfig = config.SetAndSave
 			}
-			if strings.TrimSpace(m.cfg.ActivePersona) != "" {
-				savePersonaTTS := m.savePersonaTTS
-				if savePersonaTTS == nil {
-					savePersonaTTS = persona.UpdateActiveTTS
-				}
-				if err := savePersonaTTS(m.cfg, activeTTSProvider(m.cfg), voice.Name); err != nil {
-					m.message = fmt.Sprintf("Failed to save persona voice: %v", err)
-					return nil
-				}
-			} else if err := saveConfig(key, voice.Name); err != nil {
+			// Global default only — persona voices are edited under Personas.
+			if err := saveConfig(key, voice.Name); err != nil {
 				m.message = fmt.Sprintf("Failed to save voice: %v", err)
 				return nil
 			}
@@ -584,7 +563,7 @@ func (m *settingsModel) selectCurrent() tea.Cmd {
 			} else {
 				m.cfg.TTSVoice = voice.Name
 			}
-			m.message = fmt.Sprintf("Voice set to %s", voice.Name)
+			m.message = fmt.Sprintf("Default voice set to %s · personas with their own voice keep it", voice.Name)
 		}
 	case sectionLanguage:
 		if m.cursor < len(m.languageItems) {

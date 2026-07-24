@@ -8,13 +8,77 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/persona"
+	"github.com/lancekrogers/samantha/internal/tts"
 )
 
 const (
 	personaFormName   = 0
 	personaFormPrompt = 1
+	personaFormStack  = 2
 )
+
+// Stack step rows.
+const (
+	stackRowBrainProvider = 0
+	stackRowBrainModel    = 1
+	stackRowTTSProvider   = 2
+	stackRowVoice         = 3
+	stackRowCount         = 4
+)
+
+// stackDefaultLabel is provider index 0: inherit the app-level default.
+const stackDefaultLabel = "(default)"
+
+// stackBrainProviders lists selectable brain providers for the form.
+func stackBrainProviders() []string {
+	out := []string{stackDefaultLabel}
+	for _, spec := range brain.Providers() {
+		out = append(out, spec.Name)
+	}
+	return out
+}
+
+// stackTTSProviders lists selectable TTS providers for the form.
+func stackTTSProviders() []string {
+	out := []string{stackDefaultLabel}
+	for _, spec := range tts.Providers() {
+		out = append(out, spec.Name)
+	}
+	return out
+}
+
+// providerIndex maps a stored provider name onto its list index (0 = default).
+func providerIndex(list []string, name string) int {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return 0
+	}
+	for i, item := range list {
+		if strings.EqualFold(item, name) {
+			return i
+		}
+	}
+	return 0
+}
+
+// providerAt returns the provider name for a list index; "" for the default.
+func providerAt(list []string, idx int) string {
+	if idx <= 0 || idx >= len(list) {
+		return ""
+	}
+	return list[idx]
+}
+
+func newPersonaStackInput(prompt, placeholder string) textinput.Model {
+	ti := textinput.New()
+	ti.Prompt = "  " + prompt
+	ti.Placeholder = placeholder
+	ti.CharLimit = 64
+	ti.Width = 40
+	return ti
+}
 
 func newPersonaPromptArea() textarea.Model {
 	ta := textarea.New()
@@ -64,22 +128,38 @@ func (m personasModel) updateForm(msg tea.KeyMsg) (personasModel, tea.Cmd) {
 	case isPersonaFormSaveKey(key):
 		return m.submitForm()
 	case key == "tab":
-		if m.formStep == personaFormName {
+		switch m.formStep {
+		case personaFormName:
 			return m.focusPromptStep()
-		}
-		return m.focusNameStep()
-	case key == "shift+tab":
-		if m.formStep == personaFormPrompt {
+		case personaFormPrompt:
+			return m.focusStackStep()
+		default:
 			return m.focusNameStep()
 		}
-		return m.focusPromptStep()
+	case key == "shift+tab":
+		switch m.formStep {
+		case personaFormPrompt:
+			return m.focusNameStep()
+		case personaFormStack:
+			return m.focusPromptStep()
+		default:
+			return m.focusStackStep()
+		}
 	case key == "enter":
 		if m.formStep == personaFormName {
 			// Name done → prompt. Save is intentionally not Enter (multi-line
 			// prompt needs Enter for newlines).
 			return m.focusPromptStep()
 		}
-		// Enter inserts newline in the prompt textarea (fall through).
+		// Enter inserts newline in the prompt textarea (fall through);
+		// on the stack step it advances rows.
+		if m.formStep == personaFormStack {
+			m.setStackRow((m.stackRow + 1) % stackRowCount)
+			return m, nil
+		}
+	}
+	if m.formStep == personaFormStack {
+		return m.updateStackStep(msg)
 	}
 
 	var cmd tea.Cmd
@@ -91,6 +171,99 @@ func (m personasModel) updateForm(msg tea.KeyMsg) (personasModel, tea.Cmd) {
 	return m, cmd
 }
 
+// updateStackStep routes keys inside the model/voice step: ↑/↓ move rows,
+// ←/→ cycle providers on the provider rows, everything else types into the
+// focused text row.
+func (m personasModel) updateStackStep(msg tea.KeyMsg) (personasModel, tea.Cmd) {
+	key := msg.String()
+	switch key {
+	case "up":
+		m.setStackRow((m.stackRow + stackRowCount - 1) % stackRowCount)
+		return m, nil
+	case "down":
+		m.setStackRow((m.stackRow + 1) % stackRowCount)
+		return m, nil
+	case "left", "right":
+		delta := 1
+		if key == "left" {
+			delta = -1
+		}
+		switch m.stackRow {
+		case stackRowBrainProvider:
+			list := stackBrainProviders()
+			m.brainProviderIdx = (m.brainProviderIdx + delta + len(list)) % len(list)
+		case stackRowTTSProvider:
+			list := stackTTSProviders()
+			m.ttsProviderIdx = (m.ttsProviderIdx + delta + len(list)) % len(list)
+		}
+		if m.stackRow == stackRowBrainProvider || m.stackRow == stackRowTTSProvider {
+			return m, nil
+		}
+	}
+
+	var cmd tea.Cmd
+	switch m.stackRow {
+	case stackRowBrainModel:
+		m.brainModelInput, cmd = m.brainModelInput.Update(msg)
+	case stackRowVoice:
+		m.voiceInput, cmd = m.voiceInput.Update(msg)
+	}
+	return m, cmd
+}
+
+// setStackRow moves focus between stack rows, blurring/focusing text inputs.
+func (m *personasModel) setStackRow(row int) {
+	m.stackRow = row
+	m.brainModelInput.Blur()
+	m.voiceInput.Blur()
+	switch row {
+	case stackRowBrainModel:
+		m.brainModelInput.Focus()
+	case stackRowVoice:
+		m.voiceInput.Focus()
+	}
+}
+
+func (m personasModel) focusStackStep() (personasModel, tea.Cmd) {
+	m.formStep = personaFormStack
+	m.nameInput.Blur()
+	m.promptTA.Blur()
+	m.setStackRow(stackRowBrainProvider)
+	m.message = "Model & voice · ←/→ pick provider · ↑/↓ rows · (default) inherits Settings"
+	return m, nil
+}
+
+// formBrain returns the stack step's brain selection ("" fields = inherit).
+func (m *personasModel) formBrain() persona.Brain {
+	return persona.Brain{
+		Provider: providerAt(stackBrainProviders(), m.brainProviderIdx),
+		Model:    strings.TrimSpace(m.brainModelInput.Value()),
+	}
+}
+
+// formTTS returns the stack step's TTS selection ("" fields = inherit).
+func (m *personasModel) formTTS() persona.TTS {
+	return persona.TTS{
+		Provider: providerAt(stackTTSProviders(), m.ttsProviderIdx),
+		Voice:    strings.TrimSpace(m.voiceInput.Value()),
+	}
+}
+
+// prefillStack seeds the stack step from a profile (nil = defaults).
+func (m *personasModel) prefillStack(p *persona.Profile) {
+	if p == nil {
+		m.brainProviderIdx = 0
+		m.ttsProviderIdx = 0
+		m.brainModelInput.SetValue("")
+		m.voiceInput.SetValue("")
+		return
+	}
+	m.brainProviderIdx = providerIndex(stackBrainProviders(), p.Brain.Provider)
+	m.ttsProviderIdx = providerIndex(stackTTSProviders(), p.TTS.Provider)
+	m.brainModelInput.SetValue(strings.TrimSpace(p.Brain.Model))
+	m.voiceInput.SetValue(strings.TrimSpace(p.TTS.Voice))
+}
+
 func (m *personasModel) cancelForm() {
 	m.formMode = ""
 	m.formStep = personaFormName
@@ -99,6 +272,10 @@ func (m *personasModel) cancelForm() {
 	m.nameInput.SetValue("")
 	m.promptTA.Blur()
 	m.promptTA.SetValue("")
+	m.prefillStack(nil)
+	m.brainModelInput.Blur()
+	m.voiceInput.Blur()
+	m.stackRow = stackRowBrainProvider
 }
 
 func (m personasModel) focusNameStep() (personasModel, tea.Cmd) {
@@ -147,6 +324,7 @@ func (m *personasModel) beginCreate() tea.Cmd {
 	m.nameInput.Focus()
 	m.promptTA.SetValue(m.resolveDefaultPrompt())
 	m.promptTA.Blur()
+	m.prefillStack(nil) // "(default)" = clone current globals at create time
 	return textinput.Blink
 }
 
@@ -180,6 +358,7 @@ func (m *personasModel) beginEdit() tea.Cmd {
 	}
 	m.promptTA.SetValue(text)
 	m.promptTA.Blur()
+	m.prefillStack(p)
 	return textinput.Blink
 }
 
@@ -209,7 +388,12 @@ func (m personasModel) submitForm() (personasModel, tea.Cmd) {
 		if create == nil {
 			create = persona.CreateAndUseWithOpts
 		}
-		p, err := create(m.cfg, persona.CreateOpts{DisplayName: name, SystemPrompt: prompt})
+		p, err := create(m.cfg, persona.CreateOpts{
+			DisplayName:  name,
+			SystemPrompt: prompt,
+			Brain:        m.formBrain(),
+			TTS:          m.formTTS(),
+		})
 		if err != nil {
 			m.message = fmt.Sprintf("Failed to create: %v", err)
 			return m, nil
@@ -234,6 +418,12 @@ func (m personasModel) submitForm() (personasModel, tea.Cmd) {
 		if m.savePrompt != nil {
 			if _, err := m.savePrompt(m.editID, prompt); err != nil {
 				m.message = fmt.Sprintf("Failed to save prompt: %v", err)
+				return m, nil
+			}
+		}
+		if m.saveStack != nil {
+			if _, err := m.saveStack(m.editID, m.formBrain(), m.formTTS()); err != nil {
+				m.message = fmt.Sprintf("Failed to save model/voice: %v", err)
 				return m, nil
 			}
 		}

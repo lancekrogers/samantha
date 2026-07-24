@@ -148,29 +148,28 @@ func Use(cfg *config.Config, id string) error {
 	return nil
 }
 
-// UpdateActiveTTS persists a Settings provider/voice choice into the active
-// persona as well as the compatibility config keys. Without this, the next
-// config.Load would re-apply the old persona voice and undo a live TUI change.
-func UpdateActiveTTS(cfg *config.Config, provider, voice string) error {
-	if cfg == nil {
-		return fmt.Errorf("persona: config is nil")
+// UpdateStack persists brain + TTS choices onto one persona profile. This is
+// the only write path for a persona's model/voice stack: Settings writes
+// global defaults only (design WI-c8884d §5.2), and the Personas editor
+// writes here. Empty fields clear back to inherit-global.
+func UpdateStack(id string, brain Brain, tts TTS) (*Profile, error) {
+	if err := ValidateID(id); err != nil {
+		return nil, err
 	}
-	p, err := Load(ActiveID(cfg))
+	p, err := Load(id)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if provider = strings.TrimSpace(provider); provider != "" {
-		p.TTS.Provider = provider
+	p.Brain = Brain{
+		Provider: strings.TrimSpace(brain.Provider),
+		Model:    strings.TrimSpace(brain.Model),
 	}
-	if voice = strings.TrimSpace(voice); voice != "" {
-		p.TTS.Voice = voice
+	p.TTS = TTS{
+		Provider: strings.TrimSpace(tts.Provider),
+		Voice:    strings.TrimSpace(tts.Voice),
 	}
 	if err := Write(p, false); err != nil {
-		return fmt.Errorf("saving active persona TTS: %w", err)
+		return nil, fmt.Errorf("saving persona stack: %w", err)
 	}
-	if err := PersistTTS(p); err != nil {
-		return fmt.Errorf("saving active persona TTS config: %w", err)
-	}
-	applyTTS(cfg, p.TTS)
-	return nil
+	return p, nil
 }

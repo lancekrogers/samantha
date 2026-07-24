@@ -78,3 +78,40 @@ func TestCreateRequiresName(t *testing.T) {
 		t.Fatal("expected error for empty name")
 	}
 }
+
+func TestCreateClonesGlobalBrainStack(t *testing.T) {
+	setConfigDir(t, t.TempDir())
+	cfg := &config.Config{BrainProvider: "ollama", OllamaModel: "llama3", TTSProvider: "kokoro", TTSVoice: "af_heart"}
+
+	p, err := Create(cfg, "Clone Kid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Brain.Provider != "ollama" || p.Brain.Model != "llama3" {
+		t.Fatalf("created brain = %+v, want globals cloned at create time", p.Brain)
+	}
+}
+
+func TestCreateWithOptsExplicitStack(t *testing.T) {
+	setConfigDir(t, t.TempDir())
+	cfg := &config.Config{BrainProvider: "claude", TTSProvider: "kokoro", TTSVoice: "af_heart"}
+
+	p, err := CreateWithOpts(cfg, CreateOpts{
+		DisplayName: "Local Sage",
+		Brain:       Brain{Provider: "ollama", Model: "qwen2.5:14b"},
+		TTS:         TTS{Provider: "qwen3-tts", Voice: "Ryan"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Brain.Provider != "ollama" || got.Brain.Model != "qwen2.5:14b" {
+		t.Fatalf("persisted brain = %+v", got.Brain)
+	}
+	if got.TTS.Provider != "qwen3-tts" || got.TTS.Voice != "Ryan" {
+		t.Fatalf("persisted tts = %+v", got.TTS)
+	}
+}
