@@ -27,6 +27,22 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+  # Enforcing gate for the linters whose findings are already at zero
+  # (govet, ineffassign, unused — see .golangci.yml). errcheck and staticcheck
+  # are staged in a follow-up once their cleanup lands.
+  lint:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.12.2
+
   # Enforcing: the pipeline barge-in VAD race (interrupt controller) is fixed
   # and this -race suite is its deterministic regression guard, so a failure
   # must fail the job rather than only warn.

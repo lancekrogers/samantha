@@ -1,0 +1,24 @@
+# golangci-lint configuration (v2 schema).
+#
+# Staged rollout. This enables the bug-catching linters whose findings are
+# already at zero, so `just lint` and the CI lint job are a clean, enforcing
+# gate rather than an advisory wall of noise:
+#
+#   govet       — suspicious constructs the compiler allows
+#   ineffassign — assignments whose value is never read (dead writes / bugs)
+#   unused      — dead functions, types, and vars
+#
+# Deliberately deferred to a dedicated cleanup PR (each is a real change, not a
+# config flip):
+#   errcheck    — ~50 unchecked errors; per the project standard these need real
+#                 handling/wrapping, not a blanket `_ =`.
+#   staticcheck — SA style + QF quickfix + a couple of ambiguous demo/debug
+#                 findings; worth its own focused review.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - govet
+    - ineffassign
+    - unused
