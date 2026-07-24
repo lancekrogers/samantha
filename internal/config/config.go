@@ -456,11 +456,17 @@ func SetAndSaveBrainProvider(cfg *Config, provider string) error {
 
 	v.Set("brain_provider", provider)
 	if strings.EqualFold(strings.TrimSpace(provider), "ollama") {
-		if os.Getenv("VOICE_TOOLS_ENABLED") == "" && !v.InConfig("voice_tools_enabled") {
+		// Full config dumps often bake voice_tools_enabled: false into yaml as a
+		// written default. That makes InConfig true and leaves Ollama tool-less.
+		// Switching TO Ollama in Settings should turn tools/skills on unless the
+		// environment explicitly forces them off (VOICE_TOOLS_ENABLED=false).
+		if !envForcesFalse("VOICE_TOOLS_ENABLED") {
 			v.Set("voice_tools_enabled", true)
+			next.VoiceToolsEnabled = true
 		}
-		if os.Getenv("SKILLS_ENABLED") == "" && !v.InConfig("skills_enabled") {
+		if !envForcesFalse("SKILLS_ENABLED") {
 			v.Set("skills_enabled", true)
+			next.SkillsEnabled = true
 		}
 	}
 
@@ -469,6 +475,16 @@ func SetAndSaveBrainProvider(cfg *Config, provider string) error {
 	}
 	*cfg = next
 	return nil
+}
+
+// envForcesFalse reports whether env is an explicit false-ish value.
+func envForcesFalse(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "0", "false", "no", "off":
+		return true
+	default:
+		return false
+	}
 }
 
 // ClampToolCommandTimeout bounds tool_command_timeout to 1–120 seconds.

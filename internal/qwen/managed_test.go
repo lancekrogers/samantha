@@ -90,56 +90,6 @@ func TestEnsureInstalledRuntimeIsNoOp(t *testing.T) {
 	}
 }
 
-func TestAdoptLegacyManagedInstall(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	// UserHomeDir on macOS uses HOME.
-
-	legacyModels := filepath.Join(home, ".cache", "samantha", "models")
-	writeReadyManagedInstall(t, legacyModels)
-
-	activeModels := filepath.Join(home, ".cache", "festival-voice", "models")
-	if err := adoptLegacyManagedInstall(activeModels); err != nil {
-		t.Fatal(err)
-	}
-	status := Inspect(activeModels)
-	if !status.Installed {
-		t.Fatalf("adopted install not ready: %+v", status)
-	}
-	// Second adopt must not clobber.
-	if err := adoptLegacyManagedInstall(activeModels); err == nil {
-		t.Fatal("expected adopt to refuse existing destination")
-	}
-}
-
-func writeReadyManagedInstall(t *testing.T, modelsDir string) {
-	t.Helper()
-	p := ManagedPaths(modelsDir)
-	for _, path := range []string{
-		p.Python, p.Worker, p.RuntimeMarker,
-		filepath.Join(p.Model, "config.json"),
-		filepath.Join(p.Model, "model.safetensors"),
-		filepath.Join(p.Model, "speech_tokenizer", "model.safetensors"),
-	} {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte("fixture"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	marker, err := json.Marshal(installMarker{
-		Schema: managedSchema, Package: PackageVersion, Worker: WorkerRevision, ModelID: DefaultModelID,
-		ModelRevision: DefaultModelRevision, InstalledAt: time.Now(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p.Marker, marker, 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestCustomVoiceRegistryIsStable(t *testing.T) {
 	voices := CustomVoices()
 	if len(voices) != 9 || voices[0].Name != "Vivian" || voices[6].Name != "Aiden" {

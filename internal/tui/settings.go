@@ -446,7 +446,11 @@ func (m *settingsModel) selectCurrent() tea.Cmd {
 			}
 			m.buildModelItems()
 			m.buildToolItems()
-			m.message = fmt.Sprintf("Provider set to %s", name)
+			if strings.EqualFold(name, "ollama") && m.cfg.VoiceToolsEnabled {
+				m.message = fmt.Sprintf("Provider set to %s · local tools on (Settings → Tools to toggle)", name)
+			} else {
+				m.message = fmt.Sprintf("Provider set to %s", name)
+			}
 		}
 	case sectionModel:
 		if m.cursor < len(m.modelItems) {
