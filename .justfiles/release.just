@@ -92,10 +92,10 @@ linux-artifact:
     cp LICENSE "$stage/LICENSE"
     cp "$module_dir/LICENSE" "$licensedir/sherpa-onnx-go-linux-LICENSE"
 
-    # sherpa-onnx-go-linux v1.12.29 bundles ONNX Runtime 1.23.2 without its
+    # sherpa-onnx-go-linux v1.13.4 bundles ONNX Runtime 1.27.0 without its
     # redistribution files. Pin and verify the upstream license material, and
     # fail loudly if a future module update changes the bundled runtime.
-    onnxruntime_version="1.23.2"
+    onnxruntime_version="1.27.0"
     strings "$native_dir/libonnxruntime.so" | grep -Fx "$onnxruntime_version" >/dev/null || {
         echo "bundled ONNX Runtime version no longer matches license version $onnxruntime_version" >&2
         exit 1
@@ -108,7 +108,7 @@ linux-artifact:
         printf '%s  %s\n' \
             "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c" \
             "onnxruntime-LICENSE" \
-            "e9e90971a8e75a9a8ac0c6412e29c1202d079998389915aa485f46c816c3b4cc" \
+            "0e07b95f3a8d6230037707c5c4a2b554d12c4cb67369669ac255635528ffcee2" \
             "onnxruntime-ThirdPartyNotices.txt" |
             sha256sum --check -
     )
