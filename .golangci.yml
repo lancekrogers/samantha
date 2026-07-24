@@ -4,16 +4,10 @@
 #   govet       — suspicious constructs the compiler allows
 #   ineffassign — assignments whose value is never read (dead writes / bugs)
 #   unused      — dead functions, types, and vars
-#   errcheck    — unchecked errors. The exclusion below allow-lists best-effort
-#                 cleanup (read-side / deferred Close, malgo Uninit, buffer
-#                 Flush, temp Remove, Fprint to test servers or stdio) whose
-#                 error is not actionable. Meaningful close errors ARE checked
-#                 at the call site (see netapi/auth.go cert/key write). This
-#                 keeps errcheck a forward gate: a future swallowed Unmarshal,
-#                 Write, WalkDir, etc. still fails the build.
-#
-# Deferred to a dedicated cleanup PR: staticcheck (SA/QF style + ambiguous
-# demo/debug findings).
+#   errcheck    — unchecked errors (see the cleanup allow-list below)
+#   staticcheck — bug/correctness + safe simplifications (SA/S/ST). The QF
+#                 "quickfix" category is excluded: those are opt-in style
+#                 suggestions (tagged switch, De Morgan), not defects.
 version: "2"
 
 linters:
@@ -22,9 +16,26 @@ linters:
     - errcheck
     - govet
     - ineffassign
+    - staticcheck
     - unused
   exclusions:
     rules:
+      # errcheck: best-effort cleanup whose error is not actionable — read-side
+      # or deferred Close, malgo Uninit, buffer Flush, temp Remove, and Fprint
+      # to test servers or stdio. Meaningful close errors ARE checked at the
+      # call site (see netapi/auth.go). errcheck still catches other swallowed
+      # errors (Unmarshal, Write, WalkDir, ...).
       - linters:
           - errcheck
         source: '(\.Close\(|\.Uninit\(\)|\.Flush\(\)|os\.Remove(All)?\(|fmt\.Fprint)'
+      # staticcheck QF*: quickfix style suggestions, not defects.
+      - linters:
+          - staticcheck
+        text: 'QF[0-9]'
+      # staticcheck SA6002: the debug-audio recorder pools []byte by value;
+      # pointer-pooling would obscure debug-only code for a negligible per-Put
+      # header allocation.
+      - linters:
+          - staticcheck
+        path: internal/audio/debug\.go
+        text: 'SA6002'
