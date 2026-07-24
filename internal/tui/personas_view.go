@@ -1,9 +1,9 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	ansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/lancekrogers/samantha/internal/persona"
@@ -47,7 +47,7 @@ func (m personasModel) View() string {
 	}
 	help := "  ↑/↓ navigate • enter switch • n create • e edit • esc back"
 	if m.formMode != "" {
-		help = "  tab fields • enter name→prompt • ctrl+j / alt+s / f2 save • esc cancel"
+		help = "  tab fields • save: ctrl+j · alt+s · f2 • esc cancel"
 	}
 	b.WriteString(dimStyle.Render(ansi.Truncate(help, width, "…")))
 	return b.String()
@@ -80,65 +80,100 @@ func (m personasModel) listLines(listRows int) []string {
 	return padPersonasLines(lines, listRows)
 }
 
+// formBoxWidth is the outer width of the form's field boxes, leaving a
+// 2-column indent inside the terminal.
+func (m personasModel) formBoxWidth() int {
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+	return max(min(w-2, 78), 24)
+}
+
+// personaStepPills renders the wizard progress line: done, current, upcoming.
+func personaStepPills(current int) string {
+	steps := []string{"Name", "Prompt", "Model & voice"}
+	parts := make([]string, 0, len(steps))
+	for i, s := range steps {
+		switch {
+		case i < current:
+			parts = append(parts, statusStyle.Render("✓ "+s))
+		case i == current:
+			parts = append(parts, selectedStyle.Render("▸ "+s))
+		default:
+			parts = append(parts, dimStyle.Render("· "+s))
+		}
+	}
+	return "  " + strings.Join(parts, "   ")
+}
+
+// formBox draws a titled, rounded box around body lines. The title is already
+// styled; the border tracks focus (accent when active, dim otherwise).
+func formBox(title string, body []string, width int, focused bool) []string {
+	border := dimStyle
+	if focused {
+		border = lipgloss.NewStyle().Foreground(colorAccent)
+	}
+	inner := width - 4
+	titleText := " " + title + " "
+	fill := max(width-3-ansi.StringWidth(titleText), 0)
+	lines := make([]string, 0, len(body)+2)
+	lines = append(lines, "  "+border.Render("╭─")+titleText+border.Render(strings.Repeat("─", fill)+"╮"))
+	for _, line := range body {
+		content := ansi.Truncate(line, inner, "…")
+		pad := max(inner-ansi.StringWidth(content), 0)
+		lines = append(lines, "  "+border.Render("│")+" "+content+strings.Repeat(" ", pad)+" "+border.Render("│"))
+	}
+	lines = append(lines, "  "+border.Render("╰"+strings.Repeat("─", width-2)+"╯"))
+	return lines
+}
+
 func (m personasModel) formLines() []string {
-	title := "  Create a new voice agent"
+	title := "Create a new voice agent"
 	if m.formMode == "edit" {
-		title = "  Edit persona " + m.editID
+		title = "Edit persona " + m.editID
 	}
-	slug := persona.Slugify(m.nameInput.Value())
-	if slug == "" {
-		slug = "persona"
-	}
-	nameMark, promptMark, stackMark := " ", " ", " "
-	switch m.formStep {
-	case personaFormName:
-		nameMark = "▸"
-	case personaFormPrompt:
-		promptMark = "▸"
-	default:
-		stackMark = "▸"
-	}
-	lines := []string{
-		title,
-		"",
-		fmt.Sprintf("%s Name", nameMark),
-		m.nameInput.View(),
-	}
+	boxW := m.formBoxWidth()
+
+	nameTitle := headerStyle.Render("Name")
 	if m.formMode == "create" {
-		lines = append(lines, dimStyle.Render(fmt.Sprintf("  id will be: %s", slug)))
+		slug := persona.Slugify(m.nameInput.Value())
+		if slug == "" {
+			slug = "persona"
+		}
+		nameTitle += dimStyle.Render(" · id: " + slug)
 	}
-	lines = append(lines,
+	promptTitle := headerStyle.Render("System prompt") + dimStyle.Render(" · {agent_name} supported")
+	if m.formStep == personaFormPrompt {
+		promptTitle += dimStyle.Render(" — ") + m.promptTA.modeChip()
+	}
+	stackTitle := headerStyle.Render("Model & voice") + dimStyle.Render(" · (default) inherits Settings")
+
+	lines := []string{
+		"  " + normalStyle.Bold(true).Render(title),
+		personaStepPills(m.formStep),
 		"",
-		fmt.Sprintf("%s System prompt  (real brain identity · supports {agent_name})", promptMark),
-	)
-	// Expand textarea to one visual line per row so truncation never hides it
-	// as a single multi-line blob counted as one list slot.
-	lines = append(lines, strings.Split(m.promptTA.View(), "\n")...)
+	}
+	lines = append(lines, formBox(nameTitle, []string{m.nameInput.View()}, boxW, m.formStep == personaFormName)...)
+	lines = append(lines, formBox(promptTitle, strings.Split(m.promptTA.View(), "\n"), boxW, m.formStep == personaFormPrompt)...)
 	if m.formStep == personaFormPrompt {
 		lines = append(lines, dimStyle.Render("  "+m.promptTA.modeline()))
 	}
-	lines = append(lines,
-		"",
-		fmt.Sprintf("%s Model & voice  ((default) inherits Settings)", stackMark),
-	)
-	lines = append(lines, m.stackLines()...)
-	lines = append(lines,
-		"",
-		dimStyle.Render("  save: ctrl+j · alt+s · f2  (ctrl+s if terminal allows)  ·  tab fields  ·  esc cancel"),
-	)
+	lines = append(lines, formBox(stackTitle, m.stackLines(), boxW, m.formStep == personaFormStack)...)
 	return lines
 }
 
 // stackLines renders the model/voice rows of the form's stack step.
 func (m personasModel) stackLines() []string {
-	mark := func(row int) string {
-		if m.formStep == personaFormStack && m.stackRow == row {
-			return "▸"
+	row := func(idx int, label, value string) string {
+		mark, labelStyle := "  ", dimStyle
+		if m.formStep == personaFormStack && m.stackRow == idx {
+			mark, labelStyle = selectedStyle.Render("▸ "), selectedStyle
 		}
-		return " "
+		return mark + labelStyle.Render(label) + " " + value
 	}
 	brainProvider := stackBrainProviders()[m.brainProviderIdx]
-	brainRow := fmt.Sprintf("  %s Brain: ‹ %s ›", mark(stackRowBrainProvider), brainProvider)
+	brainRow := row(stackRowBrainProvider, "Brain", "‹ "+brainProvider+" ›")
 	if strings.EqualFold(brainProvider, "claude") && strings.TrimSpace(m.brainModelInput.Value()) != "" {
 		// Claude has no app-level model key yet; be honest that the model
 		// string is recorded on the profile but not routed.
@@ -147,9 +182,9 @@ func (m personasModel) stackLines() []string {
 	ttsProvider := stackTTSProviders()[m.ttsProviderIdx]
 	return []string{
 		brainRow,
-		fmt.Sprintf("  %s%s", mark(stackRowBrainModel), m.brainModelInput.View()),
-		fmt.Sprintf("  %s TTS:   ‹ %s ›", mark(stackRowTTSProvider), ttsProvider),
-		fmt.Sprintf("  %s%s", mark(stackRowVoice), m.voiceInput.View()),
+		row(stackRowBrainModel, "Model", m.brainModelInput.View()),
+		row(stackRowTTSProvider, "TTS  ", "‹ "+ttsProvider+" ›"),
+		row(stackRowVoice, "Voice", m.voiceInput.View()),
 	}
 }
 

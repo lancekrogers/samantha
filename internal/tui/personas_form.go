@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -71,37 +70,25 @@ func providerAt(list []string, idx int) string {
 	return list[idx]
 }
 
-func newPersonaStackInput(prompt, placeholder string) textinput.Model {
+func newPersonaStackInput(placeholder string) textinput.Model {
 	ti := textinput.New()
-	ti.Prompt = "  " + prompt
+	ti.Prompt = ""
 	ti.Placeholder = placeholder
 	ti.CharLimit = 64
 	ti.Width = 40
 	return ti
 }
 
-func newPersonaPromptArea() vimTextarea {
-	ta := textarea.New()
-	ta.Placeholder = "System prompt / personality for this voice agent…"
-	ta.CharLimit = 8000
-	ta.SetWidth(60)
-	ta.SetHeight(8)
-	ta.ShowLineNumbers = false
-	// Match conversation: insert newline with ctrl+j / ctrl+enter variants only if
-	// we route those to the textarea. We intercept save keys before Update.
-	return newVimTextarea(ta)
-}
-
 func (m *personasModel) resizeForm() {
-	w := max(m.width-8, 24)
-	m.nameInput.Width = max(w-8, 20)
-	m.promptTA.SetWidth(w)
-	// Leave room for chrome (title, name field, labels, help) so the prompt
-	// textarea is never clipped out of the form body.
-	h := max(m.height-14, 3)
-	if h > 12 {
-		h = 12
-	}
+	inner := m.formBoxWidth() - 4
+	m.nameInput.Width = max(inner-2, 10)
+	// The editor draws a 4-column line-number gutter inside the box.
+	m.promptTA.SetWidth(max(inner-5, 20))
+	m.brainModelInput.Width = max(inner-12, 10)
+	m.voiceInput.Width = max(inner-12, 10)
+	// Leave room for chrome (pills, field boxes, help) so the prompt editor
+	// is never clipped out of the form body.
+	h := min(max(m.height-18, 3), 12)
 	m.promptTA.SetHeight(h)
 }
 
@@ -122,8 +109,8 @@ func (m personasModel) updateForm(msg tea.KeyMsg) (personasModel, tea.Cmd) {
 	key := msg.String()
 	switch {
 	case key == "esc":
-		// The prompt step owns esc: insert→normal first; only a normal-mode
-		// esc (surfacing as vimTAEventCancel below) leaves the form.
+		// The prompt step owns esc: insert→normal first; only an idle
+		// normal-mode esc (surfacing as promptEventCancel below) leaves the form.
 		if m.formStep == personaFormPrompt {
 			break
 		}
@@ -156,8 +143,8 @@ func (m personasModel) updateForm(msg tea.KeyMsg) (personasModel, tea.Cmd) {
 			// prompt needs Enter for newlines).
 			return m.focusPromptStep()
 		}
-		// Enter inserts newline in the prompt textarea (fall through);
-		// on the stack step it advances rows.
+		// Enter falls through to the prompt editor (newline in insert mode,
+		// save in normal mode); on the stack step it advances rows.
 		if m.formStep == personaFormStack {
 			m.setStackRow((m.stackRow + 1) % stackRowCount)
 			return m, nil
@@ -172,12 +159,12 @@ func (m personasModel) updateForm(msg tea.KeyMsg) (personasModel, tea.Cmd) {
 		m.nameInput, cmd = m.nameInput.Update(msg)
 		return m, cmd
 	}
-	var ev vimTAEvent
+	var ev promptEvent
 	m.promptTA, cmd, ev = m.promptTA.Update(msg)
 	switch ev {
-	case vimTAEventSave:
+	case promptEventSave:
 		return m.submitForm()
-	case vimTAEventCancel:
+	case promptEventCancel:
 		m.cancelForm()
 		m.message = "Edit cancelled"
 	}
@@ -305,16 +292,16 @@ func (m personasModel) focusPromptStep() (personasModel, tea.Cmd) {
 	}
 	m.formStep = personaFormPrompt
 	m.nameInput.Blur()
-	// Ensure a usable draft: empty prompt body gets the default identity.
+	// Ensure a usable draft: an empty prompt body gets the seed identity.
 	if strings.TrimSpace(m.promptTA.Value()) == "" {
-		if text := m.resolveDefaultPrompt(); text != "" {
+		if text := m.resolveSeedPrompt(); text != "" {
 			m.promptTA.SetValue(text)
 		}
 	}
 	m.promptTA.StartInsert()
 	m.promptTA.Focus()
-	m.message = "Edit the system prompt · vim: esc normal, :w save, :q cancel · ctrl+j / alt+s / f2 also save"
-	return m, textarea.Blink
+	m.message = "Edit the system prompt · esc for NORMAL: v visual · y/p yank/paste · u undo · :w save · :q cancel"
+	return m, nil
 }
 
 func (m *personasModel) resolveDefaultPrompt() string {
@@ -328,6 +315,18 @@ func (m *personasModel) resolveDefaultPrompt() string {
 	return text
 }
 
+// resolveSeedPrompt returns the draft for an empty prompt field: the minimal
+// starter for new personas, the full built-in identity when editing (so a
+// failed load never silently downgrades an existing persona to the starter).
+func (m *personasModel) resolveSeedPrompt() string {
+	if m.formMode == "create" && m.starterPrompt != nil {
+		if text, err := m.starterPrompt(); err == nil && strings.TrimSpace(text) != "" {
+			return text
+		}
+	}
+	return m.resolveDefaultPrompt()
+}
+
 func (m *personasModel) beginCreate() tea.Cmd {
 	m.formMode = "create"
 	m.formStep = personaFormName
@@ -336,7 +335,7 @@ func (m *personasModel) beginCreate() tea.Cmd {
 	m.resizeForm()
 	m.nameInput.SetValue("")
 	m.nameInput.Focus()
-	m.promptTA.SetValue(m.resolveDefaultPrompt())
+	m.promptTA.SetValue(m.resolveSeedPrompt())
 	m.promptTA.Blur()
 	m.prefillStack(nil) // "(default)" = clone current globals at create time
 	return textinput.Blink
@@ -387,13 +386,13 @@ func (m personasModel) submitForm() (personasModel, tea.Cmd) {
 	prompt := strings.TrimSpace(m.promptTA.Value())
 	if prompt == "" {
 		// Name-only create/edit still needs a real identity document for the brain.
-		prompt = strings.TrimSpace(m.resolveDefaultPrompt())
+		prompt = strings.TrimSpace(m.resolveSeedPrompt())
 	}
 	if prompt == "" {
 		m.message = "Enter a system prompt (this is the persona identity the brain loads)"
 		m.formStep = personaFormPrompt
 		m.promptTA.Focus()
-		return m, textarea.Blink
+		return m, nil
 	}
 
 	switch m.formMode {

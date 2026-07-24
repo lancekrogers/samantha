@@ -59,6 +59,27 @@ active persona).
 just demo-persona-switch
 ```
 
+## persona-create.gif — boxed create form with the vim prompt editor
+
+The full create wizard: step pills (Name → Prompt → Model & voice), one
+rounded box per field with the focused box in accent, and the system prompt
+edited in a real vim modal editor:
+
+1. **n** — open the create form; type **Research Buddy** into the Name box
+   (the derived id updates live in the box title)
+2. **Prompt step** — the short starter prompt is pre-seeded; the box title
+   shows the vim mode (INSERT/NORMAL/VISUAL/COMMAND)
+3. **Vim** — `dd` deletes a line, `u` undoes it, `v`+`e` selects, `y` yanks,
+   `o` opens a line and types; `:wq` saves, `:q!` cancels
+4. **Model & voice** — `←/→` cycles the per-persona brain provider
+5. **ctrl+j** — commits the form; **e** reopens the persona in the edit form
+
+Uses the same disposable `$HOME` seeding as persona-switch.
+
+```bash
+just demo-persona-create
+```
+
 ## qwen-voices.gif — managed Qwen setup and voice selection
 
 Full Bubble Tea Settings flow for the managed Qwen provider:

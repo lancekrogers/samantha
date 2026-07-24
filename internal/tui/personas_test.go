@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -249,13 +250,14 @@ func TestPersonasFormKeepsSystemPromptVisibleOnShortHeight(t *testing.T) {
 	}
 }
 
-func TestPersonasCreateNameOnlyUsesDefaultPrompt(t *testing.T) {
+func TestPersonasCreateNameOnlyUsesStarterPrompt(t *testing.T) {
 	cfg := &config.Config{ActivePersona: "samantha", AgentName: "Samantha"}
 	m := newPersonas(cfg)
 	m.listPersonas = func() ([]*persona.Profile, error) {
 		return []*persona.Profile{{ID: "samantha", DisplayName: "Samantha"}}, nil
 	}
 	m.defaultPrompt = func() (string, error) { return "You are {agent_name}, default.", nil }
+	m.starterPrompt = func() (string, error) { return "You are {agent_name}, starter.", nil }
 	var gotOpts persona.CreateOpts
 	m.createPersona = func(c *config.Config, opts persona.CreateOpts) (*persona.Profile, error) {
 		gotOpts = opts
@@ -264,13 +266,47 @@ func TestPersonasCreateNameOnlyUsesDefaultPrompt(t *testing.T) {
 	m.reload()
 	m.beginCreate()
 	m.nameInput.SetValue("Named Only")
-	m.promptTA.SetValue("") // empty — should fall back to default
+	m.promptTA.SetValue("") // empty — should fall back to the starter seed
 	m, _ = m.submitForm()
 	if m.formMode != "" {
 		t.Fatal("form should close")
 	}
-	if !strings.Contains(gotOpts.SystemPrompt, "default") {
-		t.Fatalf("expected default prompt, got %q", gotOpts.SystemPrompt)
+	if !strings.Contains(gotOpts.SystemPrompt, "starter") {
+		t.Fatalf("expected starter prompt, got %q", gotOpts.SystemPrompt)
+	}
+}
+
+func TestPersonasCreateSeedsStarterNotFullDefault(t *testing.T) {
+	cfg := &config.Config{ActivePersona: "samantha", AgentName: "Samantha"}
+	m := newPersonas(cfg)
+	m.listPersonas = func() ([]*persona.Profile, error) {
+		return []*persona.Profile{{ID: "samantha", DisplayName: "Samantha"}}, nil
+	}
+	m.defaultPrompt = func() (string, error) { return "You are {agent_name}, the full built-in identity.", nil }
+	m.starterPrompt = func() (string, error) { return "You are {agent_name}, starter.", nil }
+	m.reload()
+	m.beginCreate()
+	if got := m.promptTA.Value(); !strings.Contains(got, "starter") || strings.Contains(got, "built-in") {
+		t.Fatalf("create should seed the starter, got %q", got)
+	}
+}
+
+func TestPersonasEditFallbackKeepsFullDefault(t *testing.T) {
+	// A persona whose prompt fails to load must fall back to the full default,
+	// never the starter — otherwise saving would downgrade the identity.
+	cfg := &config.Config{ActivePersona: "samantha", AgentName: "Samantha"}
+	m := newPersonas(cfg)
+	m.listPersonas = func() ([]*persona.Profile, error) {
+		return []*persona.Profile{{ID: "samantha", DisplayName: "Samantha"}}, nil
+	}
+	m.loadPrompt = func(string) (string, error) { return "", fmt.Errorf("boom") }
+	m.defaultPrompt = func() (string, error) { return "You are {agent_name}, the full built-in identity.", nil }
+	m.starterPrompt = func() (string, error) { return "You are {agent_name}, starter.", nil }
+	m.reload()
+	m.cursor = 0
+	m.beginEdit()
+	if got := m.promptTA.Value(); !strings.Contains(got, "built-in") {
+		t.Fatalf("edit fallback should be the full default, got %q", got)
 	}
 }
 

@@ -31,7 +31,7 @@ type personasModel struct {
 	formStep  int // name | prompt | stack
 	editID    string
 	nameInput textinput.Model
-	promptTA  vimTextarea
+	promptTA  promptEditor
 
 	// Stack step: per-persona brain provider/model + TTS provider/voice.
 	// Index 0 of the provider lists is "(default)" = inherit the app config.
@@ -49,6 +49,7 @@ type personasModel struct {
 	saveStack     func(id string, b persona.Brain, t persona.TTS) (*persona.Profile, error)
 	loadPrompt    func(name string) (string, error)
 	defaultPrompt func() (string, error)
+	starterPrompt func() (string, error)
 }
 
 func newPersonas(cfg *config.Config) personasModel {
@@ -62,22 +63,24 @@ func newPersonas(cfg *config.Config) personasModel {
 		saveStack:       persona.UpdateStack,
 		loadPrompt:      persona.LoadSystemPrompt,
 		defaultPrompt:   persona.DefaultSystemPrompt,
+		starterPrompt:   persona.StarterSystemPrompt,
 		nameInput:       newPersonaCreateInput(),
-		promptTA:        newPersonaPromptArea(),
-		brainModelInput: newPersonaStackInput("Model: ", "empty = provider default"),
-		voiceInput:      newPersonaStackInput("Voice: ", "empty = provider default"),
+		promptTA:        newPromptEditor(),
+		brainModelInput: newPersonaStackInput("empty = provider default"),
+		voiceInput:      newPersonaStackInput("empty = provider default"),
 	}
 	m.reload()
 	return m
 }
 
-// newPersonaCreateInput builds the name field for the create/edit form.
+// newPersonaCreateInput builds the name field for the create/edit form. The
+// label lives on the field box, so the input itself carries no prompt text.
 func newPersonaCreateInput() textinput.Model {
 	ti := textinput.New()
 	ti.Placeholder = "Research buddy"
 	ti.CharLimit = 64
 	ti.Width = 40
-	ti.Prompt = "  Name: "
+	ti.Prompt = ""
 	return ti
 }
 
@@ -184,13 +187,6 @@ func (m personasModel) Update(msg tea.Msg) (personasModel, tea.Cmd) {
 		}
 		m.ensureVisible()
 
-	default:
-		// Keep textarea blink alive while editing the prompt.
-		if m.formMode != "" && m.formStep == personaFormPrompt {
-			var cmd tea.Cmd
-			m.promptTA, cmd = m.promptTA.UpdateMsg(msg)
-			return m, cmd
-		}
 	}
 	return m, nil
 }

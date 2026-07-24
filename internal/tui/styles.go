@@ -116,6 +116,12 @@ var (
 	dimStyle = lipgloss.NewStyle().
 			Foreground(colorDim)
 
+	// selectionStyle paints vim visual-mode selections; colorDim maps onto
+	// bright black under the 16-color VHS profile, so it stays visible there.
+	selectionStyle = lipgloss.NewStyle().
+			Background(colorDim).
+			Foreground(colorBg)
+
 	statusStyle = lipgloss.NewStyle().
 			Foreground(colorStatus)
 
