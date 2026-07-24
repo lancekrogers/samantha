@@ -110,9 +110,7 @@ func (m personasModel) formLines() []string {
 	)
 	// Expand textarea to one visual line per row so truncation never hides it
 	// as a single multi-line blob counted as one list slot.
-	for _, row := range strings.Split(m.promptTA.View(), "\n") {
-		lines = append(lines, row)
-	}
+	lines = append(lines, strings.Split(m.promptTA.View(), "\n")...)
 	lines = append(lines,
 		"",
 		dimStyle.Render("  save: ctrl+j · alt+s · f2  (ctrl+s if terminal allows)  ·  tab fields  ·  esc cancel"),

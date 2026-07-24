@@ -19,17 +19,17 @@ type CaptureSource interface {
 // LiveFeed windows mic PCM and submits speech-like spans to a LiveAdapter.
 // It never blocks the capture path: full queues drop frames.
 type LiveFeed struct {
-	adapter  *LiveAdapter
-	capture  CaptureSource
-	window   int // samples
-	hop      int
-	minRMS   float64
-	subID    int
-	ch       <-chan []float32
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	seq      atomic.Uint64
-	started  time.Time
+	adapter *LiveAdapter
+	capture CaptureSource
+	window  int // samples
+	hop     int
+	minRMS  float64
+	subID   int
+	ch      <-chan []float32
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	seq     atomic.Uint64
+	started time.Time
 }
 
 // StartLiveFeed begins async feeding. windowMS comes from speaker.live.window_ms.

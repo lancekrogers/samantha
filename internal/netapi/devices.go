@@ -177,12 +177,6 @@ func (s *deviceStore) delete(id string) (token string, ok bool, err error) {
 	return token, true, nil
 }
 
-func (s *deviceStore) lookupToken(token string) *DeviceRecord {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.byToken[token]
-}
-
 func (s *deviceStore) acceptToken(token string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -242,8 +236,5 @@ func generateDeviceID() (string, error) {
 // constantTimeTokenMatch compares presented against want without leaking length
 // via early exit on unequal lengths (pad both to equal for subtle).
 func constantTimeTokenMatch(presented, want string) bool {
-	if subtle.ConstantTimeCompare([]byte(presented), []byte(want)) == 1 {
-		return true
-	}
-	return false
+	return subtle.ConstantTimeCompare([]byte(presented), []byte(want)) == 1
 }

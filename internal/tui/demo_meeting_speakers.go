@@ -89,13 +89,10 @@ func (multiSpeakerDemoProvider) Start(ctx context.Context) (stt.Session, error) 
 			sleepDemo(ctx, 350*time.Millisecond)
 			_ = i
 		}
-		for {
-			if !send(stt.PhaseEvent{Phase: "listening"}) {
-				return
-			}
-			if !send(stt.Timeout{}) {
-				return
-			}
+		if !send(stt.PhaseEvent{Phase: "listening"}) {
+			return
+		}
+		if !send(stt.Timeout{}) {
 			return
 		}
 	}()

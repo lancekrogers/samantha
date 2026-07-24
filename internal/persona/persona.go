@@ -30,13 +30,13 @@ var idPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 // Profile is one voice agent persona (not the system-prompt body).
 type Profile struct {
-	Schema      string         `yaml:"schema"`
-	ID          string         `yaml:"id"`
-	DisplayName string         `yaml:"display_name"`
-	Builtin     bool           `yaml:"builtin,omitempty"`
-	TTS         TTS            `yaml:"tts"`
-	Prompts     PromptRefs     `yaml:"prompts"`
-	Path        string         `yaml:"-"` // absolute path of persona.yaml when loaded
+	Schema      string     `yaml:"schema"`
+	ID          string     `yaml:"id"`
+	DisplayName string     `yaml:"display_name"`
+	Builtin     bool       `yaml:"builtin,omitempty"`
+	TTS         TTS        `yaml:"tts"`
+	Prompts     PromptRefs `yaml:"prompts"`
+	Path        string     `yaml:"-"` // absolute path of persona.yaml when loaded
 }
 
 // TTS holds per-persona speech settings. Each persona may choose any supported

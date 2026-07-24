@@ -105,22 +105,8 @@ done
 
 func TestManagedQwenSessionStreamsPCMChunks(t *testing.T) {
 	script := filepath.Join(t.TempDir(), "pcm-worker.sh")
-	// Three float32 samples: 0.5, -0.5, 0.25 as little-endian base64.
-	// 0.5 = 3f000000, -0.5 = bf000000, 0.25 = 3e800000 → base64
-	source := `#!/bin/sh
-echo '{"protocol":"samantha-qwen/v1","type":"ready","voices":["Vivian"]}'
-while IFS= read -r request; do
-  case "$request" in
-    *'"type":"shutdown"'*) exit 0 ;;
-    *)
-      echo '{"protocol":"samantha-qwen/v1","type":"audio_chunk","request_id":"qwen-1","sample_rate":24000,"pcm_f32le_b64":"AAAAPwAAgD8AAIA+"}'
-      # note: above may be wrong — test uses decode helper separately for accuracy
-      echo '{"protocol":"samantha-qwen/v1","type":"complete","request_id":"qwen-1","sample_rate":24000}'
-      ;;
-  esac
-done
-`
-	// Build a correct base64 chunk in Go and inject into the script.
+	// Three float32 samples (0.5, -0.5, 0.25) encoded as little-endian base64 in
+	// Go and injected into the worker script below.
 	samples := []float32{0.5, -0.5, 0.25}
 	raw := make([]byte, len(samples)*4)
 	for i, s := range samples {
@@ -131,7 +117,7 @@ done
 		raw[i*4+3] = byte(u >> 24)
 	}
 	b64 := base64.StdEncoding.EncodeToString(raw)
-	source = fmt.Sprintf(`#!/bin/sh
+	source := fmt.Sprintf(`#!/bin/sh
 echo '{"protocol":"samantha-qwen/v1","type":"ready","voices":["Vivian"]}'
 while IFS= read -r request; do
   case "$request" in

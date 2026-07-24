@@ -191,6 +191,15 @@ var (
 	v          *viper.Viper
 	// mu guards v: the TUI reads config from tea.Cmd goroutines while the
 	// Update goroutine writes via SetAndSave.
+	//
+	// mu does NOT guard the fields of a *Config value returned by Load — that
+	// struct is plain data with no internal synchronization. A *Config must not
+	// be shared by pointer between a goroutine that mutates its fields (e.g. the
+	// TUI Update loop) and one that reads them live (a pipeline/brain turn).
+	// Hand concurrent readers an independent snapshot instead: a fresh Load, or a
+	// value copy (next := *cfg) as serve/meeting/benchmark do before overriding a
+	// field. The TUI honors this via conversationRuntimeBuilder's per-conversation
+	// Load; see the App.cfg invariant in internal/tui/tui.go.
 	mu sync.RWMutex
 )
 

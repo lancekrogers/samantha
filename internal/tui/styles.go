@@ -16,7 +16,6 @@ import (
 var (
 	colorBg      = lipgloss.Color("#0d0d11")
 	colorRaised  = lipgloss.Color("#16161a")
-	colorBorder  = lipgloss.Color("#2a2a33")
 	colorAccent  = lipgloss.Color("#8BE9FD") // cyan  → bright cyan
 	colorUser    = lipgloss.Color("#57A6FF") // blue  → bright blue
 	colorAgent   = lipgloss.Color("#50FA7B") // green → bright green
@@ -135,11 +134,6 @@ var (
 			Foreground(colorAgent).
 			Bold(true)
 
-	boxStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(colorAccent).
-			Padding(0, 1)
-
 	hearingStyle = lipgloss.NewStyle().
 			Foreground(colorHearing).
 			Bold(true)
@@ -150,13 +144,6 @@ var (
 
 	thinkStyle = lipgloss.NewStyle().
 			Foreground(colorThink)
-
-	// headerBarStyle is a full-width brand strip behind the conversation title.
-	headerBarStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(colorNormal).
-			Background(colorRaised).
-			Padding(0, 1)
 
 	chipStyle = lipgloss.NewStyle().
 			Foreground(colorBg).
