@@ -44,6 +44,7 @@ from TUI Settings; users do not need to install Python or a Qwen CLI.
 
 - Go 1.26+
 - [just](https://github.com/casey/just)
+- A C compiler for source builds (`gcc` or `clang`; Samantha uses CGO)
 - A working microphone and speaker for voice mode
 - Claude CLI on `PATH` when `brain_provider=claude`
 - Ollama running locally when `brain_provider=ollama`
@@ -52,6 +53,33 @@ from TUI Settings; users do not need to install Python or a Qwen CLI.
 macOS users may need to grant microphone permission to the terminal app used to run Samantha.
 
 ## Install
+
+### Linux amd64 archive
+
+Tagged releases include a relocatable `samantha-linux-amd64.tar.gz` for
+x86_64 glibc Linux. It contains the Samantha executable and its sherpa-onnx /
+onnxruntime shared libraries; keep the executable and `lib/` directory
+together.
+
+```bash
+tar -xzf samantha-linux-amd64.tar.gz
+mkdir -p ~/.local/opt ~/.local/bin
+mv samantha-linux-amd64 ~/.local/opt/samantha
+ln -s ~/.local/opt/samantha/samantha ~/.local/bin/samantha
+samantha --version
+```
+
+Ensure `~/.local/bin` is on `PATH`. Models are downloaded separately on first
+setup:
+
+```bash
+samantha models ensure
+samantha doctor --voice-devices
+```
+
+The release archive targets glibc Linux with Ubuntu 24.04 as its build and
+compatibility floor. Source builds are also validated on Arch/EndeavourOS;
+musl systems such as Alpine require a separate native build strategy.
 
 ### Homebrew (macOS)
 
@@ -76,6 +104,11 @@ For development builds:
 just build
 just run -- --text
 ```
+
+On Linux, `just install` is a source/developer install and retains the native
+libraries supplied through the Go module cache. Use the release archive when
+you need a relocatable installation that remains valid after cleaning that
+cache.
 
 ## Usage
 
@@ -292,8 +325,11 @@ ask what titles you own.
 
 **Typical setup (most users):**
 
-1. Install Calibre (macOS: `brew install --cask calibre`, or the installer from
-   calibre-ebook.com). Open Calibre once so it creates your library.
+1. Install Calibre and open it once so it creates your library:
+   - macOS: `brew install --cask calibre`
+   - Arch Linux: `sudo pacman -S calibre`
+   - Debian/Ubuntu: `sudo apt install calibre`
+   - Windows or other platforms: use the installer from calibre-ebook.com
 2. Enable the integration: `samantha config calibre_enabled true`
    (or open **Library** in the TUI and press **e**).
 3. Samantha finds `calibredb` on `PATH`, or in the macOS app bundle
@@ -644,9 +680,11 @@ samantha models ensure        # download any missing assets (atomic + verified)
 samantha doctor               # diagnose config, assets, and external binaries
 ```
 
-`models status` and `doctor` are read-only and safe offline; `doctor` exits
-non-zero only on errors (a missing asset is a warning that points you to
-`models ensure`). Downloads are reliable by construction: each file is written to
+`models status` and `doctor` are read-only and safe offline. Doctor validates
+the selected Claude/Grok CLI or Ollama configuration without making a network
+request, and exits non-zero on setup errors (a missing model asset remains a
+warning that points you to `models ensure`). Downloads are reliable by
+construction: each file is written to
 a temp file, size/checksum-verified when known, and atomically renamed; archives
 are extracted into a temp directory, verified, then promoted — so an interrupted
 or corrupt download never lands a partial asset, and **re-running

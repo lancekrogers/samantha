@@ -85,6 +85,87 @@ func TestDiagnoseUnsupportedProviderIsError(t *testing.T) {
 	}
 }
 
+func TestDiagnoseBrainProvider(t *testing.T) {
+	tests := []struct {
+		name            string
+		cfg             Config
+		lookPath        func(string) (string, error)
+		wantSeverity    Severity
+		wantDetail      string
+		wantRemediation string
+	}{
+		{
+			name:         "default claude found",
+			cfg:          Config{},
+			lookPath:     okLookPath,
+			wantSeverity: SeverityOK,
+			wantDetail:   "claude CLI",
+		},
+		{
+			name:            "selected claude missing",
+			cfg:             Config{BrainProvider: "claude"},
+			lookPath:        failLookPath,
+			wantSeverity:    SeverityError,
+			wantDetail:      "claude CLI not found",
+			wantRemediation: "brain_provider",
+		},
+		{
+			name:            "selected grok missing",
+			cfg:             Config{BrainProvider: "grok"},
+			lookPath:        failLookPath,
+			wantSeverity:    SeverityError,
+			wantDetail:      "grok CLI not found",
+			wantRemediation: "brain_provider",
+		},
+		{
+			name:            "ollama model missing",
+			cfg:             Config{BrainProvider: "ollama", OllamaHost: "http://localhost:11434"},
+			lookPath:        failLookPath,
+			wantSeverity:    SeverityError,
+			wantDetail:      "ollama_model is not configured",
+			wantRemediation: "samantha config ollama_model",
+		},
+		{
+			name:            "ollama host invalid",
+			cfg:             Config{BrainProvider: "ollama", OllamaModel: "gemma", OllamaHost: "localhost:11434"},
+			lookPath:        failLookPath,
+			wantSeverity:    SeverityError,
+			wantDetail:      "invalid ollama_host",
+			wantRemediation: "http://",
+		},
+		{
+			name:         "ollama configured without requiring cli",
+			cfg:          Config{BrainProvider: "ollama", OllamaModel: "gemma", OllamaHost: "http://localhost:11434"},
+			lookPath:     failLookPath,
+			wantSeverity: SeverityOK,
+			wantDetail:   "connectivity is not probed",
+		},
+		{
+			name:            "unsupported",
+			cfg:             Config{BrainProvider: "other"},
+			lookPath:        okLookPath,
+			wantSeverity:    SeverityError,
+			wantDetail:      "unsupported brain_provider",
+			wantRemediation: "claude, grok, or ollama",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := diagnoseBrainProvider(&tt.cfg, tt.lookPath)
+			if got.Severity != tt.wantSeverity {
+				t.Fatalf("severity = %q, want %q: %+v", got.Severity, tt.wantSeverity, got)
+			}
+			if !strings.Contains(got.Detail, tt.wantDetail) {
+				t.Errorf("detail = %q, want %q", got.Detail, tt.wantDetail)
+			}
+			if tt.wantRemediation != "" && !strings.Contains(got.Remediation, tt.wantRemediation) {
+				t.Errorf("remediation = %q, want %q", got.Remediation, tt.wantRemediation)
+			}
+		})
+	}
+}
+
 // TestDiagnoseConflictingSTTModeIsError proves an stt_provider/stt_mode
 // conflict surfaces as a doctor error with the resolver's actionable message,
 // and does not leak a misleading model-assets error.
@@ -201,7 +282,13 @@ func TestValidateQwenExternalWorkerRejectsManagedSpeaker(t *testing.T) {
 }
 
 func TestDiagnoseDefaultKokoroDoesNotRequireOptionalQwen(t *testing.T) {
-	cfg := &Config{STTProvider: "sherpa", TTSProvider: "kokoro"}
+	cfg := &Config{
+		BrainProvider: "ollama",
+		OllamaModel:   "test-model",
+		OllamaHost:    "http://localhost:11434",
+		STTProvider:   "sherpa",
+		TTSProvider:   "kokoro",
+	}
 	diags := diagByName(Diagnose(cfg, t.TempDir(), failLookPath))
 
 	if d := diags["tts-provider"]; d.Severity != SeverityOK || !strings.Contains(d.Detail, "kokoro") {

@@ -411,6 +411,11 @@ func toolRunCommandWithTimeout(ctx context.Context, workDir string, args map[str
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = workDir
+	configureCommandCancellation(cmd)
+	// Bound pipe draining if a descendant escapes cancellation. On Unix the
+	// process-group cancellation handles the normal shell-and-children case;
+	// WaitDelay is the portable final guard.
+	cmd.WaitDelay = 100 * time.Millisecond
 
 	output, err := cmd.CombinedOutput()
 	result := string(output)

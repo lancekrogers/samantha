@@ -15,7 +15,14 @@ concurrency:
 
 jobs:
   test:
-    runs-on: macos-latest
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - ubuntu-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -47,7 +54,14 @@ jobs:
   # and this -race suite is its deterministic regression guard, so a failure
   # must fail the job rather than only warn.
   voiceflow:
-    runs-on: macos-latest
+    name: Voiceflow (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - ubuntu-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -56,3 +70,37 @@ jobs:
           cache: true
       - name: Voiceflow
         run: go test -race -tags integration ./tests/voiceflow/... -count=1 -timeout 5m
+
+  integration:
+    name: Container integration (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Integration
+        run: go run ./internal/buildutil integration
+
+  linux-artifact:
+    name: Relocatable Linux artifact
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: extractions/setup-just@v3
+      - name: Install artifact tools
+        run: sudo apt-get install --yes patchelf
+      - name: Build and smoke-test artifact
+        run: just release linux-artifact
+      - uses: actions/upload-artifact@v4
+        with:
+          name: samantha-linux-amd64
+          path: dist/samantha-linux-amd64.tar.gz
+          if-no-files-found: error

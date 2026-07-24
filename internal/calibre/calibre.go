@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/platforminfo"
 )
 
 // Sentinel errors for common resolution outcomes.
@@ -135,7 +136,7 @@ func BundleLookPath(name string) (string, error) {
 			return candidate, nil
 		}
 	}
-	return "", fmt.Errorf("%w: %s not on PATH or in Calibre app bundle; install Calibre (macOS: brew install --cask calibre) or set calibredb_binary", ErrCalibreNotFound, name)
+	return "", fmt.Errorf("%w: %s", ErrCalibreNotFound, platforminfo.MissingCalibreDetail(runtime.GOOS, name))
 }
 
 func bundleDirs() []string {

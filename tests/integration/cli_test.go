@@ -159,9 +159,19 @@ func TestCLI_AudiobookCreatePlan(t *testing.T) {
 func TestCLI_Doctor(t *testing.T) {
 	tc := GetSharedContainer(t)
 
-	// The container has the default config (sherpa + kokoro) but no model
-	// assets, so doctor must report missing assets as warnings — and exit 0,
-	// read-only, with no network — since warnings are not errors.
+	// Select the offline-valid brain configuration so this test isolates model
+	// asset warnings. The default Claude provider intentionally fails doctor
+	// when its required CLI is absent from this minimal container.
+	if _, err := tc.RunSamantha("config", "brain_provider", "ollama"); err != nil {
+		t.Fatalf("configure offline doctor brain provider: %v", err)
+	}
+	if _, err := tc.RunSamantha("config", "ollama_model", "integration-model"); err != nil {
+		t.Fatalf("configure offline doctor model: %v", err)
+	}
+
+	// The container has sherpa + kokoro configured but no model assets, so
+	// doctor must report missing assets as warnings — and exit 0, read-only,
+	// with no network — since warnings are not errors.
 	output, err := tc.RunSamantha("doctor")
 	if err != nil {
 		t.Fatalf("samantha doctor failed (warnings should exit 0): %v", err)
