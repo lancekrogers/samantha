@@ -399,10 +399,6 @@ func toolWriteFile(workDir string, args map[string]any) string {
 	return fmt.Sprintf("wrote %d bytes to %s", len(content), path)
 }
 
-func toolRunCommand(ctx context.Context, workDir string, args map[string]any) string {
-	return toolRunCommandWithTimeout(ctx, workDir, args, 0)
-}
-
 func toolRunCommandWithTimeout(ctx context.Context, workDir string, args map[string]any, timeout time.Duration) string {
 	command, _ := args["command"].(string)
 	if command == "" {

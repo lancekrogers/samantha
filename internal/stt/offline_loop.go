@@ -92,10 +92,7 @@ func runOfflineLoop(ctx context.Context, deps offlineLoopDeps, events chan<- Eve
 			return true
 		}
 		track.reset()
-		if !emitPhase("listening") {
-			return true
-		}
-		return false
+		return !emitPhase("listening")
 	}
 
 	for {

@@ -84,10 +84,6 @@ func (m conversationModel) lineBounds(offset int) (int, int) {
 	return m.editor.lineBounds(offset)
 }
 
-func (m conversationModel) lineStartOffset(offset int) int {
-	return m.editor.lineStart(offset)
-}
-
 func (m conversationModel) currentLineLength() int {
 	_, end := m.editor.lineBounds(m.editor.cursorOffset())
 	return end - m.editor.lineStart(m.editor.cursorOffset())

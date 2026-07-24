@@ -31,7 +31,7 @@ func TestSlashCommandRegistryMatchesCanonicalNamesAndAliases(t *testing.T) {
 func TestSettingsCommandRequestsSettingsScreen(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	m, _ := startedConversation(t, runner, false)
-	m, cmd := typeAndEnter(m, "/settings")
+	_, cmd := typeAndEnter(m, "/settings")
 
 	if cmd == nil {
 		t.Fatal("/settings did not request a screen change")

@@ -40,7 +40,14 @@ type meetingRoutePlan struct {
 
 // App is the top-level bubbletea model.
 type App struct {
-	screen    screen
+	screen screen
+	// cfg is mutated only on the bubbletea Update goroutine (settings, audiobook,
+	// library screens write its fields directly). It is never handed to a live
+	// pipeline/brain goroutine: conversationRuntimeBuilder takes an independent
+	// snapshot via config.Load() at conversation entry, so a running turn reads a
+	// distinct *Config and never aliases these writes. Preserve that invariant —
+	// pass a snapshot (config.Load or a value copy), not this pointer, to any
+	// goroutine that reads config concurrently. See internal/config/config.go.
 	cfg       *config.Config
 	providers []discovery.ProviderInfo
 	width     int

@@ -173,6 +173,13 @@ func (c *Capture) SetFrontend(frontend Frontend) {
 }
 
 // Subscribe registers a non-blocking listener for live capture chunks.
+//
+// Read-only contract: the []float32 delivered on the returned channel is shared
+// — publish fans the SAME backing slice to every subscriber for a given frame.
+// Consumers must treat it as read-only; a subscriber that mutates it in place
+// corrupts the frame every other subscriber observes. (The ring buffer is
+// unaffected: RingBuffer.Write copies element-wise into its own storage.) A
+// consumer that needs to retain or mutate samples must copy first.
 func (c *Capture) Subscribe(buffer int) (int, <-chan []float32) {
 	if buffer <= 0 {
 		buffer = 1
@@ -211,6 +218,11 @@ func (c *Capture) IsRunning() bool {
 }
 
 func (c *Capture) publish(samples []float32) {
+	// Every subscriber receives the SAME samples slice (no per-subscriber copy):
+	// the read-only contract on Subscribe is what keeps that safe. Copying here
+	// would add an allocation per subscriber on the real-time malgo callback
+	// thread, so the contract is documented rather than enforced.
+	//
 	// Hold the read lock across the sends. They are non-blocking (buffered +
 	// default), so the callback thread never stalls, and Unsubscribe's
 	// delete+close (under the write lock) cannot race a send.

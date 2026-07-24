@@ -228,16 +228,6 @@ func archiveExtracted(dir string, checkFiles []string) bool {
 	return true
 }
 
-func archiveInstalled(dir, id, url, sha256Hex string, checkFiles []string) bool {
-	if !archiveExtracted(dir, checkFiles) {
-		return false
-	}
-	if sha256Hex == "" {
-		return true
-	}
-	return archiveInstallMarkerValid(dir, id, url, sha256Hex, checkFiles)
-}
-
 func ensureArchiveInstalled(dir, id, url, sha256Hex string, checkFiles []string) (bool, error) {
 	if !archiveExtracted(dir, checkFiles) {
 		return false, nil
@@ -467,10 +457,6 @@ func safeJoin(dir, rel string) (string, error) {
 		return "", fmt.Errorf("unsafe path %q escapes archive root", rel)
 	}
 	return target, nil
-}
-
-func fileExists(path string, expectedSize int64) bool {
-	return fileVerified(path, expectedSize, "")
 }
 
 func fileVerified(path string, expectedSize int64, sha256Hex string) bool {

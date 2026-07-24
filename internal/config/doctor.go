@@ -266,7 +266,7 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 				platforminfo.CalibreBinaryHint(runtime.GOOS) + ".",
 		})
 	} else {
-		detail := p
+		var detail string
 		if cfg.CalibreEnabled {
 			detail = p + " (calibre_enabled=true)"
 		} else {

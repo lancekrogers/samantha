@@ -204,7 +204,9 @@ func entrySize(p string, e fs.DirEntry) int64 {
 		return info.Size()
 	}
 	var total int64
-	filepath.WalkDir(p, func(_ string, d fs.DirEntry, err error) error {
+	// Best-effort size scan: the callback already ignores per-entry errors, so
+	// a failed walk simply yields the partial total accumulated so far.
+	_ = filepath.WalkDir(p, func(_ string, d fs.DirEntry, err error) error {
 		if err != nil || !d.Type().IsRegular() {
 			return nil
 		}

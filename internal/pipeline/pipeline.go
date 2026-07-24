@@ -399,7 +399,8 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 		playback, err := p.Player.PlayStream(ctx, stream)
 		if err != nil {
 			if !usedFallback {
-				playback, usedFallback, err = p.playFallback(ctx, response, err)
+				// usedFallback is not read again on this linear path; discard it.
+				playback, _, err = p.playFallback(ctx, response, err)
 			}
 			if err == nil {
 				// The fallback playback is ready; continue through the normal
@@ -736,7 +737,8 @@ func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct
 	playback, err := p.Player.PlayStream(ctx, stream)
 	if err != nil {
 		if !usedFallback {
-			playback, usedFallback, err = p.playFallback(ctx, sentence, err)
+			// usedFallback is not read again on this linear path; discard it.
+			playback, _, err = p.playFallback(ctx, sentence, err)
 		}
 		if err == nil {
 			// The fallback playback is ready; continue to enqueue its watcher.
@@ -861,7 +863,7 @@ func (p *Pipeline) applyPlaybackEvent(event playbackEvent, metrics *turnMetrics,
 }
 
 func (p *Pipeline) handlePlaybackLifecycle(sentence string, synthStarted time.Time, playback *audio.Playback, metrics *turnMetrics) {
-	startedAt := time.Time{}
+	var startedAt time.Time
 
 	select {
 	case <-playback.Started():
@@ -1015,7 +1017,7 @@ func (p *Pipeline) toolEndHook() func(name, preview string) {
 // the loop keeps consuming, so finished events must still be delivered to drain
 // the pending count.
 func watchPlayback(loopDone <-chan struct{}, sentence string, synthStarted time.Time, playback *audio.Playback, started *atomic.Bool, out chan<- playbackEvent) {
-	startedAt := time.Time{}
+	var startedAt time.Time
 
 	select {
 	case <-loopDone:

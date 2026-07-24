@@ -40,7 +40,7 @@ func (m settingsModel) meetingItems() []string {
 	}
 	nCfg := len(m.cfg.Meeting.Route.Destinations)
 	nAvail := len(m.routeDests)
-	availLabel := "…"
+	var availLabel string
 	if m.routeDestsLoading {
 		availLabel = "discovering…"
 	} else if m.routeDestsErr != "" {

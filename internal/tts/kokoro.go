@@ -259,7 +259,7 @@ func (k *KokoroTTS) ListVoices(locale, gender string) []Voice {
 
 		voices = append(voices, Voice{
 			Name:         name,
-			FriendlyName: fmt.Sprintf("Kokoro %s (%s)", strings.Title(vName), vLocale),
+			FriendlyName: fmt.Sprintf("Kokoro %s (%s)", titleCase(vName), vLocale),
 			Gender:       vGender,
 			Locale:       vLocale,
 		})

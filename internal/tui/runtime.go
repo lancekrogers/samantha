@@ -66,12 +66,6 @@ type meetingReadyMsg struct {
 	err error
 }
 
-// meetingProgressMsg is asset-download progress while preparing the recorder.
-type meetingProgressMsg struct {
-	name string
-	pct  float64
-}
-
 func buildMeeting(build MeetingBuilder, ctx context.Context, description string) tea.Cmd {
 	if build == nil {
 		return func() tea.Msg {
