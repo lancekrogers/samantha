@@ -158,6 +158,7 @@ type turnMetrics struct {
 	playbackComplete time.Time
 	bargeIn          time.Time
 	interrupted      bool
+	degraded         bool
 }
 
 func newTurnMetrics() *turnMetrics {
@@ -166,6 +167,7 @@ func newTurnMetrics() *turnMetrics {
 
 func (m *turnMetrics) snapshot() events.TurnMetrics {
 	return events.TurnMetrics{
+		Degraded:                m.degraded,
 		Interrupted:             m.interrupted,
 		STTFinalElapsed:         m.elapsed(m.sttFinal),
 		FirstModelChunkElapsed:  m.elapsed(m.firstModelChunk),
@@ -224,6 +226,70 @@ func (c *turnConductor) finish(terminal TurnState) {
 	c.p.emit(m)
 }
 
+// recoverTurn closes out a turn that died on a hard brain/tool failure with a
+// user-visible (and spoken, when possible) recovery reply instead of silence.
+// The error becomes activity detail, the transcript keeps any partial reply
+// with the recovery line appended, and the turn completes degraded — so
+// callers do not count a model failure as a voice-input failure.
+func (p *Pipeline) recoverTurn(ctx context.Context, turn *turnConductor, metrics *turnMetrics, partial string, err error) {
+	metrics.degraded = true
+	stage := "brain"
+	speak := true
+	if errors.Is(err, errPlaybackStalled) {
+		// The player is wedged; queueing recovery speech into it would stall
+		// again. The reply text still reaches the transcript.
+		stage = "playback"
+		speak = false
+	}
+	p.emit(events.Error{Stage: stage, Message: err.Error()})
+
+	response := brain.RecoveryReply
+	if partial = strings.TrimSpace(partial); partial != "" {
+		response = partial + "\n\n" + brain.RecoveryReply
+	}
+	p.emit(events.ResponseReady{Response: response, Degraded: true})
+
+	if speak && ctx.Err() == nil {
+		p.speakBestEffort(ctx, brain.RecoveryReply, metrics, turn)
+	}
+	turn.finish(TurnCompleted)
+	if p.OnTurn != nil {
+		p.OnTurn()
+	}
+}
+
+// speakBestEffort synthesizes and plays one utterance for a degraded turn.
+// Failures only produce activity detail — recovery speech must never fail the
+// turn it is rescuing.
+func (p *Pipeline) speakBestEffort(ctx context.Context, sentence string, metrics *turnMetrics, turn *turnConductor) {
+	if p.OutputMuted() || p.Player == nil || !p.ttsReady() {
+		return
+	}
+	turn.to(TurnSpeaking)
+	if metrics.firstSegment.IsZero() {
+		metrics.firstSegment = time.Now()
+	}
+	p.emit(events.SpeechSegmentReady{Text: sentence})
+	p.emit(events.GeneratingVoice{Sentence: sentence})
+
+	synthStarted := time.Now()
+	stream, _, err := p.synthesizeWithFallback(ctx, sentence)
+	if err != nil {
+		p.emit(events.Error{Stage: "tts", Message: fmt.Sprintf("TTS: %v", err)})
+		return
+	}
+	if p.OutputMuted() {
+		discardPCMStream(stream)
+		return
+	}
+	playback, err := p.Player.PlayStream(ctx, stream)
+	if err != nil {
+		p.emit(events.Error{Stage: "playback", Message: fmt.Sprintf("playback: %v", err)})
+		return
+	}
+	p.handlePlaybackLifecycle(sentence, synthStarted, playback, metrics)
+}
+
 // StopPlayback aborts audible TTS immediately. Used by the TUI when the user
 // types to barge in so speech does not continue until the turn context drains.
 func (p *Pipeline) StopPlayback() {
@@ -275,24 +341,27 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 		OnToolEnd:    p.toolEndHook(),
 	})
 	if err != nil {
-		turn.finish(TurnFailed)
-		return text, fmt.Errorf("brain: %w", err)
+		if errors.Is(err, context.Canceled) {
+			turn.finish(TurnInterrupted)
+			return text, fmt.Errorf("brain: %w", err)
+		}
+		p.recoverTurn(ctx, turn, metrics, "", fmt.Errorf("brain: %w", err))
+		return text, nil
 	}
 
 	fullResponse, interrupted, err := p.streamResponse(turnCtx, turnCancel, brainStream, true, metrics, turn)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			// Model/tool stall — distinct from STT timed_out (no speech).
-			p.emit(events.Error{Stage: "brain", Message: "model timed out before finishing a reply"})
-			turn.finish(TurnFailed)
-			return text, fmt.Errorf("brain: %w", err)
-		}
 		if interrupted || errors.Is(err, context.Canceled) {
 			turn.finish(TurnInterrupted)
-		} else {
-			turn.finish(TurnFailed)
+			return text, err
 		}
-		return text, err
+		if errors.Is(err, context.DeadlineExceeded) {
+			// Model/tool stall — distinct from STT timed_out (no speech).
+			err = fmt.Errorf("model timed out before finishing a reply: %w", err)
+		}
+		// Speak on the parent ctx: turnCtx is dead after a deadline stall.
+		p.recoverTurn(ctx, turn, metrics, fullResponse, err)
+		return text, nil
 	}
 
 	// On a barge-in the user is already speaking their next turn into the mic;
@@ -302,6 +371,7 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 	p.emit(events.ResponseReady{
 		Response:    fullResponse,
 		Interrupted: interrupted,
+		Degraded:    metrics.degraded,
 	})
 	if interrupted {
 		turn.finish(TurnInterrupted)
@@ -320,8 +390,8 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 // ResponseReady for the transcript, terminal metrics via finish, and OnTurn
 // for session auto-save. Every degraded and mute short-circuit must use this
 // so finish logic cannot drift across early returns.
-func (p *Pipeline) completeTextTurn(turn *turnConductor, response string) {
-	p.emit(events.ResponseReady{Response: response})
+func (p *Pipeline) completeTextTurn(turn *turnConductor, metrics *turnMetrics, response string) {
+	p.emit(events.ResponseReady{Response: response, Degraded: metrics.degraded})
 	turn.finish(TurnCompleted)
 	if p.OnTurn != nil {
 		p.OnTurn()
@@ -349,8 +419,12 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 		OnToolEnd:    p.toolEndHook(),
 	})
 	if err != nil {
-		turn.finish(TurnFailed)
-		return fmt.Errorf("brain: %w", err)
+		if errors.Is(err, context.Canceled) {
+			turn.finish(TurnInterrupted)
+			return fmt.Errorf("brain: %w", err)
+		}
+		p.recoverTurn(ctx, turn, metrics, "", fmt.Errorf("brain: %w", err))
+		return nil
 	}
 
 	// Stream the reply so the TUI can render it token-by-token, then fall back
@@ -358,11 +432,16 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	// and per-chunk ResponseDelta events are emitted inside observeStream.
 	response, err := p.collectTextStream(brainCtx, stream, metrics)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			p.emit(events.Error{Stage: "brain", Message: "model timed out before finishing a reply"})
+		if errors.Is(err, context.Canceled) {
+			turn.finish(TurnInterrupted)
+			return fmt.Errorf("brain: %w", err)
 		}
-		turn.finish(TurnFailed)
-		return fmt.Errorf("brain: %w", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			err = fmt.Errorf("model timed out before finishing a reply: %w", err)
+		}
+		// Speak on the parent ctx: brainCtx is dead after a deadline stall.
+		p.recoverTurn(ctx, turn, metrics, response, err)
+		return nil
 	}
 
 	metrics.modelComplete = time.Now()
@@ -385,14 +464,14 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 			// Voice is best-effort in text mode: the text response still
 			// completed, so the turn is completed (degraded), not failed.
 			p.emit(events.Error{Stage: "tts", Message: fmt.Sprintf("TTS: %v", err)})
-			p.completeTextTurn(turn, response)
+			p.completeTextTurn(turn, metrics, response)
 			return nil
 		}
 		if p.OutputMuted() {
 			// Drop the stream so the synth producer is not left blocked on a
 			// full frames channel after we skip PlayStream.
 			discardPCMStream(stream)
-			p.completeTextTurn(turn, response)
+			p.completeTextTurn(turn, metrics, response)
 			return nil
 		}
 
@@ -409,7 +488,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 				// Engine.PlayStream owns the stream once called (even on error) and
 				// must drain it; the pipeline does not discard here.
 				p.emit(events.Error{Stage: "playback", Message: fmt.Sprintf("playback: %v", err)})
-				p.completeTextTurn(turn, response)
+				p.completeTextTurn(turn, metrics, response)
 				return nil
 			}
 		}
@@ -418,14 +497,14 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 		// saw an empty queue. Stop again so that late-enqueued audio cannot play.
 		if p.OutputMuted() {
 			p.Player.Stop()
-			p.completeTextTurn(turn, response)
+			p.completeTextTurn(turn, metrics, response)
 			return nil
 		}
 
 		p.handlePlaybackLifecycle(response, synthStarted, playback, metrics)
 	}
 
-	p.completeTextTurn(turn, response)
+	p.completeTextTurn(turn, metrics, response)
 	return nil
 }
 
@@ -625,6 +704,14 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 			metrics.modelComplete = time.Now()
 			p.emit(events.ThinkingComplete{Elapsed: metrics.elapsed(metrics.modelComplete)})
 			if result.Err != nil && !interrupted {
+				if result.Recovered {
+					// The brain already streamed a spoken recovery reply
+					// through Chunks; let the turn drain and complete degraded
+					// while the failure lands in the activity feed.
+					metrics.degraded = true
+					p.emit(events.Error{Stage: "brain", Message: result.Err.Error()})
+					continue
+				}
 				if p.Player != nil {
 					p.Player.Stop()
 				}
@@ -970,10 +1057,19 @@ func (p *Pipeline) collectTextStream(ctx context.Context, stream *brain.Stream, 
 	select {
 	case res := <-stream.Done:
 		if res.Err != nil {
-			return "", res.Err
+			if res.Recovered {
+				// The streamed text already ends with the brain's recovery
+				// reply; keep it and surface the failure as activity detail.
+				metrics.degraded = true
+				p.emit(events.Error{Stage: "brain", Message: res.Err.Error()})
+				break
+			}
+			// Return any partial text so the caller's recovery path can keep
+			// it in the transcript alongside the recovery reply.
+			return strings.TrimSpace(b.String()), res.Err
 		}
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return strings.TrimSpace(b.String()), ctx.Err()
 	}
 	return strings.TrimSpace(b.String()), nil
 }

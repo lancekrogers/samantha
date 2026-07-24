@@ -15,6 +15,10 @@ type StreamOptions struct {
 // StreamResult reports the terminal outcome of a streamed response.
 type StreamResult struct {
 	Err error
+	// Recovered marks that Err was already converted into a spoken recovery
+	// reply streamed through Chunks (and recorded in history). Consumers must
+	// treat the turn as degraded-complete and surface Err as detail only.
+	Recovered bool
 }
 
 // Stream carries a streamed model response and its terminal result.
