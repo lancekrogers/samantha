@@ -295,6 +295,19 @@ func qwenUnsupported(feature, detail string) error {
 }
 
 func (q *Qwen3TTS) synthesize(ctx context.Context, req SynthesisRequest, stream *audio.PCMStream) {
+	runCtx, cancel := context.WithTimeout(ctx, q.timeout)
+	defer cancel()
+	if q.managed {
+		// Managed path streams float32 PCM over JSONL (no temp WAV required).
+		// Model generation is still whole-utterance; see worker.py comments.
+		if err := q.synthesizeManagedStream(runCtx, req, stream); err != nil {
+			stream.CloseWithError(managedWorkerError(err))
+			return
+		}
+		stream.Close()
+		return
+	}
+
 	tmpDir, err := os.MkdirTemp("", "samantha-qwen3-tts-")
 	if err != nil {
 		stream.CloseWithError(fmt.Errorf("qwen3-tts: create output directory: %w", err))
@@ -304,16 +317,6 @@ func (q *Qwen3TTS) synthesize(ctx context.Context, req SynthesisRequest, stream 
 
 	outputPath := filepath.Join(tmpDir, "speech.wav")
 	textPath := filepath.Join(tmpDir, "text.txt")
-	runCtx, cancel := context.WithTimeout(ctx, q.timeout)
-	defer cancel()
-	if q.managed {
-		if err := q.synthesizeManaged(runCtx, req, outputPath); err != nil {
-			stream.CloseWithError(managedWorkerError(err))
-			return
-		}
-		q.streamWorkerWAV(ctx, outputPath, stream)
-		return
-	}
 
 	args, err := q.buildArgs(req, outputPath, textPath)
 	if err != nil {
@@ -356,13 +359,13 @@ func (q *Qwen3TTS) synthesize(ctx context.Context, req SynthesisRequest, stream 
 	q.streamWorkerWAV(ctx, outputPath, stream)
 }
 
-// synthesizeManaged serializes access to the persistent model worker and owns
-// its recovery policy. Cancellation invalidates only the worker process; the
-// provider remains available and starts a fresh worker on the next request.
+// synthesizeManagedStream serializes access to the persistent model worker and
+// owns its recovery policy. Cancellation invalidates only the worker process;
+// the provider remains available and starts a fresh worker on the next request.
 // Unexpected worker/protocol failures receive one immediate restart + retry so
 // conversational callers reach their configured fallback only after Qwen has
 // had a chance to recover itself.
-func (q *Qwen3TTS) synthesizeManaged(ctx context.Context, req SynthesisRequest, outputPath string) error {
+func (q *Qwen3TTS) synthesizeManagedStream(ctx context.Context, req SynthesisRequest, stream *audio.PCMStream) error {
 	q.sessionMu.Lock()
 	defer q.sessionMu.Unlock()
 
@@ -373,7 +376,7 @@ func (q *Qwen3TTS) synthesizeManaged(ctx context.Context, req SynthesisRequest, 
 		return err
 	}
 
-	err := q.session.Synthesize(ctx, req, outputPath)
+	err := q.session.SynthesizeToStream(ctx, req, stream)
 	if err == nil {
 		return nil
 	}
@@ -385,7 +388,7 @@ func (q *Qwen3TTS) synthesizeManaged(ctx context.Context, req SynthesisRequest, 
 	if restartErr := q.ensureManagedSessionLocked(ctx); restartErr != nil {
 		return fmt.Errorf("managed worker failed (%v); restart failed: %w", err, restartErr)
 	}
-	if retryErr := q.session.Synthesize(ctx, req, outputPath); retryErr != nil {
+	if retryErr := q.session.SynthesizeToStream(ctx, req, stream); retryErr != nil {
 		q.discardManagedSessionLocked()
 		return fmt.Errorf("managed worker failed after one restart: %w", retryErr)
 	}

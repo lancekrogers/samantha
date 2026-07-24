@@ -19,7 +19,7 @@ import (
 const (
 	ProviderName         = "qwen3-tts"
 	PackageVersion       = "0.1.1"
-	WorkerRevision       = "2"
+	WorkerRevision       = "3" // PCM audio_chunk JSONL; no temp-WAV required
 	UVVersion            = "0.11.30"
 	PythonVersion        = "3.12"
 	DefaultModelID       = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"

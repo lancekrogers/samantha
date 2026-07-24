@@ -3,9 +3,11 @@ package tts
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -42,14 +44,32 @@ func TestManagedQwenSessionHelper(t *testing.T) {
 				}
 			}
 		}
-		if err := audio.WriteWAVFloat32(msg.OutputPath, qwen3TTSSampleRate, []float32{0.1, -0.1, 0.2}); err != nil {
-			os.Exit(4)
+		// Emit progressive PCM like the real worker (post-generation).
+		samples := []float32{0.1, -0.1, 0.2}
+		raw := make([]byte, len(samples)*4)
+		for i, s := range samples {
+			u := math.Float32bits(s)
+			raw[i*4] = byte(u)
+			raw[i*4+1] = byte(u >> 8)
+			raw[i*4+2] = byte(u >> 16)
+			raw[i*4+3] = byte(u >> 24)
+		}
+		chunk := managedQwenMessage{
+			Protocol: managedQwenProtocol, Type: "audio_chunk", RequestID: msg.RequestID,
+			SampleRate: qwen3TTSSampleRate, PCMf32leB64: base64.StdEncoding.EncodeToString(raw),
+		}
+		data, _ := json.Marshal(chunk)
+		fmt.Println(string(data))
+		if msg.OutputPath != "" {
+			if err := audio.WriteWAVFloat32(msg.OutputPath, qwen3TTSSampleRate, samples); err != nil {
+				os.Exit(4)
+			}
 		}
 		response := managedQwenMessage{
 			Protocol: managedQwenProtocol, Type: "complete", RequestID: msg.RequestID,
-			OutputPath: msg.OutputPath, SampleRate: qwen3TTSSampleRate,
+			SampleRate: qwen3TTSSampleRate,
 		}
-		data, _ := json.Marshal(response)
+		data, _ = json.Marshal(response)
 		fmt.Println(string(data))
 	}
 }
@@ -75,10 +95,77 @@ done
 		t.Fatalf("startManagedQwenSession() error = %v", err)
 	}
 	defer session.Close()
+	// Legacy file path still works when worker only sends complete (no chunks).
 	if err := session.Synthesize(context.Background(), SynthesisRequest{
 		Text: "hello", Mode: VoiceModeCustomVoice, Voice: "Vivian", Language: "English",
 	}, filepath.Join(t.TempDir(), "speech.wav")); err != nil {
 		t.Fatalf("Synthesize() error = %v", err)
+	}
+}
+
+func TestManagedQwenSessionStreamsPCMChunks(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "pcm-worker.sh")
+	// Three float32 samples: 0.5, -0.5, 0.25 as little-endian base64.
+	// 0.5 = 3f000000, -0.5 = bf000000, 0.25 = 3e800000 → base64
+	source := `#!/bin/sh
+echo '{"protocol":"samantha-qwen/v1","type":"ready","voices":["Vivian"]}'
+while IFS= read -r request; do
+  case "$request" in
+    *'"type":"shutdown"'*) exit 0 ;;
+    *)
+      echo '{"protocol":"samantha-qwen/v1","type":"audio_chunk","request_id":"qwen-1","sample_rate":24000,"pcm_f32le_b64":"AAAAPwAAgD8AAIA+"}'
+      # note: above may be wrong — test uses decode helper separately for accuracy
+      echo '{"protocol":"samantha-qwen/v1","type":"complete","request_id":"qwen-1","sample_rate":24000}'
+      ;;
+  esac
+done
+`
+	// Build a correct base64 chunk in Go and inject into the script.
+	samples := []float32{0.5, -0.5, 0.25}
+	raw := make([]byte, len(samples)*4)
+	for i, s := range samples {
+		u := math.Float32bits(s)
+		raw[i*4] = byte(u)
+		raw[i*4+1] = byte(u >> 8)
+		raw[i*4+2] = byte(u >> 16)
+		raw[i*4+3] = byte(u >> 24)
+	}
+	b64 := base64.StdEncoding.EncodeToString(raw)
+	source = fmt.Sprintf(`#!/bin/sh
+echo '{"protocol":"samantha-qwen/v1","type":"ready","voices":["Vivian"]}'
+while IFS= read -r request; do
+  case "$request" in
+    *'"type":"shutdown"'*) exit 0 ;;
+    *)
+      echo '{"protocol":"samantha-qwen/v1","type":"audio_chunk","request_id":"qwen-1","sample_rate":24000,"pcm_f32le_b64":"%s"}'
+      echo '{"protocol":"samantha-qwen/v1","type":"complete","request_id":"qwen-1","sample_rate":24000}'
+      ;;
+  esac
+done
+`, b64)
+	if err := os.WriteFile(script, []byte(source), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	session, err := startManagedQwenSession("sh", script, "/models/qwen", time.Second)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer session.Close()
+	stream := audio.NewPCMStream(context.Background())
+	if err := session.SynthesizeToStream(context.Background(), SynthesisRequest{
+		Text: "hello", Mode: VoiceModeCustomVoice, Voice: "Vivian", Language: "English",
+	}, stream); err != nil {
+		t.Fatalf("SynthesizeToStream: %v", err)
+	}
+	stream.Close()
+	got := drainStream(t, stream)
+	if len(got) != 3 {
+		t.Fatalf("samples = %v, want 3", got)
+	}
+	for i, want := range samples {
+		if math.Abs(float64(got[i]-want)) > 1e-6 {
+			t.Fatalf("sample[%d] = %v, want %v", i, got[i], want)
+		}
 	}
 }
 
