@@ -83,7 +83,9 @@ func (m settingsModel) previewVoice(ctx context.Context, id int64, voice tts.Voi
 			defer cleanup()
 		}
 
-		stream, err := ttsProvider.Synthesize(ctx, "Hi, I'm Samantha. This is how I sound.")
+		// Name the voice being auditioned — not a fixed persona. Providers,
+		// voices, and agents are all multi-select now.
+		stream, err := ttsProvider.Synthesize(ctx, tts.SpokenPreviewLine(voice.Name))
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return quiet

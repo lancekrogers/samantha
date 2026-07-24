@@ -379,7 +379,10 @@ func TestSetAndSaveBrainProviderPersistsOllamaDefaults(t *testing.T) {
 	}
 }
 
-func TestSetAndSaveBrainProviderPreservesExplicitOllamaDisables(t *testing.T) {
+func TestSetAndSaveBrainProviderEnablesOllamaToolsDespiteDumpedFalse(t *testing.T) {
+	// WriteConfigAs often materializes voice_tools_enabled: false as a real key.
+	// Switching to Ollama in Settings must re-enable tools so local models can
+	// actually use list/read/write/run_command.
 	t.Setenv("VOICE_TOOLS_ENABLED", "")
 	t.Setenv("SKILLS_ENABLED", "")
 
@@ -402,16 +405,49 @@ func TestSetAndSaveBrainProviderPreservesExplicitOllamaDisables(t *testing.T) {
 	if err := SetAndSaveBrainProvider(cfg, "ollama"); err != nil {
 		t.Fatalf("SetAndSaveBrainProvider() error: %v", err)
 	}
+	if !cfg.VoiceToolsEnabled || !cfg.SkillsEnabled {
+		t.Fatalf("switch to ollama should enable tools/skills, got tools=%v skills=%v",
+			cfg.VoiceToolsEnabled, cfg.SkillsEnabled)
+	}
 
 	v = viper.New()
 	setDefaults(v)
 	reloaded, err := Load()
 	if err != nil {
-		t.Fatalf("Load() after explicit disables: %v", err)
+		t.Fatalf("Load() after switch: %v", err)
 	}
-	if reloaded.VoiceToolsEnabled || reloaded.SkillsEnabled {
-		t.Fatalf("explicit Ollama disables must remain false, got tools=%v skills=%v",
+	if !reloaded.VoiceToolsEnabled || !reloaded.SkillsEnabled {
+		t.Fatalf("persisted ollama switch should keep tools/skills on, got tools=%v skills=%v",
 			reloaded.VoiceToolsEnabled, reloaded.SkillsEnabled)
+	}
+}
+
+func TestSetAndSaveBrainProviderHonorsEnvToolsOff(t *testing.T) {
+	t.Setenv("VOICE_TOOLS_ENABLED", "false")
+	t.Setenv("SKILLS_ENABLED", "false")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("brain_provider: claude\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	origDir, origFile := configDir, configFile
+	configDir, configFile = dir, path
+	defer func() {
+		configDir, configFile = origDir, origFile
+	}()
+	resetViper(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	if err := SetAndSaveBrainProvider(cfg, "ollama"); err != nil {
+		t.Fatalf("SetAndSaveBrainProvider() error: %v", err)
+	}
+	if cfg.VoiceToolsEnabled || cfg.SkillsEnabled {
+		t.Fatalf("env=false must keep tools/skills off, got tools=%v skills=%v",
+			cfg.VoiceToolsEnabled, cfg.SkillsEnabled)
 	}
 }
 

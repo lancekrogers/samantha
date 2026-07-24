@@ -189,6 +189,8 @@ func (m *settingsModel) buildTTSItems() {
 				detail = "installing managed runtime and CustomVoice model…"
 			case managed && m.qwenStatus.Installed:
 				detail = fmt.Sprintf("managed CustomVoice · %d preset voices · ready", len(managedqwen.CustomVoices()))
+			case managed && m.qwenStatus.RuntimeReady && m.qwenStatus.ModelReady:
+				detail = "on disk · enter to repair install marker"
 			case managed:
 				detail = "not installed · enter to install preset voices"
 			}
@@ -444,7 +446,11 @@ func (m *settingsModel) selectCurrent() tea.Cmd {
 			}
 			m.buildModelItems()
 			m.buildToolItems()
-			m.message = fmt.Sprintf("Provider set to %s", name)
+			if strings.EqualFold(name, "ollama") && m.cfg.VoiceToolsEnabled {
+				m.message = fmt.Sprintf("Provider set to %s · local tools on (Settings → Tools to toggle)", name)
+			} else {
+				m.message = fmt.Sprintf("Provider set to %s", name)
+			}
 		}
 	case sectionModel:
 		if m.cursor < len(m.modelItems) {
@@ -508,7 +514,11 @@ func (m *settingsModel) selectCurrent() tea.Cmd {
 				m.qwenInstallCancel = cancel
 				m.qwenInstalling = true
 				m.qwenInstallEvents = newEventBridge(16)
-				m.message = "Installing the managed Qwen runtime and preset voices; this is a large first-time download…"
+				if m.qwenStatus.RuntimeReady && m.qwenStatus.ModelReady {
+					m.message = "Repairing managed Qwen metadata (model already on disk)…"
+				} else {
+					m.message = "Installing the managed Qwen runtime and preset voices; first install can be a large download…"
+				}
 				m.buildTTSItems()
 				return tea.Batch(m.qwenInstallEvents.wait(), m.installManagedQwen(ctx))
 			}
