@@ -184,7 +184,13 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 					done <- StreamResult{Err: err}
 					return
 				}
-				o.history = append(o.history, api.Message{Role: "assistant", Content: RecoveryReply})
+				// Keep any partial streamed text: the user already saw/heard
+				// it, so the next turn's context must include it too.
+				reply := RecoveryReply
+				if partial := strings.TrimSpace(textBuf.String()); partial != "" {
+					reply = partial + "\n\n" + RecoveryReply
+				}
+				o.history = append(o.history, api.Message{Role: "assistant", Content: reply})
 				o.trimHistory()
 				done <- StreamResult{Err: err, Recovered: true}
 				return
