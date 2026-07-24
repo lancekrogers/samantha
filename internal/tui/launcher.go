@@ -252,7 +252,7 @@ func (m launcherModel) openPersonaPicker() (launcherModel, tea.Cmd) {
 	m.submenu = nil
 	m.submenuTitle = "New conversation — pick a persona"
 	m.submenuCursor = 0
-	for i, p := range profiles {
+	for _, p := range profiles {
 		if p == nil {
 			continue
 		}
@@ -269,7 +269,9 @@ func (m launcherModel) openPersonaPicker() (launcherModel, tea.Cmd) {
 			} else {
 				hint = "active"
 			}
-			m.submenuCursor = i
+			// Cursor tracks the built submenu, not the profiles index — nil
+			// holes in the listing must not skew the pre-selection.
+			m.submenuCursor = len(m.submenu)
 		}
 		m.submenu = append(m.submenu, launcherItem{
 			label: label, hint: hint, glyph: glyph,
