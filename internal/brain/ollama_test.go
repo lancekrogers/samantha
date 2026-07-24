@@ -489,3 +489,41 @@ func TestThinkStreamCanceledCtxSkipsRecovery(t *testing.T) {
 		t.Fatalf("stream done = %+v, want raw error without recovery on canceled ctx", res)
 	}
 }
+
+// ollamaPartialThenErrorStub streams one valid content line, then breaks the
+// NDJSON stream so the client surfaces an error after partial text arrived.
+func ollamaPartialThenErrorStub(t *testing.T) *api.Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"model":"m","message":{"role":"assistant","content":"Let me check that."},"done":false}`+"\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		_, _ = io.WriteString(w, "not json\n")
+	}))
+	t.Cleanup(srv.Close)
+	base, _ := url.Parse(srv.URL)
+	return api.NewClient(base, http.DefaultClient)
+}
+
+func TestThinkStreamChatErrorKeepsPartialTextInHistory(t *testing.T) {
+	// The user already saw/heard the partial reply, so the next turn's
+	// context must contain it — not just the recovery line.
+	o := &OllamaBrain{client: ollamaPartialThenErrorStub(t), model: "m", cfg: &config.Config{MaxHistory: 10}}
+
+	stream, err := o.ThinkStream(context.Background(), "check something", StreamOptions{})
+	if err != nil {
+		t.Fatalf("ThinkStream() error = %v", err)
+	}
+	for range stream.Chunks {
+	}
+	res := <-stream.Done
+	if res.Err == nil || !res.Recovered {
+		t.Fatalf("stream done = %+v, want a Recovered error result", res)
+	}
+	hist := o.History()
+	tail := hist[len(hist)-1]
+	if !strings.Contains(tail.Content, "Let me check that.") || !strings.Contains(tail.Content, RecoveryReply) {
+		t.Fatalf("history tail = %q, want partial text plus recovery reply", tail.Content)
+	}
+}
