@@ -58,6 +58,21 @@ func (e *Editor) SetCursorInsert(pos Position) {
 	e.buffer.SetCursorInsert(pos)
 }
 
+// ReplaceLineRange replaces [startCol, endCol) on the cursor line with text.
+func (e *Editor) ReplaceLineRange(startCol, endCol int, text string) {
+	e.buffer.ReplaceLineRange(startCol, endCol, text)
+}
+
+// InsertAtCursor inserts text at the cursor (insert-mode semantics).
+func (e *Editor) InsertAtCursor(text string) {
+	e.buffer.Insert(text)
+}
+
+// CurrentLine returns the text of the line under the cursor.
+func (e *Editor) CurrentLine() string {
+	return e.buffer.CurrentLine()
+}
+
 // SetSize sets the editor dimensions.
 func (e *Editor) SetSize(width, height int) {
 	e.width = width

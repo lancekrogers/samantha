@@ -19,6 +19,12 @@ func promptKeys(t *testing.T, p promptEditor, keys ...string) (promptEditor, pro
 			msg = tea.KeyMsg{Type: tea.KeyEscape}
 		case "enter":
 			msg = tea.KeyMsg{Type: tea.KeyEnter}
+		case "tab":
+			msg = tea.KeyMsg{Type: tea.KeyTab}
+		case "shift-tab":
+			msg = tea.KeyMsg{Type: tea.KeyShiftTab}
+		case "backspace":
+			msg = tea.KeyMsg{Type: tea.KeyBackspace}
 		default:
 			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 		}
@@ -133,5 +139,80 @@ func TestPromptEditorViewShowsLineNumbersAndContent(t *testing.T) {
 	view := stripANSI(p.View())
 	if !strings.Contains(view, "hello world") || !strings.Contains(view, "1") {
 		t.Fatalf("view missing content or line numbers:\n%s", view)
+	}
+}
+
+func TestPromptEditorPlaceholderTabComplete(t *testing.T) {
+	p := newPromptEditor()
+	p.StartInsert()
+	// Type "You are {" then Tab → preview agent_name, Enter → close brace.
+	p, _ = promptKeys(t, p, "Y", "o", "u", " ", "a", "r", "e", " ", "{", "tab", "enter")
+	if !strings.Contains(p.Value(), "{agent_name}") {
+		t.Fatalf("value = %q, want {agent_name} inserted", p.Value())
+	}
+	if p.phActive {
+		t.Fatal("completion should clear after enter")
+	}
+}
+
+func TestPromptEditorPlaceholderTabAfterPartial(t *testing.T) {
+	p := newPromptEditor()
+	p.StartInsert()
+	p, _ = promptKeys(t, p, "{", "a", "g", "tab", "enter")
+	if p.Value() != "{agent_name}" {
+		t.Fatalf("value = %q", p.Value())
+	}
+}
+
+func TestPromptEditorPlaceholderEscCancelsPreview(t *testing.T) {
+	p := newPromptEditor()
+	p.StartInsert()
+	p, _ = promptKeys(t, p, "H", "i", " ", "{", "tab")
+	if !strings.Contains(p.Value(), "{agent_name") {
+		t.Fatalf("preview missing: %q", p.Value())
+	}
+	p, ev := promptKeys(t, p, "esc")
+	if ev != promptEventNone {
+		t.Fatalf("esc during completion canceled form: %v", ev)
+	}
+	if p.Mode() != vim.ModeInsert {
+		t.Fatalf("mode = %v, want insert after esc cancel completion", p.Mode())
+	}
+	// Preview name dropped; opening brace remains.
+	if p.Value() != "Hi {" {
+		t.Fatalf("value = %q, want brace kept without preview name", p.Value())
+	}
+}
+
+func TestPromptEditorViewColorizesKnownPlaceholder(t *testing.T) {
+	p := newPromptEditor()
+	p.SetValue("You are {agent_name}.")
+	view := p.View()
+	// Raw view must still contain the token text; style is ANSI-wrapped.
+	if !strings.Contains(stripANSI(view), "{agent_name}") {
+		t.Fatalf("view missing token:\n%s", stripANSI(view))
+	}
+	// modeline in insert mentions tab variables when not completing.
+	p.StartInsert()
+	if !strings.Contains(stripANSI(p.modeline()), "tab variables") {
+		t.Fatalf("modeline = %q", stripANSI(p.modeline()))
+	}
+	// Completing shows the selected variable in the modeline.
+	p, _ = promptKeys(t, p, "{", "tab")
+	if !strings.Contains(stripANSI(p.modeline()), "agent_name") {
+		t.Fatalf("completion modeline = %q", stripANSI(p.modeline()))
+	}
+}
+
+func TestOpenBracePrefix(t *testing.T) {
+	col, partial, ok := openBracePrefix("You are {ag", 11)
+	if !ok || col != 8 || partial != "ag" {
+		t.Fatalf("got col=%d partial=%q ok=%v", col, partial, ok)
+	}
+	if _, _, ok := openBracePrefix("done {agent_name} more", 20); ok {
+		t.Fatal("closed token should not open completion")
+	}
+	if _, _, ok := openBracePrefix("no brace", 4); ok {
+		t.Fatal("expected no open brace")
 	}
 }
