@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/tts"
 )
@@ -45,6 +46,13 @@ func (c *capturedMetrics) Outcome() string {
 		return v.Outcome
 	}
 	return ""
+}
+
+func (c *capturedMetrics) Degraded() bool {
+	if v, ok := c.last.Load().(events.TurnMetrics); ok {
+		return v.Degraded
+	}
+	return false
 }
 
 // countTurnMetrics subscribes a capture for terminal metrics events.
@@ -151,21 +159,26 @@ func TestTerminalSTTErrorFailsWithSingleMetrics(t *testing.T) {
 	}
 }
 
-func TestTerminalTextModeBrainErrorFailsWithSingleMetrics(t *testing.T) {
+func TestTerminalTextModeBrainErrorRecoversWithSingleMetrics(t *testing.T) {
 	bus := events.NewBus()
 	metrics := countTurnMetrics(bus)
+	var ready atomic.Value
+	events.Subscribe(bus, func(e events.ResponseReady) { ready.Store(e) })
 
 	p := &Pipeline{Brain: &fakeBrain{streamErr: errors.New("api down")}, Events: bus}
 
-	err := p.RunTurnTextMode(context.Background(), "hi")
-	if err == nil || !strings.Contains(err.Error(), "brain") {
-		t.Fatalf("RunTurnTextMode() error = %v, want an actionable error naming brain", err)
+	if err := p.RunTurnTextMode(context.Background(), "hi"); err != nil {
+		t.Fatalf("RunTurnTextMode() error = %v, want nil (recovered turn)", err)
 	}
 	if got := metrics.Load(); got != 1 {
 		t.Fatalf("TurnMetrics emitted %d times, want exactly 1", got)
 	}
-	if got := metrics.Outcome(); got != "failed" {
-		t.Fatalf("TurnMetrics.Outcome = %q, want failed", got)
+	if got := metrics.Outcome(); got != "completed" || !metrics.Degraded() {
+		t.Fatalf("TurnMetrics = outcome %q degraded %v, want completed degraded", got, metrics.Degraded())
+	}
+	e, ok := ready.Load().(events.ResponseReady)
+	if !ok || !e.Degraded || !strings.Contains(e.Response, brain.RecoveryReply) {
+		t.Fatalf("ResponseReady = %+v, want degraded recovery reply", e)
 	}
 }
 

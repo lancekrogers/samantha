@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -177,11 +176,8 @@ func TestRunTurnTextModeBrainTimeoutRecovers(t *testing.T) {
 
 	start := time.Now()
 	err := p.RunTurnTextMode(context.Background(), "look into this")
-	if err == nil {
-		t.Fatal("expected brain timeout error")
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("error = %v, want DeadlineExceeded", err)
+	if err != nil {
+		t.Fatalf("RunTurnTextMode() error = %v, want nil (recovered turn)", err)
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("timeout recovery took %v, want prompt return", elapsed)
@@ -189,8 +185,8 @@ func TestRunTurnTextModeBrainTimeoutRecovers(t *testing.T) {
 	if errEvt.Stage != "brain" || !strings.Contains(errEvt.Message, "timed out") {
 		t.Fatalf("Error event = %+v, want brain timeout message", errEvt)
 	}
-	if metrics.Outcome != "failed" {
-		t.Fatalf("TurnMetrics.Outcome = %q, want failed", metrics.Outcome)
+	if metrics.Outcome != "completed" || !metrics.Degraded {
+		t.Fatalf("TurnMetrics = outcome %q degraded %v, want completed degraded", metrics.Outcome, metrics.Degraded)
 	}
 }
 

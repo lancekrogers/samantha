@@ -175,7 +175,18 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 				return nil
 			})
 			if err != nil {
-				done <- StreamResult{Err: fmt.Errorf("ollama stream: %w", err)}
+				err = fmt.Errorf("ollama stream: %w", err)
+				// A dead context means shutdown or barge-in — no one is
+				// listening for a recovery line. Otherwise close the loop out
+				// loud: stream the recovery reply, record it so the next turn
+				// has an assistant message, and surface err as detail only.
+				if ctx.Err() != nil || sendChunk(ctx, out, RecoveryReply) != nil {
+					done <- StreamResult{Err: err}
+					return
+				}
+				o.history = append(o.history, api.Message{Role: "assistant", Content: RecoveryReply})
+				o.trimHistory()
+				done <- StreamResult{Err: err, Recovered: true}
 				return
 			}
 

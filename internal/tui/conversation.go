@@ -737,7 +737,11 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		if e.Outcome == "timed_out" {
 			break
 		}
-		m.appendActivity("turn", e.Outcome, e.PlaybackCompleteElapsed)
+		outcome := e.Outcome
+		if e.Degraded {
+			outcome += " (degraded)"
+		}
+		m.appendActivity("turn", outcome, e.PlaybackCompleteElapsed)
 		if line := formatTurnMetrics(e); line != "" {
 			m.appendTranscript(dimStyle.Render("    " + line))
 		}
@@ -796,6 +800,9 @@ func formatTurnMetrics(e events.TurnMetrics) string {
 	}
 	if e.PlaybackCompleteElapsed > 0 {
 		parts = append(parts, "spoke "+formatSeconds(e.PlaybackCompleteElapsed))
+	}
+	if e.Degraded {
+		parts = append(parts, "degraded")
 	}
 	return strings.Join(parts, " · ")
 }

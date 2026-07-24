@@ -430,3 +430,62 @@ func TestThinkFullSendsToolsWhenEnabled(t *testing.T) {
 		t.Fatal("ToolsEnabled=true must send a tools request")
 	}
 }
+
+// ollamaErrorStub serves the chat API with a hard 500 so error-path recovery
+// can be exercised without a real server.
+func ollamaErrorStub(t *testing.T) *api.Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"error":"boom"}`)
+	}))
+	t.Cleanup(srv.Close)
+	base, _ := url.Parse(srv.URL)
+	return api.NewClient(base, http.DefaultClient)
+}
+
+func TestThinkStreamChatErrorStreamsRecoveryReply(t *testing.T) {
+	// The recovery invariant (WI-c8884d P1): a hard chat error must not end
+	// the stream silently — the recovery line streams to the caller, lands in
+	// history for the next turn, and the error surfaces as Recovered detail.
+	o := &OllamaBrain{client: ollamaErrorStub(t), model: "m", cfg: &config.Config{MaxHistory: 10}}
+
+	stream, err := o.ThinkStream(context.Background(), "do something hard", StreamOptions{})
+	if err != nil {
+		t.Fatalf("ThinkStream() error = %v", err)
+	}
+	var got []string
+	for c := range stream.Chunks {
+		got = append(got, c)
+	}
+	res := <-stream.Done
+	if res.Err == nil || !res.Recovered {
+		t.Fatalf("stream done = %+v, want a Recovered error result", res)
+	}
+	if joined := strings.Join(got, ""); !strings.Contains(joined, RecoveryReply) {
+		t.Fatalf("streamed chunks = %q, want recovery reply", joined)
+	}
+	hist := o.History()
+	if len(hist) == 0 || hist[len(hist)-1].Content != RecoveryReply {
+		t.Fatalf("history tail = %+v, want assistant recovery reply recorded", hist)
+	}
+}
+
+func TestThinkStreamCanceledCtxSkipsRecovery(t *testing.T) {
+	// Shutdown and barge-in cancel the turn context; no one is listening for
+	// a recovery line, so the raw error must pass through un-recovered.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	o := &OllamaBrain{client: ollamaErrorStub(t), model: "m", cfg: &config.Config{MaxHistory: 10}}
+
+	stream, err := o.ThinkStream(ctx, "hi", StreamOptions{})
+	if err != nil {
+		t.Fatalf("ThinkStream() error = %v", err)
+	}
+	for range stream.Chunks {
+	}
+	res := <-stream.Done
+	if res.Err == nil || res.Recovered {
+		t.Fatalf("stream done = %+v, want raw error without recovery on canceled ctx", res)
+	}
+}

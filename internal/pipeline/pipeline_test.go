@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -325,23 +326,95 @@ func TestRunTurnBargeInCancelsBrainProducer(t *testing.T) {
 	}
 }
 
-func TestRunTurnReturnsBrainStreamError(t *testing.T) {
+func TestRunTurnRecoversBrainStreamError(t *testing.T) {
+	// The recovery invariant (WI-c8884d P1): a hard brain error must close the
+	// turn with a user-visible recovery reply, not a silent error return that
+	// callers count as a voice-input failure.
 	bus := events.NewBus()
-	sttProvider := &fakeSTT{text: "hello"}
-	brainProvider := &fakeBrain{streamErr: errors.New("boom")}
+	var ready atomic.Value
+	events.Subscribe(bus, func(e events.ResponseReady) { ready.Store(e) })
+	var errEvt atomic.Value
+	events.Subscribe(bus, func(e events.Error) { errEvt.Store(e) })
 
 	p := &Pipeline{
-		STT:    sttProvider,
-		Brain:  brainProvider,
+		STT:    &fakeSTT{text: "hello"},
+		Brain:  &fakeBrain{streamErr: errors.New("boom")},
 		Events: bus,
 	}
 
-	_, err := p.RunTurn(context.Background())
-	if err == nil {
-		t.Fatal("RunTurn() error = nil, want brain stream error")
+	text, err := p.RunTurn(context.Background())
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v, want nil (recovered turn)", err)
 	}
-	if err.Error() != "brain: boom" {
-		t.Fatalf("RunTurn() error = %q, want %q", err.Error(), "brain: boom")
+	if text != "hello" {
+		t.Fatalf("RunTurn() text = %q, want transcript preserved", text)
+	}
+	e, ok := ready.Load().(events.ResponseReady)
+	if !ok {
+		t.Fatal("no ResponseReady emitted for recovered turn")
+	}
+	if !e.Degraded {
+		t.Fatalf("ResponseReady.Degraded = false, want true: %+v", e)
+	}
+	if !strings.Contains(e.Response, brain.RecoveryReply) {
+		t.Fatalf("ResponseReady.Response = %q, want recovery reply", e.Response)
+	}
+	ev, ok := errEvt.Load().(events.Error)
+	if !ok || !strings.Contains(ev.Message, "boom") {
+		t.Fatalf("Error event = %+v, want brain failure detail in activity", ev)
+	}
+}
+
+func TestRunTurnSpeaksRecoveryReply(t *testing.T) {
+	// Degraded turns still close the loop audibly: the recovery line goes
+	// through TTS so a hands-free user hears the failure instead of silence.
+	bus := events.NewBus()
+	var spoke atomic.Value
+	events.Subscribe(bus, func(e events.SpeakingStarted) { spoke.Store(e) })
+
+	player := newFakePlayer(10 * time.Millisecond)
+	defer player.Close()
+	p := &Pipeline{
+		STT:    &fakeSTT{text: "hello"},
+		Brain:  &fakeBrain{streamErr: errors.New("boom")},
+		TTS:    &fakeTTS{},
+		Player: player,
+		Events: bus,
+	}
+	if _, err := p.RunTurn(context.Background()); err != nil {
+		t.Fatalf("RunTurn() error = %v, want nil (recovered turn)", err)
+	}
+	e, ok := spoke.Load().(events.SpeakingStarted)
+	if !ok || e.Text != brain.RecoveryReply {
+		t.Fatalf("SpeakingStarted = %+v, want spoken recovery reply", e)
+	}
+}
+
+func TestRunTurnRecoveredBrainStreamCompletesDegraded(t *testing.T) {
+	// A brain that already streamed its own recovery line reports Recovered:
+	// the pipeline keeps the streamed text as the reply instead of stacking a
+	// second recovery message on top, and the failure still reaches activity.
+	bus := events.NewBus()
+	var ready atomic.Value
+	events.Subscribe(bus, func(e events.ResponseReady) { ready.Store(e) })
+	var errEvt atomic.Value
+	events.Subscribe(bus, func(e events.Error) { errEvt.Store(e) })
+
+	p := &Pipeline{
+		STT:    &fakeSTT{text: "hello"},
+		Brain:  &fakeBrain{chunks: []string{brain.RecoveryReply}, streamErr: errors.New("boom"), recovered: true},
+		Events: bus,
+	}
+	if _, err := p.RunTurn(context.Background()); err != nil {
+		t.Fatalf("RunTurn() error = %v, want nil (recovered turn)", err)
+	}
+	e, _ := ready.Load().(events.ResponseReady)
+	if !e.Degraded || e.Response != brain.RecoveryReply {
+		t.Fatalf("ResponseReady = %+v, want degraded reply equal to the streamed recovery line", e)
+	}
+	ev, ok := errEvt.Load().(events.Error)
+	if !ok || !strings.Contains(ev.Message, "boom") {
+		t.Fatalf("Error event = %+v, want brain failure detail in activity", ev)
 	}
 }
 
@@ -409,21 +482,30 @@ func TestRunTurnNoSpeechEmitsSingleMetrics(t *testing.T) {
 
 func TestRunTurnBrainErrorEmitsSingleMetrics(t *testing.T) {
 	// Regression guard: error paths previously emitted zero terminal metrics.
-	// With the state machine owning emission, every terminal path emits one.
+	// With the state machine owning emission, every terminal path emits one —
+	// a recovered brain error completes the turn degraded.
 	bus := events.NewBus()
 	var metricsCount atomic.Int32
-	events.Subscribe(bus, func(events.TurnMetrics) { metricsCount.Add(1) })
+	var lastMetrics atomic.Value
+	events.Subscribe(bus, func(e events.TurnMetrics) {
+		metricsCount.Add(1)
+		lastMetrics.Store(e)
+	})
 
 	p := &Pipeline{
 		STT:    &fakeSTT{text: "hello"},
 		Brain:  &fakeBrain{streamErr: errors.New("boom")},
 		Events: bus,
 	}
-	if _, err := p.RunTurn(context.Background()); err == nil {
-		t.Fatal("RunTurn() error = nil, want brain error")
+	if _, err := p.RunTurn(context.Background()); err != nil {
+		t.Fatalf("RunTurn() error = %v, want nil (recovered turn)", err)
 	}
 	if got := metricsCount.Load(); got != 1 {
 		t.Fatalf("TurnMetrics emitted %d times on brain error, want exactly 1", got)
+	}
+	m, _ := lastMetrics.Load().(events.TurnMetrics)
+	if m.Outcome != "completed" || !m.Degraded {
+		t.Fatalf("TurnMetrics = outcome %q degraded %v, want completed degraded", m.Outcome, m.Degraded)
 	}
 }
 
@@ -461,6 +543,7 @@ func (f *fakeSTT) Available() bool { return true }
 type fakeBrain struct {
 	chunks    []string
 	streamErr error
+	recovered bool // report streamErr as an already-recovered failure
 }
 
 func (f *fakeBrain) ThinkStream(ctx context.Context, input string, opts brain.StreamOptions) (*brain.Stream, error) {
@@ -477,7 +560,7 @@ func (f *fakeBrain) ThinkStream(ctx context.Context, input string, opts brain.St
 			case out <- chunk:
 			}
 		}
-		done <- brain.StreamResult{Err: f.streamErr}
+		done <- brain.StreamResult{Err: f.streamErr, Recovered: f.recovered}
 	}()
 	return &brain.Stream{Chunks: out, Done: done}, nil
 }
@@ -963,8 +1046,8 @@ func TestRunTurnBrainErrorJoinsInterruptWatcher(t *testing.T) {
 		Events:     events.NewBus(),
 	}
 
-	if _, err := p.RunTurn(context.Background()); err == nil {
-		t.Fatal("RunTurn() error = nil, want brain error")
+	if _, err := p.RunTurn(context.Background()); err != nil {
+		t.Fatalf("RunTurn() error = %v, want nil (recovered turn)", err)
 	}
 	if n := capture.subCount(); n != 0 {
 		t.Fatalf("capture subscriptions after error return = %d, want 0 (watcher joined)", n)
