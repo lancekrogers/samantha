@@ -144,6 +144,9 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 		// Bind the session's identity now: the runtime is built from this
 		// snapshot, so later persona switches/edits (Settings, Personas, other
 		// sessions) cannot mutate this conversation's prompt, name, or voice.
+		// The system prompt doc itself is resolved exactly once, inside the
+		// brain constructor below — nothing may re-read it mid-session, or
+		// disk edits would leak into an in-flight conversation.
 		binding, err := persona.ResolveBinding(cfg, personaID)
 		if err != nil {
 			return nil, fmt.Errorf("resolve persona: %w", err)
