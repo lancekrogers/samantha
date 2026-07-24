@@ -206,8 +206,6 @@ func TestSettingsTabCycleIncludesTools(t *testing.T) {
 	}
 }
 
-
-
 func TestSettingsToolsTogglePersistsAndRefreshes(t *testing.T) {
 	cfg := &config.Config{
 		BrainProvider:     "ollama",
