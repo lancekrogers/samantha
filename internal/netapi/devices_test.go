@@ -293,7 +293,7 @@ func TestDeviceRevokeKillsOnlyThatStream(t *testing.T) {
 	aliveCtx, cancelAlive := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancelAlive()
 	// Connection still open: CloseWrite would fail if already closed by server.
-	// Prefer a short Read that times out without error of closed connection type... 
+	// Prefer a short Read that times out without error of closed connection type...
 	// Actually open sockets that are idle will timeout. Closed sockets return err immediately.
 	// Race: server may take a moment to close. Wait briefly then check status with d2.
 	time.Sleep(100 * time.Millisecond)

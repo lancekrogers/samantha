@@ -14,9 +14,9 @@ var kokoroImportPy []byte
 
 const (
 	// thewh1teagle Kokoro v1.0 — same files Python samantha-cli downloads.
-	kokoroV1OnnxURL   = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
-	kokoroV1VoicesURL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
-	kokoroV1OnnxName  = "kokoro-v1.0.onnx"
+	kokoroV1OnnxURL    = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
+	kokoroV1VoicesURL  = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
+	kokoroV1OnnxName   = "kokoro-v1.0.onnx"
 	kokoroV1VoicesName = "voices-v1.0.bin"
 )
 

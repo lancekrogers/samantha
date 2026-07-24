@@ -59,19 +59,19 @@ type libraryProbeMsg struct {
 }
 
 type libraryModel struct {
-	cfg       *config.Config
-	client    calibre.Client
-	width     int
-	height    int
-	pane      int // libPaneBrowse or libPaneDetail
-	query     string
-	editing   bool
-	editBuf   string
-	focus     int // libFocusQuery or libFocusList
-	books     []calibre.Book
-	cursor    int
-	offset    int
-	loading   bool
+	cfg     *config.Config
+	client  calibre.Client
+	width   int
+	height  int
+	pane    int // libPaneBrowse or libPaneDetail
+	query   string
+	editing bool
+	editBuf string
+	focus   int // libFocusQuery or libFocusList
+	books   []calibre.Book
+	cursor  int
+	offset  int
+	loading bool
 	// preparing is true while BestFormatPathContext (export/convert) is in flight.
 	preparing bool
 	errText   string
