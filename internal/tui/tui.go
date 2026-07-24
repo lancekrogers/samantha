@@ -133,6 +133,10 @@ type switchScreenMsg screen
 // settingsDoneMsg returns from settings to the screen that opened it.
 type settingsDoneMsg struct{}
 
+// openSettingsSectionMsg opens the Settings screen landed on a specific
+// section (e.g. the launcher's "Meeting settings" entry).
+type openSettingsSectionMsg struct{ section settingsSection }
+
 // startPipelineMsg enters the conversation screen and builds the pipeline
 // there (D2) — the TUI no longer exits to hand off.
 type startPipelineMsg struct {
@@ -273,6 +277,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return a, nil
+
+	case openSettingsSectionMsg:
+		// Reuse the full settings-entry path (model rebuild, geometry, voice
+		// pause), then land on the requested section.
+		model, cmd := a.Update(switchScreenMsg(screenSettings))
+		app := model.(App)
+		app.settings.section = msg.section
+		// Tab-into normally lazy-loads meeting route destinations; entering
+		// programmatically must trigger the same load.
+		if msg.section == sectionMeeting && !app.settings.routeDestsLoading && app.settings.routeDests == nil {
+			return app, tea.Batch(cmd, app.settings.loadRouteDestinations())
+		}
+		return app, cmd
 
 	case startMeetingMsg:
 		a.meetingRoutePlan = meetingRoutePlan{
