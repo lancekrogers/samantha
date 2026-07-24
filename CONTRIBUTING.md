@@ -32,4 +32,4 @@ When filing a bug, include:
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the MIT License.
+By contributing, you agree that your contributions will be licensed under the Apache License 2.0, and you confirm you have the right to submit them under that license (Apache-2.0 §5).
