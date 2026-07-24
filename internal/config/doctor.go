@@ -264,7 +264,7 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 				"(macOS app: /Applications/calibre.app/Contents/MacOS/calibredb).",
 		})
 	} else {
-		detail := p
+		var detail string
 		if cfg.CalibreEnabled {
 			detail = p + " (calibre_enabled=true)"
 		} else {

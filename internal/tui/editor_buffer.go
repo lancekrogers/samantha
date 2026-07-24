@@ -142,7 +142,7 @@ func (b *editorBuffer) moveVertical(down bool) {
 	start, _ := b.lineBounds(position)
 	column := position - start
 	_, currentEnd := b.lineBounds(position)
-	target := currentEnd
+	var target int
 	if down {
 		if currentEnd >= len(runes) {
 			return

@@ -177,12 +177,6 @@ func (s *deviceStore) delete(id string) (token string, ok bool, err error) {
 	return token, true, nil
 }
 
-func (s *deviceStore) lookupToken(token string) *DeviceRecord {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.byToken[token]
-}
-
 func (s *deviceStore) acceptToken(token string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
