@@ -14,13 +14,23 @@ import (
 
 func runRootForPrompts(t *testing.T, promptDir string, args ...string) (string, error) {
 	t.Helper()
+	// Isolate from the real ~/.obey. `prompts show persona` calls config.Load,
+	// whose afterLoad hook (persona.EnsureAndApply) overlays the machine's active
+	// persona onto cfg.Persona. A fresh temp config dir means an empty personas
+	// tree that seeds the embedded "samantha" default, and the active_persona
+	// override defeats any value viper's config layer retained from a prior
+	// test's real Load. Without both, the developer's real active persona leaks
+	// in and flakes the "samantha"/"embedded" assertions in full-suite runs.
+	config.SetConfigDirForTest(t, t.TempDir())
 	config.Set("prompts_dir", promptDir)
 	config.Set("persona", "samantha")
+	config.Set("active_persona", "samantha")
 	promptsListJSON = false
 	promptsShowJSON = false
 	t.Cleanup(func() {
 		config.Set("prompts_dir", "")
 		config.Set("persona", "samantha")
+		config.Set("active_persona", "samantha")
 		promptsListJSON = false
 		promptsShowJSON = false
 	})
