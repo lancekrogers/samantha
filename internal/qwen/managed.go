@@ -179,14 +179,22 @@ func Inspect(modelsDir string) Status {
 
 	data, err := os.ReadFile(p.Marker)
 	if err != nil {
-		status.Detail = "Qwen preset voices are not installed"
+		if status.RuntimeReady && status.ModelReady {
+			status.Detail = "Qwen files present; install marker missing — repair will refresh metadata only"
+		} else {
+			status.Detail = "Qwen preset voices are not installed"
+		}
 		return status
 	}
 	var marker installMarker
 	if json.Unmarshal(data, &marker) != nil || marker.Schema != managedSchema ||
 		marker.Package != PackageVersion || marker.Worker != WorkerRevision || marker.ModelID != DefaultModelID ||
 		marker.ModelRevision != DefaultModelRevision {
-		status.Detail = "Qwen installation metadata is stale; repair is required"
+		if status.RuntimeReady && status.ModelReady {
+			status.Detail = "Qwen installation metadata is stale; repair will re-verify without a full re-download when possible"
+		} else {
+			status.Detail = "Qwen installation metadata is stale; repair is required"
+		}
 		return status
 	}
 	status.Installed = status.RuntimeReady && status.ModelReady
@@ -208,6 +216,11 @@ type ProgressFunc func(stage string, pct float64)
 // Ensure installs an isolated uv/Python runtime, the pinned official qwen-tts
 // package, Samantha's worker, and the pinned CustomVoice model. It never changes
 // shell profiles or writes outside modelsDir (apart from transient OS temp files).
+//
+// When runtime + model files already exist (stale or missing marker only), Ensure
+// re-verifies and rewrites metadata without re-downloading the multi-GB model.
+// It also adopts a ready install from the legacy ~/.cache/samantha models root
+// when the active modelsDir is empty after the festival-voice brand migration.
 func Ensure(ctx context.Context, modelsDir string, progress ProgressFunc) (Status, error) {
 	if runtime.GOOS == "windows" {
 		return Status{}, errors.New("managed Qwen setup currently supports macOS and Linux")
@@ -220,6 +233,15 @@ func Ensure(ctx context.Context, modelsDir string, progress ProgressFunc) (Statu
 			progress("Qwen preset voices", 100)
 		}
 		return status, nil
+	}
+	// Brand migration: reuse a complete install under the pre-rename cache.
+	if err := adoptLegacyManagedInstall(modelsDir); err == nil {
+		if status := Inspect(modelsDir); status.Installed {
+			if progress != nil {
+				progress("Qwen preset voices", 100)
+			}
+			return status, nil
+		}
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -258,25 +280,37 @@ func Ensure(ctx context.Context, modelsDir string, progress ProgressFunc) (Statu
 		}
 	}
 
-	if progress != nil {
+	needPip := !runtimePackageCurrent(p)
+	if needPip {
+		if progress != nil {
+			progress("qwen-tts runtime", 30)
+		}
+		if err := run(ctx, env, p.UV, "pip", "install", "--python", p.Python, "qwen-tts=="+PackageVersion); err != nil {
+			return Status{}, fmt.Errorf("managed Qwen setup: install qwen-tts: %w", err)
+		}
+		if err := writeFileAtomic(p.RuntimeMarker, []byte(PackageVersion+"\n"), 0o600); err != nil {
+			return Status{}, fmt.Errorf("managed Qwen setup: mark qwen-tts runtime: %w", err)
+		}
+	} else if progress != nil {
 		progress("qwen-tts runtime", 30)
 	}
-	if err := run(ctx, env, p.UV, "pip", "install", "--python", p.Python, "qwen-tts=="+PackageVersion); err != nil {
-		return Status{}, fmt.Errorf("managed Qwen setup: install qwen-tts: %w", err)
-	}
-	if err := writeFileAtomic(p.RuntimeMarker, []byte(PackageVersion+"\n"), 0o600); err != nil {
-		return Status{}, fmt.Errorf("managed Qwen setup: mark qwen-tts runtime: %w", err)
-	}
 
-	if progress != nil {
+	modelReady := regularFile(filepath.Join(p.Model, "config.json")) &&
+		regularFile(filepath.Join(p.Model, "model.safetensors")) &&
+		regularFile(filepath.Join(p.Model, "speech_tokenizer", "model.safetensors"))
+	if !modelReady {
+		if progress != nil {
+			progress("Qwen CustomVoice model", 55)
+		}
+		if err := run(ctx, env, p.Python, p.Worker, "download",
+			"--model-id", DefaultModelID,
+			"--revision", DefaultModelRevision,
+			"--model-dir", p.Model,
+		); err != nil {
+			return Status{}, fmt.Errorf("managed Qwen setup: download model: %w", err)
+		}
+	} else if progress != nil {
 		progress("Qwen CustomVoice model", 55)
-	}
-	if err := run(ctx, env, p.Python, p.Worker, "download",
-		"--model-id", DefaultModelID,
-		"--revision", DefaultModelRevision,
-		"--model-dir", p.Model,
-	); err != nil {
-		return Status{}, fmt.Errorf("managed Qwen setup: download model: %w", err)
 	}
 	if progress != nil {
 		progress("Qwen model verification", 90)
@@ -308,6 +342,50 @@ func Ensure(ctx context.Context, modelsDir string, progress ProgressFunc) (Statu
 		progress("Qwen preset voices", 100)
 	}
 	return status, nil
+}
+
+func runtimePackageCurrent(p Paths) bool {
+	if !regularFile(p.Python) || !regularFile(p.RuntimeMarker) {
+		return false
+	}
+	data, err := os.ReadFile(p.RuntimeMarker)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(data)) == PackageVersion
+}
+
+// adoptLegacyManagedInstall links a ready managed install from the pre-rename
+// ~/.cache/samantha models root into modelsDir when the destination qwen tree
+// is missing. Prevents a full re-download after AppSlug became festival-voice.
+func adoptLegacyManagedInstall(modelsDir string) error {
+	modelsDir = filepath.Clean(strings.TrimSpace(modelsDir))
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return errors.New("no home")
+	}
+	legacyModels := filepath.Join(home, ".cache", "samantha", "models")
+	if filepath.Clean(legacyModels) == modelsDir {
+		return errors.New("already legacy")
+	}
+	if !Inspect(legacyModels).Installed {
+		return errors.New("legacy not installed")
+	}
+	dst := ManagedPaths(modelsDir).Root
+	src := ManagedPaths(legacyModels).Root
+	if _, err := os.Lstat(dst); err == nil {
+		// Destination already exists (partial or full); do not clobber.
+		return errors.New("destination exists")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	if err := os.Symlink(src, dst); err != nil {
+		return err
+	}
+	return nil
 }
 
 func managedEnv(p Paths) []string {
