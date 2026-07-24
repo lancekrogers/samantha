@@ -26,6 +26,44 @@ func TestParseCampaignListJSON(t *testing.T) {
 	}
 }
 
+// camp list --json prints registry verification on stdout before the array
+// when the registry was cleaned. That prefix starts with a multi-byte checkmark
+// (UTF-8 E2 9C 93) which encoding/json reports as invalid character 'â'.
+func TestParseCampaignListJSONStripsRegistryCleanPrefix(t *testing.T) {
+	raw := "✓ Registry cleaned: removed 1, updated 2\n\n" +
+		`[{"id":"abc","name":"My_Tools","org":"devtools","path":"/tmp/My_Tools","status":"active","type":"product"}]` + "\n"
+	camps, err := ParseCampaignListJSON([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(camps) != 1 || camps[0].Name != "My_Tools" {
+		t.Fatalf("camps = %+v", camps)
+	}
+}
+
+func TestParseCampaignListJSONStripsEllipsisNoise(t *testing.T) {
+	// Same Go error signature the TUI showed: invalid character 'â' …
+	raw := "… scanning\n" + `[{"name":"obey-campaign"}]`
+	camps, err := ParseCampaignListJSON([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(camps) != 1 || camps[0].Name != "obey-campaign" {
+		t.Fatalf("camps = %+v", camps)
+	}
+}
+
+func TestParseCampaignListJSONEmpty(t *testing.T) {
+	camps, err := ParseCampaignListJSON(nil)
+	if err != nil || len(camps) != 0 {
+		t.Fatalf("empty: camps=%v err=%v", camps, err)
+	}
+	camps, err = ParseCampaignListJSON([]byte("✓ only noise, no json"))
+	if err != nil || len(camps) != 0 {
+		t.Fatalf("noise-only: camps=%v err=%v", camps, err)
+	}
+}
+
 func TestListCampaignsNotOnPath(t *testing.T) {
 	camps, err := ListCampaigns(context.Background(),
 		func(context.Context, string, ...string) ([]byte, error) {

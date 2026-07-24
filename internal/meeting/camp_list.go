@@ -1,6 +1,7 @@
 package meeting
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -42,14 +43,25 @@ func ListCampaigns(ctx context.Context, run Runner, look LookPath) ([]Campaign, 
 }
 
 // ParseCampaignListJSON decodes the array produced by `camp list --json`.
+//
+// camp may print human-readable registry verification lines on stdout before
+// the JSON array (e.g. "✓ Registry cleaned: removed 1\n\n[…]"). Those prefixes
+// start with multi-byte UTF-8 (checkmark → Go reports invalid character 'â').
+// We extract the first JSON value from the payload so destination discovery
+// still works after a registry clean.
 func ParseCampaignListJSON(data []byte) ([]Campaign, error) {
-	data = []byte(strings.TrimSpace(string(data)))
-	if len(data) == 0 {
+	payload := extractJSONPayload(data)
+	if len(payload) == 0 {
 		return nil, nil
 	}
 	var camps []Campaign
-	if err := json.Unmarshal(data, &camps); err != nil {
-		return nil, fmt.Errorf("meeting: parse camp list json: %w", err)
+	if err := json.Unmarshal(payload, &camps); err != nil {
+		// Prefer a short preview so soft-fail UIs stay readable.
+		preview := strings.TrimSpace(string(payload))
+		if len(preview) > 80 {
+			preview = preview[:80] + "…"
+		}
+		return nil, fmt.Errorf("meeting: parse camp list json: %w (got %q)", err, preview)
 	}
 	out := make([]Campaign, 0, len(camps))
 	for _, c := range camps {
@@ -61,6 +73,89 @@ func ParseCampaignListJSON(data []byte) ([]Campaign, error) {
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// extractJSONPayload returns the first top-level JSON array or object in data,
+// or nil when none is found. Leading BOM and human log lines are skipped.
+func extractJSONPayload(data []byte) []byte {
+	data = bytes.TrimSpace(data)
+	if len(data) >= 3 && data[0] == 0xef && data[1] == 0xbb && data[2] == 0xbf {
+		data = bytes.TrimSpace(data[3:])
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	// Fast path: already pure JSON.
+	if data[0] == '[' || data[0] == '{' {
+		return data
+	}
+	// Find the first array or object start and take through the matching end.
+	// Prefer '[' (camp list --json is an array); fall back to '{'.
+	start := bytes.IndexByte(data, '[')
+	if start < 0 {
+		start = bytes.IndexByte(data, '{')
+	}
+	if start < 0 {
+		return nil
+	}
+	slice := data[start:]
+	end := jsonValueEnd(slice)
+	if end < 0 {
+		// Incomplete / not JSON — let Unmarshal report the problem.
+		return slice
+	}
+	return slice[:end]
+}
+
+// jsonValueEnd returns the exclusive end index of the first complete JSON
+// value in data (array or object), respecting strings and escapes. -1 if
+// the structure is incomplete.
+func jsonValueEnd(data []byte) int {
+	if len(data) == 0 {
+		return -1
+	}
+	open := data[0]
+	var close byte
+	switch open {
+	case '[':
+		close = ']'
+	case '{':
+		close = '}'
+	default:
+		return -1
+	}
+	depth := 0
+	inString := false
+	escape := false
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		if inString {
+			if escape {
+				escape = false
+				continue
+			}
+			if c == '\\' {
+				escape = true
+				continue
+			}
+			if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case open:
+			depth++
+		case close:
+			depth--
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return -1
 }
 
 // CampaignDestinationID builds a stable destination id for a discovered campaign.
