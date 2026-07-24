@@ -114,7 +114,8 @@ func selectDevice(ctx malgo.Context, kind malgo.DeviceType, name string, sub *ma
 // copyDeviceIDToC detaches a miniaudio device ID from DeviceInfo's Go-managed
 // storage. DeviceInfo also owns a Formats slice, so passing &info.ID[0] through
 // malgo's C device config violates cgo's pointer rules and panics at runtime
-// with "Go pointer to unpinned Go pointer".
+// with "Go pointer to unpinned Go pointer". In the pinned malgo version,
+// DeviceID.Pointer uses C.CBytes, whose allocation must be released with C.free.
 func copyDeviceIDToC(id malgo.DeviceID) (unsafe.Pointer, func()) {
 	ptr := id.Pointer()
 	var once sync.Once
