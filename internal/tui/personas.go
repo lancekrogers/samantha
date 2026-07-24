@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -32,7 +31,7 @@ type personasModel struct {
 	formStep  int // name | prompt | stack
 	editID    string
 	nameInput textinput.Model
-	promptTA  textarea.Model
+	promptTA  vimTextarea
 
 	// Stack step: per-persona brain provider/model + TTS provider/voice.
 	// Index 0 of the provider lists is "(default)" = inherit the app config.
@@ -189,7 +188,7 @@ func (m personasModel) Update(msg tea.Msg) (personasModel, tea.Cmd) {
 		// Keep textarea blink alive while editing the prompt.
 		if m.formMode != "" && m.formStep == personaFormPrompt {
 			var cmd tea.Cmd
-			m.promptTA, cmd = m.promptTA.Update(msg)
+			m.promptTA, cmd = m.promptTA.UpdateMsg(msg)
 			return m, cmd
 		}
 	}

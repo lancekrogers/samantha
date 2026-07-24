@@ -114,6 +114,9 @@ func (m personasModel) formLines() []string {
 	// Expand textarea to one visual line per row so truncation never hides it
 	// as a single multi-line blob counted as one list slot.
 	lines = append(lines, strings.Split(m.promptTA.View(), "\n")...)
+	if m.formStep == personaFormPrompt {
+		lines = append(lines, dimStyle.Render("  "+m.promptTA.modeline()))
+	}
 	lines = append(lines,
 		"",
 		fmt.Sprintf("%s Model & voice  ((default) inherits Settings)", stackMark),
