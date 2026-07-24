@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/calibre"
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/platforminfo"
 )
 
 // Focus regions inside the library browser.
@@ -59,19 +61,19 @@ type libraryProbeMsg struct {
 }
 
 type libraryModel struct {
-	cfg       *config.Config
-	client    calibre.Client
-	width     int
-	height    int
-	pane      int // libPaneBrowse or libPaneDetail
-	query     string
-	editing   bool
-	editBuf   string
-	focus     int // libFocusQuery or libFocusList
-	books     []calibre.Book
-	cursor    int
-	offset    int
-	loading   bool
+	cfg     *config.Config
+	client  calibre.Client
+	width   int
+	height  int
+	pane    int // libPaneBrowse or libPaneDetail
+	query   string
+	editing bool
+	editBuf string
+	focus   int // libFocusQuery or libFocusList
+	books   []calibre.Book
+	cursor  int
+	offset  int
+	loading bool
 	// preparing is true while BestFormatPathContext (export/convert) is in flight.
 	preparing bool
 	errText   string
@@ -606,9 +608,8 @@ func (m libraryModel) onboardingView() string {
 	b.WriteString(ansi.Truncate(selectedStyle.Render("  Get started"), width, "…"))
 	b.WriteString("\n")
 	steps := []string{
-		"1. Install Calibre: brew install --cask calibre  (macOS) or https://calibre-ebook.com",
-		"2. Open Calibre once so it creates your library folder",
-		"3. Press e here to enable  (or: samantha config calibre_enabled true)",
+		"1. " + platforminfo.CalibreInstallRemediation(runtime.GOOS),
+		"2. Press e here to enable  (or: samantha config calibre_enabled true)",
 	}
 	if m.binaryErr == nil && m.probed && !m.enabled() {
 		steps = []string{
@@ -620,9 +621,8 @@ func (m libraryModel) onboardingView() string {
 	if m.enabled() && m.binaryErr != nil {
 		steps = []string{
 			"Integration is on, but calibredb was not found.",
-			"Install Calibre, or set calibredb_binary to the full path.",
-			"macOS app: /Applications/calibre.app/Contents/MacOS/calibredb",
-			"Linux package: often /opt/calibre/calibredb  ·  Windows: add to PATH",
+			platforminfo.CalibreInstallRemediation(runtime.GOOS),
+			platforminfo.CalibreBinaryHint(runtime.GOOS),
 		}
 	}
 	for _, s := range steps {

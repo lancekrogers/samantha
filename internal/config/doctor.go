@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"runtime"
 	"strings"
 
+	"github.com/lancekrogers/samantha/internal/platforminfo"
 	"github.com/lancekrogers/samantha/internal/qwen"
 )
 
@@ -36,6 +39,8 @@ type Diagnostic struct {
 // for lacking one.
 func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, error)) []Diagnostic {
 	var diags []Diagnostic
+
+	diags = append(diags, diagnoseBrainProvider(cfg, lookPath))
 
 	norm, sttErr := NormalizeSTTWithMode(cfg.STTProvider, cfg.STTMode)
 	if sttErr == nil {
@@ -239,7 +244,7 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 			Name:        "pdftotext-binary",
 			Severity:    SeverityWarn,
 			Detail:      "pdftotext not found in PATH (optional; needed for PDF narrate/render)",
-			Remediation: "install Poppler (e.g. brew install poppler) to enable PDF extraction",
+			Remediation: platforminfo.PopplerInstallRemediation(runtime.GOOS),
 		})
 	} else {
 		diags = append(diags, Diagnostic{Name: "pdftotext-binary", Severity: SeverityOK, Detail: "pdftotext"})
@@ -257,11 +262,8 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 			Name:     "calibre-binary",
 			Severity: SeverityWarn,
 			Detail:   "calibredb not found (optional ebook catalog; Library TUI / library CLI / --from-library)",
-			Remediation: "Calibre is free library software for ebooks (https://calibre-ebook.com). " +
-				"Install it (macOS: brew install --cask calibre), open it once to create a library, " +
-				"then: samantha config calibre_enabled true. " +
-				"If calibredb is still missing, set calibredb_binary to the full path " +
-				"(macOS app: /Applications/calibre.app/Contents/MacOS/calibredb).",
+			Remediation: platforminfo.CalibreInstallRemediation(runtime.GOOS) + ". " +
+				platforminfo.CalibreBinaryHint(runtime.GOOS) + ".",
 		})
 	} else {
 		detail := p
@@ -274,6 +276,63 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 	}
 
 	return diags
+}
+
+func diagnoseBrainProvider(cfg *Config, lookPath func(string) (string, error)) Diagnostic {
+	provider := strings.ToLower(strings.TrimSpace(cfg.BrainProvider))
+	if provider == "" {
+		provider = "claude"
+	}
+
+	switch provider {
+	case "claude", "grok":
+		path, err := lookPath(provider)
+		if err != nil {
+			return Diagnostic{
+				Name:        "brain-provider",
+				Severity:    SeverityError,
+				Detail:      fmt.Sprintf("%s CLI not found on PATH", provider),
+				Remediation: fmt.Sprintf("install the %s CLI and ensure %q is on PATH, or select another brain_provider", provider, provider),
+			}
+		}
+		return Diagnostic{
+			Name:     "brain-provider",
+			Severity: SeverityOK,
+			Detail:   fmt.Sprintf("%s CLI (%s)", provider, path),
+		}
+	case "ollama":
+		model := strings.TrimSpace(cfg.OllamaModel)
+		if model == "" {
+			return Diagnostic{
+				Name:        "brain-provider",
+				Severity:    SeverityError,
+				Detail:      "ollama_model is not configured",
+				Remediation: "run: samantha config ollama_model <model>",
+			}
+		}
+		host := strings.TrimSpace(cfg.OllamaHost)
+		parsed, err := url.Parse(host)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return Diagnostic{
+				Name:        "brain-provider",
+				Severity:    SeverityError,
+				Detail:      fmt.Sprintf("invalid ollama_host %q", host),
+				Remediation: "set ollama_host to an http:// or https:// URL",
+			}
+		}
+		return Diagnostic{
+			Name:     "brain-provider",
+			Severity: SeverityOK,
+			Detail:   fmt.Sprintf("ollama model %q at %s (connectivity is not probed by offline doctor)", model, host),
+		}
+	default:
+		return Diagnostic{
+			Name:        "brain-provider",
+			Severity:    SeverityError,
+			Detail:      fmt.Sprintf("unsupported brain_provider %q", cfg.BrainProvider),
+			Remediation: "set brain_provider to claude, grok, or ollama",
+		}
+	}
 }
 
 // VoiceDeviceChecker probes audio hardware availability. Implementations must

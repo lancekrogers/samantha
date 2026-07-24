@@ -1,8 +1,7 @@
 # Release tasks for Samantha.
 #
-# Samantha ships as a build-from-source Homebrew formula (it's a cgo/native
-# build, so there are no cross-compiled binaries). A release is just a tag:
-# GitHub publishes the source tarball, then the tap formula points at it.
+# Samantha uses native CGO builds. Homebrew builds macOS from source; release
+# workflows also publish relocatable native artifacts for supported platforms.
 
 [private]
 default:
@@ -37,6 +36,120 @@ formula-sha version:
     echo "  url \"$url\""
     echo "  sha256 \"$sha\""
 
+# Produces dist/samantha-linux-amd64.tar.gz: the native CGO binary plus the
+# sherpa-onnx/onnxruntime shared libraries it needs. patchelf replaces the
+# module-cache RUNPATH injected by sherpa's cgo flags with $ORIGIN/lib, then an
+# extraction smoke test proves the tarball runs without the builder's module
+# cache or LD_LIBRARY_PATH.
+#
+# Build a relocatable, self-contained glibc Linux amd64 release artifact
+[no-cd]
+linux-artifact:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "x86_64" ]]; then
+        echo "linux-artifact builds a native amd64 artifact and must run on x86_64 Linux" >&2
+        exit 1
+    fi
+    for tool in patchelf readelf ldd sha256sum; do
+        command -v "$tool" >/dev/null || {
+            echo "linux-artifact requires $tool (Arch: sudo pacman -S patchelf binutils; Debian/Ubuntu: sudo apt install patchelf binutils)" >&2
+            exit 1
+        }
+    done
+
+    platform="linux-amd64"
+    stage="dist/samantha-${platform}"
+    tarball="dist/samantha-${platform}.tar.gz"
+    bin="$stage/samantha"
+    libdir="$stage/lib"
+    licensedir="$stage/licenses"
+
+    rm -rf "$stage" "$tarball"
+    mkdir -p "$libdir" "$licensedir"
+
+    echo "Building native CGO amd64 binary…"
+    CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+        go build -buildvcs=false -trimpath -o "$bin" ./cmd/samantha
+
+    module_dir="$(
+        go list -m -json github.com/k2-fsa/sherpa-onnx-go-linux |
+            awk -F'"' '$2 == "Dir" { print $4; exit }'
+    )"
+    [[ -n "$module_dir" ]] || {
+        echo "cannot locate github.com/k2-fsa/sherpa-onnx-go-linux module directory" >&2
+        exit 1
+    }
+    native_dir="$module_dir/lib/x86_64-unknown-linux-gnu"
+    for lib in libsherpa-onnx-c-api.so libonnxruntime.so; do
+        [[ -f "$native_dir/$lib" ]] || {
+            echo "required native library is missing: $native_dir/$lib" >&2
+            exit 1
+        }
+        cp "$native_dir/$lib" "$libdir/$lib"
+    done
+    cp LICENSE "$stage/LICENSE"
+    cp "$module_dir/LICENSE" "$licensedir/sherpa-onnx-go-linux-LICENSE"
+
+    patchelf --set-rpath '$ORIGIN/lib' "$bin"
+    runpath="$(patchelf --print-rpath "$bin")"
+    [[ "$runpath" == '$ORIGIN/lib' ]] || {
+        echo "unexpected Linux artifact RUNPATH: $runpath" >&2
+        exit 1
+    }
+    if readelf -d "$bin" | grep -F "$module_dir"; then
+        echo "Linux artifact still references the builder module cache" >&2
+        exit 1
+    fi
+    if ldd "$bin" | grep -q 'not found'; then
+        echo "Linux artifact has unresolved shared libraries:" >&2
+        ldd "$bin" >&2
+        exit 1
+    fi
+
+    version="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+    built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    mapfile -t relfiles < <(cd "$stage" && find . -type f | sed 's|^\./||' | sort)
+    {
+        printf '{\n'
+        printf '  "name": "samantha",\n'
+        printf '  "version": "%s",\n' "$version"
+        printf '  "platform": "%s",\n' "$platform"
+        printf '  "built_at": "%s",\n' "$built_at"
+        printf '  "files": [\n'
+        first=1
+        for rel in "${relfiles[@]}"; do
+            sha="$(sha256sum "$stage/$rel" | cut -d' ' -f1)"
+            (( first )) && first=0 || printf ',\n'
+            printf '    {"path": "%s", "sha256": "%s"}' "$rel" "$sha"
+        done
+        printf '\n  ]\n}\n'
+    } > "$stage/manifest.json"
+
+    tar -czf "$tarball" -C dist "samantha-${platform}"
+
+    smoke_root="$(mktemp -d)"
+    trap 'rm -rf "$smoke_root"' EXIT
+    tar -xzf "$tarball" -C "$smoke_root"
+    smoke_bin="$smoke_root/samantha-${platform}/samantha"
+    smoke_lib="$smoke_root/samantha-${platform}/lib"
+    env -u LD_LIBRARY_PATH "$smoke_bin" --version
+    smoke_ldd="$(env -u LD_LIBRARY_PATH ldd "$smoke_bin")"
+    for lib in libsherpa-onnx-c-api.so libonnxruntime.so; do
+        grep -F "$smoke_lib/$lib" <<<"$smoke_ldd" >/dev/null || {
+            echo "relocation smoke test did not load bundled $lib:" >&2
+            echo "$smoke_ldd" >&2
+            exit 1
+        }
+    done
+
+    echo
+    echo "Artifact: $tarball"
+    sha256sum "$tarball"
+    echo "Contents:"
+    tar -tzf "$tarball"
+
 # Produces dist/samantha-macos-arm64.tar.gz: the CGO-built binary plus every
 # non-system sherpa-onnx/onnxruntime dylib it needs, laid out so the binary
 # finds them via @executable_path/lib from any directory, with a manifest.json
@@ -66,7 +179,7 @@ macos-artifact:
 
     echo "Building CGO arm64 binary…"
     CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
-        go build -trimpath -o "$bin" ./cmd/samantha
+        go build -buildvcs=false -trimpath -o "$bin" ./cmd/samantha
 
     # The cgo LDFLAGS bake the sherpa-onnx module-cache dir in as an LC_RPATH;
     # that is where @rpath dylibs are found before relocation.
