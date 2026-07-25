@@ -46,6 +46,18 @@ func PlaceholderValues(agentName string) map[string]string {
 	}
 }
 
+// PlaceholderDescription returns the catalog help text for a placeholder name,
+// or "" when the name is unknown.
+func PlaceholderDescription(name string) string {
+	name = strings.TrimSpace(name)
+	for _, p := range PersonaPlaceholders {
+		if p.Name == name {
+			return p.Description
+		}
+	}
+	return ""
+}
+
 // IsKnownPlaceholder reports whether name is in PersonaPlaceholders.
 func IsKnownPlaceholder(name string) bool {
 	name = strings.TrimSpace(name)

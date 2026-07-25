@@ -216,3 +216,56 @@ func TestOpenBracePrefix(t *testing.T) {
 		t.Fatal("expected no open brace")
 	}
 }
+
+func TestPromptEditorEscKeepsTypedPartial(t *testing.T) {
+	p := newPromptEditor()
+	p.StartInsert()
+	p, _ = promptKeys(t, p, "{", "a", "g", "tab")
+	if !strings.Contains(p.Value(), "{agent_name") {
+		t.Fatalf("preview missing: %q", p.Value())
+	}
+	p, ev := promptKeys(t, p, "esc")
+	if ev != promptEventNone {
+		t.Fatalf("esc during completion canceled the form: %v", ev)
+	}
+	if p.Value() != "{ag" {
+		t.Fatalf("value = %q, want the typed prefix kept", p.Value())
+	}
+}
+
+func TestPlaceholderTokensMatchResolverGrammar(t *testing.T) {
+	line := "You are {agent_name}, not {planet} nor {bad-name}."
+	spans := placeholderTokens(line)
+	if len(spans) != 2 {
+		t.Fatalf("spans = %+v, want the two well-formed tokens", spans)
+	}
+	if got := line[spans[0].Start:spans[0].End]; got != "{agent_name}" {
+		t.Fatalf("first span = %q", got)
+	}
+	if spans[0].Name != "agent_name" {
+		t.Fatalf("first name = %q", spans[0].Name)
+	}
+	if spans[1].Name != "planet" {
+		t.Fatalf("second name = %q", spans[1].Name)
+	}
+}
+
+func TestPromptEditorCompletionActiveGate(t *testing.T) {
+	p := newPromptEditor()
+	p.SetValue("plain text")
+	if p.completionActive() {
+		t.Fatal("normal mode must not claim tab")
+	}
+	p.StartInsert()
+	if p.completionActive() {
+		t.Fatal("insert mode with no open brace must not claim tab")
+	}
+	p, _ = promptKeys(t, p, "{")
+	if !p.completionActive() {
+		t.Fatal("an open brace with candidates should claim tab")
+	}
+	p, _ = promptKeys(t, p, "z", "z")
+	if p.completionActive() {
+		t.Fatal("an open brace with no matching candidate must not claim tab")
+	}
+}

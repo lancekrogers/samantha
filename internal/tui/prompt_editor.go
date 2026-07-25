@@ -33,6 +33,7 @@ type promptEditor struct {
 	phBraceLine  int
 	phCandidates []string
 	phIndex      int
+	phPartial    string // text typed after `{` before the first Tab
 }
 
 // promptEvent reports a form-level action the editor requested.
@@ -97,12 +98,31 @@ func (p promptEditor) View() string {
 	cfg.PlaceholderKnown = placeholderKnownStyle
 	cfg.PlaceholderUnknown = placeholderUnknownStyle
 	cfg.KnownPlaceholders = knownPlaceholderSet()
+	cfg.Tokens = placeholderTokens
 	if !p.focused {
 		cfg.CursorBlock = normalStyle
 		cfg.CursorInsert = normalStyle
 		cfg.Selection = normalStyle
 	}
 	return p.ed.View(cfg)
+}
+
+// placeholderTokens reports the {name} spans on a line using the same grammar
+// the resolver substitutes with, so the colorizer cannot drift from it.
+func placeholderTokens(line string) []vim.TokenSpan {
+	spans := prompts.FindPlaceholders(line)
+	if len(spans) == 0 {
+		return nil
+	}
+	out := make([]vim.TokenSpan, 0, len(spans))
+	for _, s := range spans {
+		out = append(out, vim.TokenSpan{
+			Start: s[0],
+			End:   s[1],
+			Name:  prompts.PlaceholderNameAt(line, s[0]),
+		})
+	}
+	return out
 }
 
 func knownPlaceholderSet() map[string]bool {
@@ -214,6 +234,7 @@ func (p *promptEditor) cyclePlaceholder(reverse bool) bool {
 		p.phActive = true
 		p.phBraceCol = braceCol
 		p.phBraceLine = cur.Line
+		p.phPartial = partial
 	} else if reverse {
 		p.phIndex--
 		if p.phIndex < 0 {
@@ -262,8 +283,8 @@ func (p *promptEditor) commitPlaceholder() {
 	p.ed.EnsureCursorVisible()
 }
 
-// revertPlaceholderPreview restores `{` + original empty/partial by leaving
-// only the opening brace (drops the cycled name preview).
+// revertPlaceholderPreview drops the cycled name and restores what the user had
+// actually typed after the opening `{`.
 func (p *promptEditor) revertPlaceholderPreview() {
 	if !p.phActive {
 		return
@@ -273,7 +294,7 @@ func (p *promptEditor) revertPlaceholderPreview() {
 	if p.phBraceLine != cur.Line || p.phBraceCol < 0 || p.phBraceCol >= len(line) {
 		return
 	}
-	p.ed.ReplaceLineRange(p.phBraceCol+1, cur.Col, "")
+	p.ed.ReplaceLineRange(p.phBraceCol+1, cur.Col, p.phPartial)
 }
 
 func (p *promptEditor) clearPlaceholderCompletion() {
@@ -282,6 +303,7 @@ func (p *promptEditor) clearPlaceholderCompletion() {
 	p.phBraceLine = 0
 	p.phCandidates = nil
 	p.phIndex = 0
+	p.phPartial = ""
 }
 
 // openBracePrefix finds an unclosed `{` before col on the same line.
@@ -327,6 +349,24 @@ func isPlaceholderPartial(s string) bool {
 		}
 	}
 	return true
+}
+
+// completionActive reports that Tab/shift+Tab belong to placeholder completion
+// rather than to the form's field navigation: insert mode with a cycle already
+// running, or an unclosed `{` before the cursor that has candidates.
+func (p promptEditor) completionActive() bool {
+	if p.ed.Mode() != vim.ModeInsert {
+		return false
+	}
+	if p.phActive {
+		return true
+	}
+	cur := p.ed.Cursor()
+	_, partial, ok := openBracePrefix(p.ed.CurrentLine(), cur.Col)
+	if !ok {
+		return false
+	}
+	return len(prompts.FilterPlaceholders(partial)) > 0 || prompts.IsKnownPlaceholder(partial)
 }
 
 // idleNormal reports normal mode with nothing pending — the only state where
@@ -395,10 +435,14 @@ func (p promptEditor) modeline() string {
 	}
 	if p.phActive && len(p.phCandidates) > 0 {
 		name := p.phCandidates[p.phIndex]
+		detail := fmt.Sprintf("%d/%d", p.phIndex+1, len(p.phCandidates))
+		if help := prompts.PlaceholderDescription(name); help != "" {
+			detail += " · " + help
+		}
 		return fmt.Sprintf(
 			"var %s %s · tab cycle · enter insert {…} · esc cancel",
 			placeholderKnownStyle.Render("{"+name+"}"),
-			dimStyle.Render(fmt.Sprintf("%d/%d", p.phIndex+1, len(p.phCandidates))),
+			dimStyle.Render(detail),
 		)
 	}
 	switch p.ed.Mode() {

@@ -2,7 +2,6 @@ package vim
 
 import (
 	"strings"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -18,15 +17,24 @@ type ViewConfig struct {
 	CommandLine  lipgloss.Style
 	ShowLineNums bool
 
-	// PlaceholderKnown styles complete {name} tokens whose name is in
-	// KnownPlaceholders (or all tokens when KnownPlaceholders is nil/empty
-	// and PlaceholderKnown is set). PlaceholderUnknown styles other tokens.
+	// PlaceholderKnown styles tokens reported by Tokens whose name is in
+	// KnownPlaceholders; PlaceholderUnknown styles the rest. Nil or empty
+	// KnownPlaceholders means every reported token is "known".
 	PlaceholderKnown   lipgloss.Style
 	PlaceholderUnknown lipgloss.Style
-	// KnownPlaceholders maps bare placeholder names that should use the
-	// known style. Nil or empty means every complete token is "known" when
-	// PlaceholderKnown is non-zero (host usually supplies the catalog).
-	KnownPlaceholders map[string]bool
+	KnownPlaceholders  map[string]bool
+	// Tokens reports the highlightable spans on one line. The editor has no
+	// opinion on the token grammar — the host owns it, so the colorizer can
+	// never drift from whatever actually substitutes the tokens at runtime.
+	Tokens func(line string) []TokenSpan
+}
+
+// TokenSpan is a highlightable [Start,End) byte range on a line and the bare
+// name it carries (used to pick the known vs unknown style).
+type TokenSpan struct {
+	Start int
+	End   int
+	Name  string
 }
 
 // DefaultViewConfig returns theme-neutral styles; hosts override the colors
@@ -131,15 +139,15 @@ func (e *Editor) renderLine(lineIdx int, line string, cursor Position, cfg ViewC
 		return " " // Empty line placeholder
 	}
 
-	// Per-byte style for complete {name} tokens on this line.
-	phStyle := placeholderStylesForLine(line, cfg)
+	// Per-byte style for the host's tokens on this line.
+	phStyle := tokenStylesForLine(line, cfg)
 
 	var result strings.Builder
 
 	// Iterate by byte index so columns match buffer.Col (byte-based).
 	for col := 0; col < len(line); {
-		r, size := decodeRune(line[col:])
-		char := line[col : col+size]
+		next := stepFwd(line, col)
+		char := line[col:next]
 		charOffset := lineStartOffset + col
 
 		isCursor := lineIdx == cursor.Line && col == cursor.Col
@@ -159,8 +167,7 @@ func (e *Editor) renderLine(lineIdx int, line string, cursor Position, cfg ViewC
 				result.WriteString(cfg.NormalText.Render(char))
 			}
 		}
-		col += size
-		_ = r
+		col = next
 	}
 
 	// Handle cursor at end of line in insert mode
@@ -171,48 +178,27 @@ func (e *Editor) renderLine(lineIdx int, line string, cursor Position, cfg ViewC
 	return result.String()
 }
 
-// placeholderStylesForLine maps each byte index inside a complete {name}
-// token to the style that should paint that byte.
-func placeholderStylesForLine(line string, cfg ViewConfig) map[int]lipgloss.Style {
-	out := make(map[int]lipgloss.Style)
-	for i := 0; i < len(line); i++ {
-		if line[i] != '{' {
-			continue
-		}
-		j := i + 1
-		if j >= len(line) || !isIdentStart(line[j]) {
-			continue
-		}
-		j++
-		for j < len(line) && isIdentCont(line[j]) {
-			j++
-		}
-		if j >= len(line) || line[j] != '}' {
-			continue
-		}
-		name := line[i+1 : j]
+// tokenStylesForLine maps each byte index inside a host-reported token to the
+// style that should paint it.
+func tokenStylesForLine(line string, cfg ViewConfig) map[int]lipgloss.Style {
+	if cfg.Tokens == nil {
+		return nil
+	}
+	spans := cfg.Tokens(line)
+	if len(spans) == 0 {
+		return nil
+	}
+	out := make(map[int]lipgloss.Style, len(spans)*8)
+	for _, span := range spans {
 		st := cfg.PlaceholderKnown
-		if len(cfg.KnownPlaceholders) > 0 && !cfg.KnownPlaceholders[name] {
+		if len(cfg.KnownPlaceholders) > 0 && !cfg.KnownPlaceholders[span.Name] {
 			st = cfg.PlaceholderUnknown
 		}
-		for k := i; k <= j; k++ {
+		for k := max(span.Start, 0); k < min(span.End, len(line)); k++ {
 			out[k] = st
 		}
-		i = j
 	}
 	return out
-}
-
-func isIdentStart(b byte) bool {
-	return b == '_' || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
-}
-
-func isIdentCont(b byte) bool {
-	return isIdentStart(b) || (b >= '0' && b <= '9')
-}
-
-func decodeRune(s string) (rune, int) {
-	return utf8.DecodeRuneInString(s)
 }
 
 // lineStartOffset calculates the absolute offset at the start of a line.

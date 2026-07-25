@@ -365,3 +365,62 @@ func TestPersonasFormStackRoundTrip(t *testing.T) {
 		t.Fatal("form should close after save")
 	}
 }
+
+// Placeholder completion must be reachable through the form, not just by driving
+// promptEditor directly: updateForm claimed tab for field navigation, so `{`+Tab
+// jumped to the Model & voice step instead of completing.
+func TestPersonasPromptStepTabCompletesPlaceholder(t *testing.T) {
+	cfg := &config.Config{ActivePersona: "samantha", AgentName: "Samantha"}
+	m := newPersonas(cfg)
+	m.listPersonas = func() ([]*persona.Profile, error) {
+		return []*persona.Profile{{ID: "samantha", DisplayName: "Samantha"}}, nil
+	}
+	m.starterPrompt = func() (string, error) { return "", nil }
+	m.defaultPrompt = func() (string, error) { return "", nil }
+	m.reload()
+	m.width, m.height = 80, 30
+	m.beginCreate()
+	m.nameInput.SetValue("Tabby")
+	m, _ = m.focusPromptStep()
+	m.promptTA.SetValue("")
+	m.promptTA.StartInsert()
+
+	for _, r := range "You are {" {
+		m, _ = m.updateForm(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = m.updateForm(tea.KeyMsg{Type: tea.KeyTab})
+	if m.formStep != personaFormPrompt {
+		t.Fatalf("tab left the prompt step (step=%d); completion is unreachable", m.formStep)
+	}
+	if !strings.Contains(m.promptTA.Value(), "{agent_name") {
+		t.Fatalf("tab did not complete the placeholder: %q", m.promptTA.Value())
+	}
+	m, _ = m.updateForm(tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(m.promptTA.Value(), "{agent_name}") {
+		t.Fatalf("enter did not close the token: %q", m.promptTA.Value())
+	}
+}
+
+// With nothing to complete, tab still moves between fields.
+func TestPersonasPromptStepTabStillNavigatesFields(t *testing.T) {
+	cfg := &config.Config{ActivePersona: "samantha", AgentName: "Samantha"}
+	m := newPersonas(cfg)
+	m.listPersonas = func() ([]*persona.Profile, error) {
+		return []*persona.Profile{{ID: "samantha", DisplayName: "Samantha"}}, nil
+	}
+	m.starterPrompt = func() (string, error) { return "You are {agent_name}.", nil }
+	m.reload()
+	m.width, m.height = 80, 30
+	m.beginCreate()
+	m.nameInput.SetValue("Tabby")
+	m, _ = m.focusPromptStep()
+
+	m, _ = m.updateForm(tea.KeyMsg{Type: tea.KeyTab})
+	if m.formStep != personaFormStack {
+		t.Fatalf("tab with no open brace should advance to the stack step, got %d", m.formStep)
+	}
+	m, _ = m.updateForm(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if m.formStep != personaFormPrompt {
+		t.Fatalf("shift+tab should return to the prompt step, got %d", m.formStep)
+	}
+}
