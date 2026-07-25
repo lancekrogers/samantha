@@ -196,6 +196,30 @@ func (b *Buffer) LineCount() int {
 	return len(b.lines)
 }
 
+// ReplaceLineRange replaces [startCol, endCol) on the current line with text
+// and leaves the cursor at the end of the inserted text (insert-mode style).
+// Columns are byte offsets, matching the rest of this buffer.
+func (b *Buffer) ReplaceLineRange(startCol, endCol int, text string) {
+	if len(b.lines) == 0 {
+		b.lines = []string{""}
+	}
+	line := b.lines[b.cursor.Line]
+	if startCol < 0 {
+		startCol = 0
+	}
+	if endCol < startCol {
+		endCol = startCol
+	}
+	if startCol > len(line) {
+		startCol = len(line)
+	}
+	if endCol > len(line) {
+		endCol = len(line)
+	}
+	b.lines[b.cursor.Line] = line[:startCol] + text + line[endCol:]
+	b.cursor.Col = startCol + len(text)
+}
+
 // Insert inserts text at the current cursor position.
 func (b *Buffer) Insert(text string) {
 	if len(b.lines) == 0 {

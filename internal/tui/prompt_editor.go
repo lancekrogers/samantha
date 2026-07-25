@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/lancekrogers/samantha/internal/prompts"
 	"github.com/lancekrogers/samantha/internal/tui/vim"
 )
 
@@ -14,11 +17,23 @@ import (
 // vimTextarea layer (WI-c8884d P5) with the full modal editor — visual mode,
 // operators, text objects, yank/paste, undo/redo — so a long system prompt is
 // actually editable in place.
+//
+// Placeholder completion (insert mode): type `{`, then Tab to cycle known
+// template variables; Enter inserts the selected name plus a closing `}`.
+// Complete tokens like {agent_name} are colorized in the view.
 type promptEditor struct {
 	ed      *vim.Editor
 	focused bool
 	width   int
 	height  int
+
+	// Placeholder tab-completion state (insert mode only).
+	phActive     bool
+	phBraceCol   int // column of the opening '{' on the cursor line
+	phBraceLine  int
+	phCandidates []string
+	phIndex      int
+	phPartial    string // text typed after `{` before the first Tab
 }
 
 // promptEvent reports a form-level action the editor requested.
@@ -41,6 +56,7 @@ func (p *promptEditor) Value() string { return p.ed.Content() }
 func (p *promptEditor) SetValue(s string) {
 	p.ed = vim.NewEditor(s)
 	p.ed.SetSize(p.width, p.height)
+	p.clearPlaceholderCompletion()
 }
 
 func (p *promptEditor) Focus() { p.focused = true }
@@ -51,6 +67,7 @@ func (p *promptEditor) Blur()  { p.focused = false }
 func (p *promptEditor) StartInsert() {
 	p.ed.State().Reset()
 	p.ed.State().EnterInsert()
+	p.clearPlaceholderCompletion()
 }
 
 func (p *promptEditor) SetWidth(w int) {
@@ -78,12 +95,43 @@ func (p promptEditor) View() string {
 	cfg.LineNumber = dimStyle
 	cfg.CommandLine = dimStyle
 	cfg.Selection = selectionStyle
+	cfg.PlaceholderKnown = placeholderKnownStyle
+	cfg.PlaceholderUnknown = placeholderUnknownStyle
+	cfg.KnownPlaceholders = knownPlaceholderSet()
+	cfg.Tokens = placeholderTokens
 	if !p.focused {
 		cfg.CursorBlock = normalStyle
 		cfg.CursorInsert = normalStyle
 		cfg.Selection = normalStyle
 	}
 	return p.ed.View(cfg)
+}
+
+// placeholderTokens reports the {name} spans on a line using the same grammar
+// the resolver substitutes with, so the colorizer cannot drift from it.
+func placeholderTokens(line string) []vim.TokenSpan {
+	spans := prompts.FindPlaceholders(line)
+	if len(spans) == 0 {
+		return nil
+	}
+	out := make([]vim.TokenSpan, 0, len(spans))
+	for _, s := range spans {
+		out = append(out, vim.TokenSpan{
+			Start: s[0],
+			End:   s[1],
+			Name:  prompts.PlaceholderNameAt(line, s[0]),
+		})
+	}
+	return out
+}
+
+func knownPlaceholderSet() map[string]bool {
+	names := prompts.PlaceholderNames()
+	out := make(map[string]bool, len(names))
+	for _, n := range names {
+		out[n] = true
+	}
+	return out
 }
 
 // Update routes one key through the modal editor and maps the outcome onto a
@@ -93,9 +141,28 @@ func (p promptEditor) Update(msg tea.KeyMsg) (promptEditor, tea.Cmd, promptEvent
 	if msg.String() == "esc" && p.idleNormal() {
 		return p, nil, promptEventCancel
 	}
+
+	// Placeholder completion intercepts Tab/Enter/Esc in insert mode.
+	if p.ed.Mode() == vim.ModeInsert {
+		if handled, next := p.handlePlaceholderKeys(msg); handled {
+			return next, nil, promptEventNone
+		}
+	}
+
 	if p.ed.Mode() == vim.ModeInsert && p.insertArrow(msg) {
+		p.clearPlaceholderCompletion()
 		return p, nil, promptEventNone
 	}
+	// Any non-completion key that mutates content drops the cycle state;
+	// handlePlaceholderKeys already no-ops when the brace context is gone.
+	if p.phActive && !isPlaceholderNavKey(msg) {
+		// Typing more of a name keeps completion useful only while the prefix
+		// still matches; rebuild on next Tab. Clear so Enter inserts newline.
+		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace || msg.Type == tea.KeyBackspace || msg.Type == tea.KeyDelete {
+			p.clearPlaceholderCompletion()
+		}
+	}
+
 	cmd, _ := p.ed.Update(msg)
 	switch strings.TrimSpace(cmd) {
 	case "w", "wq", "x":
@@ -104,6 +171,202 @@ func (p promptEditor) Update(msg tea.KeyMsg) (promptEditor, tea.Cmd, promptEvent
 		return p, nil, promptEventCancel
 	}
 	return p, nil, promptEventNone
+}
+
+func isPlaceholderNavKey(msg tea.KeyMsg) bool {
+	switch msg.Type {
+	case tea.KeyTab, tea.KeyShiftTab, tea.KeyEnter, tea.KeyEscape:
+		return true
+	}
+	return false
+}
+
+// handlePlaceholderKeys implements { → Tab cycle → Enter commit.
+// Returns handled=true when the key was consumed for completion.
+func (p *promptEditor) handlePlaceholderKeys(msg tea.KeyMsg) (bool, promptEditor) {
+	switch msg.Type {
+	case tea.KeyTab, tea.KeyShiftTab:
+		return p.cyclePlaceholder(msg.Type == tea.KeyShiftTab), *p
+	case tea.KeyEnter:
+		if !p.phActive {
+			return false, *p
+		}
+		p.commitPlaceholder()
+		return true, *p
+	case tea.KeyEscape:
+		if !p.phActive {
+			return false, *p
+		}
+		// Leave the opening `{` (and any typed prefix); drop the preview name.
+		p.revertPlaceholderPreview()
+		p.clearPlaceholderCompletion()
+		return true, *p
+	default:
+		return false, *p
+	}
+}
+
+// cyclePlaceholder starts or advances tab-completion after an unclosed `{`.
+func (p *promptEditor) cyclePlaceholder(reverse bool) bool {
+	line := p.ed.CurrentLine()
+	cur := p.ed.Cursor()
+	braceCol, partial, ok := openBracePrefix(line, cur.Col)
+	if !ok {
+		return false
+	}
+
+	sameCtx := p.phActive && p.phBraceLine == cur.Line && p.phBraceCol == braceCol && len(p.phCandidates) > 0
+	if !sameCtx {
+		// Fresh context: filter by typed prefix. If the partial is already a
+		// full known name (re-opening after a preview), offer the whole catalog.
+		p.phCandidates = prompts.FilterPlaceholders(partial)
+		if len(p.phCandidates) == 0 {
+			if prompts.IsKnownPlaceholder(partial) {
+				p.phCandidates = prompts.PlaceholderNames()
+			} else {
+				return false
+			}
+		}
+		p.phIndex = 0
+		if reverse {
+			p.phIndex = len(p.phCandidates) - 1
+		}
+		p.phActive = true
+		p.phBraceCol = braceCol
+		p.phBraceLine = cur.Line
+		p.phPartial = partial
+	} else if reverse {
+		p.phIndex--
+		if p.phIndex < 0 {
+			p.phIndex = len(p.phCandidates) - 1
+		}
+	} else {
+		p.phIndex = (p.phIndex + 1) % len(p.phCandidates)
+	}
+
+	name := p.phCandidates[p.phIndex]
+	// Replace everything after `{` up to cursor with the candidate name
+	// (no closing brace yet — Enter commits `}`).
+	p.ed.ReplaceLineRange(braceCol+1, cur.Col, name)
+	p.ed.EnsureCursorVisible()
+	return true
+}
+
+// commitPlaceholder inserts the closing `}` after the previewed name.
+func (p *promptEditor) commitPlaceholder() {
+	if !p.phActive || len(p.phCandidates) == 0 {
+		p.clearPlaceholderCompletion()
+		return
+	}
+	line := p.ed.CurrentLine()
+	cur := p.ed.Cursor()
+	// Ensure name is present after brace, then add `}` if missing.
+	name := p.phCandidates[p.phIndex]
+	braceCol := p.phBraceCol
+	if braceCol < 0 || braceCol >= len(line) || line[braceCol] != '{' {
+		// Brace lost — insert full token at cursor.
+		p.ed.InsertAtCursor("{" + name + "}")
+		p.clearPlaceholderCompletion()
+		return
+	}
+	// Replace [brace+1, cur) with name, then append `}` if next char isn't.
+	p.ed.ReplaceLineRange(braceCol+1, cur.Col, name)
+	cur = p.ed.Cursor()
+	line = p.ed.CurrentLine()
+	if cur.Col >= len(line) || line[cur.Col] != '}' {
+		p.ed.InsertAtCursor("}")
+	} else {
+		// Move past existing `}`.
+		p.ed.SetCursorInsert(vim.Position{Line: cur.Line, Col: cur.Col + 1})
+	}
+	p.clearPlaceholderCompletion()
+	p.ed.EnsureCursorVisible()
+}
+
+// revertPlaceholderPreview drops the cycled name and restores what the user had
+// actually typed after the opening `{`.
+func (p *promptEditor) revertPlaceholderPreview() {
+	if !p.phActive {
+		return
+	}
+	cur := p.ed.Cursor()
+	line := p.ed.CurrentLine()
+	if p.phBraceLine != cur.Line || p.phBraceCol < 0 || p.phBraceCol >= len(line) {
+		return
+	}
+	p.ed.ReplaceLineRange(p.phBraceCol+1, cur.Col, p.phPartial)
+}
+
+func (p *promptEditor) clearPlaceholderCompletion() {
+	p.phActive = false
+	p.phBraceCol = 0
+	p.phBraceLine = 0
+	p.phCandidates = nil
+	p.phIndex = 0
+	p.phPartial = ""
+}
+
+// openBracePrefix finds an unclosed `{` before col on the same line.
+// partial is the identifier-ish text between `{` and col.
+func openBracePrefix(line string, col int) (braceCol int, partial string, ok bool) {
+	if col < 0 {
+		col = 0
+	}
+	if col > len(line) {
+		col = len(line)
+	}
+	// Walk left for the nearest `{` that is not already closed before col.
+	for i := col - 1; i >= 0; i-- {
+		switch line[i] {
+		case '}':
+			// Closed token — stop; no open brace for completion.
+			return 0, "", false
+		case '{':
+			// Characters after `{` up to col must be a valid (possibly empty) prefix.
+			partial = line[i+1 : col]
+			if !isPlaceholderPartial(partial) {
+				return 0, "", false
+			}
+			return i, partial, true
+		}
+	}
+	return 0, "", false
+}
+
+func isPlaceholderPartial(s string) bool {
+	if s == "" {
+		return true
+	}
+	for i, r := range s {
+		if i == 0 {
+			if r != '_' && !unicode.IsLetter(r) {
+				return false
+			}
+			continue
+		}
+		if r != '_' && !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// completionActive reports that Tab/shift+Tab belong to placeholder completion
+// rather than to the form's field navigation: insert mode with a cycle already
+// running, or an unclosed `{` before the cursor that has candidates.
+func (p promptEditor) completionActive() bool {
+	if p.ed.Mode() != vim.ModeInsert {
+		return false
+	}
+	if p.phActive {
+		return true
+	}
+	cur := p.ed.Cursor()
+	_, partial, ok := openBracePrefix(p.ed.CurrentLine(), cur.Col)
+	if !ok {
+		return false
+	}
+	return len(prompts.FilterPlaceholders(partial)) > 0 || prompts.IsKnownPlaceholder(partial)
 }
 
 // idleNormal reports normal mode with nothing pending — the only state where
@@ -170,9 +433,21 @@ func (p promptEditor) modeline() string {
 	if ex, active := p.ExBuffer(); active {
 		return ":" + ex
 	}
+	if p.phActive && len(p.phCandidates) > 0 {
+		name := p.phCandidates[p.phIndex]
+		detail := fmt.Sprintf("%d/%d", p.phIndex+1, len(p.phCandidates))
+		if help := prompts.PlaceholderDescription(name); help != "" {
+			detail += " · " + help
+		}
+		return fmt.Sprintf(
+			"var %s %s · tab cycle · enter insert {…} · esc cancel",
+			placeholderKnownStyle.Render("{"+name+"}"),
+			dimStyle.Render(detail),
+		)
+	}
 	switch p.ed.Mode() {
 	case vim.ModeInsert:
-		return "-- INSERT -- · esc normal · save: :w / ctrl+j"
+		return "-- INSERT -- · { tab variables · esc normal · save: :w / ctrl+j"
 	case vim.ModeVisual, vim.ModeVisualLine:
 		return "-- VISUAL -- · y yank · d delete · c change · esc normal"
 	default:

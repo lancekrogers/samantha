@@ -157,6 +157,16 @@ var (
 			Bold(true).
 			Padding(0, 1)
 
+	// placeholderKnownStyle paints complete {agent_name}-style tokens in the
+	// persona prompt editor. Unknown {tokens} use the error color.
+	placeholderKnownStyle = lipgloss.NewStyle().
+				Foreground(colorAccent).
+				Bold(true)
+
+	placeholderUnknownStyle = lipgloss.NewStyle().
+				Foreground(colorError).
+				Bold(true)
+
 	chipMutedStyle = lipgloss.NewStyle().
 			Foreground(colorDim).
 			Background(colorRaised).

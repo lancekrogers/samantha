@@ -16,6 +16,25 @@ type ViewConfig struct {
 	LineNumber   lipgloss.Style
 	CommandLine  lipgloss.Style
 	ShowLineNums bool
+
+	// PlaceholderKnown styles tokens reported by Tokens whose name is in
+	// KnownPlaceholders; PlaceholderUnknown styles the rest. Nil or empty
+	// KnownPlaceholders means every reported token is "known".
+	PlaceholderKnown   lipgloss.Style
+	PlaceholderUnknown lipgloss.Style
+	KnownPlaceholders  map[string]bool
+	// Tokens reports the highlightable spans on one line. The editor has no
+	// opinion on the token grammar — the host owns it, so the colorizer can
+	// never drift from whatever actually substitutes the tokens at runtime.
+	Tokens func(line string) []TokenSpan
+}
+
+// TokenSpan is a highlightable [Start,End) byte range on a line and the bare
+// name it carries (used to pick the known vs unknown style).
+type TokenSpan struct {
+	Start int
+	End   int
+	Name  string
 }
 
 // DefaultViewConfig returns theme-neutral styles; hosts override the colors
@@ -29,6 +48,9 @@ func DefaultViewConfig() ViewConfig {
 		LineNumber:   lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
 		CommandLine:  lipgloss.NewStyle().Foreground(lipgloss.Color("7")),
 		ShowLineNums: true,
+		// Placeholder styles default empty so hosts opt in.
+		PlaceholderKnown:   lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true),
+		PlaceholderUnknown: lipgloss.NewStyle().Foreground(lipgloss.Color("1")),
 	}
 }
 
@@ -102,7 +124,7 @@ func (e *Editor) View(cfg ViewConfig) string {
 	return b.String()
 }
 
-// renderLine renders a single line with cursor/selection highlighting.
+// renderLine renders a single line with cursor/selection/placeholder highlighting.
 func (e *Editor) renderLine(lineIdx int, line string, cursor Position, cfg ViewConfig, inVisual bool, selStartOff, selEndOff int) string {
 	lineStartOffset := e.lineStartOffset(lineIdx)
 
@@ -117,28 +139,35 @@ func (e *Editor) renderLine(lineIdx int, line string, cursor Position, cfg ViewC
 		return " " // Empty line placeholder
 	}
 
+	// Per-byte style for the host's tokens on this line.
+	phStyle := tokenStylesForLine(line, cfg)
+
 	var result strings.Builder
 
-	for col, ch := range line {
+	// Iterate by byte index so columns match buffer.Col (byte-based).
+	for col := 0; col < len(line); {
+		next := stepFwd(line, col)
+		char := line[col:next]
 		charOffset := lineStartOffset + col
-		char := string(ch)
 
 		isCursor := lineIdx == cursor.Line && col == cursor.Col
 		isSelected := inVisual && charOffset >= selStartOff && charOffset <= selEndOff
 
 		switch {
 		case isCursor && e.state.Mode == ModeInsert:
-			// Insert mode cursor (underline) within line
 			result.WriteString(cfg.CursorInsert.Render(char))
 		case isCursor:
-			// Block cursor in normal/visual mode
 			result.WriteString(cfg.CursorBlock.Render(char))
 		case isSelected:
-			// Visual selection
 			result.WriteString(cfg.Selection.Render(char))
 		default:
-			result.WriteString(cfg.NormalText.Render(char))
+			if st, ok := phStyle[col]; ok {
+				result.WriteString(st.Render(char))
+			} else {
+				result.WriteString(cfg.NormalText.Render(char))
+			}
 		}
+		col = next
 	}
 
 	// Handle cursor at end of line in insert mode
@@ -147,6 +176,29 @@ func (e *Editor) renderLine(lineIdx int, line string, cursor Position, cfg ViewC
 	}
 
 	return result.String()
+}
+
+// tokenStylesForLine maps each byte index inside a host-reported token to the
+// style that should paint it.
+func tokenStylesForLine(line string, cfg ViewConfig) map[int]lipgloss.Style {
+	if cfg.Tokens == nil {
+		return nil
+	}
+	spans := cfg.Tokens(line)
+	if len(spans) == 0 {
+		return nil
+	}
+	out := make(map[int]lipgloss.Style, len(spans)*8)
+	for _, span := range spans {
+		st := cfg.PlaceholderKnown
+		if len(cfg.KnownPlaceholders) > 0 && !cfg.KnownPlaceholders[span.Name] {
+			st = cfg.PlaceholderUnknown
+		}
+		for k := max(span.Start, 0); k < min(span.End, len(line)); k++ {
+			out[k] = st
+		}
+	}
+	return out
 }
 
 // lineStartOffset calculates the absolute offset at the start of a line.

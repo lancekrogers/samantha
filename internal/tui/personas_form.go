@@ -119,7 +119,23 @@ func (m personasModel) updateForm(msg tea.KeyMsg) (personasModel, tea.Cmd) {
 		return m, nil
 	case isPersonaFormSaveKey(key):
 		return m.submitForm()
-	case key == "tab":
+	case key == "tab", key == "shift+tab":
+		// On the prompt step Tab is the placeholder-completion key whenever the
+		// editor has a `{…}` to complete; only fall through to field navigation
+		// when it does not, otherwise the completion is unreachable in the form.
+		if m.formStep == personaFormPrompt && m.promptTA.completionActive() {
+			break
+		}
+		if key == "shift+tab" {
+			switch m.formStep {
+			case personaFormPrompt:
+				return m.focusNameStep()
+			case personaFormStack:
+				return m.focusPromptStep()
+			default:
+				return m.focusStackStep()
+			}
+		}
 		switch m.formStep {
 		case personaFormName:
 			return m.focusPromptStep()
@@ -127,15 +143,6 @@ func (m personasModel) updateForm(msg tea.KeyMsg) (personasModel, tea.Cmd) {
 			return m.focusStackStep()
 		default:
 			return m.focusNameStep()
-		}
-	case key == "shift+tab":
-		switch m.formStep {
-		case personaFormPrompt:
-			return m.focusNameStep()
-		case personaFormStack:
-			return m.focusPromptStep()
-		default:
-			return m.focusStackStep()
 		}
 	case key == "enter":
 		if m.formStep == personaFormName {
