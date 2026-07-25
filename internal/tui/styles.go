@@ -116,6 +116,12 @@ var (
 	dimStyle = lipgloss.NewStyle().
 			Foreground(colorDim)
 
+	// selectionStyle paints vim visual-mode selections; colorDim maps onto
+	// bright black under the 16-color VHS profile, so it stays visible there.
+	selectionStyle = lipgloss.NewStyle().
+			Background(colorDim).
+			Foreground(colorBg)
+
 	statusStyle = lipgloss.NewStyle().
 			Foreground(colorStatus)
 
@@ -150,6 +156,16 @@ var (
 			Background(colorAccent).
 			Bold(true).
 			Padding(0, 1)
+
+	// placeholderKnownStyle paints complete {agent_name}-style tokens in the
+	// persona prompt editor. Unknown {tokens} use the error color.
+	placeholderKnownStyle = lipgloss.NewStyle().
+				Foreground(colorAccent).
+				Bold(true)
+
+	placeholderUnknownStyle = lipgloss.NewStyle().
+				Foreground(colorError).
+				Bold(true)
 
 	chipMutedStyle = lipgloss.NewStyle().
 			Foreground(colorDim).

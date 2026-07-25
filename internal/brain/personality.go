@@ -37,7 +37,7 @@ func resolvePrompt(cfg *config.Config, kind prompts.Kind) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving %s prompt: %w", kind, err)
 	}
-	text, err := prompts.ResolvePlaceholders(doc.Assemble(), []string{"agent_name"}, map[string]string{"agent_name": cfg.AgentName})
+	text, err := prompts.ResolvePlaceholders(doc.Assemble(), prompts.PlaceholderNames(), prompts.PlaceholderValues(cfg.AgentName))
 	if err != nil {
 		return "", fmt.Errorf("%s prompt %q: %w", kind, cfg.Persona, err)
 	}
