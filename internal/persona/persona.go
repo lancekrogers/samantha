@@ -18,6 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/prompts"
 )
 
 // Schema identifies the persona profile document version.
@@ -285,10 +286,14 @@ func effectivePersonaRef(p *Profile) string {
 	if id == "" || ref == id {
 		return ref
 	}
-	if text, err := LoadSystemPrompt(id); err == nil && strings.TrimSpace(text) != "" {
-		return id
+	// Only a real user document at prompts/persona/<id>.yaml wins. Checking via
+	// LoadSystemPrompt would also match the embedded fallback, which would
+	// override a deliberate shared ref on the samantha profile.
+	entry, err := prompts.Describe(promptsDir(), prompts.KindPersona, id)
+	if err != nil || entry.Source != prompts.SourceUser {
+		return ref
 	}
-	return ref
+	return id
 }
 
 // applyBrain overlays per-persona model routing. Empty fields inherit the

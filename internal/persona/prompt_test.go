@@ -204,3 +204,22 @@ func TestApplyKeepsRefWhenNoPrivatePrompt(t *testing.T) {
 		t.Fatalf("cfg.Persona = %q, want shared-base", cfg.Persona)
 	}
 }
+
+func TestApplyDoesNotOverrideSharedRefWithEmbeddedName(t *testing.T) {
+	// The heal must key on a real user document, not the embedded fallback:
+	// LoadSystemPrompt("samantha") always succeeds, so keying on it would rewrite
+	// a deliberate shared ref on the samantha profile back to "samantha".
+	dir := t.TempDir()
+	setConfigDir(t, dir)
+	if err := WriteSystemPrompt("team-voice", "You are the team voice."); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{}
+	Apply(cfg, &Profile{
+		Schema: Schema, ID: DefaultID, DisplayName: "Samantha",
+		Prompts: PromptRefs{Persona: "team-voice"},
+	})
+	if cfg.Persona != "team-voice" {
+		t.Fatalf("cfg.Persona = %q, want the explicit shared ref kept", cfg.Persona)
+	}
+}
