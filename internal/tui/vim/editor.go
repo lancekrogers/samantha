@@ -90,17 +90,33 @@ func (e *Editor) IsCommandMode() bool {
 }
 
 // VisualSelection returns the visual selection range, if in visual mode.
+// In V-LINE mode the span covers the whole lines it touches.
 func (e *Editor) VisualSelection() (start, end Position, active bool) {
 	if !e.state.IsVisual() {
 		return Position{}, Position{}, false
 	}
-	s, endOff := e.state.VisualRange(e.buffer.CursorOffset())
+	startPos, endPos := e.visualSpan()
+	return startPos, endPos, true
+}
 
-	// Convert offsets to positions
+// visualSpan resolves the active selection into buffer positions, widening to
+// full lines for V-LINE so d/y/c and the highlight agree with vim.
+func (e *Editor) visualSpan() (Position, Position) {
+	s, endOff := e.state.VisualRange(e.buffer.CursorOffset())
 	startPos := e.offsetToPosition(s)
 	endPos := e.offsetToPosition(endOff)
+	if e.state.Mode == ModeVisualLine {
+		from, to := e.state.VisualLineRange(startPos.Line, endPos.Line)
+		startPos = Position{Line: from, Col: 0}
+		endPos = Position{Line: to, Col: max(len(e.buffer.Lines()[to])-1, 0)}
+	}
+	return startPos, endPos
+}
 
-	return startPos, endPos, true
+// visualLines is the inclusive line span of the active selection.
+func (e *Editor) visualLines() (int, int) {
+	startPos, endPos := e.visualSpan()
+	return e.state.VisualLineRange(startPos.Line, endPos.Line)
 }
 
 func (e *Editor) offsetToPosition(offset int) Position {
@@ -196,11 +212,12 @@ func (e *Editor) handleNormal(msg tea.KeyMsg) (cmd string, quit bool) {
 		e.state.AccumulateCount(int(key[0] - '0'))
 		return "", false
 	}
-	if len(key) == 1 && key[0] == '0' && e.state.Count > 1 {
+	if len(key) == 1 && key[0] == '0' && e.state.HasCount {
 		e.state.AccumulateCount(0)
 		return "", false
 	}
 
+	hadCount := e.state.HasCount
 	count := e.state.GetCount()
 
 	// Check for operator-pending mode
@@ -211,19 +228,21 @@ func (e *Editor) handleNormal(msg tea.KeyMsg) (cmd string, quit bool) {
 	switch key {
 	// Mode switching
 	case "i":
-		e.state.EnterInsert()
+		// Typed text needs an undo point too: without one, u after an insert
+		// session silently did nothing.
+		e.beginInsert()
 	case "a":
 		cur := e.buffer.Cursor()
-		e.buffer.SetCursorInsert(Position{Line: cur.Line, Col: cur.Col + 1})
-		e.state.EnterInsert()
+		e.buffer.SetCursorInsert(Position{Line: cur.Line, Col: runeEnd(e.buffer.CurrentLine(), cur.Col)})
+		e.beginInsert()
 	case "I":
 		MoveToFirstNonBlank(e.buffer)
-		e.state.EnterInsert()
+		e.beginInsert()
 	case "A":
 		cur := e.buffer.Cursor()
 		lineLen := e.buffer.CurrentLineLen()
 		e.buffer.SetCursorInsert(Position{Line: cur.Line, Col: lineLen})
-		e.state.EnterInsert()
+		e.beginInsert()
 	case "o":
 		e.saveUndo()
 		e.buffer.NewLineBelow()
@@ -234,7 +253,7 @@ func (e *Editor) handleNormal(msg tea.KeyMsg) (cmd string, quit bool) {
 		e.state.EnterInsert()
 	case "s":
 		e.saveUndo()
-		e.buffer.DeleteChar()
+		e.buffer.DeleteCharNoJoin()
 		e.state.EnterInsert()
 	case "S":
 		e.saveUndo()
@@ -286,7 +305,7 @@ func (e *Editor) handleNormal(msg tea.KeyMsg) (cmd string, quit bool) {
 		e.state.PendingKey = 'g'
 		return "", false
 	case "G":
-		if count > 1 {
+		if hadCount {
 			MoveToLine(e.buffer, count)
 		} else {
 			MoveToDocumentEnd(e.buffer)
@@ -331,9 +350,10 @@ func (e *Editor) handleNormal(msg tea.KeyMsg) (cmd string, quit bool) {
 
 	// Line operations
 	case "x":
+		// vim's x never pulls the next line up, and does nothing on a blank line.
 		e.saveUndo()
 		for range count {
-			e.buffer.DeleteChar()
+			e.buffer.DeleteCharNoJoin()
 		}
 	case "X":
 		e.saveUndo()
@@ -378,6 +398,14 @@ func (e *Editor) handleNormal(msg tea.KeyMsg) (cmd string, quit bool) {
 	}
 
 	return "", false
+}
+
+// beginInsert opens an undo block for a plain insert session (i, a, I, A) and
+// switches mode. Operator-driven inserts (o, O, s, S, C, c<motion>) already save
+// before they mutate, so the whole change stays one undo block.
+func (e *Editor) beginInsert() {
+	e.saveUndo()
+	e.state.EnterInsert()
 }
 
 // handleOperatorPending processes keys when an operator is pending.
@@ -449,7 +477,11 @@ func (e *Editor) handleOperatorPending(msg tea.KeyMsg, count int) (string, bool)
 	}
 
 	// Apply operator to motion range
-	e.applyOperator(op, motion.Start, motion.End)
+	if motion.Linewise {
+		e.applyLinewiseOperator(op, motion.Start.Line, motion.End.Line)
+	} else {
+		e.applyOperator(op, motion.Start, motion.End, !motion.Exclusive)
+	}
 	e.state.ClearOperator()
 	return "", false
 }
@@ -532,25 +564,52 @@ func (e *Editor) handleTextObjectKey(key string) (string, bool) {
 	}
 
 	if obj.Found {
-		e.applyOperator(op, obj.Start, obj.End)
+		e.applyOperator(op, obj.Start, obj.End, true)
 	}
 	e.state.ClearOperator()
 	e.EnsureCursorVisible()
 	return "", false
 }
 
-// applyOperator applies an operator to a range.
-func (e *Editor) applyOperator(op Operator, start, end Position) {
+// applyOperator applies an operator to a charwise range. inclusive covers the
+// rune at end (e, $, %, text objects); exclusive stops before it (w, b, h, l,
+// 0, ^) — without the distinction d0 and db each eat one rune too many.
+func (e *Editor) applyOperator(op Operator, start, end Position, inclusive bool) {
+	del := e.buffer.DeleteRange
+	yank := e.buffer.YankRange
+	if !inclusive {
+		del = e.buffer.DeleteRangeExclusive
+		yank = e.buffer.YankRangeExclusive
+	}
 	switch op {
 	case OpDelete:
 		e.saveUndo()
-		e.buffer.DeleteRange(start, end)
+		del(start, end)
 	case OpChange:
 		e.saveUndo()
-		e.buffer.DeleteRange(start, end)
+		del(start, end)
 		e.state.EnterInsert()
 	case OpYank:
-		e.buffer.YankRange(start, end)
+		yank(start, end)
+	}
+}
+
+// applyLinewiseOperator applies an operator to whole lines, the way vim treats
+// dj / dk / dG / dgg and V-mode selections.
+func (e *Editor) applyLinewiseOperator(op Operator, from, to int) {
+	switch op {
+	case OpDelete:
+		e.saveUndo()
+		e.buffer.YankLines(from, to)
+		e.buffer.DeleteLines(from, to)
+	case OpChange:
+		e.saveUndo()
+		e.buffer.YankLines(from, to)
+		e.buffer.DeleteLines(from, to)
+		e.buffer.NewLineAbove()
+		e.state.EnterInsert()
+	case OpYank:
+		e.buffer.YankLines(from, to)
 	}
 }
 
@@ -558,7 +617,9 @@ func (e *Editor) applyOperator(op Operator, start, end Position) {
 func (e *Editor) handleInsert(msg tea.KeyMsg) (cmd string, quit bool) {
 	switch msg.Type {
 	case tea.KeyEscape:
-		// Exit insert mode
+		// Exit insert mode. An insert session that typed nothing must not leave
+		// a no-op entry that makes the next u look broken.
+		e.undoStack.DropIfUnchanged(e.buffer.Content())
 		e.state.Reset()
 		// Move cursor back one if not at start
 		if e.buffer.Cursor().Col > 0 {
@@ -612,20 +673,37 @@ func (e *Editor) handleVisual(msg tea.KeyMsg) (cmd string, quit bool) {
 		curPos := e.buffer.CursorOffset()
 		e.buffer.SetCursorFromOffset(e.state.VisualStart)
 		e.state.VisualStart = curPos
-	case "d", "x":
-		start, end := e.state.VisualRange(e.buffer.CursorOffset())
-		e.saveUndo()
-		e.buffer.DeleteRange(e.offsetToPosition(start), e.offsetToPosition(end))
-		e.state.Reset()
-	case "y":
-		start, end := e.state.VisualRange(e.buffer.CursorOffset())
-		e.buffer.YankRange(e.offsetToPosition(start), e.offsetToPosition(end))
-		e.state.Reset()
-	case "c":
-		start, end := e.state.VisualRange(e.buffer.CursorOffset())
-		e.saveUndo()
-		e.buffer.DeleteRange(e.offsetToPosition(start), e.offsetToPosition(end))
-		e.state.EnterInsert()
+	case "v":
+		// Toggle charwise/linewise without losing the anchor.
+		if e.state.Mode == ModeVisual {
+			e.state.Reset()
+		} else {
+			e.state.Mode = ModeVisual
+		}
+	case "V":
+		if e.state.Mode == ModeVisualLine {
+			e.state.Reset()
+		} else {
+			e.state.Mode = ModeVisualLine
+		}
+	case "d", "x", "y", "c":
+		// V-LINE operates on whole lines; plain visual is inclusive charwise.
+		linewise := e.state.Mode == ModeVisualLine
+		from, to := e.visualLines()
+		start, end := e.visualSpan()
+		op := map[string]Operator{"d": OpDelete, "x": OpDelete, "y": OpYank, "c": OpChange}[key]
+		if linewise {
+			e.applyLinewiseOperator(op, from, to)
+		} else {
+			e.applyOperator(op, start, end, true)
+		}
+		if op == OpYank {
+			// vim leaves the cursor at the start of the yanked region.
+			e.buffer.SetCursor(start)
+		}
+		if op != OpChange {
+			e.state.Reset()
+		}
 	}
 
 	return "", false

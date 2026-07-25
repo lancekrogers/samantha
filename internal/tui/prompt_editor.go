@@ -337,7 +337,7 @@ func (p promptEditor) idleNormal() bool {
 		!s.HasPendingOperator() &&
 		s.PendingKey == 0 &&
 		!s.AwaitingChar && !s.AwaitingReplace && !s.AwaitingTextObj &&
-		s.Count == 1
+		!s.HasCount
 }
 
 // insertArrow moves the cursor on arrow keys in insert mode, which the ported

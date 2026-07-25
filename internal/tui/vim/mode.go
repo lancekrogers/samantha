@@ -63,9 +63,13 @@ func (o Operator) String() string {
 
 // State holds the current vim editing state.
 type State struct {
-	Mode          Mode
-	PendingOp     Operator
-	Count         int  // Numeric count prefix (e.g., 3dw)
+	Mode      Mode
+	PendingOp Operator
+	// Count is the numeric prefix (e.g. 3dw); HasCount says whether the user
+	// actually typed one. Using Count==1 as "no count" broke every count whose
+	// first digit is 1 (10j, 11w, 100G).
+	Count         int
+	HasCount      bool
 	PendingMotion bool // Waiting for a motion after operator
 	FindChar      rune // Character for f/F/t/T motions
 	FindForward   bool // Direction for find
@@ -93,11 +97,19 @@ func NewState() *State {
 	}
 }
 
+// VisualLineRange returns the inclusive line span of a V-mode selection.
+func (s *State) VisualLineRange(startLine, cursorLine int) (int, int) {
+	if startLine <= cursorLine {
+		return startLine, cursorLine
+	}
+	return cursorLine, startLine
+}
+
 // Reset clears pending operations and returns to normal mode.
 func (s *State) Reset() {
 	s.Mode = ModeNormal
 	s.PendingOp = OpNone
-	s.Count = 1
+	s.ClearCount()
 	s.PendingMotion = false
 	s.FindChar = 0
 	s.CommandBuffer = ""
@@ -113,7 +125,7 @@ func (s *State) Reset() {
 func (s *State) EnterInsert() {
 	s.Mode = ModeInsert
 	s.PendingOp = OpNone
-	s.Count = 1
+	s.ClearCount()
 	s.PendingMotion = false
 }
 
@@ -152,26 +164,33 @@ func (s *State) HasPendingOperator() bool {
 func (s *State) ClearOperator() {
 	s.PendingOp = OpNone
 	s.PendingMotion = false
+	s.ClearCount()
+}
+
+// ClearCount resets the numeric prefix to "none typed".
+func (s *State) ClearCount() {
 	s.Count = 1
+	s.HasCount = false
 }
 
 // AccumulateCount accumulates a digit into the count prefix.
 func (s *State) AccumulateCount(digit int) {
-	if s.Count == 1 && digit == 0 {
-		// Leading zero is 0 motion (go to line start), not count
+	if !s.HasCount {
+		if digit == 0 {
+			// Leading zero is the 0 motion (go to line start), not a count.
+			return
+		}
+		s.Count = digit
+		s.HasCount = true
 		return
 	}
-	if s.Count == 1 {
-		s.Count = digit
-	} else {
-		s.Count = s.Count*10 + digit
-	}
+	s.Count = s.Count*10 + digit
 }
 
 // GetCount returns the current count and resets it.
 func (s *State) GetCount() int {
 	count := s.Count
-	s.Count = 1
+	s.ClearCount()
 	return count
 }
 

@@ -43,6 +43,15 @@ func (s *UndoStack) Save(content string, cursor Position) {
 	s.redos = s.redos[:0]
 }
 
+// DropIfUnchanged removes the newest undo entry when it matches content, so an
+// operation that opened an undo block but changed nothing (entering and leaving
+// insert mode without typing) does not consume a u press.
+func (s *UndoStack) DropIfUnchanged(content string) {
+	if n := len(s.undos); n > 0 && s.undos[n-1].Content == content {
+		s.undos = s.undos[:n-1]
+	}
+}
+
 // Undo returns the previous state, or nil if nothing to undo.
 func (s *UndoStack) Undo(currentContent string, currentCursor Position) *UndoEntry {
 	if len(s.undos) == 0 {
