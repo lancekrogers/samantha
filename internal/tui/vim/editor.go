@@ -591,7 +591,11 @@ func (e *Editor) applyLinewiseOperator(op Operator, from, to int) {
 		e.saveUndo()
 		e.buffer.YankLines(from, to)
 		e.buffer.DeleteLines(from, to)
-		e.buffer.NewLineAbove()
+		// DeleteLines already leaves one empty line when it removed everything;
+		// opening another there would strand a blank line.
+		if e.buffer.LineCount() > 1 || e.buffer.CurrentLine() != "" {
+			e.buffer.NewLineAbove()
+		}
 		e.state.EnterInsert()
 	case OpYank:
 		e.buffer.YankLines(from, to)

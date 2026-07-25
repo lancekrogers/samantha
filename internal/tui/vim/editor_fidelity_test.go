@@ -267,3 +267,18 @@ func TestDeleteKeyStillJoinsInInsertMode(t *testing.T) {
 		t.Fatalf("Delete at end of line = %q, want joined", got)
 	}
 }
+
+func TestLinewiseChangeOpensOneLine(t *testing.T) {
+	e := NewEditor("aaaa\nbbbb\ncccc")
+	press(e, "cj", "new")
+	if got := e.Content(); got != "new\ncccc" {
+		t.Fatalf("cj = %q, want new\\ncccc", got)
+	}
+
+	// Changing every line must leave exactly one line to type on.
+	e = NewEditor("aaaa\nbbbb")
+	press(e, "V", "j", "c", "only")
+	if got := e.Content(); got != "only" {
+		t.Fatalf("Vjc = %q, want only (no stranded blank line)", got)
+	}
+}
