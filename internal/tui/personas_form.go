@@ -374,11 +374,11 @@ func (m *personasModel) loadEditPrompt(p *persona.Profile) (text, note string) {
 		return "", "No persona selected"
 	}
 	if m.loadPromptForProfile != nil {
-		if got, err := m.loadPromptForProfile(p); err == nil {
+		got, err := m.loadPromptForProfile(p)
+		if err == nil {
 			return got, ""
-		} else if err != nil {
-			note = fmt.Sprintf("Could not load system prompt: %v · edit and save to create prompts/persona/%s.yaml", err, p.ID)
 		}
+		note = fmt.Sprintf("Could not load system prompt: %v · edit and save to create prompts/persona/%s.yaml", err, p.ID)
 	} else if m.loadPrompt != nil {
 		name := strings.TrimSpace(p.Prompts.Persona)
 		if name == "" {

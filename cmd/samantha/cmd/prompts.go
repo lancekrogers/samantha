@@ -21,6 +21,23 @@ var promptsCmd = &cobra.Command{
 	Short: "Inspect prompt documents (read-only)",
 }
 
+// promptNameForKind is the catalog name the resolver uses for a kind, matching
+// what the brain resolves. Only kind=persona is named by cfg.Persona; passing
+// that name for every kind made `prompts show turn` fail for any custom persona
+// once the resolver stopped falling back to the embedded default by name.
+func promptNameForKind(cfg *config.Config, kind prompts.Kind) string {
+	switch kind {
+	case prompts.KindPersona:
+		return cfg.Persona
+	case prompts.KindTurn:
+		return cfg.TurnPrompt
+	default:
+		// Other kinds have no per-persona ref; empty selects the embedded
+		// default for that kind when one exists.
+		return ""
+	}
+}
+
 var promptsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List embedded and user prompt documents",
@@ -57,12 +74,13 @@ var promptsShowCmd = &cobra.Command{
 		}
 		kind := prompts.Kind(args[0])
 		userDir := config.PromptsDir()
+		name := promptNameForKind(cfg, kind)
 
-		entry, err := prompts.Describe(userDir, kind, cfg.Persona)
+		entry, err := prompts.Describe(userDir, kind, name)
 		if err != nil {
 			return err
 		}
-		doc, err := (prompts.Resolver{UserDir: userDir}).Resolve(kind, cfg.Persona)
+		doc, err := (prompts.Resolver{UserDir: userDir}).Resolve(kind, name)
 		if err != nil {
 			return err
 		}

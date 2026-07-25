@@ -37,9 +37,6 @@ func Create(cfg *config.Config, displayName string) (*Profile, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := WriteSystemPrompt(id, seed); err != nil {
-		return nil, fmt.Errorf("seeding system prompt for %s: %w", id, err)
-	}
 
 	p := &Profile{
 		Schema:      Schema,
@@ -68,6 +65,11 @@ func Create(cfg *config.Config, displayName string) (*Profile, error) {
 	}
 	if err := Write(p, false); err != nil {
 		return nil, err
+	}
+	// Seed the private document after the profile lands so a failed profile
+	// write cannot leave an orphan prompts/persona/<id>.yaml behind.
+	if err := WriteSystemPrompt(id, seed); err != nil {
+		return nil, fmt.Errorf("seeding system prompt for %s: %w", id, err)
 	}
 	return p, nil
 }

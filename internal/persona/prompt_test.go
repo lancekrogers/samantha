@@ -163,3 +163,44 @@ func TestUpdateSystemPrompt(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestApplyPrefersPrivatePromptOverStaleRef(t *testing.T) {
+	// The stale-ref profile the editor heals must not hard-fail the brain before
+	// anyone opens the editor: Apply resolves cfg.Persona to the id whose private
+	// document exists, so resolvePrompt finds a document.
+	dir := t.TempDir()
+	setConfigDir(t, dir)
+	if err := WriteSystemPrompt("uncle-fu", "You are Uncle Fu, a private agent."); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{}
+	Apply(cfg, &Profile{
+		Schema: Schema, ID: "uncle-fu", DisplayName: "uncle fu",
+		TTS:     TTS{Provider: "qwen3-tts", Voice: "Uncle_Fu"},
+		Prompts: PromptRefs{Persona: "Uncle_Fu"},
+	})
+	if cfg.Persona != "uncle-fu" {
+		t.Fatalf("cfg.Persona = %q, want uncle-fu", cfg.Persona)
+	}
+	if _, err := (prompts.Resolver{UserDir: promptsDir()}).Resolve(prompts.KindPersona, cfg.Persona); err != nil {
+		t.Fatalf("brain would fail to construct: %v", err)
+	}
+}
+
+func TestApplyKeepsRefWhenNoPrivatePrompt(t *testing.T) {
+	// No private document: keep the profile's ref so a genuinely missing prompt
+	// still surfaces as an error instead of being silently rewritten.
+	dir := t.TempDir()
+	setConfigDir(t, dir)
+	if err := WriteSystemPrompt("shared-base", "You are a shared base."); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{}
+	Apply(cfg, &Profile{
+		Schema: Schema, ID: "borrower", DisplayName: "Borrower",
+		Prompts: PromptRefs{Persona: "shared-base"},
+	})
+	if cfg.Persona != "shared-base" {
+		t.Fatalf("cfg.Persona = %q, want shared-base", cfg.Persona)
+	}
+}

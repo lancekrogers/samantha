@@ -260,7 +260,7 @@ func Apply(cfg *config.Config, p *Profile) {
 	if name := strings.TrimSpace(p.DisplayName); name != "" {
 		cfg.AgentName = name
 	}
-	if ref := strings.TrimSpace(p.Prompts.Persona); ref != "" {
+	if ref := effectivePersonaRef(p); ref != "" {
 		cfg.Persona = ref
 	}
 	// Turn prompt is independent of the persona system-prompt name. Empty
@@ -271,6 +271,24 @@ func Apply(cfg *config.Config, p *Profile) {
 	}
 	applyBrain(cfg, p.Brain)
 	applyTTS(cfg, p.TTS)
+}
+
+// effectivePersonaRef is the kind=persona catalog name the brain should resolve
+// for p. The private prompts/persona/<id>.yaml wins over prompts.persona so a
+// stale ref (the real Uncle_Fu case: prompts.persona held the TTS voice id)
+// cannot hard-fail brain construction now that the resolver no longer falls back
+// to the embedded samantha document. The editor heals the file on disk; this
+// keeps the running process working before anyone opens it.
+func effectivePersonaRef(p *Profile) string {
+	ref := strings.TrimSpace(p.Prompts.Persona)
+	id := strings.TrimSpace(p.ID)
+	if id == "" || ref == id {
+		return ref
+	}
+	if text, err := LoadSystemPrompt(id); err == nil && strings.TrimSpace(text) != "" {
+		return id
+	}
+	return ref
 }
 
 // applyBrain overlays per-persona model routing. Empty fields inherit the
