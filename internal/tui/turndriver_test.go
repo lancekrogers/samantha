@@ -87,6 +87,20 @@ func (f *fakeTurnRunner) texts() []string {
 	return append([]string(nil), f.textInputs...)
 }
 
+// waitForTexts blocks until the runner has recorded at least n text turns, so a
+// test can barge into a turn that is provably running instead of racing it.
+func waitForTexts(t *testing.T, f *fakeTurnRunner, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(f.texts()) >= n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("runner recorded %d text turns, want %d", len(f.texts()), n)
+}
+
 func startedConversation(t *testing.T, runner *fakeTurnRunner, voice bool) (conversationModel, *events.Bus) {
 	t.Helper()
 	bus := events.NewBus()
@@ -405,6 +419,10 @@ func TestSubmitWhileTextTurnBargesInAgain(t *testing.T) {
 	}
 	textDone := make(chan tea.Msg, 1)
 	go func() { textDone <- textCmd() }()
+	// dispatchTextTurn short-circuits on an already-canceled context, so the
+	// first turn must actually reach the runner before we barge in — otherwise
+	// the cancel races the goroutine and "first barge" is never recorded.
+	waitForTexts(t, runner, 1)
 
 	// Wait until the first turn actually records its input; otherwise the second
 	// Enter can cancel the turn before RunTurnTextMode runs, dropping "first barge".
