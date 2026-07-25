@@ -61,17 +61,7 @@ func (e *Editor) View(cfg ViewConfig) string {
 	lines := e.buffer.Lines()
 	cursor := e.buffer.Cursor()
 
-	// Calculate visible range based on scroll offset
-	startLine := e.scrollOffset
-	endLine := min(startLine+e.height, len(lines))
-
-	// Ensure we have at least some lines to show
-	if endLine <= startLine {
-		endLine = startLine + 1
-	}
-	if endLine > len(lines) {
-		endLine = len(lines)
-	}
+	startLine := min(max(e.scrollOffset, 0), max(len(lines)-1, 0))
 
 	// Get visual selection range if applicable. V-LINE highlights whole lines,
 	// matching what d/y/c will act on.
@@ -86,40 +76,28 @@ func (e *Editor) View(cfg ViewConfig) string {
 		}
 	}
 
-	for lineIdx := startLine; lineIdx < endLine; lineIdx++ {
-		if lineIdx >= len(lines) {
-			break
-		}
-		line := lines[lineIdx]
-
-		// Optional line numbers
-		if cfg.ShowLineNums {
-			lineNum := lipgloss.NewStyle().Width(4).Align(lipgloss.Right).Render(
-				strings.TrimSpace(cfg.LineNumber.Render(itoa(lineIdx+1) + " ")),
-			)
-			b.WriteString(lineNum)
-		}
-
-		// Render line content with cursor/selection highlighting
-		renderedLine := e.renderLine(lineIdx, line, cursor, cfg, inVisual, selStartOff, selEndOff)
-
-		// Apply soft wrapping to fit within editor width
-		if e.width > 0 {
-			wrapStyle := lipgloss.NewStyle().Width(e.width)
-			renderedLine = wrapStyle.Render(renderedLine)
-		}
-
-		b.WriteString(renderedLine)
-
-		if lineIdx < endLine-1 {
-			b.WriteString("\n")
+	// Build visual rows, not logical lines. A wrapped line occupies several rows,
+	// so budgeting by logical lines let the editor render far more rows than its
+	// height — the persona form sized a box for e.height and got a taller one.
+	rows := make([]string, 0, e.height)
+	for lineIdx := startLine; lineIdx < len(lines) && len(rows) < e.height; lineIdx++ {
+		rendered := e.renderLine(lineIdx, lines[lineIdx], cursor, cfg, inVisual, selStartOff, selEndOff)
+		for i, row := range wrapRows(rendered, e.width) {
+			if len(rows) >= e.height {
+				break
+			}
+			// Only the first row of a wrapped line carries its number; the rest
+			// are indented to match, or continuations would start at column 0.
+			rows = append(rows, e.gutter(cfg, lineIdx, i == 0)+row)
 		}
 	}
 
-	// Pad with empty lines if content is shorter than height
-	for i := endLine - startLine; i < e.height; i++ {
-		b.WriteString("\n~")
+	// Pad to exactly height so the caller's layout budget always holds.
+	for len(rows) < e.height {
+		rows = append(rows, "~")
 	}
+
+	b.WriteString(strings.Join(rows, "\n"))
 
 	return b.String()
 }
@@ -211,24 +189,71 @@ func (e *Editor) lineStartOffset(lineIdx int) int {
 	return offset
 }
 
-// EnsureCursorVisible adjusts scroll offset to keep cursor visible.
+// gutter renders the line-number column for one visual row. Continuation rows
+// of a wrapped line get blank padding of the same width so text stays aligned.
+func (e *Editor) gutter(cfg ViewConfig, lineIdx int, first bool) string {
+	if !cfg.ShowLineNums {
+		return ""
+	}
+	if !first {
+		return strings.Repeat(" ", gutterWidth)
+	}
+	return lipgloss.NewStyle().Width(gutterWidth).Align(lipgloss.Right).Render(
+		strings.TrimSpace(cfg.LineNumber.Render(itoa(lineIdx+1) + " ")),
+	)
+}
+
+// gutterWidth is the line-number column width. Hosts subtract it when sizing
+// the editor (see resizeForm in the persona form).
+const gutterWidth = 4
+
+// wrapRows soft-wraps one rendered line into visual rows. Styling is already
+// applied, so lipgloss wraps on display width and leaves the ANSI intact.
+func wrapRows(rendered string, width int) []string {
+	if width <= 0 {
+		return []string{rendered}
+	}
+	return strings.Split(lipgloss.NewStyle().Width(width).Render(rendered), "\n")
+}
+
+// visualRows is how many rows a logical line occupies once wrapped.
+func (e *Editor) visualRows(lineIdx int) int {
+	lines := e.buffer.Lines()
+	if lineIdx < 0 || lineIdx >= len(lines) {
+		return 1
+	}
+	return len(wrapRows(lines[lineIdx], e.width))
+}
+
+// EnsureCursorVisible adjusts scroll offset to keep the cursor visible, counting
+// wrapped rows — comparing logical line indices alone let the cursor sit below
+// the viewport whenever earlier lines wrapped.
 func (e *Editor) EnsureCursorVisible() {
 	cursor := e.buffer.Cursor()
 
-	// Scroll up if cursor above viewport
 	if cursor.Line < e.scrollOffset {
 		e.scrollOffset = cursor.Line
 	}
-
-	// Scroll down if cursor below viewport
-	if cursor.Line >= e.scrollOffset+e.height {
-		e.scrollOffset = cursor.Line - e.height + 1
-	}
-
-	// Clamp scroll offset
 	if e.scrollOffset < 0 {
 		e.scrollOffset = 0
 	}
+
+	// Advance the top line until the cursor's own row fits in the window.
+	for e.scrollOffset < cursor.Line && e.rowsThroughCursor(cursor) > e.height {
+		e.scrollOffset++
+	}
+}
+
+// rowsThroughCursor counts visual rows from the top of the viewport through the
+// row the cursor sits on.
+func (e *Editor) rowsThroughCursor(cursor Position) int {
+	rows := 0
+	for i := e.scrollOffset; i < cursor.Line; i++ {
+		rows += e.visualRows(i)
+	}
+	line := e.buffer.CurrentLine()
+	col := min(max(cursor.Col, 0), len(line))
+	return rows + len(wrapRows(line[:col], e.width))
 }
 
 // itoa is a simple int to string conversion.
