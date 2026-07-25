@@ -238,6 +238,17 @@ func DefaultSystemPrompt() (string, error) {
 	return strings.TrimSpace(doc.Assemble()), nil
 }
 
+// StarterSystemPrompt returns the minimal embedded starter identity used to
+// seed brand-new personas — enough structure to get going, not the full
+// built-in samantha prompt.
+func StarterSystemPrompt() (string, error) {
+	doc, err := prompts.Starter(prompts.KindPersona)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(doc.Assemble()), nil
+}
+
 func promptsDir() string {
 	return config.PromptsDir()
 }

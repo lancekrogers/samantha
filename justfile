@@ -77,6 +77,17 @@ demo-persona-switch: build
     just _optimize-demo-gif demos/persona-switch.gif
     ls -lh demos/persona-switch.gif
 
+# Personas → Create: boxed form wizard + vim system-prompt editor.
+demo-persona-create: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    env -u NO_COLOR -u CLICOLOR \
+        CLICOLOR_FORCE=1 FORCE_COLOR=1 \
+        TERM=xterm-256color COLORTERM=truecolor \
+        vhs demos/persona-create.tape
+    just _optimize-demo-gif demos/persona-create.gif
+    ls -lh demos/persona-create.gif
+
 # Opt-in live managed-Qwen gate. Requires the managed model to have already
 # been installed with `samantha models ensure --tts`; outputs remain available
 # for listening instead of disappearing with the Go test temp directory.

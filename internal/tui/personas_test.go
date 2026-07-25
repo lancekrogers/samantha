@@ -250,13 +250,14 @@ func TestPersonasFormKeepsSystemPromptVisibleOnShortHeight(t *testing.T) {
 	}
 }
 
-func TestPersonasCreateNameOnlyUsesDefaultPrompt(t *testing.T) {
+func TestPersonasCreateNameOnlyUsesStarterPrompt(t *testing.T) {
 	cfg := &config.Config{ActivePersona: "samantha", AgentName: "Samantha"}
 	m := newPersonas(cfg)
 	m.listPersonas = func() ([]*persona.Profile, error) {
 		return []*persona.Profile{{ID: "samantha", DisplayName: "Samantha"}}, nil
 	}
 	m.defaultPrompt = func() (string, error) { return "You are {agent_name}, default.", nil }
+	m.starterPrompt = func() (string, error) { return "You are {agent_name}, starter.", nil }
 	var gotOpts persona.CreateOpts
 	m.createPersona = func(c *config.Config, opts persona.CreateOpts) (*persona.Profile, error) {
 		gotOpts = opts
@@ -265,13 +266,56 @@ func TestPersonasCreateNameOnlyUsesDefaultPrompt(t *testing.T) {
 	m.reload()
 	m.beginCreate()
 	m.nameInput.SetValue("Named Only")
-	m.promptTA.SetValue("") // empty — should fall back to default
+	m.promptTA.SetValue("") // empty — should fall back to the starter seed
 	m, _ = m.submitForm()
 	if m.formMode != "" {
 		t.Fatal("form should close")
 	}
-	if !strings.Contains(gotOpts.SystemPrompt, "default") {
-		t.Fatalf("expected default prompt, got %q", gotOpts.SystemPrompt)
+	if !strings.Contains(gotOpts.SystemPrompt, "starter") {
+		t.Fatalf("expected starter prompt, got %q", gotOpts.SystemPrompt)
+	}
+}
+
+func TestPersonasCreateSeedsStarterNotFullDefault(t *testing.T) {
+	cfg := &config.Config{ActivePersona: "samantha", AgentName: "Samantha"}
+	m := newPersonas(cfg)
+	m.listPersonas = func() ([]*persona.Profile, error) {
+		return []*persona.Profile{{ID: "samantha", DisplayName: "Samantha"}}, nil
+	}
+	m.defaultPrompt = func() (string, error) { return "You are {agent_name}, the full built-in identity.", nil }
+	m.starterPrompt = func() (string, error) { return "You are {agent_name}, starter.", nil }
+	m.reload()
+	m.beginCreate()
+	if got := m.promptTA.Value(); !strings.Contains(got, "starter") || strings.Contains(got, "built-in") {
+		t.Fatalf("create should seed the starter, got %q", got)
+	}
+}
+
+func TestPersonasEditFallbackInjectsNothing(t *testing.T) {
+	// Supersedes TestPersonasEditFallbackKeepsFullDefault: that test asserted a
+	// failed load seeds the full built-in identity, which is exactly the silent
+	// wrong-identity injection this branch removes. Its intent — never let a
+	// failed load downgrade or replace a persona's identity — is preserved more
+	// strictly here: the editor stays empty and says so, and saving is the
+	// user's explicit act rather than an accidental overwrite.
+	cfg := &config.Config{ActivePersona: "uncle-fu", AgentName: "Uncle Fu"}
+	m := newPersonas(cfg)
+	m.listPersonas = func() ([]*persona.Profile, error) {
+		return []*persona.Profile{{ID: "uncle-fu", DisplayName: "Uncle Fu"}}, nil
+	}
+	m.loadPromptForProfile = func(*persona.Profile) (string, error) { return "", fmt.Errorf("boom") }
+	m.defaultPrompt = func() (string, error) { return "You are {agent_name}, the full built-in identity.", nil }
+	m.starterPrompt = func() (string, error) { return "You are {agent_name}, starter.", nil }
+	m.reload()
+	m.width, m.height = 80, 30
+	m.cursor = 0
+	m.beginEdit()
+
+	if got := m.promptTA.Value(); got != "" {
+		t.Fatalf("edit fallback injected a prompt body: %q", got)
+	}
+	if !strings.Contains(m.message, "Could not load system prompt") {
+		t.Fatalf("message = %q, want the load failure surfaced", m.message)
 	}
 }
 
@@ -360,5 +404,64 @@ func TestPersonasFormStackRoundTrip(t *testing.T) {
 	}
 	if m.formMode != "" {
 		t.Fatal("form should close after save")
+	}
+}
+
+// Placeholder completion must be reachable through the form, not just by driving
+// promptEditor directly: updateForm claimed tab for field navigation, so `{`+Tab
+// jumped to the Model & voice step instead of completing.
+func TestPersonasPromptStepTabCompletesPlaceholder(t *testing.T) {
+	cfg := &config.Config{ActivePersona: "samantha", AgentName: "Samantha"}
+	m := newPersonas(cfg)
+	m.listPersonas = func() ([]*persona.Profile, error) {
+		return []*persona.Profile{{ID: "samantha", DisplayName: "Samantha"}}, nil
+	}
+	m.starterPrompt = func() (string, error) { return "", nil }
+	m.defaultPrompt = func() (string, error) { return "", nil }
+	m.reload()
+	m.width, m.height = 80, 30
+	m.beginCreate()
+	m.nameInput.SetValue("Tabby")
+	m, _ = m.focusPromptStep()
+	m.promptTA.SetValue("")
+	m.promptTA.StartInsert()
+
+	for _, r := range "You are {" {
+		m, _ = m.updateForm(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = m.updateForm(tea.KeyMsg{Type: tea.KeyTab})
+	if m.formStep != personaFormPrompt {
+		t.Fatalf("tab left the prompt step (step=%d); completion is unreachable", m.formStep)
+	}
+	if !strings.Contains(m.promptTA.Value(), "{agent_name") {
+		t.Fatalf("tab did not complete the placeholder: %q", m.promptTA.Value())
+	}
+	m, _ = m.updateForm(tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(m.promptTA.Value(), "{agent_name}") {
+		t.Fatalf("enter did not close the token: %q", m.promptTA.Value())
+	}
+}
+
+// With nothing to complete, tab still moves between fields.
+func TestPersonasPromptStepTabStillNavigatesFields(t *testing.T) {
+	cfg := &config.Config{ActivePersona: "samantha", AgentName: "Samantha"}
+	m := newPersonas(cfg)
+	m.listPersonas = func() ([]*persona.Profile, error) {
+		return []*persona.Profile{{ID: "samantha", DisplayName: "Samantha"}}, nil
+	}
+	m.starterPrompt = func() (string, error) { return "You are {agent_name}.", nil }
+	m.reload()
+	m.width, m.height = 80, 30
+	m.beginCreate()
+	m.nameInput.SetValue("Tabby")
+	m, _ = m.focusPromptStep()
+
+	m, _ = m.updateForm(tea.KeyMsg{Type: tea.KeyTab})
+	if m.formStep != personaFormStack {
+		t.Fatalf("tab with no open brace should advance to the stack step, got %d", m.formStep)
+	}
+	m, _ = m.updateForm(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if m.formStep != personaFormPrompt {
+		t.Fatalf("shift+tab should return to the prompt step, got %d", m.formStep)
 	}
 }

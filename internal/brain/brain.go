@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -14,13 +15,27 @@ import (
 	"github.com/lancekrogers/samantha/internal/textclean"
 )
 
+// claudeRunner is the slice of the claude client the interactive Brain needs:
+// the streaming path for voice/TUI turns and the blocking path for text turns.
+// Narrowing it to an interface lets tests inject a fake without shelling out to
+// a real claude CLI. *claude.ClaudeClient satisfies it.
+type claudeRunner interface {
+	StreamPrompt(ctx context.Context, prompt string, opts *claude.RunOptions) (<-chan claude.Message, <-chan error)
+	RunPromptCtx(ctx context.Context, prompt string, opts *claude.RunOptions) (*claude.ClaudeResult, error)
+}
+
 // Brain manages conversation with Claude via claude-code-go.
 type Brain struct {
-	client          *claude.ClaudeClient
+	client          claudeRunner
 	cfg             *config.Config
 	systemPrompt    string
 	turnInstruction string
 	history         []Turn
+	// sessionID is the claude CLI session captured on the first turn and reused
+	// via --resume thereafter, so subsequent turns send only the new input and
+	// get Anthropic-side prompt caching. Empty until the first turn captures it;
+	// scoped to this Brain, which is constructed per conversation.
+	sessionID string
 }
 
 // Turn represents a single conversation exchange.
@@ -82,6 +97,10 @@ func (b *Brain) runOptions(format claude.OutputFormat, toolsEnabled bool) *claud
 		SystemPrompt:   b.systemPrompt,
 		PermissionMode: mode,
 		Tools:          tools,
+		// Empty until the first turn captures a session; once set, the SDK emits
+		// --resume so the CLI owns history server-side. The system prompt is still
+		// passed on resume (harmless; dropping flattened history is the win).
+		ResumeID: b.sessionID,
 	}
 }
 
@@ -89,71 +108,31 @@ func (b *Brain) runOptions(format claude.OutputFormat, toolsEnabled bool) *claud
 // Each message on the channel may contain partial text.
 func (b *Brain) ThinkStream(ctx context.Context, input string, streamOpts StreamOptions) (*Stream, error) {
 	b.history = append(b.history, Turn{Role: "user", Content: input})
-	prompt := b.buildPrompt()
-
-	// Partial (stream_event) messages are not requested: chunking is
-	// per-assistant-message, so deltas would be discarded anyway.
-	opts := b.runOptions(claude.StreamJSONOutput, streamOpts.ToolsEnabled)
-
-	messages, errs := b.client.StreamPrompt(ctx, prompt, opts)
 
 	out := make(chan string, 8)
 	done := make(chan StreamResult, 1)
 	go func() {
 		defer close(out)
 		defer close(done)
-		var fullResponse strings.Builder
-		var streamErr error
 
-		for msg := range messages {
-			// Extract text content from assistant messages
-			if msg.Type == "assistant" {
-				var content struct {
-					Content []struct {
-						Type string `json:"type"`
-						Text string `json:"text"`
-					} `json:"content"`
-				}
-				if err := json.Unmarshal(msg.Message, &content); err == nil {
-					for _, c := range content.Content {
-						if c.Type == "text" && c.Text != "" {
-							fullResponse.WriteString(c.Text)
-							if err := sendChunk(ctx, out, c.Text); err != nil {
-								done <- StreamResult{Err: err}
-								return
-							}
-						}
-					}
-				}
-			}
-
-			// Check for final result
-			if msg.Type == "result" && msg.Result != "" {
-				if fullResponse.Len() == 0 {
-					fullResponse.WriteString(msg.Result)
-					if err := sendChunk(ctx, out, msg.Result); err != nil {
-						done <- StreamResult{Err: err}
-						return
-					}
-				}
-			}
+		resuming := b.sessionID != ""
+		raw, streamedAny, err := b.streamAttempt(ctx, out, streamOpts)
+		// A stale/rejected --resume session errors before any text streams. Drop
+		// the id and retry once via the flatten path so one bad CLI session file
+		// can't wedge the conversation. Guard on !streamedAny to avoid re-speaking
+		// already-emitted audio, and on ctx.Err()==nil so a user barge-in cancel
+		// is not mistaken for a resume failure.
+		if err != nil && resuming && !streamedAny && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "samantha: claude resume failed, retrying without session: %v\n", err)
+			b.sessionID = ""
+			raw, _, err = b.streamAttempt(ctx, out, streamOpts)
 		}
-
-		// Drain errors
-		for err := range errs {
-			if err != nil {
-				if streamErr == nil {
-					streamErr = fmt.Errorf("claude stream: %w", err)
-				}
-			}
-		}
-
-		if streamErr != nil {
-			done <- StreamResult{Err: streamErr}
+		if err != nil {
+			done <- StreamResult{Err: err}
 			return
 		}
 
-		response, finErr := finalizeStreamedText(ctx, out, fullResponse.String())
+		response, finErr := finalizeStreamedText(ctx, out, raw)
 		if finErr != nil {
 			done <- StreamResult{Err: finErr}
 			return
@@ -166,22 +145,119 @@ func (b *Brain) ThinkStream(ctx context.Context, input string, streamOpts Stream
 	return &Stream{Chunks: out, Done: done}, nil
 }
 
+// streamAttempt runs a single Claude streaming turn: it builds the prompt for
+// the current session state, forwards assistant text to out, and captures the
+// CLI session id for resume. It returns the raw (uncleaned) assistant text,
+// whether any chunk reached out, and any terminal stream error. It does not
+// touch b.history or the fallback text — the caller finalizes once, after any
+// resume-failure retry, so a failed first attempt never emits the fallback.
+func (b *Brain) streamAttempt(ctx context.Context, out chan<- string, streamOpts StreamOptions) (string, bool, error) {
+	prompt := b.buildPrompt()
+
+	// Partial (stream_event) messages are not requested: chunking is
+	// per-assistant-message, so deltas would be discarded anyway.
+	opts := b.runOptions(claude.StreamJSONOutput, streamOpts.ToolsEnabled)
+
+	messages, errs := b.client.StreamPrompt(ctx, prompt, opts)
+
+	var fullResponse strings.Builder
+	streamedAny := false
+	var streamErr error
+	var resultErr error
+
+	for msg := range messages {
+		// The CLI stamps session_id on its init and result messages; capture it
+		// from whichever arrives so the next turn can resume.
+		if msg.SessionID != "" {
+			b.sessionID = msg.SessionID
+		}
+
+		// Extract text content from assistant messages
+		if msg.Type == "assistant" {
+			var content struct {
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			}
+			if err := json.Unmarshal(msg.Message, &content); err == nil {
+				for _, c := range content.Content {
+					if c.Type == "text" && c.Text != "" {
+						fullResponse.WriteString(c.Text)
+						if err := sendChunk(ctx, out, c.Text); err != nil {
+							return fullResponse.String(), streamedAny, err
+						}
+						streamedAny = true
+					}
+				}
+			}
+		}
+
+		// Check for final result
+		if msg.Type == "result" {
+			// The CLI can report failure with exit 0 and is_error on the result
+			// (max turns, execution error, some session rejections). Without this
+			// the error text would be spoken as the reply and a stale --resume
+			// would never reach the flatten retry.
+			if msg.IsError && fullResponse.Len() == 0 {
+				resultErr = resultError(msg.Subtype, msg.Result)
+			}
+			if msg.Result != "" && fullResponse.Len() == 0 && !msg.IsError {
+				fullResponse.WriteString(msg.Result)
+				if err := sendChunk(ctx, out, msg.Result); err != nil {
+					return fullResponse.String(), streamedAny, err
+				}
+				streamedAny = true
+			}
+		}
+	}
+
+	// Drain errors
+	for err := range errs {
+		if err != nil {
+			if streamErr == nil {
+				streamErr = fmt.Errorf("claude stream: %w", err)
+			}
+		}
+	}
+	if streamErr == nil {
+		streamErr = resultErr
+	}
+
+	return fullResponse.String(), streamedAny, streamErr
+}
+
+// resultError turns a claude result message/transcript marked is_error into a Go
+// error, preserving the CLI's own text so the log and degraded path can show it.
+func resultError(subtype, text string) error {
+	detail := strings.TrimSpace(text)
+	switch {
+	case subtype != "" && detail != "":
+		return fmt.Errorf("claude result error (%s): %s", subtype, detail)
+	case subtype != "":
+		return fmt.Errorf("claude result error (%s)", subtype)
+	case detail != "":
+		return fmt.Errorf("claude result error: %s", detail)
+	}
+	return fmt.Errorf("claude result error")
+}
+
 // ThinkFull sends input and waits for the complete response.
 func (b *Brain) ThinkFull(ctx context.Context, input string, streamOpts StreamOptions) (string, error) {
 	b.history = append(b.history, Turn{Role: "user", Content: input})
-	prompt := b.buildPrompt()
 
-	opts := b.runOptions(claude.TextOutput, streamOpts.ToolsEnabled)
-
-	result, err := b.client.RunPromptCtx(ctx, prompt, opts)
-	if err != nil {
-		return "", fmt.Errorf("claude error: %w", err)
+	resuming := b.sessionID != ""
+	response, err := b.thinkFullAttempt(ctx, streamOpts)
+	// Same stale-session guard as ThinkStream: a rejected --resume fails the
+	// whole call, so drop the id and retry once via the flatten path. ctx.Err()
+	// gate keeps a user cancellation from being treated as a resume failure.
+	if err != nil && resuming && ctx.Err() == nil {
+		fmt.Fprintf(os.Stderr, "samantha: claude resume failed, retrying without session: %v\n", err)
+		b.sessionID = ""
+		response, err = b.thinkFullAttempt(ctx, streamOpts)
 	}
-
-	// Clean first, then fall back, so the fallback is spoken verbatim.
-	response := cleanForVoice(result.Result)
-	if response == "" {
-		response = fallbackResponse
+	if err != nil {
+		return "", err
 	}
 
 	b.history = append(b.history, Turn{Role: "samantha", Content: response})
@@ -190,25 +266,57 @@ func (b *Brain) ThinkFull(ctx context.Context, input string, streamOpts StreamOp
 	return response, nil
 }
 
+// thinkFullAttempt runs a single blocking Claude turn and captures the session
+// id for resume. JSON output is required here (not plain text): the SDK only
+// populates ClaudeResult.SessionID when it parses a JSON transcript.
+func (b *Brain) thinkFullAttempt(ctx context.Context, streamOpts StreamOptions) (string, error) {
+	prompt := b.buildPrompt()
+	opts := b.runOptions(claude.JSONOutput, streamOpts.ToolsEnabled)
+
+	result, err := b.client.RunPromptCtx(ctx, prompt, opts)
+	if err != nil {
+		return "", fmt.Errorf("claude error: %w", err)
+	}
+	if result.SessionID != "" {
+		b.sessionID = result.SessionID
+	}
+	// Same exit-0 failure shape as the streaming path: never speak the CLI's
+	// error text, and let a rejected --resume fall through to the flatten retry.
+	if result.IsError {
+		return "", resultError(result.Subtype, result.Result)
+	}
+
+	// Clean first, then fall back, so the fallback is spoken verbatim.
+	response := cleanForVoice(result.Result)
+	if response == "" {
+		response = fallbackResponse
+	}
+	return response, nil
+}
+
 func (b *Brain) buildPrompt() string {
 	var parts []string
 
-	// Include recent history for context
-	recent := b.history
-	if len(recent) > 6 {
-		recent = recent[len(recent)-6:]
-	}
-
-	if len(recent) > 1 {
-		parts = append(parts, "Recent conversation:")
-		for _, t := range recent[:len(recent)-1] {
-			speaker := "User"
-			if t.Role == "samantha" {
-				speaker = b.cfg.AgentName
-			}
-			parts = append(parts, fmt.Sprintf("%s: %s", speaker, t.Content))
+	// Only prepend flattened history when no CLI session carries it. With a
+	// resume id the CLI owns history server-side, so re-sending it would bust
+	// the cached prefix — send only the new turn (plus the turn instruction).
+	if b.sessionID == "" {
+		recent := b.history
+		if len(recent) > 6 {
+			recent = recent[len(recent)-6:]
 		}
-		parts = append(parts, "")
+
+		if len(recent) > 1 {
+			parts = append(parts, "Recent conversation:")
+			for _, t := range recent[:len(recent)-1] {
+				speaker := "User"
+				if t.Role == "samantha" {
+					speaker = b.cfg.AgentName
+				}
+				parts = append(parts, fmt.Sprintf("%s: %s", speaker, t.Content))
+			}
+			parts = append(parts, "")
+		}
 	}
 
 	parts = append(parts, fmt.Sprintf("User: %s", b.history[len(b.history)-1].Content))
@@ -232,14 +340,21 @@ func (b *Brain) History() []Turn {
 	return b.history
 }
 
-// ClearHistory wipes conversation history.
+// ClearHistory wipes conversation history. The CLI session id is dropped too so
+// a fresh conversation starts a fresh CLI session instead of resuming the old
+// one.
 func (b *Brain) ClearHistory() {
 	b.history = nil
+	b.sessionID = ""
 }
 
-// LoadHistory restores conversation history from a saved session.
+// LoadHistory restores conversation history from a saved samantha session. No
+// live CLI session exists for persisted history, so the id is cleared: the
+// first turn after load runs the flatten path, then captures a new session id
+// and resumes from there.
 func (b *Brain) LoadHistory(turns []Turn) {
 	b.history = normalizePromptHistory(turns)
+	b.sessionID = ""
 }
 
 // normalizePromptHistory maps persisted roles onto the prompt-based providers'

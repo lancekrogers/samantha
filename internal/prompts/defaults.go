@@ -12,6 +12,13 @@ import (
 //go:embed defaults/*.yaml
 var defaultsFS embed.FS
 
+// startersFS holds minimal per-kind templates that seed new user-authored
+// prompts (e.g. the create-persona form). Kept out of defaults/ so Seed and
+// Catalog never treat them as runtime prompt documents.
+//
+//go:embed starters/*.yaml
+var startersFS embed.FS
+
 // Default returns the embedded default document for a kind, one per kind
 // at defaults/<kind>.yaml.
 func Default(kind Kind) (*Document, error) {
@@ -22,6 +29,20 @@ func Default(kind Kind) (*Document, error) {
 	doc, err := Load(data)
 	if err != nil {
 		return nil, fmt.Errorf("embedded default %q: %w", kind, err)
+	}
+	return doc, nil
+}
+
+// Starter returns the embedded starter document for a kind — a minimal
+// template meant to seed new user-authored prompts — at starters/<kind>.yaml.
+func Starter(kind Kind) (*Document, error) {
+	data, err := startersFS.ReadFile("starters/" + string(kind) + ".yaml")
+	if err != nil {
+		return nil, fmt.Errorf("no embedded starter prompt for kind %q", kind)
+	}
+	doc, err := Load(data)
+	if err != nil {
+		return nil, fmt.Errorf("embedded starter %q: %w", kind, err)
 	}
 	return doc, nil
 }
