@@ -51,11 +51,17 @@ func (e *Editor) View(cfg ViewConfig) string {
 		endLine = len(lines)
 	}
 
-	// Get visual selection range if applicable
+	// Get visual selection range if applicable. V-LINE highlights whole lines,
+	// matching what d/y/c will act on.
 	var selStartOff, selEndOff int
 	inVisual := e.state.IsVisual()
 	if inVisual {
-		selStartOff, selEndOff = e.state.VisualRange(e.buffer.CursorOffset())
+		from, to := e.visualSpan()
+		selStartOff = e.lineStartOffset(from.Line) + from.Col
+		selEndOff = e.lineStartOffset(to.Line) + to.Col
+		if e.state.Mode == ModeVisualLine {
+			selEndOff = e.lineStartOffset(to.Line) + len(lines[to.Line])
+		}
 	}
 
 	for lineIdx := startLine; lineIdx < endLine; lineIdx++ {

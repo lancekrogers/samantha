@@ -2,39 +2,51 @@ package vim
 
 import (
 	"unicode"
+	"unicode/utf8"
 )
 
 // Motion represents the result of a motion command.
+//
+// Linewise motions (j, k, gg, G, {, }) make an operator act on whole lines.
+// Exclusive motions (w, W, b, B, h, l, 0, ^) stop before the rune the cursor
+// landed on; inclusive motions (e, E, $, %, f/t) cover it. vim draws the same
+// distinction, and it is what makes d0 and db delete the right span.
 type Motion struct {
-	Start    Position
-	End      Position
-	Linewise bool // True for line-based motions (dd, yy, etc.)
+	Start     Position
+	End       Position
+	Linewise  bool
+	Exclusive bool
 }
 
 // MoveLeft moves cursor left by count characters.
 func MoveLeft(b *Buffer, count int) Motion {
 	start := b.Cursor()
-	col := start.Col - count
-	if col < 0 {
-		col = 0
+	line := b.CurrentLine()
+	col := start.Col
+	for range count {
+		if col <= 0 {
+			break
+		}
+		col = prevRuneStart(line, col)
 	}
 	b.SetCursor(Position{Line: start.Line, Col: col})
-	return Motion{Start: start, End: b.Cursor()}
+	return Motion{Start: start, End: b.Cursor(), Exclusive: true}
 }
 
 // MoveRight moves cursor right by count characters.
 func MoveRight(b *Buffer, count int) Motion {
 	start := b.Cursor()
-	col := start.Col + count
-	lineLen := b.CurrentLineLen()
-	if col >= lineLen && lineLen > 0 {
-		col = lineLen - 1
-	}
-	if col < 0 {
-		col = 0
+	line := b.CurrentLine()
+	last := lastRuneStart(line)
+	col := start.Col
+	for range count {
+		if col >= last {
+			break
+		}
+		col = runeEnd(line, col)
 	}
 	b.SetCursor(Position{Line: start.Line, Col: col})
-	return Motion{Start: start, End: b.Cursor()}
+	return Motion{Start: start, End: b.Cursor(), Exclusive: true}
 }
 
 // MoveDown moves cursor down by count lines.
@@ -66,18 +78,13 @@ func MoveUp(b *Buffer, count int) Motion {
 func MoveToLineStart(b *Buffer) Motion {
 	start := b.Cursor()
 	b.SetCursor(Position{Line: start.Line, Col: 0})
-	return Motion{Start: start, End: b.Cursor()}
+	return Motion{Start: start, End: b.Cursor(), Exclusive: true}
 }
 
 // MoveToLineEnd moves cursor to end of line.
 func MoveToLineEnd(b *Buffer) Motion {
 	start := b.Cursor()
-	lineLen := b.CurrentLineLen()
-	col := lineLen - 1
-	if col < 0 {
-		col = 0
-	}
-	b.SetCursor(Position{Line: start.Line, Col: col})
+	b.SetCursor(Position{Line: start.Line, Col: lastRuneStart(b.CurrentLine())})
 	return Motion{Start: start, End: b.Cursor()}
 }
 
@@ -85,7 +92,7 @@ func MoveToLineEnd(b *Buffer) Motion {
 func MoveToFirstNonBlank(b *Buffer) Motion {
 	start := b.Cursor()
 	b.FirstNonBlank()
-	return Motion{Start: start, End: b.Cursor()}
+	return Motion{Start: start, End: b.Cursor(), Exclusive: true}
 }
 
 // MoveWordForward moves cursor forward by count words.
@@ -99,7 +106,7 @@ func MoveWordForward(b *Buffer, count int) Motion {
 	}
 
 	b.SetCursorFromOffset(offset)
-	return Motion{Start: start, End: b.Cursor()}
+	return Motion{Start: start, End: b.Cursor(), Exclusive: true}
 }
 
 // MoveWordBackward moves cursor backward by count words.
@@ -113,7 +120,7 @@ func MoveWordBackward(b *Buffer, count int) Motion {
 	}
 
 	b.SetCursorFromOffset(offset)
-	return Motion{Start: start, End: b.Cursor()}
+	return Motion{Start: start, End: b.Cursor(), Exclusive: true}
 }
 
 // MoveWordEnd moves cursor to end of current/next word.
@@ -141,7 +148,7 @@ func MoveBigWordForward(b *Buffer, count int) Motion {
 	}
 
 	b.SetCursorFromOffset(offset)
-	return Motion{Start: start, End: b.Cursor()}
+	return Motion{Start: start, End: b.Cursor(), Exclusive: true}
 }
 
 // MoveBigWordBackward moves cursor backward by count WORDs.
@@ -155,7 +162,7 @@ func MoveBigWordBackward(b *Buffer, count int) Motion {
 	}
 
 	b.SetCursorFromOffset(offset)
-	return Motion{Start: start, End: b.Cursor()}
+	return Motion{Start: start, End: b.Cursor(), Exclusive: true}
 }
 
 // MoveBigWordEnd moves cursor to end of current/next WORD.
@@ -209,13 +216,13 @@ func FindCharForward(b *Buffer, char rune, count int, till bool) Motion {
 	line := b.CurrentLine()
 
 	found := 0
-	for i := start.Col + 1; i < len(line); i++ {
-		if rune(line[i]) == char {
+	for i := runeEnd(line, start.Col); i < len(line); i = stepFwd(line, i) {
+		if runeAt(line, i) == char {
 			found++
 			if found == count {
 				col := i
 				if till {
-					col-- // Stop before the character
+					col = stepBack(line, i) // Stop before the character
 				}
 				b.SetCursor(Position{Line: start.Line, Col: col})
 				return Motion{Start: start, End: b.Cursor()}
@@ -233,13 +240,14 @@ func FindCharBackward(b *Buffer, char rune, count int, till bool) Motion {
 	line := b.CurrentLine()
 
 	found := 0
-	for i := start.Col - 1; i >= 0; i-- {
-		if rune(line[i]) == char {
+	for i := start.Col; i > 0; {
+		i = stepBack(line, i)
+		if runeAt(line, i) == char {
 			found++
 			if found == count {
 				col := i
 				if till {
-					col++ // Stop after the character
+					col = stepFwd(line, i) // Stop after the character
 				}
 				b.SetCursor(Position{Line: start.Line, Col: col})
 				return Motion{Start: start, End: b.Cursor()}
@@ -255,7 +263,7 @@ func FindCharBackward(b *Buffer, char rune, count int, till bool) Motion {
 func MoveParagraphForward(b *Buffer, count int) Motion {
 	start := b.Cursor()
 
-	for i := 0; i < count; i++ {
+	for range count {
 		line := b.Cursor().Line
 		// Skip current non-empty lines
 		for line < b.LineCount()-1 && len(b.Lines()[line]) > 0 {
@@ -275,7 +283,7 @@ func MoveParagraphForward(b *Buffer, count int) Motion {
 func MoveParagraphBackward(b *Buffer, count int) Motion {
 	start := b.Cursor()
 
-	for i := 0; i < count; i++ {
+	for range count {
 		line := b.Cursor().Line
 		// Skip current empty lines
 		for line > 0 && len(b.Lines()[line]) == 0 {
@@ -291,10 +299,39 @@ func MoveParagraphBackward(b *Buffer, count int) Motion {
 	return Motion{Start: start, End: b.Cursor(), Linewise: true}
 }
 
-// Helper functions for word navigation
+// Helper functions for word navigation. Offsets are byte offsets into content;
+// every step advances or retreats by a whole rune so multi-byte text (em dashes,
+// curly quotes, accented names) is classified and never split.
 
 func isWordChar(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+}
+
+// runeAt decodes the rune starting at offset.
+func runeAt(content string, offset int) rune {
+	if offset < 0 || offset >= len(content) {
+		return 0
+	}
+	r, _ := utf8.DecodeRuneInString(content[offset:])
+	return r
+}
+
+// stepFwd returns the offset of the next rune after offset.
+func stepFwd(content string, offset int) int {
+	if offset >= len(content) {
+		return len(content)
+	}
+	_, size := utf8.DecodeRuneInString(content[offset:])
+	return offset + size
+}
+
+// stepBack returns the offset of the rune before offset.
+func stepBack(content string, offset int) int {
+	if offset <= 0 {
+		return 0
+	}
+	_, size := utf8.DecodeLastRuneInString(content[:offset])
+	return offset - size
 }
 
 func nextWordStart(content string, offset int) int {
@@ -303,21 +340,24 @@ func nextWordStart(content string, offset int) int {
 		return n
 	}
 
-	// Skip current word
-	if offset < n && isWordChar(rune(content[offset])) {
-		for offset < n && isWordChar(rune(content[offset])) {
-			offset++
+	if isWordChar(runeAt(content, offset)) {
+		for offset < n && isWordChar(runeAt(content, offset)) {
+			offset = stepFwd(content, offset)
 		}
-	} else if offset < n && !unicode.IsSpace(rune(content[offset])) {
+	} else if !unicode.IsSpace(runeAt(content, offset)) {
 		// Skip punctuation
-		for offset < n && !isWordChar(rune(content[offset])) && !unicode.IsSpace(rune(content[offset])) {
-			offset++
+		for offset < n {
+			r := runeAt(content, offset)
+			if isWordChar(r) || unicode.IsSpace(r) {
+				break
+			}
+			offset = stepFwd(content, offset)
 		}
 	}
 
 	// Skip whitespace
-	for offset < n && unicode.IsSpace(rune(content[offset])) {
-		offset++
+	for offset < n && unicode.IsSpace(runeAt(content, offset)) {
+		offset = stepFwd(content, offset)
 	}
 
 	return offset
@@ -327,52 +367,55 @@ func prevWordStart(content string, offset int) int {
 	if offset <= 0 {
 		return 0
 	}
-	offset--
+	offset = stepBack(content, offset)
 
 	// Skip whitespace backward
-	for offset > 0 && unicode.IsSpace(rune(content[offset])) {
-		offset--
+	for offset > 0 && unicode.IsSpace(runeAt(content, offset)) {
+		offset = stepBack(content, offset)
 	}
 
-	// Find start of word
-	if offset >= 0 && isWordChar(rune(content[offset])) {
-		for offset > 0 && isWordChar(rune(content[offset-1])) {
-			offset--
+	if isWordChar(runeAt(content, offset)) {
+		for offset > 0 && isWordChar(runeAt(content, stepBack(content, offset))) {
+			offset = stepBack(content, offset)
 		}
-	} else if offset >= 0 {
-		// Punctuation
-		for offset > 0 && !isWordChar(rune(content[offset-1])) && !unicode.IsSpace(rune(content[offset-1])) {
-			offset--
-		}
+		return offset
 	}
-
+	for offset > 0 {
+		prev := runeAt(content, stepBack(content, offset))
+		if isWordChar(prev) || unicode.IsSpace(prev) {
+			break
+		}
+		offset = stepBack(content, offset)
+	}
 	return offset
 }
 
 func wordEnd(content string, offset int) int {
 	n := len(content)
-	if offset >= n-1 {
-		return n - 1
+	last := lastRuneOffset(content)
+	if offset >= last {
+		return last
 	}
-	offset++
+	offset = stepFwd(content, offset)
 
 	// Skip whitespace
-	for offset < n && unicode.IsSpace(rune(content[offset])) {
-		offset++
+	for offset < n && unicode.IsSpace(runeAt(content, offset)) {
+		offset = stepFwd(content, offset)
 	}
 
-	// Move to end of word
-	if offset < n && isWordChar(rune(content[offset])) {
-		for offset < n-1 && isWordChar(rune(content[offset+1])) {
-			offset++
+	if isWordChar(runeAt(content, offset)) {
+		for offset < last && isWordChar(runeAt(content, stepFwd(content, offset))) {
+			offset = stepFwd(content, offset)
 		}
-	} else {
-		// Punctuation
-		for offset < n-1 && !isWordChar(rune(content[offset+1])) && !unicode.IsSpace(rune(content[offset+1])) {
-			offset++
-		}
+		return offset
 	}
-
+	for offset < last {
+		next := runeAt(content, stepFwd(content, offset))
+		if isWordChar(next) || unicode.IsSpace(next) {
+			break
+		}
+		offset = stepFwd(content, offset)
+	}
 	return offset
 }
 
@@ -383,13 +426,13 @@ func nextBigWordStart(content string, offset int) int {
 	}
 
 	// Skip current WORD (non-whitespace)
-	for offset < n && !unicode.IsSpace(rune(content[offset])) {
-		offset++
+	for offset < n && !unicode.IsSpace(runeAt(content, offset)) {
+		offset = stepFwd(content, offset)
 	}
 
 	// Skip whitespace
-	for offset < n && unicode.IsSpace(rune(content[offset])) {
-		offset++
+	for offset < n && unicode.IsSpace(runeAt(content, offset)) {
+		offset = stepFwd(content, offset)
 	}
 
 	return offset
@@ -399,16 +442,16 @@ func prevBigWordStart(content string, offset int) int {
 	if offset <= 0 {
 		return 0
 	}
-	offset--
+	offset = stepBack(content, offset)
 
 	// Skip whitespace backward
-	for offset > 0 && unicode.IsSpace(rune(content[offset])) {
-		offset--
+	for offset > 0 && unicode.IsSpace(runeAt(content, offset)) {
+		offset = stepBack(content, offset)
 	}
 
 	// Find start of WORD
-	for offset > 0 && !unicode.IsSpace(rune(content[offset-1])) {
-		offset--
+	for offset > 0 && !unicode.IsSpace(runeAt(content, stepBack(content, offset))) {
+		offset = stepBack(content, offset)
 	}
 
 	return offset
@@ -416,22 +459,31 @@ func prevBigWordStart(content string, offset int) int {
 
 func bigWordEnd(content string, offset int) int {
 	n := len(content)
-	if offset >= n-1 {
-		return n - 1
+	last := lastRuneOffset(content)
+	if offset >= last {
+		return last
 	}
-	offset++
+	offset = stepFwd(content, offset)
 
 	// Skip whitespace
-	for offset < n && unicode.IsSpace(rune(content[offset])) {
-		offset++
+	for offset < n && unicode.IsSpace(runeAt(content, offset)) {
+		offset = stepFwd(content, offset)
 	}
 
 	// Move to end of WORD
-	for offset < n-1 && !unicode.IsSpace(rune(content[offset+1])) {
-		offset++
+	for offset < last && !unicode.IsSpace(runeAt(content, stepFwd(content, offset))) {
+		offset = stepFwd(content, offset)
 	}
 
 	return offset
+}
+
+// lastRuneOffset is the offset of the final rune in content, or 0 when empty.
+func lastRuneOffset(content string) int {
+	if content == "" {
+		return 0
+	}
+	return stepBack(content, len(content))
 }
 
 // bracketPairs maps each bracket to its matching counterpart and direction.
@@ -464,11 +516,11 @@ func MatchBracket(b *Buffer) Motion {
 	if !isBracket(ch) {
 		line := b.CurrentLine()
 		found := false
-		for i := start.Col; i < len(line); i++ {
-			if isBracket(rune(line[i])) {
+		for i := start.Col; i < len(line); i = stepFwd(line, i) {
+			if r := runeAt(line, i); isBracket(r) {
 				// Move cursor to this bracket, then match from there.
 				offset = offset + (i - start.Col)
-				ch = rune(line[i])
+				ch = r
 				found = true
 				break
 			}
@@ -497,8 +549,8 @@ func MatchBracket(b *Buffer) Motion {
 // Cursor must be on the open bracket at offset.
 func findMatchForward(content string, offset int, open, close rune) int {
 	depth := 0
-	for i := offset; i < len(content); i++ {
-		ch := rune(content[i])
+	for i := offset; i < len(content); i = stepFwd(content, i) {
+		ch := runeAt(content, i)
 		if ch == open {
 			depth++
 		} else if ch == close {
@@ -515,16 +567,18 @@ func findMatchForward(content string, offset int, open, close rune) int {
 // Cursor must be on the close bracket at offset.
 func findMatchBackward(content string, offset int, open, close rune) int {
 	depth := 0
-	for i := offset; i >= 0; i-- {
-		ch := rune(content[i])
-		if ch == close {
+	for i := offset; ; i = stepBack(content, i) {
+		switch runeAt(content, i) {
+		case close:
 			depth++
-		} else if ch == open {
+		case open:
 			depth--
 			if depth == 0 {
 				return i
 			}
 		}
+		if i == 0 {
+			return -1
+		}
 	}
-	return -1
 }
