@@ -313,3 +313,75 @@ func mustStream(t *testing.T, b *Brain, input string) *Stream {
 	}
 	return s
 }
+
+// A result message with is_error must not be spoken as the reply, and while a
+// session is live it must reach the flatten retry the same way a stale --resume
+// exit-1 does. The claude CLI reports some failures with exit 0 + is_error.
+func TestThinkStreamResultErrorIsNotSpoken(t *testing.T) {
+	fake := &fakeClaudeClient{
+		streamScripts: []streamScript{
+			{msgs: []claude.Message{{
+				Type:    "result",
+				Subtype: "error_during_execution",
+				IsError: true,
+				Result:  "Claude Code process exited with code 1",
+			}}},
+		},
+	}
+	b := newTestBrain(fake)
+
+	text, res := collectStream(t, mustStream(t, b, "hello"))
+	if res.Err == nil {
+		t.Fatal("is_error result should surface as an error, not a reply")
+	}
+	if strings.Contains(text, "exited with code 1") {
+		t.Fatalf("CLI error text reached the speaker: %q", text)
+	}
+}
+
+func TestThinkStreamResultErrorWhileResumingRetriesFlattened(t *testing.T) {
+	fake := &fakeClaudeClient{
+		streamScripts: []streamScript{
+			{msgs: []claude.Message{assistantMsg("First reply."), resultMsg("sess-1")}},
+			// Resume attempt: exit 0, is_error result (no text).
+			{msgs: []claude.Message{{Type: "result", Subtype: "error_during_execution", IsError: true, SessionID: "sess-1", Result: "no conversation found"}}},
+			{msgs: []claude.Message{assistantMsg("Recovered reply."), resultMsg("sess-2")}},
+		},
+	}
+	b := newTestBrain(fake)
+
+	collectStream(t, mustStream(t, b, "first question"))
+	text, res := collectStream(t, mustStream(t, b, "second question"))
+	if res.Err != nil {
+		t.Fatalf("is_error on resume should fall back, got %v", res.Err)
+	}
+	if fake.streamCalls != 3 {
+		t.Fatalf("streamCalls = %d, want 3", fake.streamCalls)
+	}
+	if got := fake.streamOpts[2].ResumeID; got != "" {
+		t.Fatalf("retry ResumeID = %q, want empty", got)
+	}
+	if text != "Recovered reply." {
+		t.Fatalf("text = %q", text)
+	}
+}
+
+func TestThinkFullResultErrorIsNotSpoken(t *testing.T) {
+	fake := &fakeClaudeClient{
+		fullResults: []*claude.ClaudeResult{
+			{Result: "Claude Code process exited with code 1", IsError: true, Subtype: "error_during_execution"},
+		},
+	}
+	b := newTestBrain(fake)
+
+	out, err := b.ThinkFull(context.Background(), "hello", StreamOptions{})
+	if err == nil {
+		t.Fatal("is_error result should surface as an error")
+	}
+	if out != "" {
+		t.Fatalf("out = %q, want empty", out)
+	}
+	if len(b.history) != 1 {
+		t.Fatalf("history = %+v, want only the user turn", b.history)
+	}
+}

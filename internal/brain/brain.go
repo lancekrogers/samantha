@@ -163,6 +163,7 @@ func (b *Brain) streamAttempt(ctx context.Context, out chan<- string, streamOpts
 	var fullResponse strings.Builder
 	streamedAny := false
 	var streamErr error
+	var resultErr error
 
 	for msg := range messages {
 		// The CLI stamps session_id on its init and result messages; capture it
@@ -193,8 +194,15 @@ func (b *Brain) streamAttempt(ctx context.Context, out chan<- string, streamOpts
 		}
 
 		// Check for final result
-		if msg.Type == "result" && msg.Result != "" {
-			if fullResponse.Len() == 0 {
+		if msg.Type == "result" {
+			// The CLI can report failure with exit 0 and is_error on the result
+			// (max turns, execution error, some session rejections). Without this
+			// the error text would be spoken as the reply and a stale --resume
+			// would never reach the flatten retry.
+			if msg.IsError && fullResponse.Len() == 0 {
+				resultErr = resultError(msg.Subtype, msg.Result)
+			}
+			if msg.Result != "" && fullResponse.Len() == 0 && !msg.IsError {
 				fullResponse.WriteString(msg.Result)
 				if err := sendChunk(ctx, out, msg.Result); err != nil {
 					return fullResponse.String(), streamedAny, err
@@ -212,8 +220,26 @@ func (b *Brain) streamAttempt(ctx context.Context, out chan<- string, streamOpts
 			}
 		}
 	}
+	if streamErr == nil {
+		streamErr = resultErr
+	}
 
 	return fullResponse.String(), streamedAny, streamErr
+}
+
+// resultError turns a claude result message/transcript marked is_error into a Go
+// error, preserving the CLI's own text so the log and degraded path can show it.
+func resultError(subtype, text string) error {
+	detail := strings.TrimSpace(text)
+	switch {
+	case subtype != "" && detail != "":
+		return fmt.Errorf("claude result error (%s): %s", subtype, detail)
+	case subtype != "":
+		return fmt.Errorf("claude result error (%s)", subtype)
+	case detail != "":
+		return fmt.Errorf("claude result error: %s", detail)
+	}
+	return fmt.Errorf("claude result error")
 }
 
 // ThinkFull sends input and waits for the complete response.
@@ -253,6 +279,11 @@ func (b *Brain) thinkFullAttempt(ctx context.Context, streamOpts StreamOptions) 
 	}
 	if result.SessionID != "" {
 		b.sessionID = result.SessionID
+	}
+	// Same exit-0 failure shape as the streaming path: never speak the CLI's
+	// error text, and let a rejected --resume fall through to the flatten retry.
+	if result.IsError {
+		return "", resultError(result.Subtype, result.Result)
 	}
 
 	// Clean first, then fall back, so the fallback is spoken verbatim.
