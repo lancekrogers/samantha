@@ -36,6 +36,26 @@ type Brain struct {
 	// get Anthropic-side prompt caching. Empty until the first turn captures it;
 	// scoped to this Brain, which is constructed per conversation.
 	sessionID string
+	// promptTokens is the prompt size the CLI reported for the most recent
+	// request: new input plus whatever the cache served. Resuming replays the
+	// whole transcript, so this is the number that grows without bound and the
+	// one the session budget watches.
+	promptTokens int
+	budgetWarned bool
+}
+
+// claudeUsage is the token accounting the CLI reports on each assistant
+// message. Prompt tokens are split across three fields depending on what the
+// cache served, so the real prompt size is their sum.
+type claudeUsage struct {
+	InputTokens         int `json:"input_tokens"`
+	CacheReadTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationTokens int `json:"cache_creation_input_tokens"`
+	OutputTokens        int `json:"output_tokens"`
+}
+
+func (u claudeUsage) prompt() int {
+	return u.InputTokens + u.CacheReadTokens + u.CacheCreationTokens
 }
 
 // Turn represents a single conversation exchange.
@@ -139,10 +159,34 @@ func (b *Brain) ThinkStream(ctx context.Context, input string, streamOpts Stream
 		}
 		b.history = append(b.history, Turn{Role: "samantha", Content: response})
 		b.trimHistory()
+		// Checked after the turn lands so a reset never costs the turn in flight.
+		b.enforceSessionBudget()
 		done <- StreamResult{}
 	}()
 
 	return &Stream{Chunks: out, Done: done}, nil
+}
+
+// enforceSessionBudget drops the CLI session once the transcript it replays
+// grows past claude_max_session_tokens. Resuming hands the whole session back to
+// the model every turn, so prompt size — and with it TTFT and cache-write cost —
+// climbs for as long as the conversation lives. Dropping the id makes the next
+// turn start a fresh CLI session from flattened history (the same bounded window
+// the pre-resume code always sent), which re-floors the cost.
+//
+// Local history is untouched: the reset changes only which prefix the model
+// sees, never what the user said.
+func (b *Brain) enforceSessionBudget() {
+	budget := b.cfg.ClaudeMaxSessionTokens
+	if budget <= 0 || b.sessionID == "" || b.promptTokens < budget {
+		return
+	}
+	b.sessionID = ""
+	b.promptTokens = 0
+	if !b.budgetWarned {
+		b.budgetWarned = true
+		fmt.Fprintf(os.Stderr, "samantha: claude session past claude_max_session_tokens=%d; starting a fresh session from recent history\n", budget)
+	}
 }
 
 // streamAttempt runs a single Claude streaming turn: it builds the prompt for
@@ -179,8 +223,18 @@ func (b *Brain) streamAttempt(ctx context.Context, out chan<- string, streamOpts
 					Type string `json:"type"`
 					Text string `json:"text"`
 				} `json:"content"`
+				// The CLI stamps per-request usage on the assistant message. The
+				// SDK keeps it because Message is raw JSON; the result message's
+				// copy is dropped by the SDK's typed struct, so read it here.
+				Usage *claudeUsage `json:"usage"`
 			}
 			if err := json.Unmarshal(msg.Message, &content); err == nil {
+				if u := content.Usage; u != nil {
+					b.promptTokens = u.prompt()
+					if streamOpts.OnUsage != nil {
+						streamOpts.OnUsage(u.prompt(), u.OutputTokens)
+					}
+				}
 				for _, c := range content.Content {
 					if c.Type == "text" && c.Text != "" {
 						fullResponse.WriteString(c.Text)
