@@ -16,30 +16,45 @@ import (
 // configured document is an error, so a bad persona surfaces at construction
 // rather than mid-session.
 func personaSystemPrompt(cfg *config.Config) (string, error) {
-	return resolvePrompt(cfg, prompts.KindPersona)
+	return resolvePrompt(cfg, prompts.KindPersona, cfg.Persona)
 }
 
 // turnInstruction resolves the per-turn instruction appended to each user
 // message on the Claude and Grok prompt paths.
+//
+// Name comes from cfg.TurnPrompt (profile prompts.turn). Empty uses the
+// shared embedded turn document — not the persona system-prompt name — so a
+// custom agent does not need a private turn file and never confuses
+// "turn: samantha" with the Samantha identity.
 func turnInstruction(cfg *config.Config) (string, error) {
-	return resolvePrompt(cfg, prompts.KindTurn)
+	name := ""
+	if cfg != nil {
+		name = cfg.TurnPrompt
+	}
+	return resolvePrompt(cfg, prompts.KindTurn, name)
 }
 
-// resolvePrompt resolves a document of the given kind (explicit path, then the
-// user prompts dir, then the embedded default), assembles it, and substitutes
-// {agent_name}.
-func resolvePrompt(cfg *config.Config, kind prompts.Kind) (string, error) {
-	userDir := cfg.PromptsDir
+// resolvePrompt resolves a document of the given kind and name (explicit path,
+// then the user prompts dir, then the embedded default when name matches),
+// assembles it, and substitutes {agent_name}.
+func resolvePrompt(cfg *config.Config, kind prompts.Kind, name string) (string, error) {
+	userDir := ""
+	agentName := ""
+	if cfg != nil {
+		userDir = cfg.PromptsDir
+		agentName = cfg.AgentName
+	}
 	if userDir == "" {
 		userDir = config.PromptsDir()
 	}
-	doc, err := prompts.Resolver{UserDir: userDir}.Resolve(kind, cfg.Persona)
+	doc, err := prompts.Resolver{UserDir: userDir}.Resolve(kind, name)
 	if err != nil {
-		return "", fmt.Errorf("resolving %s prompt: %w", kind, err)
+		return "", fmt.Errorf("resolving %s prompt %q: %w", kind, name, err)
 	}
-	text, err := prompts.ResolvePlaceholders(doc.Assemble(), prompts.PlaceholderNames(), prompts.PlaceholderValues(cfg.AgentName))
+	// Catalog-driven names/values (#166) with the nil-cfg-safe agent name (#164).
+	text, err := prompts.ResolvePlaceholders(doc.Assemble(), prompts.PlaceholderNames(), prompts.PlaceholderValues(agentName))
 	if err != nil {
-		return "", fmt.Errorf("%s prompt %q: %w", kind, cfg.Persona, err)
+		return "", fmt.Errorf("%s prompt %q: %w", kind, name, err)
 	}
 	return text, nil
 }

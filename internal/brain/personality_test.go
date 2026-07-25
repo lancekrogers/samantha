@@ -55,9 +55,46 @@ prompt:
 	if err == nil {
 		t.Fatal("personaSystemPrompt() error = nil, want invalid prompt document error")
 	}
-	for _, want := range []string{"resolving persona prompt", path, "system_prompt missing identity"} {
+	for _, want := range []string{"resolving persona prompt", "broken", path, "system_prompt missing identity"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %q, want it to contain %q", err, want)
 		}
+	}
+}
+
+func TestTurnInstructionUsesSharedDefaultWhenTurnPromptEmpty(t *testing.T) {
+	// Custom personas leave prompts.turn empty; the brain must still get the
+	// shared embedded turn instruction without resolving kind=turn under the
+	// persona system-prompt name (which would 404 after wrong-name isolation).
+	cfg := &config.Config{AgentName: "Uncle Fu", Persona: "uncle-fu", TurnPrompt: ""}
+	got, err := turnInstruction(cfg)
+	if err != nil {
+		t.Fatalf("turnInstruction() error = %v", err)
+	}
+	doc, err := prompts.Default(prompts.KindTurn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := prompts.ResolvePlaceholders(doc.Assemble(), []string{"agent_name"}, map[string]string{"agent_name": "Uncle Fu"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("turnInstruction() = %q, want embedded default with agent name", got)
+	}
+}
+
+func TestPersonaSystemPromptDoesNotFallBackToSamantha(t *testing.T) {
+	dir := t.TempDir()
+	_, err := personaSystemPrompt(&config.Config{
+		AgentName:  "Uncle Fu",
+		Persona:    "uncle-fu",
+		PromptsDir: dir,
+	})
+	if err == nil {
+		t.Fatal("personaSystemPrompt(uncle-fu) succeeded, want missing-document error (not silent samantha)")
+	}
+	if !strings.Contains(err.Error(), "uncle-fu") {
+		t.Fatalf("error = %q, want uncle-fu named", err)
 	}
 }

@@ -169,3 +169,39 @@ func TestPromptsListHelpMatchesCatalogBehavior(t *testing.T) {
 		t.Errorf("prompts list --help output = %q, want current catalog behavior", out)
 	}
 }
+
+func TestPromptsShowTurnForCustomPersona(t *testing.T) {
+	// Regression: `prompts show <kind>` resolved every kind under cfg.Persona, so
+	// once the resolver stopped falling back to the embedded default by name,
+	// `prompts show turn` failed for any persona not named "samantha".
+	promptDir := t.TempDir()
+	personaDir := filepath.Join(promptDir, "persona")
+	if err := os.MkdirAll(personaDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	doc := "schema: samantha.prompt.v1\nprompt:\n  name: uncle-fu\n  kind: persona\n  system_prompt: |-\n    You are Uncle Fu.\n"
+	if err := os.WriteFile(filepath.Join(personaDir, "uncle-fu.yaml"), []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runRootForPrompts(t, promptDir, "prompts", "show", "turn")
+	if err != nil {
+		t.Fatalf("prompts show turn error = %v", err)
+	}
+	if !strings.Contains(out, "kind:   turn") {
+		t.Errorf("prompts show turn output = %q, want the turn document", out)
+	}
+}
+
+func TestPromptNameForKind(t *testing.T) {
+	cfg := &config.Config{Persona: "uncle-fu", TurnPrompt: "brisk"}
+	if got := promptNameForKind(cfg, prompts.KindPersona); got != "uncle-fu" {
+		t.Errorf("persona name = %q", got)
+	}
+	if got := promptNameForKind(cfg, prompts.KindTurn); got != "brisk" {
+		t.Errorf("turn name = %q", got)
+	}
+	if got := promptNameForKind(cfg, prompts.KindStyle); got != "" {
+		t.Errorf("style name = %q, want empty", got)
+	}
+}

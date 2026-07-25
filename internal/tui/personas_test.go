@@ -103,7 +103,7 @@ func TestPersonasScreenEditSystemPrompt(t *testing.T) {
 			{ID: "samantha", DisplayName: "Samantha", Prompts: persona.PromptRefs{Persona: "samantha"}},
 		}, nil
 	}
-	m.loadPrompt = func(name string) (string, error) {
+	m.loadPromptForProfile = func(p *persona.Profile) (string, error) {
 		return "You are {agent_name}, original.", nil
 	}
 	m.reload()
@@ -291,22 +291,63 @@ func TestPersonasCreateSeedsStarterNotFullDefault(t *testing.T) {
 	}
 }
 
-func TestPersonasEditFallbackKeepsFullDefault(t *testing.T) {
-	// A persona whose prompt fails to load must fall back to the full default,
-	// never the starter — otherwise saving would downgrade the identity.
-	cfg := &config.Config{ActivePersona: "samantha", AgentName: "Samantha"}
+func TestPersonasEditFallbackInjectsNothing(t *testing.T) {
+	// Supersedes TestPersonasEditFallbackKeepsFullDefault: that test asserted a
+	// failed load seeds the full built-in identity, which is exactly the silent
+	// wrong-identity injection this branch removes. Its intent — never let a
+	// failed load downgrade or replace a persona's identity — is preserved more
+	// strictly here: the editor stays empty and says so, and saving is the
+	// user's explicit act rather than an accidental overwrite.
+	cfg := &config.Config{ActivePersona: "uncle-fu", AgentName: "Uncle Fu"}
 	m := newPersonas(cfg)
 	m.listPersonas = func() ([]*persona.Profile, error) {
-		return []*persona.Profile{{ID: "samantha", DisplayName: "Samantha"}}, nil
+		return []*persona.Profile{{ID: "uncle-fu", DisplayName: "Uncle Fu"}}, nil
 	}
-	m.loadPrompt = func(string) (string, error) { return "", fmt.Errorf("boom") }
+	m.loadPromptForProfile = func(*persona.Profile) (string, error) { return "", fmt.Errorf("boom") }
 	m.defaultPrompt = func() (string, error) { return "You are {agent_name}, the full built-in identity.", nil }
 	m.starterPrompt = func() (string, error) { return "You are {agent_name}, starter.", nil }
 	m.reload()
+	m.width, m.height = 80, 30
 	m.cursor = 0
 	m.beginEdit()
-	if got := m.promptTA.Value(); !strings.Contains(got, "built-in") {
-		t.Fatalf("edit fallback should be the full default, got %q", got)
+
+	if got := m.promptTA.Value(); got != "" {
+		t.Fatalf("edit fallback injected a prompt body: %q", got)
+	}
+	if !strings.Contains(m.message, "Could not load system prompt") {
+		t.Fatalf("message = %q, want the load failure surfaced", m.message)
+	}
+}
+
+func TestPersonasEditDoesNotInjectSamanthaForWrongRef(t *testing.T) {
+	// Regression: stale prompts.persona (e.g. TTS voice "Uncle_Fu") used to
+	// resolve as a miss and the editor filled in the embedded samantha default.
+	cfg := &config.Config{ActivePersona: "uncle-fu"}
+	m := newPersonas(cfg)
+	m.listPersonas = func() ([]*persona.Profile, error) {
+		return []*persona.Profile{{
+			ID: "uncle-fu", DisplayName: "uncle fu",
+			Prompts: persona.PromptRefs{Persona: "Uncle_Fu", Turn: "samantha"},
+		}}, nil
+	}
+	m.loadPromptForProfile = func(p *persona.Profile) (string, error) {
+		if p.ID == "uncle-fu" {
+			return "You are Uncle Fu, private prompt.", nil
+		}
+		return "", fmt.Errorf("unexpected id %q", p.ID)
+	}
+	m.defaultPrompt = func() (string, error) {
+		return "You are {agent_name}, the samantha default — must not appear.", nil
+	}
+	m.reload()
+	m.width, m.height = 80, 28
+	m.cursor = 0
+	m.beginEdit()
+	if strings.Contains(m.promptTA.Value(), "samantha default") {
+		t.Fatalf("editor injected samantha default: %q", m.promptTA.Value())
+	}
+	if !strings.Contains(m.promptTA.Value(), "Uncle Fu, private") {
+		t.Fatalf("editor missing private prompt: %q", m.promptTA.Value())
 	}
 }
 
@@ -324,7 +365,7 @@ func TestPersonasFormStackRoundTrip(t *testing.T) {
 			Prompts: persona.PromptRefs{Persona: "research"},
 		}}, nil
 	}
-	m.loadPrompt = func(string) (string, error) { return "You are Research.", nil }
+	m.loadPromptForProfile = func(*persona.Profile) (string, error) { return "You are Research.", nil }
 	m.reload()
 	m.width, m.height = 80, 30
 	m.cursor = 0

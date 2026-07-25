@@ -23,6 +23,8 @@ type CreateOpts struct {
 }
 
 // CreateWithOpts is Create with an optional custom system prompt.
+// Create already seeds prompts/persona/<id>.yaml and binds prompts.persona to
+// the new id; a non-empty SystemPrompt overwrites that private document.
 func CreateWithOpts(cfg *config.Config, opts CreateOpts) (*Profile, error) {
 	p, err := Create(cfg, opts.DisplayName)
 	if err != nil {
@@ -47,11 +49,9 @@ func CreateWithOpts(cfg *config.Config, opts CreateOpts) (*Profile, error) {
 		if err := WriteSystemPrompt(p.ID, text); err != nil {
 			return p, err
 		}
+		// Create already set Prompts.Persona = id; keep turn empty (shared default).
 		p.Prompts.Persona = p.ID
-		if strings.TrimSpace(p.Prompts.Turn) == "" || p.Prompts.Turn == DefaultID {
-			// Keep turn instruction on the default unless the user later customizes it.
-			p.Prompts.Turn = DefaultID
-		}
+		p.Prompts.Turn = ""
 		if err := Write(p, false); err != nil {
 			return p, err
 		}
@@ -181,7 +181,8 @@ func WriteSystemPrompt(name, identity string) error {
 }
 
 // LoadSystemPrompt returns the assembled identity text for a persona prompt
-// name (user dir first, then embedded default).
+// name (user dir first, then embedded default when name matches it).
+// A missing name does not silently return another persona's document.
 func LoadSystemPrompt(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -192,6 +193,39 @@ func LoadSystemPrompt(name string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(doc.Assemble()), nil
+}
+
+// LoadSystemPromptForProfile returns the system prompt the Personas editor
+// should show for p.
+//
+// Order:
+//  1. prompts/persona/<id>.yaml when present (private doc for this profile)
+//  2. prompts.persona catalog ref when it still resolves
+//
+// When the private id document exists but the profile still points at a stale
+// ref (e.g. prompts.persona: Uncle_Fu while uncle-fu.yaml is on disk), the
+// profile is healed to prompts.persona: <id> so runtime and the editor agree.
+// Never substitutes the embedded samantha document for a different id.
+func LoadSystemPromptForProfile(p *Profile) (string, error) {
+	if p == nil {
+		return "", fmt.Errorf("persona profile: nil")
+	}
+	if id := strings.TrimSpace(p.ID); id != "" {
+		if text, err := LoadSystemPrompt(id); err == nil && strings.TrimSpace(text) != "" {
+			if strings.TrimSpace(p.Prompts.Persona) != id {
+				p.Prompts.Persona = id
+				_ = Write(p, false) // best-effort heal; editor still shows the right text
+			}
+			return text, nil
+		}
+	}
+	ref := strings.TrimSpace(p.Prompts.Persona)
+	if ref != "" && ref != p.ID {
+		if text, err := LoadSystemPrompt(ref); err == nil && strings.TrimSpace(text) != "" {
+			return text, nil
+		}
+	}
+	return "", fmt.Errorf("no system prompt document for persona %q", p.ID)
 }
 
 // DefaultSystemPrompt returns the embedded default persona identity (with

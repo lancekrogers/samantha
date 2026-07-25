@@ -59,8 +59,17 @@ func TestCreateAndUse(t *testing.T) {
 	if cfg.ActivePersona != "research-buddy" || cfg.AgentName != "Research Buddy" {
 		t.Fatalf("cfg after CreateAndUse = active=%q name=%q", cfg.ActivePersona, cfg.AgentName)
 	}
+	if p.Prompts.Persona != "research-buddy" {
+		t.Fatalf("prompts.persona = %q, want research-buddy", p.Prompts.Persona)
+	}
+	if p.Prompts.Turn != "" {
+		t.Fatalf("prompts.turn = %q, want empty shared default", p.Prompts.Turn)
+	}
 	if _, err := os.Stat(filepath.Join(dir, "personas", "research-buddy", "persona.yaml")); err != nil {
 		t.Fatalf("profile missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "prompts", "persona", "research-buddy.yaml")); err != nil {
+		t.Fatalf("private system prompt missing: %v", err)
 	}
 
 	// Second create with same name gets a suffix.

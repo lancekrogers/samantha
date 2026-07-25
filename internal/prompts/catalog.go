@@ -76,7 +76,7 @@ func Catalog(userDir string) ([]Entry, error) {
 }
 
 // Describe reports how the resolver would satisfy kind/name: a user document in
-// userDir when present, otherwise the embedded default.
+// userDir when present, otherwise the embedded default when name matches it.
 func Describe(userDir string, kind Kind, name string) (Entry, error) {
 	if path, ok := userDocPath(userDir, kind, name); ok {
 		doc, err := LoadFile(path, kind)
@@ -86,10 +86,10 @@ func Describe(userDir string, kind Kind, name string) (Entry, error) {
 			}
 			return Entry{Kind: kind, Name: name, Source: SourceUser, Path: path, Hash: doc.Hash()}, nil
 		}
-		// Fail-safe: a broken override must not brick listing/status. The
-		// resolver falls back to the embedded default at runtime; report that.
+		// Fail-safe: a broken override of the embedded name must not brick
+		// listing/status. Report the embedded default for that name only.
 	}
-	doc, err := Default(kind)
+	doc, err := resolveEmbedded(kind, name)
 	if err != nil {
 		return Entry{}, err
 	}
