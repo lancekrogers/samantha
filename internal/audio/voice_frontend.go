@@ -6,8 +6,12 @@ import (
 )
 
 const (
-	frontendTargetRMS     = 0.08
-	frontendMaxRefQueue   = SampleRate * 2
+	frontendTargetRMS = 0.08
+	// frontendMaxRefQueue holds far-end audio at the capture sample rate. The
+	// device callback pushes only what is leaving the speakers now; keep enough
+	// headroom for acoustic delay + callback jitter (was 2s and too small when
+	// bulk-push dumped whole utterances that then got drained early).
+	frontendMaxRefQueue   = SampleRate * 8
 	echoCancellerTaps     = 192
 	echoCancellerStep     = 0.08
 	echoCancellerLeak     = 0.9995

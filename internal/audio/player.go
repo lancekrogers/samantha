@@ -260,6 +260,12 @@ func (p *Player) pumpSegment(ctx context.Context, segment *playbackSegment, stre
 // (e.g. a cancelled turn) may already have produced audio worth playing, and
 // the caller still learns about the failure through the segment's terminal
 // PlaybackResult once that audio finishes.
+//
+// AEC reference is NOT pushed here. Bulk-pushing the whole utterance before the
+// device callback runs lets ProcessCapture drain the ref queue while the segment
+// is still waiting to play — so by the time speakers emit, the canceller has
+// nothing left and barge-in hears her own voice. onData feeds the reference
+// sample-clock-aligned as audio actually leaves the device.
 func finalizeSegment(segment *playbackSegment, frontend Frontend, debug *playerDebugRecorder, samples []float32, inputRate, outputRate int, streamErr error) {
 	if debug != nil {
 		debug.captureSource(inputRate, samples)
@@ -267,9 +273,7 @@ func finalizeSegment(segment *playbackSegment, frontend Frontend, debug *playerD
 	if inputRate != outputRate {
 		samples = resample(samples, inputRate, outputRate)
 	}
-	if frontend != nil {
-		frontend.PushPlaybackReference(samples)
-	}
+	_ = frontend // reference path is owned by onData; keep signature stable
 	segment.append(float32ToPCM16(samples))
 	segment.finishInput(streamErr)
 }
@@ -472,6 +476,8 @@ func (p *Player) onData(outputSamples, inputSamples []byte, frameCount uint32) {
 	}
 	monoBuf := p.monoScratch
 	debug := p.debug
+	frontend := p.frontend
+	deviceRate := p.sampleRate
 	p.mu.Unlock()
 	clearBytes(monoBuf)
 
@@ -488,6 +494,12 @@ func (p *Player) onData(outputSamples, inputSamples []byte, frameCount uint32) {
 		expandMonoS16LE(monoBuf[:writtenFrames*2], writtenFrames, channels, outputSamples)
 		if debug != nil {
 			debug.captureCallback(outputSamples, int(frameCount), writtenFrames)
+		}
+		// Feed AEC only what actually left the device this callback, resampled
+		// to the capture clock (16 kHz). Bulk-pushing earlier is wrong: the
+		// mic path drains the ref queue before these frames are audible.
+		if frontend != nil && writtenFrames > 0 {
+			pushPlaybackReferenceForCapture(frontend, monoBuf[:writtenFrames*2], deviceRate)
 		}
 	}()
 
@@ -519,6 +531,22 @@ func (p *Player) onData(outputSamples, inputSamples []byte, frameCount uint32) {
 			p.finishSegment(segment)
 		}
 	}
+}
+
+// pushPlaybackReferenceForCapture converts mono S16LE at the device sample
+// rate into capture-rate float32 and pushes it as the AEC far-end reference.
+func pushPlaybackReferenceForCapture(frontend Frontend, monoS16 []byte, deviceRate int) {
+	if frontend == nil || len(monoS16) < 2 {
+		return
+	}
+	ref := bytesToFloat32(monoS16)
+	if deviceRate > 0 && deviceRate != SampleRate {
+		ref = resample(ref, deviceRate, SampleRate)
+	}
+	if len(ref) == 0 {
+		return
+	}
+	frontend.PushPlaybackReference(ref)
 }
 
 // expandMonoS16LE writes mono S16LE frames into an interleaved multi-channel

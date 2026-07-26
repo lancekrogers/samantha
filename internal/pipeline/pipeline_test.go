@@ -950,9 +950,11 @@ func (v *fakeVAD) clearedCount() int {
 // could not service the interrupt until the TTS call finished.
 func TestRunTurnBargeInServicedDuringSynthesis(t *testing.T) {
 	bus := events.NewBus()
-	ttsDelay := 1500 * time.Millisecond
+	// TTS delay must exceed bargeInArmDelay + speech-chunk settle so the second
+	// sentence is still mid-generation when we trip barge-in (arm is 1.2s).
+	ttsDelay := 3500 * time.Millisecond
 	ttsProvider := &fakeTTS{delay: ttsDelay}
-	player := newFakePlayer(5 * time.Second) // sentence 1 plays long
+	player := newFakePlayer(8 * time.Second) // sentence 1 plays long
 	defer player.Close()
 	capture := newFakeCapture()
 
@@ -977,7 +979,7 @@ func TestRunTurnBargeInServicedDuringSynthesis(t *testing.T) {
 	// synthesis is then in flight on the worker.
 	select {
 	case <-player.StartedSignal():
-	case <-time.After(5 * time.Second):
+	case <-time.After(8 * time.Second):
 		t.Fatal("timed out waiting for playback to start")
 	}
 
