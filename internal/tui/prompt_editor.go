@@ -41,7 +41,11 @@ type promptEvent int
 
 const (
 	promptEventNone promptEvent = iota
+	// promptEventSave commits the whole create/edit form (:wq, :x, normal Enter).
 	promptEventSave
+	// promptEventAccept accepts the prompt field and advances the wizard (:w).
+	// Mirrors vim write-without-quit so users can still set model & voice.
+	promptEventAccept
 	promptEventCancel
 )
 
@@ -165,7 +169,11 @@ func (p promptEditor) Update(msg tea.KeyMsg) (promptEditor, tea.Cmd, promptEvent
 
 	cmd, _ := p.ed.Update(msg)
 	switch strings.TrimSpace(cmd) {
-	case "w", "wq", "x":
+	case "w":
+		// Write-without-quit: keep the form open so the Model & voice step
+		// remains reachable. Full form commit is :wq / :x / normal Enter / ctrl+j.
+		return p, nil, promptEventAccept
+	case "wq", "x":
 		return p, nil, promptEventSave
 	case "q", "q!":
 		return p, nil, promptEventCancel
@@ -447,10 +455,10 @@ func (p promptEditor) modeline() string {
 	}
 	switch p.ed.Mode() {
 	case vim.ModeInsert:
-		return "-- INSERT -- · { tab variables · esc normal · save: :w / ctrl+j"
+		return "-- INSERT -- · { tab variables · esc normal · :w next · :wq / ctrl+j save"
 	case vim.ModeVisual, vim.ModeVisualLine:
 		return "-- VISUAL -- · y yank · d delete · c change · esc normal"
 	default:
-		return "NORMAL · i insert · v visual · u undo · p paste · :w save · :q cancel"
+		return "NORMAL · i insert · v visual · u undo · p paste · :w next · :wq save · :q cancel"
 	}
 }

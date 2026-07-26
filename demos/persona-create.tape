@@ -112,7 +112,7 @@ Left
 Sleep 800ms
 
 # ── ctrl+j commits the whole form from any step (:wq also saves from
-#    the prompt editor) ───────────────────────────────────────────────
+#    the prompt editor; bare :w only advances to this Model & voice step)
 Ctrl+J
 Sleep 2s
 
