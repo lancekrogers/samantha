@@ -39,9 +39,9 @@ type Brain struct {
 	// promptTokens is the prompt size the CLI reported for the most recent
 	// request: new input plus whatever the cache served. Resuming replays the
 	// whole transcript, so this is the number that grows without bound and the
-	// one the session budget watches.
+	// one the session budget watches. ThinkFull falls back to a local estimate
+	// because ClaudeResult drops usage.
 	promptTokens int
-	budgetWarned bool
 }
 
 // claudeUsage is the token accounting the CLI reports on each assistant
@@ -144,7 +144,7 @@ func (b *Brain) ThinkStream(ctx context.Context, input string, streamOpts Stream
 		// is not mistaken for a resume failure.
 		if err != nil && resuming && !streamedAny && ctx.Err() == nil {
 			fmt.Fprintf(os.Stderr, "samantha: claude resume failed, retrying without session: %v\n", err)
-			b.sessionID = ""
+			b.dropSession()
 			raw, _, err = b.streamAttempt(ctx, out, streamOpts)
 		}
 		if err != nil {
@@ -181,12 +181,19 @@ func (b *Brain) enforceSessionBudget() {
 	if budget <= 0 || b.sessionID == "" || b.promptTokens < budget {
 		return
 	}
+	// Log every reset: each one floors the model back to the flatten window and
+	// is a real context change the user should be able to see in the log.
+	fmt.Fprintf(os.Stderr, "samantha: claude session past claude_max_session_tokens=%d; starting a fresh session from recent history\n", budget)
+	b.dropSession()
+}
+
+// dropSession clears the CLI resume id and the budget counter. Call whenever the
+// session is intentionally abandoned (budget reset, clear/load history, or a
+// rejected --resume), so a stale high promptTokens cannot force an immediate
+// re-reset on the next successful turn.
+func (b *Brain) dropSession() {
 	b.sessionID = ""
 	b.promptTokens = 0
-	if !b.budgetWarned {
-		b.budgetWarned = true
-		fmt.Fprintf(os.Stderr, "samantha: claude session past claude_max_session_tokens=%d; starting a fresh session from recent history\n", budget)
-	}
 }
 
 // streamAttempt runs a single Claude streaming turn: it builds the prompt for
@@ -230,9 +237,18 @@ func (b *Brain) streamAttempt(ctx context.Context, out chan<- string, streamOpts
 			}
 			if err := json.Unmarshal(msg.Message, &content); err == nil {
 				if u := content.Usage; u != nil {
-					b.promptTokens = u.prompt()
-					if streamOpts.OnUsage != nil {
-						streamOpts.OnUsage(u.prompt(), u.OutputTokens)
+					// Budget watches the full prompt (input + cache reads +
+					// cache writes): that is what --resume replays next turn.
+					if p := u.prompt(); p > 0 {
+						b.promptTokens = p
+					}
+					// OnUsage "prefill" is the tokens the server actually
+					// processed this turn — exclude cache reads so a warm
+					// prefix still shows a small prefill and cache regressions
+					// stay visible in the activity feed.
+					prefill := u.InputTokens + u.CacheCreationTokens
+					if streamOpts.OnUsage != nil && prefill+u.OutputTokens > 0 {
+						streamOpts.OnUsage(prefill, u.OutputTokens)
 					}
 				}
 				for _, c := range content.Content {
@@ -307,7 +323,7 @@ func (b *Brain) ThinkFull(ctx context.Context, input string, streamOpts StreamOp
 	// gate keeps a user cancellation from being treated as a resume failure.
 	if err != nil && resuming && ctx.Err() == nil {
 		fmt.Fprintf(os.Stderr, "samantha: claude resume failed, retrying without session: %v\n", err)
-		b.sessionID = ""
+		b.dropSession()
 		response, err = b.thinkFullAttempt(ctx, streamOpts)
 	}
 	if err != nil {
@@ -316,8 +332,27 @@ func (b *Brain) ThinkFull(ctx context.Context, input string, streamOpts StreamOp
 
 	b.history = append(b.history, Turn{Role: "samantha", Content: response})
 	b.trimHistory()
+	// ClaudeResult has no usage fields, so estimate the replayed session size
+	// from local history and enforce the same cap as ThinkStream. Stream turns
+	// overwrite promptTokens with real CLI usage when available.
+	b.promptTokens = b.estimateSessionTokens()
+	b.enforceSessionBudget()
 
 	return response, nil
+}
+
+// estimateSessionTokens approximates the CLI-replayed prompt size when usage is
+// unavailable (blocking path). chars/4 is a coarse but stable stand-in for
+// Anthropic tokenization; the stream path replaces it with real numbers.
+func (b *Brain) estimateSessionTokens() int {
+	n := len(b.systemPrompt)
+	for _, t := range b.history {
+		n += len(t.Content)
+	}
+	if n == 0 {
+		return 0
+	}
+	return (n + 3) / 4
 }
 
 // thinkFullAttempt runs a single blocking Claude turn and captures the session
@@ -399,7 +434,7 @@ func (b *Brain) History() []Turn {
 // one.
 func (b *Brain) ClearHistory() {
 	b.history = nil
-	b.sessionID = ""
+	b.dropSession()
 }
 
 // LoadHistory restores conversation history from a saved samantha session. No
@@ -408,7 +443,7 @@ func (b *Brain) ClearHistory() {
 // and resumes from there.
 func (b *Brain) LoadHistory(turns []Turn) {
 	b.history = normalizePromptHistory(turns)
-	b.sessionID = ""
+	b.dropSession()
 }
 
 // normalizePromptHistory maps persisted roles onto the prompt-based providers'
