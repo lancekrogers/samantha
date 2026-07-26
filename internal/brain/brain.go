@@ -429,6 +429,16 @@ func (b *Brain) History() []Turn {
 	return b.history
 }
 
+// SessionInfo reports the live CLI session for /session display.
+func (b *Brain) SessionInfo() SessionState {
+	return SessionState{
+		Kind:         "harness",
+		ID:           b.sessionID,
+		PromptTokens: b.promptTokens,
+		Turns:        len(b.history),
+	}
+}
+
 // ClearHistory wipes conversation history. The CLI session id is dropped too so
 // a fresh conversation starts a fresh CLI session instead of resuming the old
 // one.

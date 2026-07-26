@@ -5,6 +5,9 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/lancekrogers/samantha/internal/brain"
+	"github.com/lancekrogers/samantha/internal/events"
 )
 
 func TestSlashCommandRegistryMatchesCanonicalNamesAndAliases(t *testing.T) {
@@ -133,5 +136,52 @@ func TestHelpCommandUsesRegistry(t *testing.T) {
 	}
 	if len(runner.texts()) != 0 {
 		t.Fatal("/help reached brain")
+	}
+}
+
+func TestSessionCommandReportsStateWithoutReachingBrain(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	m, bus := startedConversation(t, runner, false)
+	m.deps.brainSession = func() (brain.SessionState, bool) {
+		return brain.SessionState{Kind: "harness", ID: "sess-12345678", PromptTokens: 12340, Turns: 8}, true
+	}
+
+	var infos []string
+	bus.SubscribeAll(func(e events.Event) {
+		if i, ok := e.(events.Info); ok {
+			infos = append(infos, i.Message)
+		}
+	})
+
+	_, _ = typeAndEnter(m, "/session")
+
+	if len(runner.texts()) != 0 {
+		t.Fatal("/session reached the brain")
+	}
+	if len(infos) != 1 {
+		t.Fatalf("infos = %v, want exactly one /session line", infos)
+	}
+	for _, wantPart := range []string{"harness", "sess-123", "12340 tok", "8 turns"} {
+		if !strings.Contains(infos[0], wantPart) {
+			t.Fatalf("info = %q, missing %q", infos[0], wantPart)
+		}
+	}
+}
+
+func TestSessionCommandDegradesWhenUnsupported(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	m, bus := startedConversation(t, runner, false)
+
+	var infos []string
+	bus.SubscribeAll(func(e events.Event) {
+		if i, ok := e.(events.Info); ok {
+			infos = append(infos, i.Message)
+		}
+	})
+
+	_, _ = typeAndEnter(m, "/session")
+
+	if len(infos) != 1 || !strings.Contains(infos[0], "unavailable") {
+		t.Fatalf("infos = %v, want one unavailable line", infos)
 	}
 }
