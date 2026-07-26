@@ -54,3 +54,31 @@ type Provider interface {
 type Warmer interface {
 	Warmup(ctx context.Context)
 }
+
+// SessionKind values for SessionState.Kind, shared by implementers and
+// consumers so a typo cannot silently fall into the wrong display branch.
+const (
+	SessionKindHarness = "harness"
+	SessionKindChat    = "chat"
+)
+
+// SessionState is a point-in-time description of who owns the conversation
+// and how big it has grown, for display (the /session command).
+type SessionState struct {
+	// Kind is SessionKindHarness (a CLI session owns the transcript) or
+	// SessionKindChat (samantha owns messages in-process).
+	Kind string
+	// ID is the harness session id being resumed; empty when none is live.
+	ID string
+	// PromptTokens is the last known replayed-prompt size (harness) or the
+	// estimated next-request size (chat). 0 when unknown.
+	PromptTokens int
+	// Turns is the local history length retained for persistence/UI.
+	Turns int
+}
+
+// SessionReporter is an optional Provider capability exposing live session
+// state for UI display.
+type SessionReporter interface {
+	SessionInfo() SessionState
+}

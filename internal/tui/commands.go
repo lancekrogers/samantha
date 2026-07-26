@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/speaker"
 )
@@ -16,6 +17,7 @@ type slashCommandID int
 const (
 	commandHelp slashCommandID = iota
 	commandClear
+	commandSession
 	commandMute
 	commandUnmute
 	commandMic
@@ -41,6 +43,7 @@ type slashCommand struct {
 var slashCommands = []slashCommand{
 	{id: commandHelp, name: "/help", usage: "/help [command]", description: "Show commands or help for one command", aliases: []string{"/?", "/commands"}},
 	{id: commandClear, name: "/clear", usage: "/clear", description: "Clear this conversation", aliases: []string{"/c"}},
+	{id: commandSession, name: "/session", usage: "/session", description: "Show who owns the model session and how big it is"},
 	{id: commandMute, name: "/mute", usage: "/mute", description: "Pause voice input"},
 	{id: commandUnmute, name: "/unmute", usage: "/unmute", description: "Resume voice input"},
 	{id: commandMic, name: "/mic", usage: "/mic", description: "Toggle voice input"},
@@ -162,6 +165,9 @@ func (m *conversationModel) executeSlashCommand(command slashCommand, args []str
 		}
 		m.emit(events.ConversationCleared{})
 		return m.resumeListening()
+	case commandSession:
+		m.emit(events.Info{Message: m.sessionSummary()})
+		return m.resumeListening()
 	case commandMute:
 		return m.setInputMuted(true)
 	case commandUnmute:
@@ -194,6 +200,39 @@ func (m *conversationModel) executeSlashCommand(command slashCommand, args []str
 		return tea.Quit
 	default:
 		return m.resumeListening()
+	}
+}
+
+// sessionSummary renders one Info line for /session: who owns the model
+// conversation (harness CLI session vs in-process chat) and how big it is.
+func (m *conversationModel) sessionSummary() string {
+	if m.deps.brainSession == nil {
+		return "session: unavailable for this provider"
+	}
+	s, ok := m.deps.brainSession()
+	if !ok {
+		return "session: unavailable for this provider"
+	}
+	switch s.Kind {
+	case brain.SessionKindHarness:
+		id := s.ID
+		if id == "" {
+			// With turns on record and still no id, resume simply is not
+			// wired for this provider — "yet" would read as stuck capture.
+			if s.Turns > 0 {
+				return fmt.Sprintf("session: harness · no live CLI session · %d turns kept", s.Turns)
+			}
+			return fmt.Sprintf("session: harness · no CLI session yet · %d turns kept", s.Turns)
+		}
+		if len(id) > 8 {
+			id = id[:8]
+		}
+		if s.PromptTokens > 0 {
+			return fmt.Sprintf("session: harness · id %s · last prompt %d tok · %d turns kept", id, s.PromptTokens, s.Turns)
+		}
+		return fmt.Sprintf("session: harness · id %s · %d turns kept", id, s.Turns)
+	default:
+		return fmt.Sprintf("session: local chat · est next prompt %d tok · %d turns kept", s.PromptTokens, s.Turns)
 	}
 }
 

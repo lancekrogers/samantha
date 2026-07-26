@@ -201,6 +201,12 @@ func (g *GrokBrain) ClearHistory() {
 	g.history = nil
 }
 
+// SessionInfo reports harness kind with no live session id: resume is not
+// wired for grok yet, so every turn re-flattens recent history (WI-529be3 P3).
+func (g *GrokBrain) SessionInfo() SessionState {
+	return SessionState{Kind: SessionKindHarness, Turns: len(g.history)}
+}
+
 // LoadHistory restores conversation history from a saved session.
 func (g *GrokBrain) LoadHistory(turns []Turn) {
 	g.history = normalizePromptHistory(turns)

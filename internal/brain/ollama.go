@@ -392,6 +392,16 @@ func (o *OllamaBrain) ClearHistory() {
 	o.history = nil
 }
 
+// SessionInfo reports the in-process conversation for /session display:
+// samantha owns messages[], so the size shown is the estimated next request.
+func (o *OllamaBrain) SessionInfo() SessionState {
+	return SessionState{
+		Kind:         SessionKindChat,
+		PromptTokens: o.estimateTokens(""),
+		Turns:        len(o.history),
+	}
+}
+
 // History returns conversation history as Turn slices for session persistence.
 func (o *OllamaBrain) History() []Turn {
 	turns := make([]Turn, len(o.history))

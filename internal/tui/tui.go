@@ -499,6 +499,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			runner:         msg.rt.Pipeline,
 			bus:            msg.rt.Bus,
 			clearHistory:   msg.rt.Pipeline.Brain.ClearHistory,
+			brainSession:   brainSessionReporter(msg.rt.Pipeline.Brain),
 			voice:          msg.rt.Voice,
 			output:         msg.rt.Output,
 			setOutputMuted: msg.rt.Pipeline.SetOutputMuted,

@@ -12,9 +12,21 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/lancekrogers/samantha/internal/app"
+	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/tui/anim"
 )
+
+// brainSessionReporter adapts an optional brain.SessionReporter into the
+// conversationDeps callback, so /session degrades gracefully on providers
+// that do not expose session state.
+func brainSessionReporter(p brain.Provider) func() (brain.SessionState, bool) {
+	r, ok := p.(brain.SessionReporter)
+	if !ok {
+		return nil
+	}
+	return func() (brain.SessionState, bool) { return r.SessionInfo(), true }
+}
 
 // turnRunner is the slice of pipeline.Pipeline the conversation driver uses.
 type turnRunner interface {
@@ -47,9 +59,12 @@ type voiceRetryMsg struct{}
 
 // conversationDeps wires the live pipeline into the conversation model.
 type conversationDeps struct {
-	runner         turnRunner
-	bus            *events.Bus
-	clearHistory   func()
+	runner       turnRunner
+	bus          *events.Bus
+	clearHistory func()
+	// brainSession reports the provider's live session state for /session;
+	// nil (or ok=false) when the provider does not expose one.
+	brainSession   func() (brain.SessionState, bool)
 	voice          bool // STT is configured; voice turns may run
 	output         bool // TTS/player are configured
 	setOutputMuted func(bool)
