@@ -107,6 +107,32 @@ func TestBargeInEnvOverride(t *testing.T) {
 	}
 }
 
+// Mouse scrolling is on by default, but claiming the mouse costs unmodified
+// click-drag selection — so turning it back off has to actually stick.
+func TestTUIMouseDefaultsOnAndCanBeDisabled(t *testing.T) {
+	orig := configFile
+	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")
+	defer func() { configFile = orig }()
+
+	setDefaults(v)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !cfg.TUIMouseEnabled {
+		t.Error("TUIMouseEnabled = false, want true by default")
+	}
+
+	t.Setenv("TUI_MOUSE_ENABLED", "false")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.TUIMouseEnabled {
+		t.Error("TUIMouseEnabled = true, want false from env")
+	}
+}
+
 func TestLoadValidConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

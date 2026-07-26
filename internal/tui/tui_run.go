@@ -69,9 +69,19 @@ func run(cfg *config.Config, build RuntimeBuilder, meeting MeetingBuilder, start
 	forceTUIColorProfile()
 
 	// Cell-motion reporting makes wheel and trackpad events available to the
-	// conversation viewport. It avoids the noisier all-motion mode: pointer
+	// conversation viewport, and avoids the noisier all-motion mode: pointer
 	// movement is reported only while a button is held.
-	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	//
+	// This is a deliberate trade, not a free win. Claiming the mouse means the
+	// terminal sends clicks and drags to Samantha rather than doing its own
+	// selection, so copying transcript text needs a modifier (option in iTerm2,
+	// fn in Terminal.app, shift in kitty). tui_mouse_enabled=false gives
+	// unmodified selection back; PgUp/PgDn scroll either way.
+	opts := []tea.ProgramOption{tea.WithAltScreen()}
+	if cfg.TUIMouseEnabled {
+		opts = append(opts, tea.WithMouseCellMotion())
+	}
+	p := tea.NewProgram(app, opts...)
 	m, runErr := p.Run()
 	final, _ := m.(App)
 	if final.remote.server != nil {

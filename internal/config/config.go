@@ -62,6 +62,13 @@ type Config struct {
 	// until the echo-canceller is strong enough to avoid self-interruption.
 	BargeInEnabled bool `mapstructure:"barge_in_enabled"`
 
+	// TUIMouseEnabled lets the TUI claim the mouse so the wheel and trackpad
+	// scroll the transcript. Claiming it means the terminal routes drags to
+	// Samantha instead of its own selection, so copying transcript text needs a
+	// modifier (option in iTerm2, fn in Terminal.app, shift in kitty). Turn this
+	// off to get unmodified click-drag selection back and scroll with PgUp/PgDn.
+	TUIMouseEnabled bool `mapstructure:"tui_mouse_enabled"`
+
 	// Brain
 	BrainProvider string `mapstructure:"brain_provider"`
 	GrokModel     string `mapstructure:"grok_model"`
@@ -276,6 +283,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("voice_frontend_enabled", false)
 	v.SetDefault("barge_in_enabled", false)
 
+	// Scrolling is the common case; unmodified mouse selection is recoverable
+	// by turning this off.
+	v.SetDefault("tui_mouse_enabled", true)
+
 	v.SetDefault("brain_provider", "claude")
 	v.SetDefault("grok_model", "")
 	v.SetDefault("ollama_model", "")
@@ -419,6 +430,7 @@ func loadLocked() (*Config, error) {
 		"vad_threshold":              "VAD_THRESHOLD",
 		"vad_min_speech_duration":    "VAD_MIN_SPEECH_DURATION",
 		"voice_frontend_enabled":     "VOICE_FRONTEND_ENABLED",
+		"tui_mouse_enabled":          "TUI_MOUSE_ENABLED",
 		"calibre_enabled":            "CALIBRE_ENABLED",
 		"calibre_library_path":       "CALIBRE_LIBRARY_PATH",
 		"calibredb_binary":           "CALIBREDB_BINARY",
