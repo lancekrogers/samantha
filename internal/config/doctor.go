@@ -42,6 +42,20 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 
 	diags = append(diags, diagnoseBrainProvider(cfg, lookPath))
 
+	// Legacy fuse detection: 60000 was the baked default that installs wrote
+	// to config.yaml between the session-budget release and the warn-path
+	// change, so an explicit 60000 is almost always inherited, not chosen.
+	// The shipped default is now 0 (warn instead of silently dropping the
+	// CLI session).
+	if cfg.ClaudeMaxSessionTokens == 60000 {
+		diags = append(diags, Diagnostic{
+			Name:        "claude-session-fuse",
+			Severity:    SeverityWarn,
+			Detail:      "claude_max_session_tokens is 60000 — the old baked default; claude sessions silently drop past it",
+			Remediation: "delete the key (or set 0) to adopt warn-only sessions; keep it only if the cap is intentional",
+		})
+	}
+
 	norm, sttErr := NormalizeSTTWithMode(cfg.STTProvider, cfg.STTMode)
 	if sttErr == nil {
 		diags = append(diags, Diagnostic{Name: "stt-provider", Severity: SeverityOK, Detail: fmt.Sprintf("%s/%s", norm.Provider, norm.Mode)})
