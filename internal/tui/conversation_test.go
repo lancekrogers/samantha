@@ -293,6 +293,34 @@ func TestConversationScrollAndFollow(t *testing.T) {
 	}
 }
 
+func TestConversationMouseWheelScrollAndFollow(t *testing.T) {
+	m := sizedConversation(t, 80, 10)
+	for i := range 50 {
+		m.appendTranscript(fmt.Sprintf("line %d", i))
+	}
+
+	m, _ = m.Update(tea.MouseMsg{
+		Button: tea.MouseButtonWheelUp,
+		Action: tea.MouseActionPress,
+	})
+	if m.viewport.AtBottom() {
+		t.Fatal("mouse wheel up did not scroll away from the bottom")
+	}
+	if m.followChat {
+		t.Fatal("mouse wheel up must clear sticky chat follow")
+	}
+
+	for !m.viewport.AtBottom() {
+		m, _ = m.Update(tea.MouseMsg{
+			Button: tea.MouseButtonWheelDown,
+			Action: tea.MouseActionPress,
+		})
+	}
+	if !m.followChat {
+		t.Fatal("mouse wheel down to the tail must restore sticky chat follow")
+	}
+}
+
 // Voice-panel reflow shrinks the chat viewport. Without sticky follow, AtBottom
 // flips false and every later message stays off-screen.
 func TestConversationFollowSurvivesVoicePanelReflow(t *testing.T) {

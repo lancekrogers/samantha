@@ -68,10 +68,10 @@ func run(cfg *config.Config, build RuntimeBuilder, meeting MeetingBuilder, start
 	// hang or mis-detect on bare PTYs (VHS/ttyd). Same pattern as festival.
 	forceTUIColorProfile()
 
-	// Do not enable Bubble Tea mouse reporting here. Claiming the mouse makes
-	// terminals send clicks and drags to Samantha instead of allowing native
-	// text selection, copy, and link activation.
-	p := tea.NewProgram(app, tea.WithAltScreen())
+	// Cell-motion reporting makes wheel and trackpad events available to the
+	// conversation viewport. It avoids the noisier all-motion mode: pointer
+	// movement is reported only while a button is held.
+	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	m, runErr := p.Run()
 	final, _ := m.(App)
 	if final.remote.server != nil {

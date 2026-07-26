@@ -209,7 +209,7 @@ commands are local — they do not cancel speech recognition or block the chat.
 |-----|--------|
 | `Enter` | Send the current draft |
 | `Ctrl+J` | Insert a newline in the draft |
-| `Page Up` / `Page Down` | Scroll the transcript or focused activity feed |
+| Mouse wheel / trackpad, `Page Up` / `Page Down` | Scroll the transcript or focused activity feed |
 | `Ctrl+T` | Focus/unfocus the activity timeline |
 | `Ctrl+G` | Pause/resume voice input (capture may stay armed; listening stops) |
 | `Ctrl+O` | Mute/unmute spoken responses (also stops current playback) |
