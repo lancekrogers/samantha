@@ -52,6 +52,17 @@ func (p *Pipeline) ttsFirstAudioGrace() time.Duration {
 	return 0
 }
 
+// stallHint names the knob that widens the budget, but only when the budget
+// actually came from the provider's FirstAudioGrace. On the default 8s a
+// Kokoro turn is not governed by qwen_tts_timeout, so naming it there points
+// the operator at a setting with no effect.
+func (p *Pipeline) stallHint(timeout time.Duration) string {
+	if grace := p.ttsFirstAudioGrace(); grace > 0 && timeout == grace {
+		return " (TTS may still be synthesizing — raise qwen_tts_timeout if this is a slow worker)"
+	}
+	return " (TTS may still be synthesizing)"
+}
+
 // stallNoticeDelay is when the watchdog tells the user it is still waiting. It
 // fires at the old default budget so anything past 8s of silence is explained.
 // Zero disables the notice: a budget that short recovers before the wait is
@@ -110,7 +121,7 @@ waiting:
 		return
 	}
 
-	msg := fmt.Sprintf("playback did not start within %s; recovering turn (TTS may still be synthesizing — raise qwen_tts_timeout if this is a slow worker)", timeout)
+	msg := fmt.Sprintf("playback did not start within %s; recovering turn%s", timeout, p.stallHint(timeout))
 	if path, err := writeGoroutineDump(); err == nil {
 		msg += fmt.Sprintf(" (goroutine dump: %s)", path)
 	}

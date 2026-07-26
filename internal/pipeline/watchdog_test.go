@@ -65,6 +65,24 @@ func TestStallNoticeDelay(t *testing.T) {
 	}
 }
 
+// The recovery message may only name qwen_tts_timeout when that knob is what
+// set the budget. A Kokoro turn on the default 8s is not governed by it.
+func TestStallHintNamesTheKnobOnlyWhenItApplies(t *testing.T) {
+	graceful := &Pipeline{TTS: &graceTTS{grace: 90 * time.Second}}
+	if got := graceful.stallHint(90 * time.Second); !strings.Contains(got, "qwen_tts_timeout") {
+		t.Fatalf("stallHint(grace budget) = %q, want the qwen_tts_timeout knob named", got)
+	}
+	// Explicit override on the same provider: the budget is no longer the grace.
+	if got := graceful.stallHint(150 * time.Millisecond); strings.Contains(got, "qwen_tts_timeout") {
+		t.Fatalf("stallHint(override) = %q, want no qwen_tts_timeout for a budget it did not set", got)
+	}
+
+	plain := &Pipeline{TTS: &fakeTTS{}}
+	if got := plain.stallHint(defaultPlaybackStallTimeout); strings.Contains(got, "qwen_tts_timeout") {
+		t.Fatalf("stallHint(default, non-gracer) = %q, want no qwen_tts_timeout", got)
+	}
+}
+
 // The notice fires while the turn is still healthy and does not itself recover
 // the turn — the stall budget keeps running underneath it.
 func TestWatchPlaybackStallEmitsInterimNotice(t *testing.T) {
