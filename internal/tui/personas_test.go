@@ -466,6 +466,92 @@ func TestPersonasPromptStepTabStillNavigatesFields(t *testing.T) {
 	}
 }
 
+// :w must accept the prompt and land on Model & voice — not submit the form.
+// Submitting closed the wizard and made the next step unreachable.
+func TestPersonasColonWAdvancesToStackStep(t *testing.T) {
+	cfg := &config.Config{ActivePersona: "samantha", AgentName: "Samantha"}
+	m := newPersonas(cfg)
+	m.listPersonas = func() ([]*persona.Profile, error) {
+		return []*persona.Profile{{ID: "samantha", DisplayName: "Samantha"}}, nil
+	}
+	created := false
+	m.createPersona = func(*config.Config, persona.CreateOpts) (*persona.Profile, error) {
+		created = true
+		return &persona.Profile{ID: "x"}, nil
+	}
+	m.starterPrompt = func() (string, error) { return "You are {agent_name}.", nil }
+	m.reload()
+	m.width, m.height = 80, 30
+	m.beginCreate()
+	m.nameInput.SetValue("Buddy")
+	m, _ = m.focusPromptStep()
+	// INSERT → NORMAL, then :w <enter>
+	m, _ = m.updateForm(tea.KeyMsg{Type: tea.KeyEscape})
+	for _, k := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{':'}},
+		{Type: tea.KeyRunes, Runes: []rune{'w'}},
+		{Type: tea.KeyEnter},
+	} {
+		m, _ = m.updateForm(k)
+	}
+	if created {
+		t.Fatal(":w submitted the form; it should only advance to Model & voice")
+	}
+	if m.formMode != "create" {
+		t.Fatalf("formMode = %q, want create still open", m.formMode)
+	}
+	if m.formStep != personaFormStack {
+		t.Fatalf("formStep = %d, want stack (Model & voice)", m.formStep)
+	}
+	// Stack must accept input after leaving the vim editor.
+	before := m.brainProviderIdx
+	m, _ = m.updateForm(tea.KeyMsg{Type: tea.KeyRight})
+	if m.brainProviderIdx == before {
+		t.Fatal("stack step did not respond to ←/→ after :w")
+	}
+	m, _ = m.updateForm(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.updateForm(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if m.brainModelInput.Value() != "q" {
+		t.Fatalf("model input = %q, want typed char after :w", m.brainModelInput.Value())
+	}
+}
+
+// :wq still commits the whole form from the prompt step.
+func TestPersonasColonWQSubmitsForm(t *testing.T) {
+	cfg := &config.Config{ActivePersona: "samantha", AgentName: "Samantha"}
+	m := newPersonas(cfg)
+	m.listPersonas = func() ([]*persona.Profile, error) {
+		return []*persona.Profile{{ID: "samantha", DisplayName: "Samantha"}}, nil
+	}
+	var gotOpts persona.CreateOpts
+	m.createPersona = func(c *config.Config, opts persona.CreateOpts) (*persona.Profile, error) {
+		gotOpts = opts
+		return &persona.Profile{ID: "buddy", DisplayName: opts.DisplayName}, nil
+	}
+	m.starterPrompt = func() (string, error) { return "You are {agent_name}.", nil }
+	m.reload()
+	m.width, m.height = 80, 30
+	m.beginCreate()
+	m.nameInput.SetValue("Buddy")
+	m.promptTA.SetValue("You are {agent_name}, buddy.")
+	m, _ = m.focusPromptStep()
+	m, _ = m.updateForm(tea.KeyMsg{Type: tea.KeyEscape})
+	for _, k := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{':'}},
+		{Type: tea.KeyRunes, Runes: []rune{'w'}},
+		{Type: tea.KeyRunes, Runes: []rune{'q'}},
+		{Type: tea.KeyEnter},
+	} {
+		m, _ = m.updateForm(k)
+	}
+	if m.formMode != "" {
+		t.Fatal(":wq should submit and close the form")
+	}
+	if gotOpts.DisplayName != "Buddy" {
+		t.Fatalf("name = %q", gotOpts.DisplayName)
+	}
+}
+
 // The persona form sizes the prompt box from the editor height, so a wrapped
 // editor used to render more rows than budgeted and push the Model & voice box
 // and the help line off screen. Measured before the fix: 46 rows into 30.

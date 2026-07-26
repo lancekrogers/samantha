@@ -74,7 +74,8 @@ func TestPromptEditorExCommandsMapToFormEvents(t *testing.T) {
 		want promptEvent
 	}{
 		{[]string{":", "w", "q", "enter"}, promptEventSave},
-		{[]string{":", "w", "enter"}, promptEventSave},
+		// :w alone accepts the field (next wizard step); it must not submit the form.
+		{[]string{":", "w", "enter"}, promptEventAccept},
 		{[]string{":", "q", "!", "enter"}, promptEventCancel},
 		{[]string{":", "q", "enter"}, promptEventCancel},
 		{[]string{"enter"}, promptEventSave}, // normal-mode enter = :wq (camp pattern)

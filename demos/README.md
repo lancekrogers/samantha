@@ -70,7 +70,7 @@ edited in a real vim modal editor:
 2. **Prompt step** — the short starter prompt is pre-seeded; the box title
    shows the vim mode (INSERT/NORMAL/VISUAL/COMMAND)
 3. **Vim** — `dd` deletes a line, `u` undoes it, `v`+`e` selects, `y` yanks,
-   `o` opens a line and types; `:wq` saves, `:q!` cancels
+   `o` opens a line and types; `:w` next step, `:wq` saves form, `:q!` cancels
 4. **Model & voice** — `←/→` cycles the per-persona brain provider
 5. **ctrl+j** — commits the form; **e** reopens the persona in the edit form
 

@@ -171,6 +171,11 @@ func (m personasModel) updateForm(msg tea.KeyMsg) (personasModel, tea.Cmd) {
 	switch ev {
 	case promptEventSave:
 		return m.submitForm()
+	case promptEventAccept:
+		// :w — leave the prompt editor and continue the wizard (Model & voice).
+		// Submitting the whole form from here used to skip that step and leave
+		// users staring at a closed form with no way to set provider/voice.
+		return m.focusStackStep()
 	case promptEventCancel:
 		m.cancelForm()
 		m.message = "Edit cancelled"
@@ -307,7 +312,7 @@ func (m personasModel) focusPromptStep() (personasModel, tea.Cmd) {
 	}
 	m.promptTA.StartInsert()
 	m.promptTA.Focus()
-	m.message = "Edit the system prompt · esc for NORMAL: v visual · y/p yank/paste · u undo · :w save · :q cancel"
+	m.message = "Edit the system prompt · esc for NORMAL · :w next step · :wq / ctrl+j save form · :q cancel"
 	return m, nil
 }
 

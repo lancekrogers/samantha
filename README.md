@@ -261,7 +261,9 @@ already in flight.
 
 The persona system-prompt editor has a vim mode: `esc` for NORMAL; `i`/`a`/`o`
 to insert; `h`/`j`/`k`/`l`/`0`/`$`/`w`/`b`/`gg`/`G` to move; `x`/`D`/`dd` to
-delete; `:w` saves and `:q` cancels. `ctrl+j`, `alt+s`, and `f2` also save.
+delete; `:w` accepts the prompt and advances to Model & voice; `:wq` (or
+normal-mode `enter`) saves the whole form; `:q` cancels. `ctrl+j`, `alt+s`,
+and `f2` also save the form from any step.
 
 ### Turn recovery and token usage
 
