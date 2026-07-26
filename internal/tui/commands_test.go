@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -126,6 +127,9 @@ func TestUnknownSlashCommandNeverReachesBrain(t *testing.T) {
 func TestHelpCommandUsesRegistry(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	m, _ := startedConversation(t, runner, false)
+	// Size the transcript to the registry so every command row fits on screen
+	// regardless of how many commands exist.
+	m.setSize(80, 24+len(slashCommands))
 	m, _ = typeAndEnter(m, "/help")
 
 	view := stripANSI(m.View())
@@ -223,4 +227,83 @@ func TestSessionSummaryBranches(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCompactCommandDispatchesWhenIdle(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	m, _ := startedConversation(t, runner, false)
+	calls := 0
+	m.deps.compact = func(ctx context.Context) error {
+		if ctx == nil {
+			t.Fatal("compact received a nil context")
+		}
+		calls++
+		return nil
+	}
+
+	m2, cmd := typeAndEnter(m, "/compact")
+	if cmd == nil {
+		t.Fatal("/compact did not dispatch")
+	}
+	if m2.turnState != turnTextRunning {
+		t.Fatalf("turnState = %v, want turnTextRunning while compacting", m2.turnState)
+	}
+	msg := cmd()
+	done, ok := msg.(compactDoneMsg)
+	if !ok {
+		t.Fatalf("cmd() = %#v, want compactDoneMsg", msg)
+	}
+	if done.err != nil {
+		t.Fatalf("compact err = %v", done.err)
+	}
+	if calls != 1 {
+		t.Fatalf("compact calls = %d, want 1", calls)
+	}
+	if len(runner.texts()) != 0 {
+		t.Fatal("/compact reached the brain as user text")
+	}
+
+	m3, _ := m2.Update(compactDoneMsg{})
+	if m3.turnState != turnIdle {
+		t.Fatalf("turnState after done = %v, want idle", m3.turnState)
+	}
+}
+
+func TestCompactCommandRefusedWhileBusyOrUnavailable(t *testing.T) {
+	runner := &fakeTurnRunner{}
+
+	t.Run("unavailable", func(t *testing.T) {
+		m, _ := startedConversation(t, runner, false)
+		// deps.compact deliberately nil.
+		_, cmd := typeAndEnter(m, "/compact")
+		if msg := runCmd(cmd); msg != nil {
+			if _, isCompact := msg.(compactDoneMsg); isCompact {
+				t.Fatal("/compact must not dispatch without a compact dep")
+			}
+		}
+	})
+
+	t.Run("busy with a reply in flight", func(t *testing.T) {
+		m, _ := startedConversation(t, runner, false)
+		calls := 0
+		m.deps.compact = func(context.Context) error { calls++; return nil }
+		m.turnState = turnTextRunning
+		_, cmd := typeAndEnter(m, "/compact")
+		if msg := runCmd(cmd); msg != nil {
+			if _, isCompact := msg.(compactDoneMsg); isCompact {
+				t.Fatal("/compact must not dispatch mid-turn")
+			}
+		}
+		if calls != 0 {
+			t.Fatalf("compact calls = %d, want 0 while busy", calls)
+		}
+	})
+}
+
+// runCmd executes a possibly nil tea.Cmd and returns its message.
+func runCmd(cmd tea.Cmd) tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	return cmd()
 }

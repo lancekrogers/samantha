@@ -121,6 +121,9 @@ type Config struct {
 	// Prompts
 	Persona    string `mapstructure:"persona"`
 	PromptsDir string `mapstructure:"prompts_dir"`
+	// CompactPrompt names the kind=compact document used as /compact's
+	// summarize-turn instruction. Empty selects the embedded default.
+	CompactPrompt string `mapstructure:"compact_prompt"`
 
 	// TurnPrompt is the catalog name for the kind=turn per-reply instruction.
 	// Empty means the embedded shared default. Set at runtime by persona.Apply
@@ -407,6 +410,7 @@ func loadLocked() (*Config, error) {
 		"voice_tools_enabled":        "VOICE_TOOLS_ENABLED",
 		"tool_command_timeout":       "TOOL_COMMAND_TIMEOUT",
 		"persona":                    "PERSONA",
+		"compact_prompt":             "COMPACT_PROMPT",
 		"active_persona":             "ACTIVE_PERSONA",
 		"prompts_dir":                "PROMPTS_DIR",
 		"skills_enabled":             "SKILLS_ENABLED",

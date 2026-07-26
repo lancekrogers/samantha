@@ -73,8 +73,11 @@ type conversationModel struct {
 	// pipeline goroutine so Enter cannot race the async bridge drain of
 	// UserInput into turnVoiceResponding. Pointer so Bubble Tea model copies
 	// share one gate with the bus subscription.
-	canCancelVoice  *atomic.Bool
-	pendingText     string
+	canCancelVoice *atomic.Bool
+	pendingText    string
+	// pendingCompact queues a /compact requested while a cancelable turn was
+	// in flight; drained by the turn-done handlers, winning over pendingText.
+	pendingCompact  bool
 	voiceEnabled    bool
 	outputMuted     bool
 	outputAvailable bool
@@ -181,6 +184,9 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 
 	case textTurnDoneMsg:
 		return m, tea.Batch(m.handleTextTurnDone(msg), m.ensureVoiceTick())
+
+	case compactDoneMsg:
+		return m, tea.Batch(m.handleCompactDone(msg), m.ensureVoiceTick())
 
 	case voiceRetryMsg:
 		return m, tea.Batch(m.handleVoiceRetry(), m.ensureVoiceTick())
@@ -735,6 +741,12 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		m.clearTranscript()
 		m.followChat = true
 		m.appendTranscript(dimStyle.Render("  Conversation cleared."))
+
+	case events.ConversationCompacted:
+		// Annotate, don't clear: the scrollback stays for the user, but the
+		// model now continues from the summary instead of the full history.
+		m.appendActivity("model", fmt.Sprintf("compacted %d turns into a summary", e.TurnsBefore), 0)
+		m.appendTranscript(dimStyle.Render(fmt.Sprintf("  Conversation compacted (%d turns summarized — the model continues from the summary).", e.TurnsBefore)))
 
 	case events.TurnMetrics:
 		m.lastMetrics = e

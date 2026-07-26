@@ -34,6 +34,18 @@ func turnInstruction(cfg *config.Config) (string, error) {
 	return resolvePrompt(cfg, prompts.KindTurn, name)
 }
 
+// CompactInstruction resolves the kind=compact document used as /compact's
+// summarize-turn prompt. Name comes from cfg.CompactPrompt; empty selects the
+// embedded default, so users customize compaction the same way as any prompt:
+// a kind=compact document in the prompts dir.
+func CompactInstruction(cfg *config.Config) (string, error) {
+	name := ""
+	if cfg != nil {
+		name = cfg.CompactPrompt
+	}
+	return resolvePrompt(cfg, prompts.KindCompact, name)
+}
+
 // resolvePrompt resolves a document of the given kind and name (explicit path,
 // then the user prompts dir, then the embedded default when name matches),
 // assembles it, and substitutes {agent_name}.

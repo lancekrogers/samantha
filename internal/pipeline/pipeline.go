@@ -54,6 +54,13 @@ type Pipeline struct {
 	VoiceToolsEnabled bool
 	OnTurn            func() // called after each completed turn for session auto-save
 
+	// CompactPrompt is the resolved kind=compact instruction for /compact's
+	// summarize turn. Empty disables compaction with a clear error.
+	CompactPrompt string
+	// OnCompactBackup receives the pre-compact history so the host can persist
+	// one recovery generation before LoadHistory rewrites the conversation.
+	OnCompactBackup func(turns []brain.Turn)
+
 	// PlaybackStallTimeout overrides the watchdog timeout; zero uses the default.
 	PlaybackStallTimeout time.Duration
 
@@ -1123,6 +1130,50 @@ func (p *Pipeline) sessionWarnHook() func(promptTokens, threshold int) {
 	return func(promptTokens, threshold int) {
 		p.emit(events.SessionWarning{PromptTokens: promptTokens, Threshold: threshold})
 	}
+}
+
+// CompactConversation shrinks the model's working context while keeping the
+// gist, identically for every provider. One summarize turn runs first — the
+// provider sees its own full context (harness CLI transcript or messages[]),
+// so the summary is grounded in what the model actually knows, not a local
+// mirror. LoadHistory then performs the kind-appropriate reset+seed: harness
+// providers drop the resume id and carry the seed in via the first-turn
+// flatten; ollama rebuilds messages[]. The seed keeps the last exchange
+// verbatim after the summary so the next turn continues naturally.
+//
+// Callers must own the pipeline (no turn in flight) — the TUI gates this the
+// same way it gates text turns.
+func (p *Pipeline) CompactConversation(ctx context.Context) error {
+	if p.CompactPrompt == "" {
+		return errors.New("compact prompt not configured")
+	}
+	history := p.Brain.History()
+	turnsBefore := len(history)
+	if turnsBefore < 2 {
+		return errors.New("nothing to compact yet")
+	}
+	// Snapshot before the summarize turn appends to history (History may
+	// alias the provider's live slice).
+	before := append([]brain.Turn(nil), history...)
+	tail := before[turnsBefore-2:]
+	if p.OnCompactBackup != nil {
+		p.OnCompactBackup(before)
+	}
+
+	ctx, cancel := p.withBrainTimeout(ctx)
+	defer cancel()
+	summary, err := p.Brain.ThinkFull(ctx, p.CompactPrompt, brain.StreamOptions{})
+	if err != nil {
+		return fmt.Errorf("compact summarize turn: %w", err)
+	}
+
+	seed := append([]brain.Turn{{Role: "assistant", Content: summary}}, tail...)
+	p.Brain.LoadHistory(seed)
+	p.emit(events.ConversationCompacted{TurnsBefore: turnsBefore, Summary: summary})
+	if p.OnTurn != nil {
+		p.OnTurn()
+	}
+	return nil
 }
 
 // watchPlayback is the playback watcher: it turns one playback's lifecycle into

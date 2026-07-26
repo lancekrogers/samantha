@@ -22,6 +22,7 @@ const (
 	KindStyle         Kind = "style"
 	KindPronunciation Kind = "pronunciation"
 	KindTurn          Kind = "turn"
+	KindCompact       Kind = "compact"
 )
 
 // Document is a versioned prompt document.
@@ -97,7 +98,7 @@ func (d *Document) Validate() error {
 		return fmt.Errorf("prompt document: missing prompt.name")
 	}
 	switch d.Prompt.Kind {
-	case KindPersona, KindSystem, KindStyle, KindPronunciation, KindTurn:
+	case KindPersona, KindSystem, KindStyle, KindPronunciation, KindTurn, KindCompact:
 	default:
 		return fmt.Errorf("prompt document %q: unknown kind %q (valid: persona, system, style, pronunciation, turn)", d.Prompt.Name, d.Prompt.Kind)
 	}

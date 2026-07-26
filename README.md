@@ -488,6 +488,7 @@ Prompt bodies stay in `prompts/` (see `samantha prompts`).
 | `active_persona` | `samantha` | `ACTIVE_PERSONA` | Persona profile id under `personas/<id>/` |
 | `agent_name` | `Samantha` | | Display name (overlaid from active persona) |
 | `persona` | `samantha` | `PERSONA` | Prompt document name for kind=persona (overlaid from active persona) |
+| `compact_prompt` | *(embedded default)* | `COMPACT_PROMPT` | Prompt document name for kind=compact — the `/compact` summarize-turn instruction |
 | `brain_provider` | `claude` | `BRAIN_PROVIDER` | Brain backend: `claude`, `grok`, or `ollama` |
 | `ollama_model` | empty | `OLLAMA_MODEL` | Ollama model name |
 | `ollama_embedding_model` | `nomic-embed-text` | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model used to match each user prompt to relevant Agent Skills. Set empty to disable semantic routing and retain model-driven `read_skill` fallback. |

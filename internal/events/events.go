@@ -97,6 +97,16 @@ type SessionWarning struct {
 
 func (e SessionWarning) eventType() string { return "session_warning" }
 
+// ConversationCompacted reports that /compact replaced the model's working
+// context with a summary. The TUI transcript is annotated, not cleared: the
+// scrollback stays, but the model now continues from the summary.
+type ConversationCompacted struct {
+	TurnsBefore int
+	Summary     string
+}
+
+func (e ConversationCompacted) eventType() string { return "conversation_compacted" }
+
 // ResponseStreamingStarted signals the first response chunk has arrived.
 type ResponseStreamingStarted struct {
 	Elapsed time.Duration

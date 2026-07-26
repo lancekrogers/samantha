@@ -42,6 +42,45 @@ func (s *Session) Save(turns []brain.Turn) error {
 	return s.saveTo(config.SessionsDir(), turns)
 }
 
+// SaveBackup writes the given turns to a sibling <id>.pre-compact.json so one
+// recovery generation survives /compact rewriting the live session. Each
+// compact overwrites the previous backup; the main session file is untouched.
+func (s *Session) SaveBackup(turns []brain.Turn) error {
+	return s.saveBackupTo(config.SessionsDir(), turns)
+}
+
+func (s *Session) saveBackupTo(dir string, turns []brain.Turn) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create sessions dir: %w", err)
+	}
+	// Copy so the backup never mutates the live session's Turns/UpdatedAt.
+	backup := *s
+	backup.Turns = normalizeTurns(turns)
+	backup.UpdatedAt = time.Now()
+	data, err := json.MarshalIndent(&backup, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal session backup: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, s.ID+".bak-tmp-*")
+	if err != nil {
+		return fmt.Errorf("create backup temp file: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("write session backup: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("close backup temp file: %w", err)
+	}
+	if err := os.Rename(tmp.Name(), filepath.Join(dir, s.ID+".pre-compact.json")); err != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("save session backup: %w", err)
+	}
+	return nil
+}
+
 func (s *Session) saveTo(dir string, turns []brain.Turn) error {
 	s.Turns = normalizeTurns(turns)
 	s.UpdatedAt = time.Now()
@@ -145,6 +184,11 @@ func listIn(dir string) []Session {
 	var sessions []Session
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		// Pre-compact backups sit beside their session; they are recovery
+		// artifacts, not sessions.
+		if strings.HasSuffix(e.Name(), ".pre-compact.json") {
 			continue
 		}
 

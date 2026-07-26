@@ -500,6 +500,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			bus:            msg.rt.Bus,
 			clearHistory:   msg.rt.Pipeline.Brain.ClearHistory,
 			brainSession:   brainSessionReporter(msg.rt.Pipeline.Brain),
+			compact:        msg.rt.Pipeline.CompactConversation,
 			voice:          msg.rt.Voice,
 			output:         msg.rt.Output,
 			setOutputMuted: msg.rt.Pipeline.SetOutputMuted,
