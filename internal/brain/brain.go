@@ -293,7 +293,7 @@ func (b *Brain) streamAttempt(ctx context.Context, out chan<- string, streamOpts
 			// the error text would be spoken as the reply and a stale --resume
 			// would never reach the flatten retry.
 			if msg.IsError && fullResponse.Len() == 0 {
-				resultErr = resultError(msg.Subtype, msg.Result)
+				resultErr = resultError("claude", msg.Subtype, msg.Result)
 			}
 			if msg.Result != "" && fullResponse.Len() == 0 && !msg.IsError {
 				fullResponse.WriteString(msg.Result)
@@ -320,19 +320,20 @@ func (b *Brain) streamAttempt(ctx context.Context, out chan<- string, streamOpts
 	return fullResponse.String(), streamedAny, streamErr
 }
 
-// resultError turns a claude result message/transcript marked is_error into a Go
-// error, preserving the CLI's own text so the log and degraded path can show it.
-func resultError(subtype, text string) error {
+// resultError turns a CLI result marked is_error into a Go error attributed to
+// the named provider, preserving the CLI's own text so the log and degraded
+// path can show it.
+func resultError(provider, subtype, text string) error {
 	detail := strings.TrimSpace(text)
 	switch {
 	case subtype != "" && detail != "":
-		return fmt.Errorf("claude result error (%s): %s", subtype, detail)
+		return fmt.Errorf("%s result error (%s): %s", provider, subtype, detail)
 	case subtype != "":
-		return fmt.Errorf("claude result error (%s)", subtype)
+		return fmt.Errorf("%s result error (%s)", provider, subtype)
 	case detail != "":
-		return fmt.Errorf("claude result error: %s", detail)
+		return fmt.Errorf("%s result error: %s", provider, detail)
 	}
-	return fmt.Errorf("claude result error")
+	return fmt.Errorf("%s result error", provider)
 }
 
 // ThinkFull sends input and waits for the complete response.
@@ -396,7 +397,7 @@ func (b *Brain) thinkFullAttempt(ctx context.Context, streamOpts StreamOptions) 
 	// Same exit-0 failure shape as the streaming path: never speak the CLI's
 	// error text, and let a rejected --resume fall through to the flatten retry.
 	if result.IsError {
-		return "", resultError(result.Subtype, result.Result)
+		return "", resultError("claude", result.Subtype, result.Result)
 	}
 
 	// Clean first, then fall back, so the fallback is spoken verbatim.
