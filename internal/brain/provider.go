@@ -15,6 +15,10 @@ type StreamOptions struct {
 	// a warm KV prefix cache it should track the size of the new turn, not
 	// the whole transcript — and gen is the tokens generated.
 	OnUsage func(prefill, gen int)
+	// OnSessionWarn reports that the provider's replayed session prompt has
+	// crossed the configured warn threshold (optional; for UI). Fired at most
+	// once per underlying session; the session itself is left alone.
+	OnSessionWarn func(promptTokens, threshold int)
 }
 
 // StreamResult reports the terminal outcome of a streamed response.

@@ -42,6 +42,10 @@ type Brain struct {
 	// one the session budget watches. ThinkFull falls back to a local estimate
 	// because ClaudeResult drops usage.
 	promptTokens int
+	// sessionWarned marks that the warn threshold fired for the current CLI
+	// session, so a long session warns once instead of every turn. Re-armed by
+	// dropSession.
+	sessionWarned bool
 }
 
 // claudeUsage is the token accounting the CLI reports on each assistant
@@ -161,6 +165,7 @@ func (b *Brain) ThinkStream(ctx context.Context, input string, streamOpts Stream
 		b.trimHistory()
 		// Checked after the turn lands so a reset never costs the turn in flight.
 		b.enforceSessionBudget()
+		b.warnSessionSize(streamOpts)
 		done <- StreamResult{}
 	}()
 
@@ -194,6 +199,24 @@ func (b *Brain) enforceSessionBudget() {
 func (b *Brain) dropSession() {
 	b.sessionID = ""
 	b.promptTokens = 0
+	b.sessionWarned = false
+}
+
+// warnSessionSize surfaces the replayed prompt size once per CLI session when
+// it crosses claude_session_warn_tokens. Warning is the default posture — the
+// fuse above is opt-in — so a runaway session is visible without being
+// silently dropped. Runs after enforceSessionBudget: a fuse reset clears the
+// id, which also suppresses a warning about a session that no longer exists.
+func (b *Brain) warnSessionSize(streamOpts StreamOptions) {
+	threshold := b.cfg.ClaudeSessionWarnTokens
+	if threshold <= 0 || b.sessionWarned || b.sessionID == "" || b.promptTokens < threshold {
+		return
+	}
+	b.sessionWarned = true
+	fmt.Fprintf(os.Stderr, "samantha: claude session prompt is %d tokens (claude_session_warn_tokens=%d); consider clearing the conversation\n", b.promptTokens, threshold)
+	if streamOpts.OnSessionWarn != nil {
+		streamOpts.OnSessionWarn(b.promptTokens, threshold)
+	}
 }
 
 // streamAttempt runs a single Claude streaming turn: it builds the prompt for
@@ -337,6 +360,7 @@ func (b *Brain) ThinkFull(ctx context.Context, input string, streamOpts StreamOp
 	// overwrite promptTokens with real CLI usage when available.
 	b.promptTokens = b.estimateSessionTokens()
 	b.enforceSessionBudget()
+	b.warnSessionSize(streamOpts)
 
 	return response, nil
 }

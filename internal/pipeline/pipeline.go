@@ -335,11 +335,12 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 	defer turnCancel()
 
 	brainStream, err := p.Brain.ThinkStream(turnCtx, text, brain.StreamOptions{
-		VoiceMode:    true,
-		ToolsEnabled: p.VoiceToolsEnabled,
-		OnToolStart:  p.toolStartHook(),
-		OnToolEnd:    p.toolEndHook(),
-		OnUsage:      p.usageHook(),
+		VoiceMode:     true,
+		ToolsEnabled:  p.VoiceToolsEnabled,
+		OnToolStart:   p.toolStartHook(),
+		OnToolEnd:     p.toolEndHook(),
+		OnUsage:       p.usageHook(),
+		OnSessionWarn: p.sessionWarnHook(),
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -415,10 +416,11 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	defer brainCancel()
 
 	stream, err := p.Brain.ThinkStream(brainCtx, input, brain.StreamOptions{
-		ToolsEnabled: p.VoiceToolsEnabled,
-		OnToolStart:  p.toolStartHook(),
-		OnToolEnd:    p.toolEndHook(),
-		OnUsage:      p.usageHook(),
+		ToolsEnabled:  p.VoiceToolsEnabled,
+		OnToolStart:   p.toolStartHook(),
+		OnToolEnd:     p.toolEndHook(),
+		OnUsage:       p.usageHook(),
+		OnSessionWarn: p.sessionWarnHook(),
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -1112,6 +1114,14 @@ func (p *Pipeline) toolEndHook() func(name, preview string) {
 func (p *Pipeline) usageHook() func(prefill, gen int) {
 	return func(prefill, gen int) {
 		p.emit(events.TokenUsage{Prefill: prefill, Gen: gen})
+	}
+}
+
+// sessionWarnHook emits SessionWarning so a growing harness session is visible
+// in the activity feed before it becomes a latency or cost problem.
+func (p *Pipeline) sessionWarnHook() func(promptTokens, threshold int) {
+	return func(promptTokens, threshold int) {
+		p.emit(events.SessionWarning{PromptTokens: promptTokens, Threshold: threshold})
 	}
 }
 
