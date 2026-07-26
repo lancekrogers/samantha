@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/speaker"
 )
@@ -213,9 +214,14 @@ func (m *conversationModel) sessionSummary() string {
 		return "session: unavailable for this provider"
 	}
 	switch s.Kind {
-	case "harness":
+	case brain.SessionKindHarness:
 		id := s.ID
 		if id == "" {
+			// With turns on record and still no id, resume simply is not
+			// wired for this provider — "yet" would read as stuck capture.
+			if s.Turns > 0 {
+				return fmt.Sprintf("session: harness · no live CLI session · %d turns kept", s.Turns)
+			}
 			return fmt.Sprintf("session: harness · no CLI session yet · %d turns kept", s.Turns)
 		}
 		if len(id) > 8 {

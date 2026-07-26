@@ -51,11 +51,18 @@ type Warmer interface {
 	Warmup(ctx context.Context)
 }
 
+// SessionKind values for SessionState.Kind, shared by implementers and
+// consumers so a typo cannot silently fall into the wrong display branch.
+const (
+	SessionKindHarness = "harness"
+	SessionKindChat    = "chat"
+)
+
 // SessionState is a point-in-time description of who owns the conversation
 // and how big it has grown, for display (the /session command).
 type SessionState struct {
-	// Kind is "harness" (a CLI session owns the transcript) or "chat"
-	// (samantha owns messages in-process).
+	// Kind is SessionKindHarness (a CLI session owns the transcript) or
+	// SessionKindChat (samantha owns messages in-process).
 	Kind string
 	// ID is the harness session id being resumed; empty when none is live.
 	ID string

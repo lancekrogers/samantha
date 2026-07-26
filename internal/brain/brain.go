@@ -432,7 +432,7 @@ func (b *Brain) History() []Turn {
 // SessionInfo reports the live CLI session for /session display.
 func (b *Brain) SessionInfo() SessionState {
 	return SessionState{
-		Kind:         "harness",
+		Kind:         SessionKindHarness,
 		ID:           b.sessionID,
 		PromptTokens: b.promptTokens,
 		Turns:        len(b.history),

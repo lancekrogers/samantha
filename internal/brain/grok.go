@@ -298,7 +298,7 @@ func (g *GrokBrain) ClearHistory() {
 
 // SessionInfo reports the live CLI session for /session display.
 func (g *GrokBrain) SessionInfo() SessionState {
-	return SessionState{Kind: "harness", ID: g.sessionID, Turns: len(g.history)}
+	return SessionState{Kind: SessionKindHarness, ID: g.sessionID, Turns: len(g.history)}
 }
 
 // LoadHistory restores conversation history from a saved samantha session. No
