@@ -465,3 +465,30 @@ func TestPersonasPromptStepTabStillNavigatesFields(t *testing.T) {
 		t.Fatalf("shift+tab should return to the prompt step, got %d", m.formStep)
 	}
 }
+
+// The persona form sizes the prompt box from the editor height, so a wrapped
+// editor used to render more rows than budgeted and push the Model & voice box
+// and the help line off screen. Measured before the fix: 46 rows into 30.
+func TestPersonasFormFitsTerminalWithLongPromptLines(t *testing.T) {
+	paragraph := strings.Repeat("This is a long unwrapped paragraph of persona guidance a real user would write. ", 3)
+	body := strings.Join([]string{paragraph, "", paragraph, "", paragraph, "", paragraph}, "\n")
+
+	for _, size := range []struct{ w, h int }{{100, 40}, {80, 30}, {80, 24}, {60, 20}} {
+		cfg := &config.Config{ActivePersona: "samantha", AgentName: "Samantha"}
+		m := newPersonas(cfg)
+		m.listPersonas = func() ([]*persona.Profile, error) {
+			return []*persona.Profile{{ID: "samantha", DisplayName: "Samantha"}}, nil
+		}
+		m.starterPrompt = func() (string, error) { return body, nil }
+		m.defaultPrompt = func() (string, error) { return body, nil }
+		m.reload()
+		m.width, m.height = size.w, size.h
+		m.beginCreate()
+		m, _ = m.focusPromptStep()
+
+		if got := len(m.formLines()); got > size.h {
+			t.Errorf("%dx%d: form is %d rows, exceeds the %d available",
+				size.w, size.h, got, size.h)
+		}
+	}
+}
