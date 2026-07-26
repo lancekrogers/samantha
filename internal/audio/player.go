@@ -85,6 +85,11 @@ type Player struct {
 	// monoScratch holds one callback period of mono S16 while onData expands
 	// into the multi-channel device buffer. Sized lazily under the callback.
 	monoScratch []byte
+	// observedPeriodFrames is the frame count miniaudio actually asks for.
+	// Backends quantize or override PeriodSizeInFrames, and AEC alignment now
+	// depends on the ring geometry, so the request is no longer trusted as the
+	// truth. Written from the device callback, read when publishing the delay.
+	observedPeriodFrames atomic.Int32
 }
 
 // NewPlayer creates a new audio player.
@@ -108,17 +113,34 @@ func NewPlayerWithDevice(deviceName string) *Player {
 // which no number of taps can fix. So count only the periods certainly still
 // queued ahead of this callback's frames, and let echoCancellerTaps absorb the
 // rest of the ring plus driver and acoustic latency.
-func referenceDelaySamples(deviceRate int) int {
+//
+// periodFrames is what the backend actually asks for, which is not necessarily
+// what the config requested — miniaudio, ALSA and CoreAudio all quantize it.
+// Only a smaller observed period is adopted: a smaller ring makes the constant
+// an over-estimate, the one error taps cannot absorb, while a larger one just
+// deepens an under-estimate the tap budget already covers. Zero (no callback
+// yet) falls back to the request.
+//
+// Period *count* stays an assumption: malgo exposes SampleRate and
+// PlaybackChannels but not the negotiated period count, so a backend that
+// silently opens fewer than playbackPeriods buffers would still be
+// over-estimated here.
+func referenceDelaySamples(deviceRate, periodFrames int) int {
 	if deviceRate <= 0 {
 		return 0
 	}
-	queuedFrames := (playbackPeriods - 1) * playbackPeriodFrames
+	if periodFrames <= 0 || periodFrames > playbackPeriodFrames {
+		periodFrames = playbackPeriodFrames
+	}
+	queuedFrames := (playbackPeriods - 1) * periodFrames
 	return queuedFrames * SampleRate / deviceRate
 }
 
 // applyReferenceDelay tells the front-end the current device's reference
 // offset. Called from both sides of the pair: the front-end can be registered
 // before a device exists, and the device rate is only known after negotiation.
+// Also called per segment, so a backend whose real period only becomes visible
+// once the callback runs corrects the offset from the next utterance on.
 func (p *Player) applyReferenceDelay() {
 	p.mu.Lock()
 	frontend := p.frontend
@@ -129,7 +151,7 @@ func (p *Player) applyReferenceDelay() {
 	if !ok || deviceRate <= 0 {
 		return
 	}
-	delayer.SetReferenceDelay(referenceDelaySamples(deviceRate))
+	delayer.SetReferenceDelay(referenceDelaySamples(deviceRate, int(p.observedPeriodFrames.Load())))
 }
 
 // SetFrontend installs an audio front-end that can observe playback
@@ -231,13 +253,18 @@ func (p *Player) Close() error {
 	p.frontend = nil
 	p.mu.Unlock()
 
-	if ingress != nil {
-		ingress.Close()
-	}
-
+	// Stop the device before the worker: until Stop returns, onData can still
+	// run with a snapped ingress pointer, and enqueueing into a worker that has
+	// already exited just fills the ready queue until blocks drop. Non-blocking
+	// either way, but this keeps "Close stops the worker" true.
 	if device != nil {
 		_ = device.Stop()
 		device.Uninit()
+	}
+
+	if ingress != nil {
+		ingress.Close()
+		debug.setAECReferenceDrops(ingress.droppedBlocks())
 	}
 
 	if ctx != nil {
@@ -290,6 +317,10 @@ func (p *Player) pumpSegment(ctx context.Context, segment *playbackSegment, stre
 		segment.fail(err)
 		return
 	}
+	// ensureDevice only publishes the offset when it opens a device. Republish
+	// here so the period the callback actually reported is picked up; the
+	// front-end ignores an unchanged value.
+	p.applyReferenceDelay()
 
 	// Kokoro produces the complete sentence before exposing its PCM samples.
 	// Buffer that already-generated sentence before handing it to the real-time
@@ -530,6 +561,7 @@ func playbackRateCandidates(sourceRate int, preferredRate uint32) []uint32 {
 
 func (p *Player) onData(outputSamples, inputSamples []byte, frameCount uint32) {
 	clearBytes(outputSamples)
+	p.observedPeriodFrames.Store(int32(frameCount))
 
 	p.mu.Lock()
 	channels := p.channels

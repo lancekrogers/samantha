@@ -18,8 +18,16 @@ const (
 	// driver latency beyond the ring buffer, and error in the delay estimate.
 	// Cancellation falls off a cliff the moment the true lag exceeds the tap
 	// window (see TestEchoCancellerERLEAcrossDeviceLatency), so this is sized
-	// for margin, not for the nominal case: 512 taps = 32ms @16kHz.
-	echoCancellerTaps = 512
+	// for margin, not for the nominal case: 768 taps = 48ms @16kHz.
+	//
+	// 512 (32ms) covered 48kHz but not the rate the player actually prefers.
+	// playbackRateCandidates tries the TTS rate first, so the common device is
+	// 24kHz, where the same 3x512-frame ring is 64ms of output latency and the
+	// delay estimate necessarily under-counts. Measured residual ERLE at 24kHz
+	// with 16ms of driver/acoustic lag: +1.8dB at 512 taps, +7.5dB at 768.
+	// 1024 is slightly worse than 768 (more taps, more gradient noise) and
+	// costs more, so 768 is the knee. Cost is ~190us per 10ms capture chunk.
+	echoCancellerTaps = 768
 	// echoCancellerStep is the NLMS adaptation rate. 0.08 converged too slowly
 	// to be useful on utterance-length audio once the filter grew long enough
 	// to span the real echo delay (~6dB ERLE); 0.4 reaches ~10dB on the same

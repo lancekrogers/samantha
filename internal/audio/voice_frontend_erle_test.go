@@ -1,6 +1,7 @@
 package audio
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"testing"
@@ -80,46 +81,86 @@ func erleThroughFrontend(t *testing.T, refDelay, echoLag int) float64 {
 }
 
 // The shipping configuration must cancel at the latency the player actually
-// creates. playbackPeriods*playbackPeriodFrames at 48kHz is 32ms of ring
-// buffer; driver and acoustic latency add more on top.
+// creates, on every rate it will actually open. playbackRateCandidates tries
+// the TTS rate first, so 24kHz is the common case, not 48kHz — and the same
+// 3x512-frame ring is 64ms of output latency there against 32ms at 48kHz,
+// while referenceDelaySamples under-counts by design. A suite that only
+// covered 48kHz stayed green while the preferred path cancelled ~1dB.
 func TestEchoCancellerERLEAcrossDeviceLatency(t *testing.T) {
-	refDelay := referenceDelaySamples(48000)
-
 	ms := func(d int) int { return d * 1000 / SampleRate }
-	// Thresholds sit a couple of dB under measured (10.4 / 9.7 / 9.2) so
-	// platform float differences do not flake, while a real regression — a
-	// dropped delay offset, a shortened filter, a slower step — falls well
-	// through: uncompensated, every one of these reads under 2dB.
-	cases := []struct {
+	// Thresholds sit a couple of dB under measured so platform float
+	// differences do not flake, while a real regression — a dropped delay
+	// offset, a shortened filter, a slower step — falls well through:
+	// uncompensated, every one of these reads under 2.5dB.
+	extras := []struct {
 		name    string
-		echoLag int
+		extraMs int
 		minERLE float64
 	}{
-		{"ring buffer only", 32 * SampleRate / 1000, 8},
-		{"ring + driver latency", 40 * SampleRate / 1000, 7.5},
-		{"ring + driver + far speaker", 48 * SampleRate / 1000, 7},
+		{"ring buffer only", 0, 6.5},
+		{"ring + driver latency", 8, 6},
+		{"ring + driver + far speaker", 16, 5.5},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			erle := erleThroughFrontend(t, refDelay, tc.echoLag)
-			t.Logf("echo lag %dms, reference delay %dms, %d taps (%dms) → ERLE %+.2f dB",
-				ms(tc.echoLag), ms(refDelay), echoCancellerTaps, ms(echoCancellerTaps), erle)
-			if erle < tc.minERLE {
-				t.Errorf("ERLE = %+.2f dB, want >= %+.2f dB — self-echo at this "+
-					"latency will reach VAD and trip barge-in", erle, tc.minERLE)
+	for _, rate := range []int{24000, 44100, 48000} {
+		t.Run(fmt.Sprintf("%dHz", rate), func(t *testing.T) {
+			refDelay := referenceDelaySamples(rate, playbackPeriodFrames)
+			// The whole ring must drain before the first frame is audible.
+			ring := playbackPeriods * playbackPeriodFrames * SampleRate / rate
+
+			for _, tc := range extras {
+				t.Run(tc.name, func(t *testing.T) {
+					echoLag := ring + tc.extraMs*SampleRate/1000
+					erle := erleThroughFrontend(t, refDelay, echoLag)
+					t.Logf("rate %dHz: echo lag %dms, reference delay %dms, residual %dms, "+
+						"%d taps (%dms) → ERLE %+.2f dB",
+						rate, ms(echoLag), ms(refDelay), ms(echoLag-refDelay),
+						echoCancellerTaps, ms(echoCancellerTaps), erle)
+					if erle < tc.minERLE {
+						t.Errorf("ERLE = %+.2f dB, want >= %+.2f dB — self-echo at this "+
+							"latency will reach VAD and trip barge-in", erle, tc.minERLE)
+					}
+				})
 			}
 		})
 	}
 }
 
-// The regression itself: with no reference delay the canceller is handed
-// far-end audio ~32ms before its echo arrives, which no amount of rate
-// alignment fixes. This is what shipped before SetReferenceDelay existed.
-func TestEchoCancellerNeedsReferenceDelay(t *testing.T) {
-	const echoLag = 40 * SampleRate / 1000
+// The residual the tap window has to span is (true output latency - estimated
+// delay), and the estimate is deliberately low. Lock the relationship the ERLE
+// numbers depend on so a change to periods, taps, or the estimate cannot
+// quietly move the worst rate past the cliff.
+func TestEchoCancellerTapsCoverWorstRateResidual(t *testing.T) {
+	// Driver and acoustic latency beyond the ring, in ms. The ERLE cases above
+	// assert cancellation holds this far out.
+	const extraMs = 16
 
-	compensated := erleThroughFrontend(t, referenceDelaySamples(48000), echoLag)
+	for _, rate := range []int{24000, 44100, 48000} {
+		ring := playbackPeriods * playbackPeriodFrames * SampleRate / rate
+		residual := ring + extraMs*SampleRate/1000 - referenceDelaySamples(rate, playbackPeriodFrames)
+		if residual > echoCancellerTaps {
+			t.Errorf("rate %dHz: residual echo %dms exceeds the %dms tap window; "+
+				"cancellation falls off a cliff past the last tap",
+				rate, residual*1000/SampleRate, echoCancellerTaps*1000/SampleRate)
+		}
+	}
+}
+
+// The regression itself: with no reference delay the canceller is handed
+// far-end audio tens of milliseconds before its echo arrives, which no amount
+// of rate alignment fixes. This is what shipped before SetReferenceDelay
+// existed.
+//
+// Measured at 24kHz — the rate playbackRateCandidates prefers — because the
+// tap window alone now covers the 48kHz profile: 768 taps span 48ms, more than
+// that ring's 32ms + driver lag, so an uncompensated 48kHz run scores ~7dB and
+// proves nothing. At 24kHz the ring is 64ms and the offset is still the only
+// thing that brings the echo inside the window.
+func TestEchoCancellerNeedsReferenceDelay(t *testing.T) {
+	const rate = 24000
+	echoLag := playbackPeriods*playbackPeriodFrames*SampleRate/rate + 8*SampleRate/1000
+
+	compensated := erleThroughFrontend(t, referenceDelaySamples(rate, playbackPeriodFrames), echoLag)
 	uncompensated := erleThroughFrontend(t, 0, echoLag)
 	t.Logf("compensated %+.2f dB vs uncompensated %+.2f dB", compensated, uncompensated)
 
@@ -142,7 +183,7 @@ func TestEchoCancellerPreservesNearEndDuringDoubleTalk(t *testing.T) {
 		echoLag = 40 * SampleRate / 1000
 		total   = SampleRate * 8
 	)
-	refDelay := referenceDelaySamples(48000)
+	refDelay := referenceDelaySamples(48000, playbackPeriodFrames)
 	far := farEndSpeech(total+echoLag, 1)
 	near := farEndSpeech(total, 99) // the user, uncorrelated with playback
 

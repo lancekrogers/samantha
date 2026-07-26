@@ -55,7 +55,7 @@ func TestFinalizeSegmentStillDeliversAudio(t *testing.T) {
 // asks it to predict the mic from reference audio that has not been pushed yet.
 func TestReferenceDelayStaysUnderDeviceBuffer(t *testing.T) {
 	for _, deviceRate := range []int{44100, 48000} {
-		got := referenceDelaySamples(deviceRate)
+		got := referenceDelaySamples(deviceRate, playbackPeriodFrames)
 		ringSamples := playbackPeriods * playbackPeriodFrames * SampleRate / deviceRate
 		if got <= 0 {
 			t.Fatalf("referenceDelaySamples(%d) = %d, want > 0", deviceRate, got)
@@ -69,8 +69,8 @@ func TestReferenceDelayStaysUnderDeviceBuffer(t *testing.T) {
 				deviceRate, got, echoCancellerTaps)
 		}
 	}
-	if got := referenceDelaySamples(0); got != 0 {
-		t.Fatalf("referenceDelaySamples(0) = %d, want 0", got)
+	if got := referenceDelaySamples(0, playbackPeriodFrames); got != 0 {
+		t.Fatalf("referenceDelaySamples(0, playbackPeriodFrames) = %d, want 0", got)
 	}
 }
 
@@ -117,8 +117,44 @@ func TestReferenceDelayAppliedWhenDeviceRateArrivesLate(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("SetReferenceDelay called %d times, want 1 once the rate is known", calls)
 	}
-	if want := referenceDelaySamples(48000); delay != want {
+	if want := referenceDelaySamples(48000, playbackPeriodFrames); delay != want {
 		t.Fatalf("published delay = %d, want %d", delay, want)
+	}
+}
+
+// The requested ring is a request, not a contract: miniaudio, ALSA and
+// CoreAudio all quantize PeriodSizeInFrames. A backend that hands back smaller
+// callbacks makes the constant an over-estimate — the one error taps cannot
+// absorb — so the observed period has to win in that direction, and only that
+// direction.
+func TestReferenceDelayFollowsObservedDevicePeriod(t *testing.T) {
+	fe := &delayFrontend{}
+	p := &Player{frontend: fe, sampleRate: 48000}
+
+	p.applyReferenceDelay()
+	if delay, _ := fe.snapshot(); delay != referenceDelaySamples(48000, playbackPeriodFrames) {
+		t.Fatalf("delay before any callback = %d, want the requested-period estimate", delay)
+	}
+
+	// A smaller real period means a smaller ring: shrink the estimate.
+	p.observedPeriodFrames.Store(playbackPeriodFrames / 2)
+	p.applyReferenceDelay()
+	small, _ := fe.snapshot()
+	if want := referenceDelaySamples(48000, playbackPeriodFrames/2); small != want {
+		t.Fatalf("delay with a %d-frame period = %d, want %d",
+			playbackPeriodFrames/2, small, want)
+	}
+	if ring := playbackPeriods * (playbackPeriodFrames / 2) * SampleRate / 48000; small >= ring {
+		t.Fatalf("delay %d must stay under the %d-sample ring it estimates", small, ring)
+	}
+
+	// A larger real period only deepens an under-estimate, which the tap budget
+	// already covers, so the conservative constant stands.
+	p.observedPeriodFrames.Store(playbackPeriodFrames * 4)
+	p.applyReferenceDelay()
+	if large, _ := fe.snapshot(); large != referenceDelaySamples(48000, playbackPeriodFrames) {
+		t.Fatalf("delay with a larger period = %d, want the requested-period estimate %d",
+			large, referenceDelaySamples(48000, playbackPeriodFrames))
 	}
 }
 
@@ -234,4 +270,94 @@ func (b *blockingFrontend) ProcessCapture(s []float32) []float32 { return s }
 func (b *blockingFrontend) Close() error                         { return nil }
 func (b *blockingFrontend) PushPlaybackReference([]float32) {
 	<-b.block
+}
+
+// Overload must cost reference audio, not reference alignment. When the
+// callback cannot hand off a block, the sample count the worker pushes has to
+// stay whole — silence standing in for the lost audio — or every later sample
+// pops that much early and the true echo walks out of the tap window. Same
+// self-barge failure as the finalizeSegment bulk push, triggered by load.
+func TestAECRefIngressGapFillPreservesTimeline(t *testing.T) {
+	gate := make(chan struct{})
+	rec := &gatedFrontend{gate: gate}
+	in := newAECRefIngress(rec)
+	defer in.Close()
+
+	const frames = 160 // 10ms @ 16 kHz, no resample
+	mono := make([]byte, frames*2)
+	for i := range frames {
+		binary.LittleEndian.PutUint16(mono[i*2:], 0x1000)
+	}
+
+	// Worker is parked on the first Push, so the pool drains and later blocks
+	// are dropped at the callback.
+	const flood = aecRefPoolSlots * 4
+	for range flood {
+		in.TryEnqueueS16(mono, SampleRate)
+	}
+	if in.droppedBlocks() == 0 {
+		t.Fatal("precondition: expected the flood to starve the pool")
+	}
+
+	// The device keeps calling back after the overload clears. The gap rides
+	// out on whichever of those blocks first finds a free slot.
+	close(gate)
+	const tail = 8
+	for range tail {
+		in.TryEnqueueS16(mono, SampleRate)
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	want := (flood + tail) * frames
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if rec.totalRefSamples() == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("pushed %d reference samples for %d enqueued blocks, want %d — "+
+		"dropped blocks shifted the far-end timeline instead of leaving a hole",
+		rec.totalRefSamples(), flood+tail, want)
+}
+
+// A callback larger than one slot must be split, not truncated: discarding the
+// tail skews the far-end timeline for the rest of the utterance.
+func TestAECRefIngressSplitsOversizedCallback(t *testing.T) {
+	rec := &recordingFrontend{}
+	in := newAECRefIngress(rec)
+	defer in.Close()
+
+	frames := aecRefSlotCap + 500
+	mono := make([]byte, frames*2)
+	for i := range frames {
+		binary.LittleEndian.PutUint16(mono[i*2:], 0x0800)
+	}
+	in.TryEnqueueS16(mono, SampleRate)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if rec.totalRefSamples() == frames {
+			if got := in.droppedBlocks(); got != 0 {
+				t.Fatalf("droppedBlocks() = %d, want 0 for a split that fit", got)
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("pushed %d of %d frames; the tail past aecRefSlotCap was truncated",
+		rec.totalRefSamples(), frames)
+}
+
+// gatedFrontend blocks the ingress worker inside its first Push until the gate
+// opens, which is what starves the slot pool.
+type gatedFrontend struct {
+	recordingFrontend
+	gate <-chan struct{}
+	once sync.Once
+}
+
+func (g *gatedFrontend) PushPlaybackReference(samples []float32) {
+	g.once.Do(func() { <-g.gate })
+	g.recordingFrontend.PushPlaybackReference(samples)
 }
