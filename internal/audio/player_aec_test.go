@@ -33,19 +33,100 @@ func (r *recordingFrontend) totalRefSamples() int {
 	return n
 }
 
-// finalizeSegment must not bulk-push the utterance into the AEC queue — that
-// path drained the reference before speakers emitted and barge-in heard self.
-func TestFinalizeSegmentDoesNotPushAECReference(t *testing.T) {
+// finalizeSegment must not touch the AEC queue — bulk-pushing the utterance
+// there drained the reference before the speakers emitted and barge-in heard
+// self. It no longer takes a Frontend at all, so that is now a compile-time
+// property; what still needs asserting is that dropping the parameter did not
+// cost the segment its audio.
+func TestFinalizeSegmentStillDeliversAudio(t *testing.T) {
 	seg := newPlaybackSegment()
-	rec := &recordingFrontend{}
 	samples := make([]float32, 4800) // 200ms @ 24k
 	for i := range samples {
 		samples[i] = 0.25
 	}
-	finalizeSegment(seg, rec, nil, samples, 24000, 24000, nil)
-	if got := rec.totalRefSamples(); got != 0 {
-		t.Fatalf("finalizeSegment pushed %d ref samples; want 0 (onData/aecIngress owns AEC feed)", got)
+	finalizeSegment(seg, nil, samples, 24000, 24000, nil)
+	if !segmentReady(seg) {
+		t.Fatal("segment not ready after finalizeSegment")
 	}
+}
+
+// referenceDelaySamples must stay strictly under the true output latency: the
+// canceller can spend taps covering an under-estimate, but an over-estimate
+// asks it to predict the mic from reference audio that has not been pushed yet.
+func TestReferenceDelayStaysUnderDeviceBuffer(t *testing.T) {
+	for _, deviceRate := range []int{44100, 48000} {
+		got := referenceDelaySamples(deviceRate)
+		ringSamples := playbackPeriods * playbackPeriodFrames * SampleRate / deviceRate
+		if got <= 0 {
+			t.Fatalf("referenceDelaySamples(%d) = %d, want > 0", deviceRate, got)
+		}
+		if got >= ringSamples {
+			t.Fatalf("referenceDelaySamples(%d) = %d, must stay under the %d-sample ring buffer",
+				deviceRate, got, ringSamples)
+		}
+		if got >= echoCancellerTaps*2 {
+			t.Fatalf("referenceDelaySamples(%d) = %d; residual would exceed the %d-tap window",
+				deviceRate, got, echoCancellerTaps)
+		}
+	}
+	if got := referenceDelaySamples(0); got != 0 {
+		t.Fatalf("referenceDelaySamples(0) = %d, want 0", got)
+	}
+}
+
+// delayFrontend records SetReferenceDelay for the wiring test.
+type delayFrontend struct {
+	recordingFrontend
+	mu    sync.Mutex
+	delay int
+	calls int
+}
+
+func (d *delayFrontend) SetReferenceDelay(samples int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.delay = samples
+	d.calls++
+}
+
+func (d *delayFrontend) snapshot() (delay, calls int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.delay, d.calls
+}
+
+// Production registers the front-end at startup but does not open the playback
+// device until the first utterance, so the reference delay cannot be known at
+// SetFrontend time. It has to land once the device rate is negotiated —
+// otherwise every session runs uncompensated.
+func TestReferenceDelayAppliedWhenDeviceRateArrivesLate(t *testing.T) {
+	fe := &delayFrontend{}
+	p := &Player{}
+
+	// SetFrontend before any device: nothing sensible to publish yet.
+	p.frontend = fe
+	p.applyReferenceDelay()
+	if delay, calls := fe.snapshot(); calls != 0 || delay != 0 {
+		t.Fatalf("delay published with no device: delay=%d calls=%d", delay, calls)
+	}
+
+	// ensureDevice negotiates a rate and re-publishes.
+	p.sampleRate = 48000
+	p.applyReferenceDelay()
+	delay, calls := fe.snapshot()
+	if calls != 1 {
+		t.Fatalf("SetReferenceDelay called %d times, want 1 once the rate is known", calls)
+	}
+	if want := referenceDelaySamples(48000); delay != want {
+		t.Fatalf("published delay = %d, want %d", delay, want)
+	}
+}
+
+// A front-end that does not implement ReferenceDelayer (passthrough, doubles)
+// must not be a problem for the player.
+func TestReferenceDelaySkipsNonDelayerFrontend(t *testing.T) {
+	p := &Player{frontend: NewPassthroughFrontend(), sampleRate: 48000}
+	p.applyReferenceDelay() // must not panic
 }
 
 func TestAECRefIngressResamplesToCaptureRate(t *testing.T) {

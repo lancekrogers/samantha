@@ -15,6 +15,11 @@ import (
 const (
 	playbackChannels         = 1
 	playbackCompactionFrames = 4096
+	// playbackPeriodFrames and playbackPeriods describe the device ring buffer.
+	// Their product is how much audio onData has queued but not yet made
+	// audible, which is the bulk of the AEC reference delay.
+	playbackPeriodFrames = 512
+	playbackPeriods      = 3
 )
 
 // PlaybackResult reports the terminal state of a queued playback segment.
@@ -93,6 +98,40 @@ func NewPlayerWithDevice(deviceName string) *Player {
 	return &Player{deviceName: deviceName, debugRoot: debugAudioDir()}
 }
 
+// referenceDelaySamples estimates, in capture-rate samples, how long after
+// onData hands frames to miniaudio those frames become audible.
+//
+// The estimate is deliberately low. The canceller pairs mic sample k with
+// far-end sample k-D and must find the true echo at tap (Dtrue - D):
+// under-estimating spends taps, which we have, while over-estimating asks the
+// filter to predict the mic from reference audio that has not been pushed yet,
+// which no number of taps can fix. So count only the periods certainly still
+// queued ahead of this callback's frames, and let echoCancellerTaps absorb the
+// rest of the ring plus driver and acoustic latency.
+func referenceDelaySamples(deviceRate int) int {
+	if deviceRate <= 0 {
+		return 0
+	}
+	queuedFrames := (playbackPeriods - 1) * playbackPeriodFrames
+	return queuedFrames * SampleRate / deviceRate
+}
+
+// applyReferenceDelay tells the front-end the current device's reference
+// offset. Called from both sides of the pair: the front-end can be registered
+// before a device exists, and the device rate is only known after negotiation.
+func (p *Player) applyReferenceDelay() {
+	p.mu.Lock()
+	frontend := p.frontend
+	deviceRate := p.sampleRate
+	p.mu.Unlock()
+
+	delayer, ok := frontend.(ReferenceDelayer)
+	if !ok || deviceRate <= 0 {
+		return
+	}
+	delayer.SetReferenceDelay(referenceDelaySamples(deviceRate))
+}
+
 // SetFrontend installs an audio front-end that can observe playback
 // reference audio for echo cancellation or similar processing.
 func (p *Player) SetFrontend(frontend Frontend) {
@@ -116,6 +155,7 @@ func (p *Player) SetFrontend(frontend Frontend) {
 	}
 	p.aecIngress = ingress
 	p.mu.Unlock()
+	p.applyReferenceDelay()
 }
 
 // PlayStream queues a synthesized PCM stream for playback.
@@ -268,10 +308,7 @@ func (p *Player) pumpSegment(ctx context.Context, segment *playbackSegment, stre
 			return
 		case frames, ok := <-stream.Frames():
 			if !ok {
-				p.mu.Lock()
-				frontend := p.frontend
-				p.mu.Unlock()
-				finalizeSegment(segment, frontend, debug, samples, inputRate, outputRate, stream.Err())
+				finalizeSegment(segment, debug, samples, inputRate, outputRate, stream.Err())
 				return
 			}
 			if len(frames) == 0 {
@@ -293,7 +330,7 @@ func (p *Player) pumpSegment(ctx context.Context, segment *playbackSegment, stre
 // is still waiting to play — so by the time speakers emit, the canceller has
 // nothing left and barge-in hears her own voice. onData feeds the reference
 // sample-clock-aligned as audio actually leaves the device (via aecIngress).
-func finalizeSegment(segment *playbackSegment, _ Frontend, debug *playerDebugRecorder, samples []float32, inputRate, outputRate int, streamErr error) {
+func finalizeSegment(segment *playbackSegment, debug *playerDebugRecorder, samples []float32, inputRate, outputRate int, streamErr error) {
 	if debug != nil {
 		debug.captureSource(inputRate, samples)
 	}
@@ -329,9 +366,11 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 	deviceConfig := malgo.DefaultDeviceConfig(malgo.Playback)
 	deviceConfig.Playback.Format = malgo.FormatS16
 	deviceConfig.Alsa.NoMMap = 1
-	// Larger periods reduce callback pressure on multi-channel displays.
-	deviceConfig.PeriodSizeInFrames = 512
-	deviceConfig.Periods = 3
+	// Larger periods reduce callback pressure on multi-channel displays. They
+	// also set the AEC reference offset: onData fills this buffer well before
+	// the frames are audible (see applyReferenceDelay).
+	deviceConfig.PeriodSizeInFrames = playbackPeriodFrames
+	deviceConfig.Periods = playbackPeriods
 	releaseDeviceID, err := selectDevice(ctx.Context, malgo.Playback, p.deviceName, &deviceConfig.Playback)
 	if err != nil {
 		_ = ctx.Uninit()
@@ -389,6 +428,9 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 	p.channels = deviceChannels
 	p.debug = debug
 	p.mu.Unlock()
+	// The negotiated rate sets the reference offset; a front-end registered
+	// before the device existed has been holding a zero delay until now.
+	p.applyReferenceDelay()
 	return deviceRate, nil
 }
 

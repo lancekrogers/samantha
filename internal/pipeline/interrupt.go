@@ -11,10 +11,19 @@ const (
 	// echo of Samantha's own first words doesn't trip barge-in. Keep this short
 	// enough that "stop" / "wait" still interrupt promptly once armed; AEC
 	// reference timing (not a long speech threshold) is what suppresses self-echo.
+	//
+	// Note this is re-armed on every playbackStarted, i.e. once per sentence
+	// (see applyPlaybackEvent) — not once per turn. Raising it therefore costs
+	// more than it looks: a sentence shorter than the window can never be
+	// interrupted at all, and back-to-back short sentences keep barge-in
+	// permanently disarmed.
 	bargeInArmDelay = 600 * time.Millisecond
 	// bargeInMinSpeechChunks requires sustained speech before interrupting, so a
-	// brief burst of residual echo isn't mistaken for the user. Chunks are
-	// ~100ms (capture publish), so 6 ≈ 0.6s — short enough for "stop"/"no".
+	// brief burst of residual echo isn't mistaken for the user. One chunk is one
+	// capture callback: Capture takes miniaudio's low-latency default period of
+	// 10ms, so 6 chunks ≈ 60ms of consecutive speech energy, not the ~0.6s an
+	// earlier comment here claimed. Short enough for "stop"/"no"; residual echo
+	// is the AEC path's job, not this counter's.
 	bargeInMinSpeechChunks = 6
 	// bargeInBufferSize is the capture subscription depth for the controller.
 	bargeInBufferSize = 8

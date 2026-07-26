@@ -1,0 +1,214 @@
+package audio
+
+import (
+	"math"
+	"math/rand"
+	"testing"
+)
+
+// Echo cancellation is easy to wire up and have do nothing. The reference path
+// can be rate-correct, phase-correct and still deliver ~0dB because the far-end
+// audio reaches the canceller tens of milliseconds before its echo reaches the
+// mic — outside the filter's tap window. These tests drive the front-end the way
+// the devices do and assert on measured ERLE, so a regression shows up as a
+// number rather than as "barge-in feels twitchy again".
+
+const (
+	// erleCaptureChunk is one capture callback: miniaudio's low-latency default
+	// period is 10ms, and Capture does not override it.
+	erleCaptureChunk = SampleRate / 100
+	// erleEchoGain is how loud the speaker is at the mic.
+	erleEchoGain = 0.5
+)
+
+// farEndSpeech generates a speech-like far-end signal: band-limited noise under
+// a syllable-rate envelope. White noise would flatter the canceller.
+func farEndSpeech(n int, seed int64) []float32 {
+	rng := rand.New(rand.NewSource(seed))
+	out := make([]float32, n)
+	var lp float64
+	for i := range out {
+		lp = 0.85*lp + 0.15*rng.NormFloat64()
+		env := 0.5 + 0.5*math.Sin(2*math.Pi*float64(i)/float64(SampleRate)*3)
+		out[i] = float32(lp * env * 0.3)
+	}
+	return out
+}
+
+// erleThroughFrontend runs the real push/pop cadence: each iteration pushes one
+// callback of far-end audio and processes one callback of mic audio whose echo
+// lags the push by echoLag samples. It reports dB of echo suppression as seen
+// by VAD — measured against the same chain with no reference fed, so the NS and
+// AGC stages cannot take credit for the AEC's work.
+func erleThroughFrontend(t *testing.T, refDelay, echoLag int) float64 {
+	t.Helper()
+
+	const seconds = 8
+	total := SampleRate * seconds
+	far := farEndSpeech(total+echoLag, 1)
+
+	run := func(feedRef bool) float64 {
+		f := NewVoiceFrontend()
+		f.SetReferenceDelay(refDelay)
+
+		var energy float64
+		for start := 0; start+erleCaptureChunk <= total; start += erleCaptureChunk {
+			if feedRef {
+				f.PushPlaybackReference(far[start : start+erleCaptureChunk])
+			}
+			mic := make([]float32, erleCaptureChunk)
+			for i := range mic {
+				// The mic hears what left the speaker echoLag samples ago.
+				if src := start + i - echoLag; src >= 0 {
+					mic[i] = erleEchoGain * far[src]
+				}
+			}
+			out := f.ProcessCapture(mic)
+			// Score the back half only, after the filter has adapted.
+			if start > total/2 {
+				for _, s := range out {
+					energy += float64(s) * float64(s)
+				}
+			}
+		}
+		return energy
+	}
+
+	withRef := run(true)
+	withoutRef := run(false)
+	return 10 * math.Log10(withoutRef/math.Max(withRef, 1e-12))
+}
+
+// The shipping configuration must cancel at the latency the player actually
+// creates. playbackPeriods*playbackPeriodFrames at 48kHz is 32ms of ring
+// buffer; driver and acoustic latency add more on top.
+func TestEchoCancellerERLEAcrossDeviceLatency(t *testing.T) {
+	refDelay := referenceDelaySamples(48000)
+
+	ms := func(d int) int { return d * 1000 / SampleRate }
+	// Thresholds sit a couple of dB under measured (10.4 / 9.7 / 9.2) so
+	// platform float differences do not flake, while a real regression — a
+	// dropped delay offset, a shortened filter, a slower step — falls well
+	// through: uncompensated, every one of these reads under 2dB.
+	cases := []struct {
+		name    string
+		echoLag int
+		minERLE float64
+	}{
+		{"ring buffer only", 32 * SampleRate / 1000, 8},
+		{"ring + driver latency", 40 * SampleRate / 1000, 7.5},
+		{"ring + driver + far speaker", 48 * SampleRate / 1000, 7},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			erle := erleThroughFrontend(t, refDelay, tc.echoLag)
+			t.Logf("echo lag %dms, reference delay %dms, %d taps (%dms) → ERLE %+.2f dB",
+				ms(tc.echoLag), ms(refDelay), echoCancellerTaps, ms(echoCancellerTaps), erle)
+			if erle < tc.minERLE {
+				t.Errorf("ERLE = %+.2f dB, want >= %+.2f dB — self-echo at this "+
+					"latency will reach VAD and trip barge-in", erle, tc.minERLE)
+			}
+		})
+	}
+}
+
+// The regression itself: with no reference delay the canceller is handed
+// far-end audio ~32ms before its echo arrives, which no amount of rate
+// alignment fixes. This is what shipped before SetReferenceDelay existed.
+func TestEchoCancellerNeedsReferenceDelay(t *testing.T) {
+	const echoLag = 40 * SampleRate / 1000
+
+	compensated := erleThroughFrontend(t, referenceDelaySamples(48000), echoLag)
+	uncompensated := erleThroughFrontend(t, 0, echoLag)
+	t.Logf("compensated %+.2f dB vs uncompensated %+.2f dB", compensated, uncompensated)
+
+	if uncompensated > 3 {
+		t.Fatalf("uncompensated ERLE = %+.2f dB; the test no longer reproduces the "+
+			"delay bug it guards", uncompensated)
+	}
+	if compensated < uncompensated+4 {
+		t.Errorf("reference delay bought only %+.2f dB (%.2f → %.2f); the offset is "+
+			"not doing its job", compensated-uncompensated, uncompensated, compensated)
+	}
+}
+
+// Barge-in only works if the user survives the canceller. A longer filter and
+// a faster step both raise the risk that the AEC adapts to near-end speech and
+// subtracts it away, so hold that line explicitly: when the user talks over
+// playback, their voice must still dominate the front-end's output.
+func TestEchoCancellerPreservesNearEndDuringDoubleTalk(t *testing.T) {
+	const (
+		echoLag = 40 * SampleRate / 1000
+		total   = SampleRate * 8
+	)
+	refDelay := referenceDelaySamples(48000)
+	far := farEndSpeech(total+echoLag, 1)
+	near := farEndSpeech(total, 99) // the user, uncorrelated with playback
+
+	f := NewVoiceFrontend()
+	f.SetReferenceDelay(refDelay)
+
+	var outEnergy, nearEnergy float64
+	for start := 0; start+erleCaptureChunk <= total; start += erleCaptureChunk {
+		f.PushPlaybackReference(far[start : start+erleCaptureChunk])
+		mic := make([]float32, erleCaptureChunk)
+		for i := range mic {
+			if src := start + i - echoLag; src >= 0 {
+				mic[i] = erleEchoGain * far[src]
+			}
+			// The user starts talking halfway in — the barge-in moment.
+			if start > total/2 {
+				mic[i] += near[start+i]
+			}
+		}
+		out := f.ProcessCapture(mic)
+		if start > total*3/4 { // score once double-talk is well established
+			for i, s := range out {
+				outEnergy += float64(s) * float64(s)
+				nearEnergy += float64(near[start+i]) * float64(near[start+i])
+			}
+		}
+	}
+
+	kept := 10 * math.Log10(outEnergy/math.Max(nearEnergy, 1e-12))
+	t.Logf("near-end preserved through double-talk: %+.2f dB", kept)
+	if kept < 0 {
+		t.Errorf("near-end preservation = %+.2f dB; the canceller is eating the "+
+			"user's voice, which is exactly what barge-in needs to hear", kept)
+	}
+}
+
+// A burst that starts after silence must re-prime the offset: the queue drains
+// to empty between utterances, and without re-priming every sentence after the
+// first would be uncompensated.
+func TestReferenceDelayRePrimesAfterSilence(t *testing.T) {
+	f := NewVoiceFrontend()
+	f.SetReferenceDelay(320)
+
+	push := make([]float32, 160)
+	for i := range push {
+		push[i] = 0.5
+	}
+
+	// First burst: the offset is primed, so the first pops are the silent
+	// device-buffer window rather than far-end audio.
+	f.PushPlaybackReference(push)
+	if out := f.refsSnapshot(); len(out) != 320+160 {
+		t.Fatalf("queue depth after first push = %d, want 320 delay + 160 pushed", len(out))
+	}
+
+	// Drain it the way continuous capture does during silence.
+	for range 10 {
+		f.ProcessCapture(make([]float32, 160))
+	}
+	if got := len(f.refsSnapshot()); got != 0 {
+		t.Fatalf("queue depth after silence = %d, want 0 (drained)", got)
+	}
+
+	// Next burst re-primes rather than pairing immediately.
+	f.PushPlaybackReference(push)
+	if out := f.refsSnapshot(); len(out) != 320+160 {
+		t.Fatalf("queue depth after second burst = %d, want the offset re-primed", len(out))
+	}
+}
