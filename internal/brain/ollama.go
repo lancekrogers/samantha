@@ -396,7 +396,7 @@ func (o *OllamaBrain) ClearHistory() {
 // samantha owns messages[], so the size shown is the estimated next request.
 func (o *OllamaBrain) SessionInfo() SessionState {
 	return SessionState{
-		Kind:         "chat",
+		Kind:         SessionKindChat,
 		PromptTokens: o.estimateTokens(""),
 		Turns:        len(o.history),
 	}

@@ -185,3 +185,42 @@ func TestSessionCommandDegradesWhenUnsupported(t *testing.T) {
 		t.Fatalf("infos = %v, want one unavailable line", infos)
 	}
 }
+
+func TestSessionSummaryBranches(t *testing.T) {
+	tests := []struct {
+		name  string
+		state brain.SessionState
+		want  string
+	}{
+		{
+			name:  "harness with live session and usage",
+			state: brain.SessionState{Kind: brain.SessionKindHarness, ID: "sess-12345678", PromptTokens: 12340, Turns: 8},
+			want:  "session: harness · id sess-123 · last prompt 12340 tok · 8 turns kept",
+		},
+		{
+			name:  "harness fresh before first turn",
+			state: brain.SessionState{Kind: brain.SessionKindHarness},
+			want:  "session: harness · no CLI session yet · 0 turns kept",
+		},
+		{
+			name:  "harness with turns but resume not wired",
+			state: brain.SessionState{Kind: brain.SessionKindHarness, Turns: 12},
+			want:  "session: harness · no live CLI session · 12 turns kept",
+		},
+		{
+			name:  "chat kind estimates next request",
+			state: brain.SessionState{Kind: brain.SessionKindChat, PromptTokens: 900, Turns: 5},
+			want:  "session: local chat · est next prompt 900 tok · 5 turns kept",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newConversation("Samantha")
+			state := tt.state
+			m.deps.brainSession = func() (brain.SessionState, bool) { return state, true }
+			if got := m.sessionSummary(); got != tt.want {
+				t.Fatalf("sessionSummary() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
