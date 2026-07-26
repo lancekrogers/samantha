@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,9 +46,67 @@ type graceTTS struct {
 func (g *graceTTS) Synthesize(context.Context, string) (*audio.PCMStream, error) {
 	return nil, nil
 }
-func (g *graceTTS) Available() bool                         { return true }
-func (g *graceTTS) ListVoices(string, string) []tts.Voice   { return nil }
-func (g *graceTTS) FirstAudioGrace() time.Duration          { return g.grace }
+func (g *graceTTS) Available() bool                       { return true }
+func (g *graceTTS) ListVoices(string, string) []tts.Voice { return nil }
+func (g *graceTTS) FirstAudioGrace() time.Duration        { return g.grace }
+
+// A long grace must stay legible: the watchdog says it is still waiting once
+// the old 8s budget passes, so a 120s Qwen turn does not look frozen. Budgets
+// at or under the default recover before the wait is worth narrating.
+func TestStallNoticeDelay(t *testing.T) {
+	if got := stallNoticeDelay(120 * time.Second); got != defaultPlaybackStallTimeout {
+		t.Fatalf("stallNoticeDelay(120s) = %v, want %v", got, defaultPlaybackStallTimeout)
+	}
+	if got := stallNoticeDelay(defaultPlaybackStallTimeout); got != 0 {
+		t.Fatalf("stallNoticeDelay(default) = %v, want 0 (no notice)", got)
+	}
+	if got := stallNoticeDelay(150 * time.Millisecond); got != 0 {
+		t.Fatalf("stallNoticeDelay(150ms) = %v, want 0 (no notice)", got)
+	}
+}
+
+// The notice fires while the turn is still healthy and does not itself recover
+// the turn — the stall budget keeps running underneath it.
+func TestWatchPlaybackStallEmitsInterimNotice(t *testing.T) {
+	bus := events.NewBus()
+	var mu sync.Mutex
+	var infos []string
+	bus.SubscribeAll(func(ev events.Event) {
+		if info, ok := ev.(events.Info); ok {
+			mu.Lock()
+			infos = append(infos, info.Message)
+			mu.Unlock()
+		}
+	})
+
+	p := &Pipeline{Events: bus}
+	streamCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var started atomic.Bool
+	stalled := make(chan struct{})
+	// Notice at 30ms (scaled default), stall at 300ms.
+	go p.watchPlaybackStallAfter(streamCtx, &started, cancel, stalled, 300*time.Millisecond, 30*time.Millisecond)
+
+	select {
+	case <-stalled:
+		t.Fatal("watchdog recovered the turn at the notice, not the stall budget")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	mu.Lock()
+	got := append([]string(nil), infos...)
+	mu.Unlock()
+	if len(got) != 1 || !strings.Contains(got[0], "still synthesizing") {
+		t.Fatalf("interim notice = %v, want one 'still synthesizing' message", got)
+	}
+
+	select {
+	case <-stalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchdog never reached the stall budget after the notice")
+	}
+}
 
 func TestRunTurnWatchdogRecoversStalledPlayback(t *testing.T) {
 	bus := events.NewBus()

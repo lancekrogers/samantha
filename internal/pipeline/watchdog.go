@@ -52,26 +52,65 @@ func (p *Pipeline) ttsFirstAudioGrace() time.Duration {
 	return 0
 }
 
+// stallNoticeDelay is when the watchdog tells the user it is still waiting. It
+// fires at the old default budget so anything past 8s of silence is explained.
+// Zero disables the notice: a budget that short recovers before the wait is
+// worth narrating.
+func stallNoticeDelay(timeout time.Duration) time.Duration {
+	if timeout <= defaultPlaybackStallTimeout {
+		return 0
+	}
+	return defaultPlaybackStallTimeout
+}
+
 // watchPlaybackStall recovers a turn whose synthesis began but never produced
 // audible playback within timeout. On a stall it dumps every goroutine stack,
 // cancels streamCtx (unblocking waitReady/pumpSegment/Write/observeStream) and
 // signals streamResponse to return; returning then trips RunTurn's turnCancel,
 // which stops the brain stream too.
 func (p *Pipeline) watchPlaybackStall(streamCtx context.Context, started *atomic.Bool, cancel context.CancelFunc, stalled chan<- struct{}, timeout time.Duration) {
+	p.watchPlaybackStallAfter(streamCtx, started, cancel, stalled, timeout, stallNoticeDelay(timeout))
+}
+
+// watchPlaybackStallAfter is watchPlaybackStall with the interim-notice delay
+// injected so tests can exercise both timers without waiting out the real
+// budget. noticeDelay of zero suppresses the notice.
+func (p *Pipeline) watchPlaybackStallAfter(streamCtx context.Context, started *atomic.Bool, cancel context.CancelFunc, stalled chan<- struct{}, timeout, noticeDelay time.Duration) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
-	select {
-	case <-streamCtx.Done():
-		return
-	case <-timer.C:
+	// A whole-utterance worker can hold the grace for a minute or more. Say so
+	// once the old 8s budget elapses so a long wait reads as synthesis in
+	// progress rather than a frozen turn.
+	var noticeC <-chan time.Time
+	if noticeDelay > 0 {
+		notice := time.NewTimer(noticeDelay)
+		defer notice.Stop()
+		noticeC = notice.C
+	}
+
+waiting:
+	for {
+		select {
+		case <-streamCtx.Done():
+			return
+		case <-noticeC:
+			noticeC = nil
+			if started.Load() || streamCtx.Err() != nil {
+				return
+			}
+			p.emit(events.Info{Message: fmt.Sprintf(
+				"still synthesizing speech; waiting up to %s for the first audio", timeout)})
+		case <-timer.C:
+			break waiting
+		}
 	}
 
 	if started.Load() || streamCtx.Err() != nil {
 		return
 	}
 
-	msg := fmt.Sprintf("playback did not start within %s; recovering turn (TTS may still be synthesizing — raise qwen_tts_timeout / PlaybackStallTimeout if this is a slow worker)", timeout)
+	msg := fmt.Sprintf("playback did not start within %s; recovering turn (TTS may still be synthesizing — raise qwen_tts_timeout if this is a slow worker)", timeout)
 	if path, err := writeGoroutineDump(); err == nil {
 		msg += fmt.Sprintf(" (goroutine dump: %s)", path)
 	}
