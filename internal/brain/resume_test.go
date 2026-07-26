@@ -581,3 +581,160 @@ func TestDropSessionOnClearAndLoadHistory(t *testing.T) {
 		t.Fatalf("LoadHistory history len = %d, want 2", len(b.history))
 	}
 }
+
+func TestSessionWarnFiresOncePerSession(t *testing.T) {
+	fake := &fakeClaudeClient{
+		streamScripts: []streamScript{
+			{msgs: []claude.Message{assistantMsgUsage("One.", 10, 100, 0, 5), resultMsg("sess-1")}},
+			{msgs: []claude.Message{assistantMsgUsage("Two.", 10, 6000, 0, 5), resultMsg("sess-1")}},
+			{msgs: []claude.Message{assistantMsgUsage("Three.", 10, 7000, 0, 5), resultMsg("sess-1")}},
+		},
+	}
+	b := newTestBrain(fake)
+	b.cfg.ClaudeSessionWarnTokens = 5000
+
+	var warns []int
+	opts := StreamOptions{OnSessionWarn: func(promptTokens, threshold int) {
+		if threshold != 5000 {
+			t.Errorf("threshold = %d, want 5000", threshold)
+		}
+		warns = append(warns, promptTokens)
+	}}
+	for _, q := range []string{"first", "second", "third"} {
+		s, err := b.ThinkStream(context.Background(), q, opts)
+		if err != nil {
+			t.Fatalf("ThinkStream(%q) error = %v", q, err)
+		}
+		if _, res := collectStream(t, s); res.Err != nil {
+			t.Fatalf("turn %q error = %v", q, res.Err)
+		}
+	}
+
+	if len(warns) != 1 || warns[0] != 6010 {
+		t.Fatalf("warns = %v, want exactly one at 6010 tokens", warns)
+	}
+	// Warning is visibility, not enforcement: the session must survive it.
+	if got := fake.streamOpts[2].ResumeID; got != "sess-1" {
+		t.Fatalf("turn 3 ResumeID = %q, want sess-1 (warn must not drop the session)", got)
+	}
+}
+
+func TestSessionWarnRearmsAfterReset(t *testing.T) {
+	fake := &fakeClaudeClient{
+		streamScripts: []streamScript{
+			{msgs: []claude.Message{assistantMsgUsage("One.", 10, 6000, 0, 5), resultMsg("sess-1")}},
+			{msgs: []claude.Message{assistantMsgUsage("Two.", 10, 6000, 0, 5), resultMsg("sess-2")}},
+		},
+	}
+	b := newTestBrain(fake)
+	b.cfg.ClaudeSessionWarnTokens = 5000
+
+	var warns int
+	opts := StreamOptions{OnSessionWarn: func(int, int) { warns++ }}
+
+	s, err := b.ThinkStream(context.Background(), "first", opts)
+	if err != nil {
+		t.Fatalf("ThinkStream() error = %v", err)
+	}
+	collectStream(t, s)
+	// Clearing drops the session and must re-arm the warning for the next one.
+	b.ClearHistory()
+	s, err = b.ThinkStream(context.Background(), "second", opts)
+	if err != nil {
+		t.Fatalf("ThinkStream() error = %v", err)
+	}
+	collectStream(t, s)
+
+	if warns != 2 {
+		t.Fatalf("warns = %d, want 2 (once per session)", warns)
+	}
+}
+
+func TestSessionWarnDisabled(t *testing.T) {
+	fake := &fakeClaudeClient{
+		streamScripts: []streamScript{
+			{msgs: []claude.Message{assistantMsgUsage("One.", 10, 999999, 0, 5), resultMsg("sess-1")}},
+		},
+	}
+	b := newTestBrain(fake)
+	b.cfg.ClaudeSessionWarnTokens = 0
+
+	var warns int
+	s, err := b.ThinkStream(context.Background(), "first", StreamOptions{
+		OnSessionWarn: func(int, int) { warns++ },
+	})
+	if err != nil {
+		t.Fatalf("ThinkStream() error = %v", err)
+	}
+	collectStream(t, s)
+
+	if warns != 0 {
+		t.Fatalf("warns = %d, want 0 when disabled", warns)
+	}
+}
+
+func TestSessionWarnSuppressedByFuseReset(t *testing.T) {
+	// With the opt-in fuse and the warn at the same threshold, the fuse resets
+	// the session first — warning about a session that no longer exists would
+	// only be noise, so none must fire.
+	fake := &fakeClaudeClient{
+		streamScripts: []streamScript{
+			{msgs: []claude.Message{assistantMsgUsage("One.", 10, 6000, 0, 5), resultMsg("sess-1")}},
+		},
+	}
+	b := newTestBrain(fake)
+	b.cfg.ClaudeMaxSessionTokens = 5000
+	b.cfg.ClaudeSessionWarnTokens = 5000
+
+	var warns int
+	s, err := b.ThinkStream(context.Background(), "first", StreamOptions{
+		OnSessionWarn: func(int, int) { warns++ },
+	})
+	if err != nil {
+		t.Fatalf("ThinkStream() error = %v", err)
+	}
+	collectStream(t, s)
+
+	if warns != 0 {
+		t.Fatalf("warns = %d, want 0 when the fuse already reset the session", warns)
+	}
+	if b.sessionID != "" {
+		t.Fatalf("sessionID = %q, want empty after fuse reset", b.sessionID)
+	}
+}
+
+func TestThinkFullSessionWarnUsesEstimate(t *testing.T) {
+	// The blocking path has no CLI usage; the warn must still fire from the
+	// same local estimate the fuse uses.
+	fake := &fakeClaudeClient{
+		fullResults: []*claude.ClaudeResult{
+			{Result: "ok", SessionID: "sess-1"},
+			{Result: "ok", SessionID: "sess-1"},
+		},
+	}
+	b := newTestBrain(fake)
+	b.systemPrompt = "S"
+	b.cfg.ClaudeSessionWarnTokens = 30
+
+	var warns int
+	opts := StreamOptions{OnSessionWarn: func(promptTokens, threshold int) {
+		if promptTokens < threshold {
+			t.Errorf("promptTokens = %d below threshold %d", promptTokens, threshold)
+		}
+		warns++
+	}}
+
+	if _, err := b.ThinkFull(context.Background(), "hi", opts); err != nil {
+		t.Fatalf("turn 1 error = %v", err)
+	}
+	if _, err := b.ThinkFull(context.Background(), strings.Repeat("x", 200), opts); err != nil {
+		t.Fatalf("turn 2 error = %v", err)
+	}
+
+	if warns != 1 {
+		t.Fatalf("warns = %d, want 1 (estimate crossed on turn 2 only)", warns)
+	}
+	if b.sessionID != "sess-1" {
+		t.Fatalf("sessionID = %q, want sess-1 kept (warn never drops)", b.sessionID)
+	}
+}

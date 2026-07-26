@@ -87,6 +87,16 @@ type TokenUsage struct {
 
 func (e TokenUsage) eventType() string { return "token_usage" }
 
+// SessionWarning reports that the prompt a harness session replays has crossed
+// the configured warn threshold. Emitted at most once per underlying session;
+// nothing is dropped — this is visibility, not enforcement.
+type SessionWarning struct {
+	PromptTokens int
+	Threshold    int
+}
+
+func (e SessionWarning) eventType() string { return "session_warning" }
+
 // ResponseStreamingStarted signals the first response chunk has arrived.
 type ResponseStreamingStarted struct {
 	Elapsed time.Duration

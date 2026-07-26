@@ -675,6 +675,9 @@ func (m *conversationModel) handleEvent(e events.Event) {
 	case events.TokenUsage:
 		m.appendActivity("model", fmt.Sprintf("prefill %d tok · gen %d tok", e.Prefill, e.Gen), 0)
 
+	case events.SessionWarning:
+		m.appendActivity("model", fmt.Sprintf("session prompt %d tok ≥ warn %d — consider clearing the conversation", e.PromptTokens, e.Threshold), 0)
+
 	case events.SpeechSegmentReady:
 		m.appendActivity("voice", "segment ready", 0)
 

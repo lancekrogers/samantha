@@ -63,6 +63,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.MaxHistory != 10 {
 		t.Errorf("MaxHistory = %d, want 10", cfg.MaxHistory)
 	}
+	if cfg.ClaudeMaxSessionTokens != 0 {
+		t.Errorf("ClaudeMaxSessionTokens = %d, want 0 (fuse is opt-in)", cfg.ClaudeMaxSessionTokens)
+	}
+	if cfg.ClaudeSessionWarnTokens != 60000 {
+		t.Errorf("ClaudeSessionWarnTokens = %d, want 60000", cfg.ClaudeSessionWarnTokens)
+	}
 	if !cfg.VADEnabled {
 		t.Error("VADEnabled = false, want true")
 	}
@@ -302,6 +308,22 @@ func TestToolCommandTimeoutEnvOverride(t *testing.T) {
 	}
 	if cfg.ToolCommandTimeout != 90 {
 		t.Fatalf("ToolCommandTimeout = %d, want 90 from env", cfg.ToolCommandTimeout)
+	}
+}
+
+func TestClaudeSessionWarnTokensEnvOverride(t *testing.T) {
+	orig := configFile
+	configFile = filepath.Join(t.TempDir(), "nonexistent.yaml")
+	defer func() { configFile = orig }()
+
+	setDefaults(v)
+	t.Setenv("CLAUDE_SESSION_WARN_TOKENS", "120000")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.ClaudeSessionWarnTokens != 120000 {
+		t.Fatalf("ClaudeSessionWarnTokens = %d, want 120000 from env", cfg.ClaudeSessionWarnTokens)
 	}
 }
 

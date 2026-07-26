@@ -504,3 +504,27 @@ func TestDiagnoseWarnsOnBargeInWithoutFrontend(t *testing.T) {
 		}
 	}
 }
+
+func TestDiagnoseFlagsLegacySessionFuse(t *testing.T) {
+	find := func(diags []Diagnostic) *Diagnostic {
+		for i := range diags {
+			if diags[i].Name == "claude-session-fuse" {
+				return &diags[i]
+			}
+		}
+		return nil
+	}
+
+	legacy := &Config{STTProvider: "sherpa", TTSProvider: "kokoro", ClaudeMaxSessionTokens: 60000}
+	d := find(Diagnose(legacy, t.TempDir(), okLookPath))
+	if d == nil || d.Severity != SeverityWarn {
+		t.Fatalf("legacy 60000 fuse not flagged as warn: %+v", d)
+	}
+
+	for _, v := range []int{0, 120000} {
+		cfg := &Config{STTProvider: "sherpa", TTSProvider: "kokoro", ClaudeMaxSessionTokens: v}
+		if d := find(Diagnose(cfg, t.TempDir(), okLookPath)); d != nil {
+			t.Fatalf("value %d wrongly flagged: %+v", v, d)
+		}
+	}
+}
