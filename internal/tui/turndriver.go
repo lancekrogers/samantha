@@ -55,6 +55,10 @@ type textTurnDoneMsg struct {
 	err error
 }
 
+type compactDoneMsg struct {
+	err error
+}
+
 type voiceRetryMsg struct{}
 
 // conversationDeps wires the live pipeline into the conversation model.
@@ -62,6 +66,9 @@ type conversationDeps struct {
 	runner       turnRunner
 	bus          *events.Bus
 	clearHistory func()
+	// compact runs the pipeline's conversation compaction; nil when the
+	// runtime did not wire it (e.g. prompt resolution failed).
+	compact func(ctx context.Context) error
 	// brainSession reports the provider's live session state for /session;
 	// nil (or ok=false) when the provider does not expose one.
 	brainSession   func() (brain.SessionState, bool)
@@ -273,6 +280,7 @@ func (m *conversationModel) recoverTurnState() tea.Cmd {
 			m.turnCancel = nil
 		}
 		m.pendingText = ""
+		m.pendingCompact = false
 		m.turnState = turnIdle
 		if m.canCancelVoice != nil {
 			m.canCancelVoice.Store(false)
@@ -367,6 +375,22 @@ func (m *conversationModel) beginTextBargeIn(text string) tea.Cmd {
 		}
 	}
 	return nil
+}
+
+// discardDraft drops a barged-in draft that /compact beat to the cancel drain.
+// The echo bubble stays as scrollback, but the pending-echo marker has to clear:
+// it suppresses the next matching UserInput bubble, so leaving it set would
+// swallow the user's re-send of the same text. The drop is announced because the
+// draft was echoed and is never going to be answered.
+func (m *conversationModel) discardDraft(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	if m.pendingUserEcho == text {
+		m.pendingUserEcho = ""
+	}
+	m.emit(events.Info{Message: "Compacting — the message you typed was not sent. Send it again once the summary lands."})
 }
 
 // expandPaletteSelection replaces an incomplete slash prefix with the
@@ -476,6 +500,11 @@ func (m *conversationModel) handleVoiceTurnDone(msg voiceTurnDoneMsg) tea.Cmd {
 	if wasCanceling {
 		text := m.pendingText
 		m.pendingText = ""
+		if m.pendingCompact {
+			m.pendingCompact = false
+			m.discardDraft(text)
+			return m.dispatchCompact()
+		}
 		if text != "" {
 			return m.submitText(text)
 		}
@@ -532,6 +561,11 @@ func (m *conversationModel) handleTextTurnDone(msg textTurnDoneMsg) tea.Cmd {
 	m.turnState = turnIdle
 
 	if wasCanceling {
+		if m.pendingCompact {
+			m.pendingCompact = false
+			m.discardDraft(pending)
+			return m.dispatchCompact()
+		}
 		if pending != "" {
 			return m.submitText(pending)
 		}
@@ -540,6 +574,73 @@ func (m *conversationModel) handleTextTurnDone(msg textTurnDoneMsg) tea.Cmd {
 
 	if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 		m.emit(events.Error{Message: msg.err.Error()})
+	}
+	return m.resumeListening()
+}
+
+// requestCompact runs /compact when the pipeline is free, or cancels a
+// cancelable in-flight voice turn and queues the compact for when the cancel
+// drains. Compaction rebuilds the provider's context, so it never runs
+// mid-turn; while a reply is in flight the user is asked to retry.
+func (m *conversationModel) requestCompact() tea.Cmd {
+	if m.deps.compact == nil {
+		m.commandError("/compact is unavailable")
+		return m.resumeListening()
+	}
+	switch m.turnState {
+	case turnIdle:
+		return m.dispatchCompact()
+	case turnVoiceListening:
+		if m.canCancelVoice != nil && m.canCancelVoice.Load() {
+			m.pendingCompact = true
+			m.turnState = turnVoiceCanceling
+			m.canCancelVoice.Store(false)
+			if m.turnCancel != nil {
+				m.turnCancel()
+			}
+			return nil
+		}
+		m.commandError("busy — try /compact again after this turn")
+		return nil
+	case turnVoiceCanceling:
+		m.pendingCompact = true
+		return nil
+	default: // turnVoiceResponding, turnTextRunning
+		m.commandError("busy — try /compact again after this turn")
+		return nil
+	}
+}
+
+// dispatchCompact owns the pipeline for the compact operation the same way a
+// text turn does, so a voice turn cannot start mid-compaction.
+func (m *conversationModel) dispatchCompact() tea.Cmd {
+	ctx, cancel := context.WithCancel(m.deps.ctx)
+	m.turnCancel = cancel
+	m.turnState = turnTextRunning
+	m.setStatus("Compacting conversation", false)
+
+	compact, wg := m.deps.compact, m.deps.wg
+	if wg != nil {
+		wg.Add(1)
+	}
+	return func() tea.Msg {
+		if wg != nil {
+			defer wg.Done()
+		}
+		defer cancel()
+		if ctx.Err() != nil {
+			return compactDoneMsg{err: ctx.Err()}
+		}
+		return compactDoneMsg{err: compact(ctx)}
+	}
+}
+
+func (m *conversationModel) handleCompactDone(msg compactDoneMsg) tea.Cmd {
+	m.turnCancel = nil
+	m.turnState = turnIdle
+	m.setStatus("", false)
+	if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
+		m.emit(events.Error{Stage: "compact", Message: msg.err.Error()})
 	}
 	return m.resumeListening()
 }

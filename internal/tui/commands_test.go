@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -126,6 +127,9 @@ func TestUnknownSlashCommandNeverReachesBrain(t *testing.T) {
 func TestHelpCommandUsesRegistry(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	m, _ := startedConversation(t, runner, false)
+	// Size the transcript to the registry so every command row fits on screen
+	// regardless of how many commands exist.
+	m.setSize(80, 24+len(slashCommands))
 	m, _ = typeAndEnter(m, "/help")
 
 	view := stripANSI(m.View())
@@ -220,6 +224,150 @@ func TestSessionSummaryBranches(t *testing.T) {
 			m.deps.brainSession = func() (brain.SessionState, bool) { return state, true }
 			if got := m.sessionSummary(); got != tt.want {
 				t.Fatalf("sessionSummary() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCompactCommandDispatchesWhenIdle(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	m, _ := startedConversation(t, runner, false)
+	calls := 0
+	m.deps.compact = func(ctx context.Context) error {
+		if ctx == nil {
+			t.Fatal("compact received a nil context")
+		}
+		calls++
+		return nil
+	}
+
+	m2, cmd := typeAndEnter(m, "/compact")
+	if cmd == nil {
+		t.Fatal("/compact did not dispatch")
+	}
+	if m2.turnState != turnTextRunning {
+		t.Fatalf("turnState = %v, want turnTextRunning while compacting", m2.turnState)
+	}
+	msg := cmd()
+	done, ok := msg.(compactDoneMsg)
+	if !ok {
+		t.Fatalf("cmd() = %#v, want compactDoneMsg", msg)
+	}
+	if done.err != nil {
+		t.Fatalf("compact err = %v", done.err)
+	}
+	if calls != 1 {
+		t.Fatalf("compact calls = %d, want 1", calls)
+	}
+	if len(runner.texts()) != 0 {
+		t.Fatal("/compact reached the brain as user text")
+	}
+
+	m3, _ := m2.Update(compactDoneMsg{})
+	if m3.turnState != turnIdle {
+		t.Fatalf("turnState after done = %v, want idle", m3.turnState)
+	}
+}
+
+func TestCompactCommandRefusedWhileBusyOrUnavailable(t *testing.T) {
+	runner := &fakeTurnRunner{}
+
+	t.Run("unavailable", func(t *testing.T) {
+		m, _ := startedConversation(t, runner, false)
+		// deps.compact deliberately nil.
+		_, cmd := typeAndEnter(m, "/compact")
+		if msg := runCmd(cmd); msg != nil {
+			if _, isCompact := msg.(compactDoneMsg); isCompact {
+				t.Fatal("/compact must not dispatch without a compact dep")
+			}
+		}
+	})
+
+	t.Run("busy with a reply in flight", func(t *testing.T) {
+		m, _ := startedConversation(t, runner, false)
+		calls := 0
+		m.deps.compact = func(context.Context) error { calls++; return nil }
+		m.turnState = turnTextRunning
+		_, cmd := typeAndEnter(m, "/compact")
+		if msg := runCmd(cmd); msg != nil {
+			if _, isCompact := msg.(compactDoneMsg); isCompact {
+				t.Fatal("/compact must not dispatch mid-turn")
+			}
+		}
+		if calls != 0 {
+			t.Fatalf("compact calls = %d, want 0 while busy", calls)
+		}
+	})
+}
+
+// runCmd executes a possibly nil tea.Cmd and returns its message.
+func runCmd(cmd tea.Cmd) tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	return cmd()
+}
+
+// A barge-in parks its draft for the cancel drain. If /compact then wins that
+// drain the draft is dropped — but it has to be dropped completely: a draft left
+// in pendingText submits itself the next time any cancel drains, long after the
+// user typed it. The text-turn drain path always cleared it; the voice path did
+// not, so the same barge-in could resurface after a compact.
+func TestCompactWinningCancelDrainDiscardsParkedDraft(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		done tea.Msg
+	}{
+		{"voice turn drain", voiceTurnDoneMsg{}},
+		{"text turn drain", textTurnDoneMsg{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &fakeTurnRunner{}
+			m, bus := startedConversation(t, runner, true)
+			m.deps.compact = func(context.Context) error { return nil }
+
+			var infos []string
+			bus.SubscribeAll(func(e events.Event) {
+				if i, ok := e.(events.Info); ok {
+					infos = append(infos, i.Message)
+				}
+			})
+
+			// Park a barged-in draft, then queue /compact behind it.
+			m.turnState = turnVoiceCanceling
+			m.pendingText = "typed instead"
+			m.pendingUserEcho = "typed instead"
+			m, _ = typeAndEnter(m, "/compact")
+			if !m.pendingCompact {
+				t.Fatal("/compact during a cancel must queue behind the drain")
+			}
+
+			m, cmd := m.Update(tt.done)
+			if msg := runCmd(cmd); msg == nil {
+				t.Fatal("drained cancel did not dispatch the queued compact")
+			}
+			if m.pendingText != "" {
+				t.Fatalf("pendingText = %q, want it discarded when compact wins", m.pendingText)
+			}
+			// The echo marker suppresses the next matching UserInput bubble, so a
+			// stale one swallows the user's re-send of the same message.
+			if m.pendingUserEcho != "" {
+				t.Fatalf("pendingUserEcho = %q, want it cleared with the draft", m.pendingUserEcho)
+			}
+			if len(infos) != 1 || !strings.Contains(infos[0], "not sent") {
+				t.Fatalf("infos = %v, want one line telling the user the draft was not sent", infos)
+			}
+
+			// The regression: a later cancel with nothing new typed must resume
+			// listening, not submit the draft the compact discarded.
+			m, _ = m.Update(compactDoneMsg{})
+			m.turnState = turnVoiceCanceling
+			m, _ = m.Update(voiceTurnDoneMsg{})
+			if m.turnState == turnTextRunning {
+				t.Fatal("discarded draft was submitted by a later cancel drain")
+			}
+			if got := runner.texts(); len(got) != 0 {
+				t.Fatalf("runner text turns = %v, want none — the draft was discarded", got)
 			}
 		})
 	}

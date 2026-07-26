@@ -19,6 +19,11 @@ type StreamOptions struct {
 	// crossed the configured warn threshold (optional; for UI). Fired at most
 	// once per underlying session; the session itself is left alone.
 	OnSessionWarn func(promptTokens, threshold int)
+	// OmitTurnInstruction drops the per-turn instruction from the prompt.
+	// Set it for meta turns whose output is not a spoken reply — /compact's
+	// summarize turn — where the turn instruction's voice framing ("2–3
+	// sentences max") lands after the real instruction and starves it.
+	OmitTurnInstruction bool
 }
 
 // StreamResult reports the terminal outcome of a streamed response.
@@ -42,6 +47,12 @@ type Provider interface {
 	// ThinkFull runs a non-streaming turn. opts.ToolsEnabled is the sole
 	// runtime gate for tool calls — callers (pipeline) pass the same flag
 	// used for ThinkStream so text and voice paths cannot diverge.
+	//
+	// On error, history must be left exactly as it was: implementations that
+	// append the input before the model call (the prompt is built from
+	// history) have to roll that back. Callers cannot clean up for them —
+	// LoadHistory would drop a live harness session — and /compact relies on
+	// it, or a failed summarize turn leaves its briefing in the conversation.
 	ThinkFull(ctx context.Context, input string, opts StreamOptions) (string, error)
 	ClearHistory()
 	History() []Turn

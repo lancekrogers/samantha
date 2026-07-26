@@ -381,8 +381,10 @@ func TestThinkFullResultErrorIsNotSpoken(t *testing.T) {
 	if out != "" {
 		t.Fatalf("out = %q, want empty", out)
 	}
-	if len(b.history) != 1 {
-		t.Fatalf("history = %+v, want only the user turn", b.history)
+	// The CLI's error text is never recorded as a reply, and the turn that
+	// failed rolls its input back out — see TestThinkFullRollsBackHistoryOnError.
+	if len(b.history) != 0 {
+		t.Fatalf("history = %+v, want empty after a failed turn", b.history)
 	}
 }
 

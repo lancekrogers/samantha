@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -160,5 +161,46 @@ func TestSaveOverwritesExistingSessionAtomically(t *testing.T) {
 	}
 	if got.Summary != "first" {
 		t.Errorf("Summary = %q, want %q", got.Summary, "first")
+	}
+}
+
+func TestSaveBackupWritesSiblingWithoutMutatingSession(t *testing.T) {
+	dir := t.TempDir()
+	s := New("claude", "sonnet")
+	live := []brain.Turn{{Role: "user", Content: "live"}}
+	if err := s.saveTo(dir, live); err != nil {
+		t.Fatalf("saveTo() error: %v", err)
+	}
+
+	preCompact := []brain.Turn{
+		{Role: "user", Content: "old one"},
+		{Role: "samantha", Content: "old reply"},
+	}
+	if err := s.saveBackupTo(dir, preCompact); err != nil {
+		t.Fatalf("saveBackupTo() error: %v", err)
+	}
+
+	// The live session's in-memory turns are untouched by the backup.
+	if len(s.Turns) != 1 || s.Turns[0].Content != "live" {
+		t.Fatalf("session turns mutated by backup: %+v", s.Turns)
+	}
+
+	// The backup file exists, holds the pre-compact turns (normalized), and
+	// does not appear in the session listing.
+	data, err := os.ReadFile(filepath.Join(dir, s.ID+".pre-compact.json"))
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	var backup Session
+	if err := json.Unmarshal(data, &backup); err != nil {
+		t.Fatalf("unmarshal backup: %v", err)
+	}
+	if len(backup.Turns) != 2 || backup.Turns[1].Role != "assistant" {
+		t.Fatalf("backup turns = %+v, want 2 normalized turns", backup.Turns)
+	}
+
+	sessions := listIn(dir)
+	if len(sessions) != 1 || sessions[0].ID != s.ID {
+		t.Fatalf("listIn = %d sessions, want only the live session", len(sessions))
 	}
 }

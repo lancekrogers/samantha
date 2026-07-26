@@ -274,6 +274,12 @@ func sendChunk(ctx context.Context, out chan<- string, chunk string) error {
 // ThinkFull sends input and waits for the complete response.
 func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOptions) (string, error) {
 	skillCtx := o.routeSkillContext(ctx, input, opts.OnToolStart, opts.OnToolEnd)
+	// A failed turn rolls back to this snapshot rather than truncating: the tool
+	// loop appends assistant/tool turns and the context budget can trim the
+	// front, so length alone cannot describe the pre-call history. Unlike
+	// ThinkStream — which records a recovery reply and keeps the turn — a failed
+	// ThinkFull answers nothing, so its input must not stay behind.
+	restore := append([]api.Message(nil), o.history...)
 	o.history = append(o.history, api.Message{Role: "user", Content: input})
 	o.ensureContextBudget(skillCtx)
 
@@ -300,6 +306,7 @@ func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOp
 			return nil
 		})
 		if err != nil {
+			o.history = restore
 			return "", fmt.Errorf("ollama error: %w", err)
 		}
 

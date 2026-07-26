@@ -17,6 +17,7 @@ type slashCommandID int
 const (
 	commandHelp slashCommandID = iota
 	commandClear
+	commandCompact
 	commandSession
 	commandMute
 	commandUnmute
@@ -43,6 +44,7 @@ type slashCommand struct {
 var slashCommands = []slashCommand{
 	{id: commandHelp, name: "/help", usage: "/help [command]", description: "Show commands or help for one command", aliases: []string{"/?", "/commands"}},
 	{id: commandClear, name: "/clear", usage: "/clear", description: "Clear this conversation", aliases: []string{"/c"}},
+	{id: commandCompact, name: "/compact", usage: "/compact", description: "Summarize the conversation and continue from the summary"},
 	{id: commandSession, name: "/session", usage: "/session", description: "Show who owns the model session and how big it is"},
 	{id: commandMute, name: "/mute", usage: "/mute", description: "Pause voice input"},
 	{id: commandUnmute, name: "/unmute", usage: "/unmute", description: "Resume voice input"},
@@ -165,6 +167,8 @@ func (m *conversationModel) executeSlashCommand(command slashCommand, args []str
 		}
 		m.emit(events.ConversationCleared{})
 		return m.resumeListening()
+	case commandCompact:
+		return m.requestCompact()
 	case commandSession:
 		m.emit(events.Info{Message: m.sessionSummary()})
 		return m.resumeListening()

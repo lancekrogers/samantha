@@ -206,6 +206,7 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 				bus.Emit(events.Error{Stage: "session", Message: fmt.Sprintf("save session: %v", err)})
 			}
 		}
+		wireCompact(p, cfg, sess, bus)
 
 		rt := &appTUI.ConversationRuntime{
 			Pipeline:     p,
@@ -261,6 +262,23 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 			rt.Seed = sess.Turns
 		}
 		return rt, nil
+	}
+}
+
+// wireCompact equips the pipeline for /compact: the resolved summarize
+// instruction and a pre-compact session backup. A prompt-resolution failure
+// disables /compact with a visible error instead of blocking startup.
+func wireCompact(p *pipeline.Pipeline, cfg *config.Config, sess *session.Session, bus *events.Bus) {
+	prompt, err := brain.CompactInstruction(cfg)
+	if err != nil {
+		bus.Emit(events.Error{Stage: "compact", Message: fmt.Sprintf("compact prompt: %v (/compact disabled)", err)})
+		return
+	}
+	p.CompactPrompt = prompt
+	p.OnCompactBackup = func(turns []brain.Turn) {
+		if err := sess.SaveBackup(turns); err != nil {
+			bus.Emit(events.Error{Stage: "compact", Message: fmt.Sprintf("pre-compact backup: %v", err)})
+		}
 	}
 }
 
