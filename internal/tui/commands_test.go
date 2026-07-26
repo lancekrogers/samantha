@@ -307,3 +307,68 @@ func runCmd(cmd tea.Cmd) tea.Msg {
 	}
 	return cmd()
 }
+
+// A barge-in parks its draft for the cancel drain. If /compact then wins that
+// drain the draft is dropped — but it has to be dropped completely: a draft left
+// in pendingText submits itself the next time any cancel drains, long after the
+// user typed it. The text-turn drain path always cleared it; the voice path did
+// not, so the same barge-in could resurface after a compact.
+func TestCompactWinningCancelDrainDiscardsParkedDraft(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		done tea.Msg
+	}{
+		{"voice turn drain", voiceTurnDoneMsg{}},
+		{"text turn drain", textTurnDoneMsg{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &fakeTurnRunner{}
+			m, bus := startedConversation(t, runner, true)
+			m.deps.compact = func(context.Context) error { return nil }
+
+			var infos []string
+			bus.SubscribeAll(func(e events.Event) {
+				if i, ok := e.(events.Info); ok {
+					infos = append(infos, i.Message)
+				}
+			})
+
+			// Park a barged-in draft, then queue /compact behind it.
+			m.turnState = turnVoiceCanceling
+			m.pendingText = "typed instead"
+			m.pendingUserEcho = "typed instead"
+			m, _ = typeAndEnter(m, "/compact")
+			if !m.pendingCompact {
+				t.Fatal("/compact during a cancel must queue behind the drain")
+			}
+
+			m, cmd := m.Update(tt.done)
+			if msg := runCmd(cmd); msg == nil {
+				t.Fatal("drained cancel did not dispatch the queued compact")
+			}
+			if m.pendingText != "" {
+				t.Fatalf("pendingText = %q, want it discarded when compact wins", m.pendingText)
+			}
+			// The echo marker suppresses the next matching UserInput bubble, so a
+			// stale one swallows the user's re-send of the same message.
+			if m.pendingUserEcho != "" {
+				t.Fatalf("pendingUserEcho = %q, want it cleared with the draft", m.pendingUserEcho)
+			}
+			if len(infos) != 1 || !strings.Contains(infos[0], "not sent") {
+				t.Fatalf("infos = %v, want one line telling the user the draft was not sent", infos)
+			}
+
+			// The regression: a later cancel with nothing new typed must resume
+			// listening, not submit the draft the compact discarded.
+			m, _ = m.Update(compactDoneMsg{})
+			m.turnState = turnVoiceCanceling
+			m, _ = m.Update(voiceTurnDoneMsg{})
+			if m.turnState == turnTextRunning {
+				t.Fatal("discarded draft was submitted by a later cancel drain")
+			}
+			if got := runner.texts(); len(got) != 0 {
+				t.Fatalf("runner text turns = %v, want none — the draft was discarded", got)
+			}
+		})
+	}
+}

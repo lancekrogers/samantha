@@ -113,7 +113,7 @@ func (g *GrokBrain) ThinkStream(ctx context.Context, input string, streamOpts St
 // reached out, and any terminal stream error. The caller finalizes once, after
 // any resume-failure retry, so a failed first attempt never emits the fallback.
 func (g *GrokBrain) streamAttempt(ctx context.Context, out chan<- string, streamOpts StreamOptions) (string, bool, error) {
-	prompt := g.buildPrompt()
+	prompt := g.buildPrompt(streamOpts.OmitTurnInstruction)
 
 	events, errs := g.client.StreamPrompt(ctx, prompt, g.runOptions(grok.StreamingJSONOutput, streamOpts.ToolsEnabled))
 
@@ -158,6 +158,9 @@ func (g *GrokBrain) streamAttempt(ctx context.Context, out chan<- string, stream
 
 // ThinkFull sends input and waits for the complete response.
 func (g *GrokBrain) ThinkFull(ctx context.Context, input string, streamOpts StreamOptions) (string, error) {
+	// Same append-then-roll-back contract as Claude: the prompt comes from
+	// history, and a turn that never answered must not leave its input behind.
+	restore := len(g.history)
 	g.history = append(g.history, Turn{Role: "user", Content: input})
 
 	resuming := g.sessionID != ""
@@ -171,6 +174,7 @@ func (g *GrokBrain) ThinkFull(ctx context.Context, input string, streamOpts Stre
 		response, err = g.thinkFullAttempt(ctx, streamOpts)
 	}
 	if err != nil {
+		g.history = g.history[:restore]
 		return "", err
 	}
 
@@ -185,7 +189,7 @@ func (g *GrokBrain) ThinkFull(ctx context.Context, input string, streamOpts Stre
 // decodeOutput only populates GrokResult.SessionID and IsError when it parses
 // a JSON result — plain output returns Text alone.
 func (g *GrokBrain) thinkFullAttempt(ctx context.Context, streamOpts StreamOptions) (string, error) {
-	prompt := g.buildPrompt()
+	prompt := g.buildPrompt(streamOpts.OmitTurnInstruction)
 
 	result, err := g.client.RunPromptCtx(ctx, prompt, g.runOptions(grok.JSONOutput, streamOpts.ToolsEnabled))
 	if err != nil {
@@ -243,7 +247,10 @@ func (g *GrokBrain) runOptions(format grok.OutputFormat, toolsEnabled bool) *gro
 	return opts
 }
 
-func (g *GrokBrain) buildPrompt() string {
+// buildPrompt renders the next turn for the CLI. omitTurnInstruction leaves off
+// the per-turn instruction so a meta turn's own instruction is the last thing
+// the model reads.
+func (g *GrokBrain) buildPrompt(omitTurnInstruction bool) string {
 	var parts []string
 
 	// Only prepend flattened history when no CLI session carries it. With a
@@ -269,8 +276,10 @@ func (g *GrokBrain) buildPrompt() string {
 	}
 
 	parts = append(parts, fmt.Sprintf("User: %s", g.history[len(g.history)-1].Content))
-	parts = append(parts, "")
-	parts = append(parts, g.turnInstruction)
+	if !omitTurnInstruction {
+		parts = append(parts, "")
+		parts = append(parts, g.turnInstruction)
+	}
 
 	return strings.Join(parts, "\n")
 }

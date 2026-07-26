@@ -377,6 +377,22 @@ func (m *conversationModel) beginTextBargeIn(text string) tea.Cmd {
 	return nil
 }
 
+// discardDraft drops a barged-in draft that /compact beat to the cancel drain.
+// The echo bubble stays as scrollback, but the pending-echo marker has to clear:
+// it suppresses the next matching UserInput bubble, so leaving it set would
+// swallow the user's re-send of the same text. The drop is announced because the
+// draft was echoed and is never going to be answered.
+func (m *conversationModel) discardDraft(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	if m.pendingUserEcho == text {
+		m.pendingUserEcho = ""
+	}
+	m.emit(events.Info{Message: "Compacting — the message you typed was not sent. Send it again once the summary lands."})
+}
+
 // expandPaletteSelection replaces an incomplete slash prefix with the
 // highlighted palette match (e.g. "/sett" → "/settings") so Enter runs the
 // selected command instead of reporting "Unknown command".
@@ -482,12 +498,13 @@ func (m *conversationModel) handleVoiceTurnDone(msg voiceTurnDoneMsg) tea.Cmd {
 	m.turnState = turnIdle
 
 	if wasCanceling {
-		if m.pendingCompact {
-			m.pendingCompact = false
-			return m.dispatchCompact()
-		}
 		text := m.pendingText
 		m.pendingText = ""
+		if m.pendingCompact {
+			m.pendingCompact = false
+			m.discardDraft(text)
+			return m.dispatchCompact()
+		}
 		if text != "" {
 			return m.submitText(text)
 		}
@@ -546,6 +563,7 @@ func (m *conversationModel) handleTextTurnDone(msg textTurnDoneMsg) tea.Cmd {
 	if wasCanceling {
 		if m.pendingCompact {
 			m.pendingCompact = false
+			m.discardDraft(pending)
 			return m.dispatchCompact()
 		}
 		if pending != "" {

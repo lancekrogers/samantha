@@ -100,7 +100,7 @@ func (d *Document) Validate() error {
 	switch d.Prompt.Kind {
 	case KindPersona, KindSystem, KindStyle, KindPronunciation, KindTurn, KindCompact:
 	default:
-		return fmt.Errorf("prompt document %q: unknown kind %q (valid: persona, system, style, pronunciation, turn)", d.Prompt.Name, d.Prompt.Kind)
+		return fmt.Errorf("prompt document %q: unknown kind %q (valid: persona, system, style, pronunciation, turn, compact)", d.Prompt.Name, d.Prompt.Kind)
 	}
 	if strings.TrimSpace(d.Prompt.SystemPrompt.Identity) == "" {
 		return fmt.Errorf("prompt document %q: system_prompt missing identity", d.Prompt.Name)

@@ -226,7 +226,7 @@ func (b *Brain) warnSessionSize(streamOpts StreamOptions) {
 // touch b.history or the fallback text — the caller finalizes once, after any
 // resume-failure retry, so a failed first attempt never emits the fallback.
 func (b *Brain) streamAttempt(ctx context.Context, out chan<- string, streamOpts StreamOptions) (string, bool, error) {
-	prompt := b.buildPrompt()
+	prompt := b.buildPrompt(streamOpts.OmitTurnInstruction)
 
 	// Partial (stream_event) messages are not requested: chunking is
 	// per-assistant-message, so deltas would be discarded anyway.
@@ -338,6 +338,10 @@ func resultError(provider, subtype, text string) error {
 
 // ThinkFull sends input and waits for the complete response.
 func (b *Brain) ThinkFull(ctx context.Context, input string, streamOpts StreamOptions) (string, error) {
+	// The prompt is built from history, so the input has to be appended before
+	// the call — and rolled back if the turn never produced an answer, or the
+	// unanswered prompt stays in the transcript as a user turn.
+	restore := len(b.history)
 	b.history = append(b.history, Turn{Role: "user", Content: input})
 
 	resuming := b.sessionID != ""
@@ -351,6 +355,7 @@ func (b *Brain) ThinkFull(ctx context.Context, input string, streamOpts StreamOp
 		response, err = b.thinkFullAttempt(ctx, streamOpts)
 	}
 	if err != nil {
+		b.history = b.history[:restore]
 		return "", err
 	}
 
@@ -384,7 +389,7 @@ func (b *Brain) estimateSessionTokens() int {
 // id for resume. JSON output is required here (not plain text): the SDK only
 // populates ClaudeResult.SessionID when it parses a JSON transcript.
 func (b *Brain) thinkFullAttempt(ctx context.Context, streamOpts StreamOptions) (string, error) {
-	prompt := b.buildPrompt()
+	prompt := b.buildPrompt(streamOpts.OmitTurnInstruction)
 	opts := b.runOptions(claude.JSONOutput, streamOpts.ToolsEnabled)
 
 	result, err := b.client.RunPromptCtx(ctx, prompt, opts)
@@ -408,7 +413,10 @@ func (b *Brain) thinkFullAttempt(ctx context.Context, streamOpts StreamOptions) 
 	return response, nil
 }
 
-func (b *Brain) buildPrompt() string {
+// buildPrompt renders the next turn for the CLI. omitTurnInstruction leaves off
+// the per-turn instruction so a meta turn's own instruction is the last thing
+// the model reads.
+func (b *Brain) buildPrompt(omitTurnInstruction bool) string {
 	var parts []string
 
 	// Only prepend flattened history when no CLI session carries it. With a
@@ -434,8 +442,10 @@ func (b *Brain) buildPrompt() string {
 	}
 
 	parts = append(parts, fmt.Sprintf("User: %s", b.history[len(b.history)-1].Content))
-	parts = append(parts, "")
-	parts = append(parts, b.turnInstruction)
+	if !omitTurnInstruction {
+		parts = append(parts, "")
+		parts = append(parts, b.turnInstruction)
+	}
 
 	return strings.Join(parts, "\n")
 }

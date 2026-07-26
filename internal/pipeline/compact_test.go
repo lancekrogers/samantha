@@ -18,6 +18,7 @@ type compactBrain struct {
 	summary     string
 	fullErr     error
 	thinkInputs []string
+	thinkOpts   []brain.StreamOptions
 	loaded      [][]brain.Turn
 }
 
@@ -25,15 +26,27 @@ func (b *compactBrain) ThinkStream(context.Context, string, brain.StreamOptions)
 	return nil, errors.New("not used")
 }
 
-func (b *compactBrain) ThinkFull(ctx context.Context, input string, _ brain.StreamOptions) (string, error) {
-	if ctx.Err() != nil {
-		return "", ctx.Err()
-	}
+// ThinkFull models the real provider contract: the input is appended before the
+// model call (the prompt is built from history) and rolled back if the call
+// fails. A fake that skips the append on the error path cannot observe a
+// dangling compact turn, which is what made the failure test a false green.
+func (b *compactBrain) ThinkFull(ctx context.Context, input string, opts brain.StreamOptions) (string, error) {
 	b.thinkInputs = append(b.thinkInputs, input)
-	if b.fullErr != nil {
-		return "", b.fullErr
+	b.thinkOpts = append(b.thinkOpts, opts)
+
+	restore := len(b.history)
+	b.history = append(b.history, brain.Turn{Role: "user", Content: input})
+
+	err := b.fullErr
+	if err == nil {
+		err = ctx.Err()
 	}
-	b.history = append(b.history, brain.Turn{Role: "user", Content: input}, brain.Turn{Role: "samantha", Content: b.summary})
+	if err != nil {
+		b.history = b.history[:restore]
+		return "", err
+	}
+
+	b.history = append(b.history, brain.Turn{Role: "samantha", Content: b.summary})
 	return b.summary, nil
 }
 
@@ -42,6 +55,18 @@ func (b *compactBrain) History() []brain.Turn { return b.history }
 func (b *compactBrain) LoadHistory(turns []brain.Turn) {
 	b.history = turns
 	b.loaded = append(b.loaded, turns)
+}
+
+func assertTurns(t *testing.T, got, want []brain.Turn, context string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s = %+v, want %+v", context, got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%s[%d] = %+v, want %+v", context, i, got[i], want[i])
+		}
+	}
 }
 
 func compactHistory() []brain.Turn {
@@ -80,6 +105,14 @@ func TestCompactConversationSummarizesAndReseeds(t *testing.T) {
 	if len(b.thinkInputs) != 1 || b.thinkInputs[0] != "SUMMARIZE THE CONVERSATION" {
 		t.Fatalf("summarize turn inputs = %v, want the compact prompt once", b.thinkInputs)
 	}
+	// The briefing has to be the model's last instruction: the per-turn voice
+	// instruction ("2–3 sentences max") is appended after it otherwise.
+	if !b.thinkOpts[0].OmitTurnInstruction {
+		t.Fatal("summarize turn must set OmitTurnInstruction")
+	}
+	if b.thinkOpts[0].ToolsEnabled {
+		t.Fatal("summarize turn must not enable tools")
+	}
 	// Seed: summary first, then the last exchange verbatim (from the
 	// pre-summarize snapshot, not the mutated history).
 	want := []brain.Turn{
@@ -104,6 +137,50 @@ func TestCompactConversationSummarizesAndReseeds(t *testing.T) {
 	}
 	if saves != 1 {
 		t.Fatalf("OnTurn calls = %d, want 1 (persist the compacted session)", saves)
+	}
+}
+
+// An ollama tool loop leaves history ending on tool/assistant turns. Seeding a
+// blind last-two slice then strands a tool result — brain.Turn has no tool-call
+// id, so the assistant message that requested it can never come along — and
+// loses the user turn that started the exchange.
+func TestCompactConversationSeedsPastToolTurns(t *testing.T) {
+	toolTail := []brain.Turn{
+		{Role: "user", Content: "one"},
+		{Role: "assistant", Content: "reply one"},
+		{Role: "user", Content: "what is in that file"},
+		{Role: "assistant", Content: ""}, // tool-call-only message
+		{Role: "tool", Content: "file contents"},
+		{Role: "assistant", Content: "it holds the config"},
+	}
+	b := &compactBrain{history: toolTail, summary: "the summary"}
+	p := &Pipeline{Brain: b, CompactPrompt: "S"}
+
+	if err := p.CompactConversation(context.Background()); err != nil {
+		t.Fatalf("CompactConversation() error = %v", err)
+	}
+	assertTurns(t, b.history, []brain.Turn{
+		{Role: "assistant", Content: "the summary"},
+		{Role: "user", Content: "what is in that file"},
+		{Role: "assistant", Content: "it holds the config"},
+	}, "seed after a tool-loop tail")
+}
+
+func TestCompactTailBounds(t *testing.T) {
+	// No user turn within the bound: the tail is capped instead of walking the
+	// whole transcript back, so the seed still fits the ≤6-turn flatten window.
+	var assistantOnly []brain.Turn
+	for range 8 {
+		assistantOnly = append(assistantOnly, brain.Turn{Role: "assistant", Content: "reply"})
+	}
+	if got := compactTail(assistantOnly); len(got) != maxCompactTail {
+		t.Fatalf("tail length = %d, want %d (bounded)", len(got), maxCompactTail)
+	}
+
+	// Everything filtered out is an empty tail, not a panic: the summary alone
+	// reseeds the conversation.
+	if got := compactTail([]brain.Turn{{Role: "tool", Content: "x"}, {Role: "assistant", Content: " "}}); len(got) != 0 {
+		t.Fatalf("tail = %+v, want empty", got)
 	}
 }
 
@@ -136,6 +213,9 @@ func TestCompactConversationGuards(t *testing.T) {
 		if saves != 0 {
 			t.Fatal("OnTurn must not run on failure")
 		}
+		// The conversation must be exactly what it was: no compact briefing
+		// left parked as a user turn, and no reseed.
+		assertTurns(t, b.history, compactHistory(), "history after a failed summarize")
 	})
 
 	t.Run("canceled context", func(t *testing.T) {
@@ -149,5 +229,6 @@ func TestCompactConversationGuards(t *testing.T) {
 		if len(b.loaded) != 0 {
 			t.Fatal("LoadHistory must not run after cancellation")
 		}
+		assertTurns(t, b.history, compactHistory(), "history after cancellation")
 	})
 }

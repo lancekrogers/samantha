@@ -1143,6 +1143,40 @@ func (p *Pipeline) sessionWarnHook() func(promptTokens, threshold int) {
 //
 // Callers must own the pipeline (no turn in flight) — the TUI gates this the
 // same way it gates text turns.
+// maxCompactTail bounds the turns kept after the summary. With the summary
+// itself that is 5, so the next turn still fits the providers' ≤6-turn flatten
+// window.
+const maxCompactTail = 4
+
+// compactTail picks the turns that follow the summary in the reseeded history:
+// the exchange the conversation is in the middle of, found by walking back to
+// the last user turn rather than blindly taking the last two. An ollama tool
+// loop ends on tool/assistant turns, so a fixed pair can miss the user turn
+// that started the exchange entirely.
+//
+// Tool turns never survive the reseed: brain.Turn carries no tool-call id, so a
+// tool result cannot be seeded together with the assistant message that
+// requested it — a stranded one is a malformed messages[] for the next request.
+// Empty turns (a tool-call-only assistant message) go with them.
+func compactTail(before []brain.Turn) []brain.Turn {
+	start := len(before)
+	for i := len(before) - 1; i >= 0 && len(before)-i <= maxCompactTail; i-- {
+		start = i
+		if before[i].Role == "user" {
+			break
+		}
+	}
+
+	tail := make([]brain.Turn, 0, len(before)-start)
+	for _, t := range before[start:] {
+		if t.Role == "tool" || strings.TrimSpace(t.Content) == "" {
+			continue
+		}
+		tail = append(tail, t)
+	}
+	return tail
+}
+
 func (p *Pipeline) CompactConversation(ctx context.Context) error {
 	if p.CompactPrompt == "" {
 		return errors.New("compact prompt not configured")
@@ -1155,15 +1189,22 @@ func (p *Pipeline) CompactConversation(ctx context.Context) error {
 	// Snapshot before the summarize turn appends to history (History may
 	// alias the provider's live slice).
 	before := append([]brain.Turn(nil), history...)
-	tail := before[turnsBefore-2:]
+	tail := compactTail(before)
 	if p.OnCompactBackup != nil {
 		p.OnCompactBackup(before)
 	}
 
 	ctx, cancel := p.withBrainTimeout(ctx)
 	defer cancel()
-	summary, err := p.Brain.ThinkFull(ctx, p.CompactPrompt, brain.StreamOptions{})
+	// OmitTurnInstruction: the compact briefing asks for a dense document, and
+	// the per-turn voice instruction ("2–3 sentences max") would otherwise land
+	// after it as the model's last word. Tools stay off — this turn only reads
+	// the conversation it already has.
+	summary, err := p.Brain.ThinkFull(ctx, p.CompactPrompt, brain.StreamOptions{OmitTurnInstruction: true})
 	if err != nil {
+		// Providers roll their own appended input back on failure, so history is
+		// already the pre-compact transcript here — no LoadHistory (it would
+		// drop a still-valid harness session and floor it to the seed).
 		return fmt.Errorf("compact summarize turn: %w", err)
 	}
 
