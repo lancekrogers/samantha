@@ -385,3 +385,199 @@ func TestThinkFullResultErrorIsNotSpoken(t *testing.T) {
 		t.Fatalf("history = %+v, want only the user turn", b.history)
 	}
 }
+
+// assistantMsgUsage is assistantMsg plus the per-request token accounting the
+// CLI stamps on assistant messages.
+func assistantMsgUsage(text string, input, cacheRead, cacheCreate, output int) claude.Message {
+	body, _ := json.Marshal(map[string]any{
+		"content": []map[string]string{{"type": "text", "text": text}},
+		"usage": map[string]int{
+			"input_tokens":                input,
+			"cache_read_input_tokens":     cacheRead,
+			"cache_creation_input_tokens": cacheCreate,
+			"output_tokens":               output,
+		},
+	})
+	return claude.Message{Type: "assistant", Message: body}
+}
+
+func TestThinkStreamReportsUsage(t *testing.T) {
+	// Regression: the claude path never called OnUsage, so claude users got no
+	// token line in the TUI while ollama users did. Prefill excludes cache
+	// reads so warm-prefix turns stay small; the budget still tracks full size.
+	fake := &fakeClaudeClient{
+		streamScripts: []streamScript{
+			{msgs: []claude.Message{assistantMsgUsage("Hi.", 2, 15672, 21, 7), resultMsg("sess-1")}},
+		},
+	}
+	b := newTestBrain(fake)
+
+	var gotPrefill, gotGen int
+	var calls int
+	s, err := b.ThinkStream(context.Background(), "hello", StreamOptions{
+		OnUsage: func(prefill, gen int) { calls++; gotPrefill, gotGen = prefill, gen },
+	})
+	if err != nil {
+		t.Fatalf("ThinkStream() error = %v", err)
+	}
+	if _, res := collectStream(t, s); res.Err != nil {
+		t.Fatalf("stream error = %v", res.Err)
+	}
+	if calls != 1 {
+		t.Fatalf("OnUsage called %d times, want 1", calls)
+	}
+	// UI prefill = input + cache creation (not cache reads).
+	if gotPrefill != 23 {
+		t.Fatalf("prefill = %d, want 23 (2 + 21)", gotPrefill)
+	}
+	if gotGen != 7 {
+		t.Fatalf("gen = %d, want 7", gotGen)
+	}
+	// Budget counter still sees the full prompt including cache reads.
+	if b.promptTokens != 15695 {
+		t.Fatalf("promptTokens = %d, want 15695 (2 + 15672 + 21)", b.promptTokens)
+	}
+}
+
+func TestThinkStreamSkipsZeroUsage(t *testing.T) {
+	fake := &fakeClaudeClient{
+		streamScripts: []streamScript{
+			{msgs: []claude.Message{assistantMsgUsage("Hi.", 0, 0, 0, 0), resultMsg("sess-1")}},
+		},
+	}
+	b := newTestBrain(fake)
+	var calls int
+	s, err := b.ThinkStream(context.Background(), "hello", StreamOptions{
+		OnUsage: func(prefill, gen int) { calls++ },
+	})
+	if err != nil {
+		t.Fatalf("ThinkStream() error = %v", err)
+	}
+	if _, res := collectStream(t, s); res.Err != nil {
+		t.Fatalf("stream error = %v", res.Err)
+	}
+	if calls != 0 {
+		t.Fatalf("OnUsage called %d times on zero usage, want 0", calls)
+	}
+}
+
+func TestSessionBudgetResetsSessionAndReflattens(t *testing.T) {
+	fake := &fakeClaudeClient{
+		streamScripts: []streamScript{
+			// Turn 1 stays under budget.
+			{msgs: []claude.Message{assistantMsgUsage("One.", 10, 100, 0, 5), resultMsg("sess-1")}},
+			// Turn 2 crosses it — resumed, but the session is dropped afterwards.
+			{msgs: []claude.Message{assistantMsgUsage("Two.", 10, 6000, 0, 5), resultMsg("sess-1")}},
+			// Turn 3 must start fresh: no ResumeID, history flattened back in.
+			{msgs: []claude.Message{assistantMsgUsage("Three.", 10, 100, 0, 5), resultMsg("sess-2")}},
+		},
+	}
+	b := newTestBrain(fake)
+	b.cfg.ClaudeMaxSessionTokens = 5000
+
+	for _, q := range []string{"first", "second", "third"} {
+		if _, res := collectStream(t, mustStream(t, b, q)); res.Err != nil {
+			t.Fatalf("turn %q error = %v", q, res.Err)
+		}
+	}
+
+	if got := fake.streamOpts[1].ResumeID; got != "sess-1" {
+		t.Fatalf("turn 2 ResumeID = %q, want sess-1 (budget applies after the turn)", got)
+	}
+	if got := fake.streamOpts[2].ResumeID; got != "" {
+		t.Fatalf("turn 3 ResumeID = %q, want empty after the budget reset", got)
+	}
+	if p := fake.streamPrompts[2]; !strings.Contains(p, "Recent conversation:") {
+		t.Fatalf("turn 3 must re-flatten history:\n%s", p)
+	}
+	// The reset changes the prefix, never the conversation.
+	if len(b.History()) != 6 {
+		t.Fatalf("history = %d turns, want 6 preserved across the reset", len(b.History()))
+	}
+	if b.sessionID != "sess-2" {
+		t.Fatalf("sessionID = %q, want the fresh session captured", b.sessionID)
+	}
+}
+
+func TestSessionBudgetDisabledResumesForever(t *testing.T) {
+	fake := &fakeClaudeClient{
+		streamScripts: []streamScript{
+			{msgs: []claude.Message{assistantMsgUsage("One.", 10, 999999, 0, 5), resultMsg("sess-1")}},
+			{msgs: []claude.Message{assistantMsgUsage("Two.", 10, 999999, 0, 5), resultMsg("sess-1")}},
+		},
+	}
+	b := newTestBrain(fake)
+	b.cfg.ClaudeMaxSessionTokens = 0 // disabled
+
+	collectStream(t, mustStream(t, b, "first"))
+	collectStream(t, mustStream(t, b, "second"))
+
+	if got := fake.streamOpts[1].ResumeID; got != "sess-1" {
+		t.Fatalf("turn 2 ResumeID = %q, want sess-1 with the cap disabled", got)
+	}
+}
+
+func TestThinkFullSessionBudgetResets(t *testing.T) {
+	// ClaudeResult has no usage; the text path must still cap growth via estimate.
+	// Turn 1 stays under budget; turn 2's estimated history crosses it and drops
+	// the session so turn 3 starts fresh (no ResumeID, history re-flattened).
+	fake := &fakeClaudeClient{
+		fullResults: []*claude.ClaudeResult{
+			{Result: "ok", SessionID: "sess-1"},
+			{Result: "ok", SessionID: "sess-1"},
+			{Result: "ok", SessionID: "sess-2"},
+		},
+	}
+	b := newTestBrain(fake)
+	b.systemPrompt = "S"
+	// After turn 1, estimate is small; after turn 2 with large inputs it exceeds.
+	b.cfg.ClaudeMaxSessionTokens = 30
+
+	if _, err := b.ThinkFull(context.Background(), "hi", StreamOptions{}); err != nil {
+		t.Fatalf("turn 1 error = %v", err)
+	}
+	if b.sessionID != "sess-1" {
+		t.Fatalf("turn 1 sessionID = %q, want sess-1 (under budget)", b.sessionID)
+	}
+
+	if _, err := b.ThinkFull(context.Background(), strings.Repeat("x", 200), StreamOptions{}); err != nil {
+		t.Fatalf("turn 2 error = %v", err)
+	}
+	if b.sessionID != "" {
+		t.Fatalf("turn 2 sessionID = %q, want empty after budget reset", b.sessionID)
+	}
+	if b.promptTokens != 0 {
+		t.Fatalf("promptTokens = %d after reset, want 0", b.promptTokens)
+	}
+
+	if _, err := b.ThinkFull(context.Background(), "third", StreamOptions{}); err != nil {
+		t.Fatalf("turn 3 error = %v", err)
+	}
+	if got := fake.runOpts[2].ResumeID; got != "" {
+		t.Fatalf("turn 3 ResumeID = %q, want empty after the budget reset", got)
+	}
+	if p := fake.runPrompts[2]; !strings.Contains(p, "Recent conversation:") {
+		t.Fatalf("turn 3 must re-flatten history:\n%s", p)
+	}
+}
+
+func TestDropSessionOnClearAndLoadHistory(t *testing.T) {
+	b := newTestBrain(&fakeClaudeClient{})
+	b.sessionID = "sess-1"
+	b.promptTokens = 99999
+
+	b.ClearHistory()
+	if b.sessionID != "" || b.promptTokens != 0 {
+		t.Fatalf("ClearHistory: sessionID=%q promptTokens=%d, want both zero", b.sessionID, b.promptTokens)
+	}
+
+	b.sessionID = "sess-2"
+	b.promptTokens = 12345
+	b.LoadHistory([]Turn{{Role: "user", Content: "hi"}, {Role: "assistant", Content: "hey"}})
+	if b.sessionID != "" || b.promptTokens != 0 {
+		t.Fatalf("LoadHistory: sessionID=%q promptTokens=%d, want both zero", b.sessionID, b.promptTokens)
+	}
+	if len(b.history) != 2 {
+		t.Fatalf("LoadHistory history len = %d, want 2", len(b.history))
+	}
+}

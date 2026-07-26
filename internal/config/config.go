@@ -78,8 +78,14 @@ type Config struct {
 	OllamaNumCtx int `mapstructure:"ollama_num_ctx"`
 	// OllamaKeepAlive keeps the model resident between voice turns
 	// (Go duration string; empty = server default).
-	OllamaKeepAlive   string `mapstructure:"ollama_keep_alive"`
-	VoiceToolsEnabled bool   `mapstructure:"voice_tools_enabled"`
+	OllamaKeepAlive string `mapstructure:"ollama_keep_alive"`
+	// ClaudeMaxSessionTokens caps the prompt the claude CLI replays on --resume.
+	// Past it the brain starts a fresh CLI session from recent history instead of
+	// resuming, so prompt size (and TTFT) cannot climb for the life of a
+	// conversation. 0 disables the cap and resumes forever.
+	ClaudeMaxSessionTokens int `mapstructure:"claude_max_session_tokens"`
+
+	VoiceToolsEnabled bool `mapstructure:"voice_tools_enabled"`
 	// ToolCommandTimeout bounds one local run_command invocation in seconds.
 	// The brain turn timeout remains the outer bound for a complete turn.
 	ToolCommandTimeout int `mapstructure:"tool_command_timeout"`
@@ -270,6 +276,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ollama_host", "http://localhost:11434")
 	v.SetDefault("ollama_num_ctx", 8192)
 	v.SetDefault("ollama_keep_alive", "10m")
+	// ~15.7k of the prompt is the system prompt + CLI preamble before any
+	// conversation, and voice turns add only a few hundred tokens each — but a
+	// tool-heavy turn can add thousands. 60k leaves a long voice conversation
+	// untouched while catching a runaway session before TTFT suffers.
+	v.SetDefault("claude_max_session_tokens", 60000)
 	v.SetDefault("voice_tools_enabled", false)
 	v.SetDefault("tool_command_timeout", 30)
 	v.SetDefault("remote_tools_enabled", false)
@@ -353,52 +364,53 @@ func loadLocked() (*Config, error) {
 	// key to its bare upper-cased name and let unrelated vars like the
 	// standard LANGUAGE leak into (and get persisted over) config values.
 	bindings := map[string]string{
-		"tts_provider":             "TTS_PROVIDER",
-		"voice_fallback_provider":  "VOICE_FALLBACK_PROVIDER",
-		"tts_voice":                "TTS_VOICE",
-		"qwen_tts_binary":          "QWEN_TTS_BINARY",
-		"qwen_tts_model":           "QWEN_TTS_MODEL",
-		"qwen_tts_timeout":         "QWEN_TTS_TIMEOUT",
-		"qwen_tts_mode":            "QWEN_TTS_MODE",
-		"qwen_tts_voice":           "QWEN_TTS_VOICE",
-		"qwen_tts_language":        "QWEN_TTS_LANGUAGE",
-		"qwen_tts_instruction":     "QWEN_TTS_INSTRUCTION",
-		"qwen_tts_reference_audio": "QWEN_TTS_REFERENCE_AUDIO",
-		"qwen_tts_reference_text":  "QWEN_TTS_REFERENCE_TEXT",
-		"qwen_tts_consent":         "QWEN_TTS_CONSENT",
-		"output_device":            "OUTPUT_DEVICE",
-		"stt_provider":             "STT_PROVIDER",
-		"input_device":             "INPUT_DEVICE",
-		"stt_mode":                 "STT_MODE",
-		"sherpa_streaming_model":   "SHERPA_STREAMING_MODEL",
-		"whisper_model":            "WHISPER_MODEL",
-		"whispercpp_binary":        "WHISPERCPP_BINARY",
-		"whispercpp_model":         "WHISPERCPP_MODEL",
-		"whispercpp_model_path":    "WHISPERCPP_MODEL_PATH",
-		"models_dir":               "MODELS_DIR",
-		"brain_provider":           "BRAIN_PROVIDER",
-		"grok_model":               "GROK_MODEL",
-		"ollama_model":             "OLLAMA_MODEL",
-		"ollama_embedding_model":   "OLLAMA_EMBEDDING_MODEL",
-		"ollama_host":              "OLLAMA_HOST",
-		"ollama_num_ctx":           "OLLAMA_NUM_CTX",
-		"ollama_keep_alive":        "OLLAMA_KEEP_ALIVE",
-		"voice_tools_enabled":      "VOICE_TOOLS_ENABLED",
-		"tool_command_timeout":     "TOOL_COMMAND_TIMEOUT",
-		"persona":                  "PERSONA",
-		"active_persona":           "ACTIVE_PERSONA",
-		"prompts_dir":              "PROMPTS_DIR",
-		"skills_enabled":           "SKILLS_ENABLED",
-		"skills_dir":               "SKILLS_DIR",
-		"barge_in_enabled":         "BARGE_IN_ENABLED",
-		"vad_threshold":            "VAD_THRESHOLD",
-		"vad_min_speech_duration":  "VAD_MIN_SPEECH_DURATION",
-		"voice_frontend_enabled":   "VOICE_FRONTEND_ENABLED",
-		"calibre_enabled":          "CALIBRE_ENABLED",
-		"calibre_library_path":     "CALIBRE_LIBRARY_PATH",
-		"calibredb_binary":         "CALIBREDB_BINARY",
-		"calibre_convert_binary":   "CALIBRE_CONVERT_BINARY",
-		"calibre_prefer_format":    "CALIBRE_PREFER_FORMAT",
+		"tts_provider":              "TTS_PROVIDER",
+		"voice_fallback_provider":   "VOICE_FALLBACK_PROVIDER",
+		"tts_voice":                 "TTS_VOICE",
+		"qwen_tts_binary":           "QWEN_TTS_BINARY",
+		"qwen_tts_model":            "QWEN_TTS_MODEL",
+		"qwen_tts_timeout":          "QWEN_TTS_TIMEOUT",
+		"qwen_tts_mode":             "QWEN_TTS_MODE",
+		"qwen_tts_voice":            "QWEN_TTS_VOICE",
+		"qwen_tts_language":         "QWEN_TTS_LANGUAGE",
+		"qwen_tts_instruction":      "QWEN_TTS_INSTRUCTION",
+		"qwen_tts_reference_audio":  "QWEN_TTS_REFERENCE_AUDIO",
+		"qwen_tts_reference_text":   "QWEN_TTS_REFERENCE_TEXT",
+		"qwen_tts_consent":          "QWEN_TTS_CONSENT",
+		"output_device":             "OUTPUT_DEVICE",
+		"stt_provider":              "STT_PROVIDER",
+		"input_device":              "INPUT_DEVICE",
+		"stt_mode":                  "STT_MODE",
+		"sherpa_streaming_model":    "SHERPA_STREAMING_MODEL",
+		"whisper_model":             "WHISPER_MODEL",
+		"whispercpp_binary":         "WHISPERCPP_BINARY",
+		"whispercpp_model":          "WHISPERCPP_MODEL",
+		"whispercpp_model_path":     "WHISPERCPP_MODEL_PATH",
+		"models_dir":                "MODELS_DIR",
+		"brain_provider":            "BRAIN_PROVIDER",
+		"grok_model":                "GROK_MODEL",
+		"ollama_model":              "OLLAMA_MODEL",
+		"ollama_embedding_model":    "OLLAMA_EMBEDDING_MODEL",
+		"ollama_host":               "OLLAMA_HOST",
+		"ollama_num_ctx":            "OLLAMA_NUM_CTX",
+		"ollama_keep_alive":         "OLLAMA_KEEP_ALIVE",
+		"claude_max_session_tokens": "CLAUDE_MAX_SESSION_TOKENS",
+		"voice_tools_enabled":       "VOICE_TOOLS_ENABLED",
+		"tool_command_timeout":      "TOOL_COMMAND_TIMEOUT",
+		"persona":                   "PERSONA",
+		"active_persona":            "ACTIVE_PERSONA",
+		"prompts_dir":               "PROMPTS_DIR",
+		"skills_enabled":            "SKILLS_ENABLED",
+		"skills_dir":                "SKILLS_DIR",
+		"barge_in_enabled":          "BARGE_IN_ENABLED",
+		"vad_threshold":             "VAD_THRESHOLD",
+		"vad_min_speech_duration":   "VAD_MIN_SPEECH_DURATION",
+		"voice_frontend_enabled":    "VOICE_FRONTEND_ENABLED",
+		"calibre_enabled":           "CALIBRE_ENABLED",
+		"calibre_library_path":      "CALIBRE_LIBRARY_PATH",
+		"calibredb_binary":          "CALIBREDB_BINARY",
+		"calibre_convert_binary":    "CALIBRE_CONVERT_BINARY",
+		"calibre_prefer_format":     "CALIBRE_PREFER_FORMAT",
 	}
 	for key, env := range bindings {
 		_ = v.BindEnv(key, env)
