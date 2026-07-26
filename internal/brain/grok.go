@@ -181,11 +181,13 @@ func (g *GrokBrain) ThinkFull(ctx context.Context, input string, streamOpts Stre
 }
 
 // thinkFullAttempt runs a single blocking Grok turn and captures the session
-// id for resume.
+// id for resume. JSON output is required here (not plain text): the SDK's
+// decodeOutput only populates GrokResult.SessionID and IsError when it parses
+// a JSON result — plain output returns Text alone.
 func (g *GrokBrain) thinkFullAttempt(ctx context.Context, streamOpts StreamOptions) (string, error) {
 	prompt := g.buildPrompt()
 
-	result, err := g.client.RunPromptCtx(ctx, prompt, g.runOptions(grok.PlainOutput, streamOpts.ToolsEnabled))
+	result, err := g.client.RunPromptCtx(ctx, prompt, g.runOptions(grok.JSONOutput, streamOpts.ToolsEnabled))
 	if err != nil {
 		return "", fmt.Errorf("grok error: %w", err)
 	}
@@ -196,7 +198,7 @@ func (g *GrokBrain) thinkFullAttempt(ctx context.Context, streamOpts StreamOptio
 	// session rejections included). Never speak the error text, and let a
 	// rejected --resume fall through to the flatten retry.
 	if result.IsError {
-		return "", resultError(result.Subtype, result.Text)
+		return "", resultError("grok", result.Subtype, result.Text)
 	}
 
 	// Clean first, then fall back, so the fallback is spoken verbatim.

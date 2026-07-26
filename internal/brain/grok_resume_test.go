@@ -216,6 +216,19 @@ func TestGrokThinkFullCapturesSessionAndRetries(t *testing.T) {
 	if g.sessionID != "gsess-2" {
 		t.Fatalf("sessionID = %q, want gsess-2 after retry", g.sessionID)
 	}
+
+	// Every blocking attempt must request JSON output: the SDK's plain-text
+	// decode returns Text alone, which would silently disable session capture
+	// and the IsError guard against a real CLI.
+	for i, opts := range fake.runOpts {
+		if opts.Format != grok.JSONOutput {
+			t.Fatalf("attempt %d Format = %q, want %q", i, opts.Format, grok.JSONOutput)
+		}
+	}
+	// A resumed blocking turn sends only the new text, no flatten.
+	if p := fake.runPrompts[1]; strings.Contains(p, "Recent conversation:") || !strings.Contains(p, "User: second") {
+		t.Fatalf("resumed blocking prompt must be new-text-only:\n%s", p)
+	}
 }
 
 func TestGrokDropsSessionOnClearAndLoadHistory(t *testing.T) {
