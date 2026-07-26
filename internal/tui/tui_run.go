@@ -77,11 +77,12 @@ func run(cfg *config.Config, build RuntimeBuilder, meeting MeetingBuilder, start
 	// selection, so copying transcript text needs a modifier (option in iTerm2,
 	// fn in Terminal.app, shift in kitty). tui_mouse_enabled=false gives
 	// unmodified selection back; PgUp/PgDn scroll either way.
-	opts := []tea.ProgramOption{tea.WithAltScreen()}
-	if cfg.TUIMouseEnabled {
-		opts = append(opts, tea.WithMouseCellMotion())
-	}
-	p := tea.NewProgram(app, opts...)
+	//
+	// The claim is not a startup option because only the conversation routes
+	// wheel events — App.Update takes it on entering that screen and releases
+	// it on leaving, so the launcher, settings and meeting screens keep
+	// unmodified selection.
+	p := tea.NewProgram(app, tea.WithAltScreen())
 	m, runErr := p.Run()
 	final, _ := m.(App)
 	if final.remote.server != nil {

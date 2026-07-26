@@ -321,6 +321,73 @@ func TestConversationMouseWheelScrollAndFollow(t *testing.T) {
 	}
 }
 
+// updateScroll branches on focus, so wheel must drive the Activity feed when
+// it holds focus. Without this, a regression that always updated m.viewport
+// would still pass the chat-only case above.
+func TestConversationMouseWheelScrollsFocusedActivity(t *testing.T) {
+	m := sizedConversation(t, 80, 10)
+	for i := range 50 {
+		m.appendActivity("stage", fmt.Sprintf("detail %d", i), time.Millisecond)
+	}
+	m.activityFocused = true
+	chatOffset := m.viewport.YOffset
+
+	m, _ = m.Update(tea.MouseMsg{
+		Button: tea.MouseButtonWheelUp,
+		Action: tea.MouseActionPress,
+	})
+	if m.activityViewport.AtBottom() {
+		t.Fatal("mouse wheel up did not scroll the focused activity feed")
+	}
+	if m.followActivity {
+		t.Fatal("mouse wheel up must clear sticky activity follow")
+	}
+	if m.viewport.YOffset != chatOffset {
+		t.Fatalf("wheel moved the unfocused chat viewport: YOffset %d -> %d", chatOffset, m.viewport.YOffset)
+	}
+
+	for !m.activityViewport.AtBottom() {
+		m, _ = m.Update(tea.MouseMsg{
+			Button: tea.MouseButtonWheelDown,
+			Action: tea.MouseActionPress,
+		})
+	}
+	if !m.followActivity {
+		t.Fatal("mouse wheel down to the tail must restore sticky activity follow")
+	}
+}
+
+// Clicks and horizontal wheel are dropped: the composer is always focused, so
+// anything routed past the vertical-wheel filter would disturb drafting.
+func TestConversationIgnoresNonVerticalWheelMouseEvents(t *testing.T) {
+	m := sizedConversation(t, 80, 10)
+	for i := range 50 {
+		m.appendTranscript(fmt.Sprintf("line %d", i))
+	}
+	m.input.SetValue("draft in progress")
+	m.syncEditorFromTextarea()
+
+	offset, draft := m.viewport.YOffset, m.input.Value()
+	for _, button := range []tea.MouseButton{
+		tea.MouseButtonLeft,
+		tea.MouseButtonRight,
+		tea.MouseButtonWheelLeft,
+		tea.MouseButtonWheelRight,
+	} {
+		m, _ = m.Update(tea.MouseMsg{Button: button, Action: tea.MouseActionPress})
+	}
+
+	if m.viewport.YOffset != offset {
+		t.Errorf("non-vertical mouse events scrolled the chat: YOffset %d -> %d", offset, m.viewport.YOffset)
+	}
+	if !m.followChat {
+		t.Error("non-vertical mouse events must not clear sticky chat follow")
+	}
+	if got := m.input.Value(); got != draft {
+		t.Errorf("composer text = %q, want %q unchanged", got, draft)
+	}
+}
+
 // Voice-panel reflow shrinks the chat viewport. Without sticky follow, AtBottom
 // flips false and every later message stays off-screen.
 func TestConversationFollowSurvivesVoicePanelReflow(t *testing.T) {

@@ -164,3 +164,64 @@ func TestSwitchToPickBookStartsLibraryBrowse(t *testing.T) {
 		t.Fatal("switching to pick book should start a browse")
 	}
 }
+
+// The mouse claim costs native text selection, so only the conversation — the
+// one screen that routes wheel events — should hold it. Leaving must give
+// selection back.
+func TestMouseClaimFollowsConversationScreen(t *testing.T) {
+	app := App{cfg: &config.Config{TUIMouseEnabled: true}, screen: screenLauncher}
+	claim, release := tea.EnableMouseCellMotion(), tea.DisableMouse()
+
+	model, cmd := app.Update(switchScreenMsg(screenConversation))
+	app = model.(App)
+	if app.screen != screenConversation {
+		t.Fatalf("screen = %v, want conversation", app.screen)
+	}
+	if !cmdEmits(cmd, claim) {
+		t.Fatal("entering conversation did not claim the mouse")
+	}
+
+	// Staying put must not re-issue the claim.
+	if _, cmd := app.Update(switchScreenMsg(screenConversation)); cmdEmits(cmd, claim) {
+		t.Fatal("re-entering the same screen re-issued the mouse claim")
+	}
+
+	model, cmd = app.Update(switchScreenMsg(screenLauncher))
+	if got := model.(App).screen; got != screenLauncher {
+		t.Fatalf("screen = %v, want launcher", got)
+	}
+	if !cmdEmits(cmd, release) {
+		t.Fatal("leaving conversation did not release the mouse")
+	}
+}
+
+// tui_mouse_enabled=false is the opt-out for users who copy from the
+// transcript: the claim must never be issued.
+func TestMouseClaimSuppressedWhenDisabled(t *testing.T) {
+	app := App{cfg: &config.Config{TUIMouseEnabled: false}, screen: screenLauncher}
+
+	_, cmd := app.Update(switchScreenMsg(screenConversation))
+	if cmdEmits(cmd, tea.EnableMouseCellMotion()) {
+		t.Fatal("tui_mouse_enabled=false still claimed the mouse")
+	}
+}
+
+// cmdEmits reports whether cmd produces want, unwrapping the BatchMsg that
+// tea.Batch returns. Bubble Tea's mouse messages are unexported empty structs,
+// so identity is by value.
+func cmdEmits(cmd tea.Cmd, want tea.Msg) bool {
+	if cmd == nil {
+		return false
+	}
+	switch msg := cmd().(type) {
+	case tea.BatchMsg:
+		for _, sub := range msg {
+			if cmdEmits(sub, want) {
+				return true
+			}
+		}
+		return false
+	default:
+		return msg == want
+	}
+}
