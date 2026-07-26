@@ -14,7 +14,11 @@ type Editor struct {
 	undoStack    *UndoStack
 	width        int
 	height       int
-	scrollOffset int // First visible line
+	scrollOffset int // First visible logical line
+	// scrollRow is the first visible visual row within scrollOffset. Non-zero
+	// when a single logical line wraps taller than the viewport and the cursor
+	// sits on a later visual row of that line.
+	scrollRow int
 }
 
 // NewEditor creates a new vim editor with the given content.

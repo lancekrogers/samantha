@@ -62,6 +62,7 @@ func (e *Editor) View(cfg ViewConfig) string {
 	cursor := e.buffer.Cursor()
 
 	startLine := min(max(e.scrollOffset, 0), max(len(lines)-1, 0))
+	startRow := max(e.scrollRow, 0)
 
 	// Get visual selection range if applicable. V-LINE highlights whole lines,
 	// matching what d/y/c will act on.
@@ -82,24 +83,42 @@ func (e *Editor) View(cfg ViewConfig) string {
 	rows := make([]string, 0, e.height)
 	for lineIdx := startLine; lineIdx < len(lines) && len(rows) < e.height; lineIdx++ {
 		rendered := e.renderLine(lineIdx, lines[lineIdx], cursor, cfg, inVisual, selStartOff, selEndOff)
-		for i, row := range wrapRows(rendered, e.width) {
+		wrapped := wrapRows(rendered, e.width)
+		rowStart := 0
+		if lineIdx == startLine {
+			// Mid-line scroll when one logical line is taller than the viewport.
+			rowStart = min(startRow, max(len(wrapped)-1, 0))
+		}
+		for i := rowStart; i < len(wrapped); i++ {
 			if len(rows) >= e.height {
 				break
 			}
 			// Only the first row of a wrapped line carries its number; the rest
 			// are indented to match, or continuations would start at column 0.
-			rows = append(rows, e.gutter(cfg, lineIdx, i == 0)+row)
+			// i==0 is the true first visual row of the logical line, even when
+			// we start painting mid-line (those rows stay gutter-indented).
+			rows = append(rows, e.gutter(cfg, lineIdx, i == 0)+wrapped[i])
 		}
 	}
 
 	// Pad to exactly height so the caller's layout budget always holds.
+	// Indent tildes under the gutter when line numbers are on, matching the
+	// text column of content rows.
 	for len(rows) < e.height {
-		rows = append(rows, "~")
+		rows = append(rows, e.tildePad(cfg))
 	}
 
 	b.WriteString(strings.Join(rows, "\n"))
 
 	return b.String()
+}
+
+// tildePad is the filler row for empty viewport space (~).
+func (e *Editor) tildePad(cfg ViewConfig) string {
+	if !cfg.ShowLineNums {
+		return "~"
+	}
+	return strings.Repeat(" ", gutterWidth) + "~"
 }
 
 // renderLine renders a single line with cursor/selection/placeholder highlighting.
@@ -216,44 +235,119 @@ func wrapRows(rendered string, width int) []string {
 	return strings.Split(lipgloss.NewStyle().Width(width).Render(rendered), "\n")
 }
 
-// visualRows is how many rows a logical line occupies once wrapped.
-func (e *Editor) visualRows(lineIdx int) int {
+// lineForScroll is the pre-wrap string used for scroll math. It matches what
+// View paints for empty lines (a single space) and, on the cursor line in
+// insert mode at EOL, the extra caret cell so row counts agree with renderLine.
+func (e *Editor) lineForScroll(lineIdx int) string {
 	lines := e.buffer.Lines()
 	if lineIdx < 0 || lineIdx >= len(lines) {
-		return 1
+		return " "
 	}
-	return len(wrapRows(lines[lineIdx], e.width))
+	line := lines[lineIdx]
+	if line == "" {
+		return " "
+	}
+	cursor := e.buffer.Cursor()
+	if e.state.Mode == ModeInsert && lineIdx == cursor.Line && cursor.Col >= len(line) {
+		return line + " "
+	}
+	return line
+}
+
+// visualRows is how many rows a logical line occupies once wrapped. Uses the
+// same pre-wrap content as View so scroll math and paint cannot disagree.
+func (e *Editor) visualRows(lineIdx int) int {
+	return max(len(wrapRows(e.lineForScroll(lineIdx), e.width)), 1)
 }
 
 // EnsureCursorVisible adjusts scroll offset to keep the cursor visible, counting
 // wrapped rows — comparing logical line indices alone let the cursor sit below
-// the viewport whenever earlier lines wrapped.
+// the viewport whenever earlier lines wrapped. When one logical line alone is
+// taller than the viewport, scrollRow advances within that line.
 func (e *Editor) EnsureCursorVisible() {
 	cursor := e.buffer.Cursor()
 
 	if cursor.Line < e.scrollOffset {
 		e.scrollOffset = cursor.Line
+		e.scrollRow = 0
 	}
 	if e.scrollOffset < 0 {
 		e.scrollOffset = 0
+		e.scrollRow = 0
 	}
 
-	// Advance the top line until the cursor's own row fits in the window.
-	for e.scrollOffset < cursor.Line && e.rowsThroughCursor(cursor) > e.height {
-		e.scrollOffset++
+	// Pull the viewport down until the cursor's visual row fits.
+	// Prefer advancing scrollRow on the first visible line (hide its top
+	// wrap-rows) before leaving that line entirely.
+	for e.rowsThroughCursor(cursor) > e.height {
+		if e.scrollOffset < cursor.Line {
+			firstRows := e.visualRows(e.scrollOffset)
+			if e.scrollRow+1 < firstRows {
+				e.scrollRow++
+				continue
+			}
+			e.scrollOffset++
+			e.scrollRow = 0
+			continue
+		}
+		// Cursor line is the top line and still taller than the viewport.
+		through := e.cursorRowInLine(cursor)
+		e.scrollRow = max(through-e.height, 0)
+		break
+	}
+
+	// Cursor moved up within the top line: don't leave it above the window.
+	if e.scrollOffset == cursor.Line {
+		through := e.cursorRowInLine(cursor)
+		if through-1 < e.scrollRow {
+			e.scrollRow = max(through-1, 0)
+		}
 	}
 }
 
+// cursorRowInLine returns the 1-based visual row of the cursor within its
+// logical line, counting through the cell under the cursor (not the prefix
+// before it) so soft-wrap boundaries are not off by one.
+func (e *Editor) cursorRowInLine(cursor Position) int {
+	lines := e.buffer.Lines()
+	if cursor.Line < 0 || cursor.Line >= len(lines) {
+		return 1
+	}
+	line := lines[cursor.Line]
+	col := min(max(cursor.Col, 0), len(line))
+
+	// Build the prefix that includes the cell under the cursor. At EOL in
+	// insert mode lineForScroll already appends the caret cell.
+	var prefix string
+	if col >= len(line) {
+		prefix = e.lineForScroll(cursor.Line)
+	} else if len(line) == 0 {
+		prefix = " "
+	} else {
+		next := stepFwd(line, col)
+		prefix = line[:next]
+	}
+	n := len(wrapRows(prefix, e.width))
+	return max(n, 1)
+}
+
 // rowsThroughCursor counts visual rows from the top of the viewport through the
-// row the cursor sits on.
+// row the cursor sits on, accounting for scrollRow mid-line clipping.
 func (e *Editor) rowsThroughCursor(cursor Position) int {
+	if cursor.Line < e.scrollOffset {
+		return 0
+	}
+	if cursor.Line == e.scrollOffset {
+		return max(e.cursorRowInLine(cursor)-e.scrollRow, 1)
+	}
 	rows := 0
-	for i := e.scrollOffset; i < cursor.Line; i++ {
+	// First visible line may be partially scrolled away.
+	firstRows := e.visualRows(e.scrollOffset)
+	rows += max(firstRows-e.scrollRow, 0)
+	for i := e.scrollOffset + 1; i < cursor.Line; i++ {
 		rows += e.visualRows(i)
 	}
-	line := e.buffer.CurrentLine()
-	col := min(max(cursor.Col, 0), len(line))
-	return rows + len(wrapRows(line[:col], e.width))
+	return rows + e.cursorRowInLine(cursor)
 }
 
 // itoa is a simple int to string conversion.
