@@ -67,6 +67,9 @@ type Player struct {
 	sampleRate int
 	channels   int // device client channel count (mono TTS is expanded into this)
 	frontend   Frontend
+	// aecIngress receives clock-aligned mono PCM from onData and pushes the
+	// capture-rate far-end reference on a worker (callback-safe).
+	aecIngress *aecRefIngress
 	current    *playbackSegment
 	queue      []*playbackSegment
 	playing    atomic.Bool
@@ -94,8 +97,25 @@ func NewPlayerWithDevice(deviceName string) *Player {
 // reference audio for echo cancellation or similar processing.
 func (p *Player) SetFrontend(frontend Frontend) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	old := p.aecIngress
+	p.aecIngress = nil
 	p.frontend = frontend
+	p.mu.Unlock()
+	if old != nil {
+		old.Close()
+	}
+	if frontend == nil {
+		return
+	}
+	ingress := newAECRefIngress(frontend)
+	p.mu.Lock()
+	if p.closed || p.frontend != frontend {
+		p.mu.Unlock()
+		ingress.Close()
+		return
+	}
+	p.aecIngress = ingress
+	p.mu.Unlock()
 }
 
 // PlayStream queues a synthesized PCM stream for playback.
@@ -166,7 +186,14 @@ func (p *Player) Close() error {
 	p.ctx = nil
 	debug := p.debug
 	p.debug = nil
+	ingress := p.aecIngress
+	p.aecIngress = nil
+	p.frontend = nil
 	p.mu.Unlock()
+
+	if ingress != nil {
+		ingress.Close()
+	}
 
 	if device != nil {
 		_ = device.Stop()
@@ -265,15 +292,14 @@ func (p *Player) pumpSegment(ctx context.Context, segment *playbackSegment, stre
 // device callback runs lets ProcessCapture drain the ref queue while the segment
 // is still waiting to play — so by the time speakers emit, the canceller has
 // nothing left and barge-in hears her own voice. onData feeds the reference
-// sample-clock-aligned as audio actually leaves the device.
-func finalizeSegment(segment *playbackSegment, frontend Frontend, debug *playerDebugRecorder, samples []float32, inputRate, outputRate int, streamErr error) {
+// sample-clock-aligned as audio actually leaves the device (via aecIngress).
+func finalizeSegment(segment *playbackSegment, _ Frontend, debug *playerDebugRecorder, samples []float32, inputRate, outputRate int, streamErr error) {
 	if debug != nil {
 		debug.captureSource(inputRate, samples)
 	}
 	if inputRate != outputRate {
 		samples = resample(samples, inputRate, outputRate)
 	}
-	_ = frontend // reference path is owned by onData; keep signature stable
 	segment.append(float32ToPCM16(samples))
 	segment.finishInput(streamErr)
 }
@@ -476,7 +502,7 @@ func (p *Player) onData(outputSamples, inputSamples []byte, frameCount uint32) {
 	}
 	monoBuf := p.monoScratch
 	debug := p.debug
-	frontend := p.frontend
+	ingress := p.aecIngress
 	deviceRate := p.sampleRate
 	p.mu.Unlock()
 	clearBytes(monoBuf)
@@ -495,11 +521,10 @@ func (p *Player) onData(outputSamples, inputSamples []byte, frameCount uint32) {
 		if debug != nil {
 			debug.captureCallback(outputSamples, int(frameCount), writtenFrames)
 		}
-		// Feed AEC only what actually left the device this callback, resampled
-		// to the capture clock (16 kHz). Bulk-pushing earlier is wrong: the
-		// mic path drains the ref queue before these frames are audible.
-		if frontend != nil && writtenFrames > 0 {
-			pushPlaybackReferenceForCapture(frontend, monoBuf[:writtenFrames*2], deviceRate)
+		// Callback-safe AEC handoff: copy into a pooled slot only (no alloc,
+		// no Frontend mutex). Worker resamples with preserved phase and pushes.
+		if ingress != nil && writtenFrames > 0 {
+			ingress.TryEnqueueS16(monoBuf[:writtenFrames*2], deviceRate)
 		}
 	}()
 
@@ -531,22 +556,6 @@ func (p *Player) onData(outputSamples, inputSamples []byte, frameCount uint32) {
 			p.finishSegment(segment)
 		}
 	}
-}
-
-// pushPlaybackReferenceForCapture converts mono S16LE at the device sample
-// rate into capture-rate float32 and pushes it as the AEC far-end reference.
-func pushPlaybackReferenceForCapture(frontend Frontend, monoS16 []byte, deviceRate int) {
-	if frontend == nil || len(monoS16) < 2 {
-		return
-	}
-	ref := bytesToFloat32(monoS16)
-	if deviceRate > 0 && deviceRate != SampleRate {
-		ref = resample(ref, deviceRate, SampleRate)
-	}
-	if len(ref) == 0 {
-		return
-	}
-	frontend.PushPlaybackReference(ref)
 }
 
 // expandMonoS16LE writes mono S16LE frames into an interleaved multi-channel

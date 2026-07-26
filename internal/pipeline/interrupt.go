@@ -8,15 +8,14 @@ import (
 
 const (
 	// bargeInArmDelay holds off interrupt detection after playback starts so the
-	// NLMS echo canceller can lock onto the far-end reference and residual
-	// self-echo of the first syllables does not trip barge-in. 600ms was too
-	// short once AEC reference feeding was fixed to be clock-aligned: adaptation
-	// still needs a beat at the start of each utterance.
-	bargeInArmDelay = 1200 * time.Millisecond
+	// echo of Samantha's own first words doesn't trip barge-in. Keep this short
+	// enough that "stop" / "wait" still interrupt promptly once armed; AEC
+	// reference timing (not a long speech threshold) is what suppresses self-echo.
+	bargeInArmDelay = 600 * time.Millisecond
 	// bargeInMinSpeechChunks requires sustained speech before interrupting, so a
 	// brief burst of residual echo isn't mistaken for the user. Chunks are
-	// ~100ms (capture publish), so 10 ≈ 1s of consecutive speech energy.
-	bargeInMinSpeechChunks = 10
+	// ~100ms (capture publish), so 6 ≈ 0.6s — short enough for "stop"/"no".
+	bargeInMinSpeechChunks = 6
 	// bargeInBufferSize is the capture subscription depth for the controller.
 	bargeInBufferSize = 8
 )
