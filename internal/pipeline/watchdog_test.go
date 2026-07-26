@@ -10,7 +10,44 @@ import (
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/tts"
 )
+
+// TestStallTimeoutHonorsQwenFirstAudioGrace is the regression for Uncle Fu /
+// qwen3-tts degraded turns: the default 8s playback stall fired while the
+// managed Qwen worker was still generating a whole utterance, aborted the
+// turn, and injected "I hit an error while working on that…".
+func TestStallTimeoutHonorsQwenFirstAudioGrace(t *testing.T) {
+	graceful := &graceTTS{grace: 90 * time.Second}
+	p := &Pipeline{TTS: graceful}
+	if got := p.stallTimeout(); got != 90*time.Second {
+		t.Fatalf("stallTimeout() = %v, want provider FirstAudioGrace 90s", got)
+	}
+
+	// Explicit override always wins (including short values used by tests).
+	p.PlaybackStallTimeout = 150 * time.Millisecond
+	if got := p.stallTimeout(); got != 150*time.Millisecond {
+		t.Fatalf("stallTimeout() = %v, want explicit 150ms override", got)
+	}
+
+	// Kokoro-style providers without FirstAudioGrace keep the default.
+	p = &Pipeline{TTS: &fakeTTS{}}
+	if got := p.stallTimeout(); got != defaultPlaybackStallTimeout {
+		t.Fatalf("stallTimeout() = %v, want default %v without grace", got, defaultPlaybackStallTimeout)
+	}
+}
+
+// graceTTS is a minimal Provider that also implements tts.FirstAudioGracer.
+type graceTTS struct {
+	grace time.Duration
+}
+
+func (g *graceTTS) Synthesize(context.Context, string) (*audio.PCMStream, error) {
+	return nil, nil
+}
+func (g *graceTTS) Available() bool                         { return true }
+func (g *graceTTS) ListVoices(string, string) []tts.Voice   { return nil }
+func (g *graceTTS) FirstAudioGrace() time.Duration          { return g.grace }
 
 func TestRunTurnWatchdogRecoversStalledPlayback(t *testing.T) {
 	bus := events.NewBus()

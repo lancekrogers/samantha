@@ -235,6 +235,20 @@ func TestQwenSynthesizeRequestRejectsMalformedAndEmptyWAV(t *testing.T) {
 	}
 }
 
+func TestQwenFirstAudioGraceMatchesSynthTimeout(t *testing.T) {
+	q := newQwen3TTS("fake-qwen3-tts", t.TempDir(), 90*time.Second, nil)
+	if got := q.FirstAudioGrace(); got != 90*time.Second {
+		t.Fatalf("FirstAudioGrace() = %v, want 90s synth timeout", got)
+	}
+	// Zero-timeout constructor falls back to the package default.
+	q = newQwen3TTS("fake-qwen3-tts", t.TempDir(), 0, nil)
+	if got := q.FirstAudioGrace(); got != defaultQwenTTSTimeout {
+		t.Fatalf("FirstAudioGrace() = %v, want default %v", got, defaultQwenTTSTimeout)
+	}
+	// Compile-time check: pipeline stallTimeout type-asserts this interface.
+	var _ FirstAudioGracer = (*Qwen3TTS)(nil)
+}
+
 func TestQwenSynthesizeRequestTimesOutAndCancelsWorker(t *testing.T) {
 	q := newQwen3TTS("fake-qwen3-tts", t.TempDir(), 25*time.Millisecond, fakeQwenCommand(nil, "sleep"))
 	q.alive.Store(true)
