@@ -140,7 +140,7 @@ func TestFinalizeSegmentPlaysPartialAudioOnStreamError(t *testing.T) {
 
 	wantErr := errors.New("stream failed mid-utterance")
 	samples := []float32{0.1, 0.2, 0.3, 0.4}
-	finalizeSegment(s, nil, nil, samples, 24_000, 24_000, wantErr)
+	finalizeSegment(s, nil, samples, 24_000, 24_000, wantErr)
 
 	if !segmentReady(s) {
 		t.Fatal("segment not ready after finalizeSegment on a failed stream")
@@ -173,7 +173,7 @@ func TestFinalizeSegmentResamplesAndSucceeds(t *testing.T) {
 	s.setReadyFrames(0)
 
 	samples := []float32{0, 0.25, 0.5, 0.75, 1, 0.75, 0.5, 0.25}
-	finalizeSegment(s, nil, nil, samples, 24_000, 48_000, nil)
+	finalizeSegment(s, nil, samples, 24_000, 48_000, nil)
 
 	if !segmentReady(s) {
 		t.Fatal("segment not ready after finalizeSegment on a clean stream")

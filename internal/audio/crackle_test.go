@@ -265,7 +265,7 @@ func TestFinalizeSegmentThenCallbackHasNoCrackle(t *testing.T) {
 
 	segment := newPlaybackSegment()
 	segment.setReadyFrames(0)
-	finalizeSegment(segment, nil, nil, collected, inRate, outRate, nil)
+	finalizeSegment(segment, nil, collected, inRate, outRate, nil)
 
 	if !segmentReady(segment) {
 		t.Fatal("segment not ready after finalizeSegment")
@@ -411,7 +411,7 @@ func TestPumpSegmentFullBufferPreventsCallbackCrackle(t *testing.T) {
 			t.Fatalf("context done while collecting: %v", ctx.Err())
 		case frames, ok := <-stream.Frames():
 			if !ok {
-				finalizeSegment(segment, nil, nil, samples, inputRate, outputRate, stream.Err())
+				finalizeSegment(segment, nil, samples, inputRate, outputRate, stream.Err())
 				goto drained
 			}
 			// Critical: do not become ready / do not resample per chunk.

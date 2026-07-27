@@ -6,10 +6,36 @@ import (
 )
 
 const (
-	frontendTargetRMS     = 0.08
-	frontendMaxRefQueue   = SampleRate * 2
-	echoCancellerTaps     = 192
-	echoCancellerStep     = 0.08
+	frontendTargetRMS = 0.08
+	// frontendMaxRefQueue holds far-end audio at the capture sample rate. The
+	// reference FIFO has no independent notion of time: a backlog IS
+	// misalignment, so the cap bounds how far out of alignment the canceller
+	// can drift if the playback and capture clocks disagree. Steady state is
+	// refs.delay (tens of ms); 2s is pure slack.
+	frontendMaxRefQueue = SampleRate * 2
+	// echoCancellerTaps must span the residual echo delay left after
+	// refs.delay removes the bulk device-buffer latency — room reflections,
+	// driver latency beyond the ring buffer, and error in the delay estimate.
+	// Cancellation falls off a cliff the moment the true lag exceeds the tap
+	// window (see TestEchoCancellerERLEAcrossDeviceLatency), so this is sized
+	// for margin, not for the nominal case: 768 taps = 48ms @16kHz.
+	//
+	// 512 (32ms) covered 48kHz but not the rate the player actually prefers.
+	// playbackRateCandidates tries the TTS rate first, so the common device is
+	// 24kHz, where the same 3x512-frame ring is 64ms of output latency and the
+	// delay estimate necessarily under-counts. Measured residual ERLE at 24kHz
+	// with 16ms of driver/acoustic lag: +1.8dB at 512 taps, +7.5dB at 768.
+	// 1024 is slightly worse than 768 (more taps, more gradient noise) and
+	// costs more, so 768 is the knee. Cost is ~190us per 10ms capture chunk.
+	echoCancellerTaps = 768
+	// echoCancellerStep is the NLMS adaptation rate. 0.08 converged too slowly
+	// to be useful on utterance-length audio once the filter grew long enough
+	// to span the real echo delay (~6dB ERLE); 0.4 reaches ~10dB on the same
+	// signal. Measured cost in double-talk is ~0.3dB of near-end preservation:
+	// the |err| > 2.5*|estimated| guard in Process is what keeps the user's own
+	// voice from being adapted away, and it still fires at this rate. Well
+	// inside NLMS stability (step < 2).
+	echoCancellerStep     = 0.4
 	echoCancellerLeak     = 0.9995
 	noiseSuppressorFloor  = 0.12
 	noiseSuppressorTarget = 0.22
@@ -63,6 +89,26 @@ func (f *VoiceFrontend) ProcessCapture(samples []float32) []float32 {
 	f.ns.Process(out)
 	f.agc.Process(out)
 	return out
+}
+
+// SetReferenceDelay declares how far behind the push the far-end audio actually
+// becomes audible, in capture-rate samples. The player derives it from the
+// device buffer it configured; see Player.applyReferenceDelay.
+//
+// Changing it resets the queue: the old backlog was built for the old offset,
+// and holding it would misalign the first burst under the new one.
+func (f *VoiceFrontend) SetReferenceDelay(samples int) {
+	if samples < 0 {
+		samples = 0
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.refs.delay == samples {
+		return
+	}
+	f.refs.delay = samples
+	f.refs.samples = f.refs.samples[:0]
 }
 
 // PushPlaybackReference feeds far-end playback audio into the AEC reference path.
@@ -214,9 +260,22 @@ func (a *automaticGainControl) Process(samples []float32) {
 	}
 }
 
+// sampleQueue is the AEC far-end FIFO. ProcessCapture pops exactly as many
+// reference samples as it has mic samples, so position in the queue is the only
+// clock: reference sample k is paired with mic sample k.
+//
+// delay is what makes that pairing physically true. onData enqueues frames when
+// it *fills* the device buffer, but those frames are not audible until the
+// buffer drains — Periods*PeriodSizeInFrames, plus driver and acoustic latency.
+// Without an offset the canceller is handed the far-end audio tens of
+// milliseconds before its echo reaches the mic, which is outside the filter's
+// tap window, and ERLE collapses to ~0dB no matter how well the rates line up.
 type sampleQueue struct {
 	samples  []float64
 	capacity int
+	// delay is the standing backlog, in capture-rate samples, injected at the
+	// start of each playback burst so pops trail pushes by the output latency.
+	delay int
 }
 
 func (q *sampleQueue) push(samples []float32) {
@@ -224,11 +283,25 @@ func (q *sampleQueue) push(samples []float32) {
 		return
 	}
 
+	// A burst starts with the queue drained (silence pops it empty). Prime the
+	// offset here rather than tracking playback state: these zeros are handed
+	// out while the audio is still inside the device buffer and genuinely
+	// inaudible, so a silent reference is the correct answer for that window.
+	// The resulting backlog also absorbs callback jitter, which is what keeps
+	// the queue from re-priming mid-burst.
+	if len(q.samples) == 0 && q.delay > 0 {
+		q.samples = append(q.samples, make([]float64, q.delay)...)
+	}
+
 	for _, sample := range samples {
 		q.samples = append(q.samples, float64(sample))
 	}
 	if len(q.samples) > q.capacity {
-		q.samples = append([]float64(nil), q.samples[len(q.samples)-q.capacity:]...)
+		// Drop from the front; copy in place rather than reallocating the
+		// whole backlog on every push once the cap is reached.
+		excess := len(q.samples) - q.capacity
+		copy(q.samples, q.samples[excess:])
+		q.samples = q.samples[:q.capacity]
 	}
 }
 
@@ -244,7 +317,8 @@ func (q *sampleQueue) pop(n int) []float64 {
 
 	available := min(len(q.samples), n)
 	copy(out, q.samples[:available])
-	q.samples = append([]float64(nil), q.samples[available:]...)
+	copy(q.samples, q.samples[available:])
+	q.samples = q.samples[:len(q.samples)-available]
 	return out
 }
 
@@ -269,4 +343,12 @@ func clampFloat(value, low, high float64) float64 {
 		return high
 	}
 	return value
+}
+
+// refsSnapshot exposes the pending reference queue for tests that assert on
+// the delay offset. Not part of the Frontend contract.
+func (f *VoiceFrontend) refsSnapshot() []float64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]float64(nil), f.refs.samples...)
 }

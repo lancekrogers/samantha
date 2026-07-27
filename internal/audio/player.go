@@ -15,6 +15,11 @@ import (
 const (
 	playbackChannels         = 1
 	playbackCompactionFrames = 4096
+	// playbackPeriodFrames and playbackPeriods describe the device ring buffer.
+	// Their product is how much audio onData has queued but not yet made
+	// audible, which is the bulk of the AEC reference delay.
+	playbackPeriodFrames = 512
+	playbackPeriods      = 3
 )
 
 // PlaybackResult reports the terminal state of a queued playback segment.
@@ -67,6 +72,9 @@ type Player struct {
 	sampleRate int
 	channels   int // device client channel count (mono TTS is expanded into this)
 	frontend   Frontend
+	// aecIngress receives clock-aligned mono PCM from onData and pushes the
+	// capture-rate far-end reference on a worker (callback-safe).
+	aecIngress *aecRefIngress
 	current    *playbackSegment
 	queue      []*playbackSegment
 	playing    atomic.Bool
@@ -77,6 +85,11 @@ type Player struct {
 	// monoScratch holds one callback period of mono S16 while onData expands
 	// into the multi-channel device buffer. Sized lazily under the callback.
 	monoScratch []byte
+	// observedPeriodFrames is the frame count miniaudio actually asks for.
+	// Backends quantize or override PeriodSizeInFrames, and AEC alignment now
+	// depends on the ring geometry, so the request is no longer trusted as the
+	// truth. Written from the device callback, read when publishing the delay.
+	observedPeriodFrames atomic.Int32
 }
 
 // NewPlayer creates a new audio player.
@@ -90,12 +103,81 @@ func NewPlayerWithDevice(deviceName string) *Player {
 	return &Player{deviceName: deviceName, debugRoot: debugAudioDir()}
 }
 
+// referenceDelaySamples estimates, in capture-rate samples, how long after
+// onData hands frames to miniaudio those frames become audible.
+//
+// The estimate is deliberately low. The canceller pairs mic sample k with
+// far-end sample k-D and must find the true echo at tap (Dtrue - D):
+// under-estimating spends taps, which we have, while over-estimating asks the
+// filter to predict the mic from reference audio that has not been pushed yet,
+// which no number of taps can fix. So count only the periods certainly still
+// queued ahead of this callback's frames, and let echoCancellerTaps absorb the
+// rest of the ring plus driver and acoustic latency.
+//
+// periodFrames is what the backend actually asks for, which is not necessarily
+// what the config requested — miniaudio, ALSA and CoreAudio all quantize it.
+// Only a smaller observed period is adopted: a smaller ring makes the constant
+// an over-estimate, the one error taps cannot absorb, while a larger one just
+// deepens an under-estimate the tap budget already covers. Zero (no callback
+// yet) falls back to the request.
+//
+// Period *count* stays an assumption: malgo exposes SampleRate and
+// PlaybackChannels but not the negotiated period count, so a backend that
+// silently opens fewer than playbackPeriods buffers would still be
+// over-estimated here.
+func referenceDelaySamples(deviceRate, periodFrames int) int {
+	if deviceRate <= 0 {
+		return 0
+	}
+	if periodFrames <= 0 || periodFrames > playbackPeriodFrames {
+		periodFrames = playbackPeriodFrames
+	}
+	queuedFrames := (playbackPeriods - 1) * periodFrames
+	return queuedFrames * SampleRate / deviceRate
+}
+
+// applyReferenceDelay tells the front-end the current device's reference
+// offset. Called from both sides of the pair: the front-end can be registered
+// before a device exists, and the device rate is only known after negotiation.
+// Also called per segment, so a backend whose real period only becomes visible
+// once the callback runs corrects the offset from the next utterance on.
+func (p *Player) applyReferenceDelay() {
+	p.mu.Lock()
+	frontend := p.frontend
+	deviceRate := p.sampleRate
+	p.mu.Unlock()
+
+	delayer, ok := frontend.(ReferenceDelayer)
+	if !ok || deviceRate <= 0 {
+		return
+	}
+	delayer.SetReferenceDelay(referenceDelaySamples(deviceRate, int(p.observedPeriodFrames.Load())))
+}
+
 // SetFrontend installs an audio front-end that can observe playback
 // reference audio for echo cancellation or similar processing.
 func (p *Player) SetFrontend(frontend Frontend) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	old := p.aecIngress
+	p.aecIngress = nil
 	p.frontend = frontend
+	p.mu.Unlock()
+	if old != nil {
+		old.Close()
+	}
+	if frontend == nil {
+		return
+	}
+	ingress := newAECRefIngress(frontend)
+	p.mu.Lock()
+	if p.closed || p.frontend != frontend {
+		p.mu.Unlock()
+		ingress.Close()
+		return
+	}
+	p.aecIngress = ingress
+	p.mu.Unlock()
+	p.applyReferenceDelay()
 }
 
 // PlayStream queues a synthesized PCM stream for playback.
@@ -166,11 +248,23 @@ func (p *Player) Close() error {
 	p.ctx = nil
 	debug := p.debug
 	p.debug = nil
+	ingress := p.aecIngress
+	p.aecIngress = nil
+	p.frontend = nil
 	p.mu.Unlock()
 
+	// Stop the device before the worker: until Stop returns, onData can still
+	// run with a snapped ingress pointer, and enqueueing into a worker that has
+	// already exited just fills the ready queue until blocks drop. Non-blocking
+	// either way, but this keeps "Close stops the worker" true.
 	if device != nil {
 		_ = device.Stop()
 		device.Uninit()
+	}
+
+	if ingress != nil {
+		ingress.Close()
+		debug.setAECReferenceDrops(ingress.droppedBlocks())
 	}
 
 	if ctx != nil {
@@ -223,6 +317,10 @@ func (p *Player) pumpSegment(ctx context.Context, segment *playbackSegment, stre
 		segment.fail(err)
 		return
 	}
+	// ensureDevice only publishes the offset when it opens a device. Republish
+	// here so the period the callback actually reported is picked up; the
+	// front-end ignores an unchanged value.
+	p.applyReferenceDelay()
 
 	// Kokoro produces the complete sentence before exposing its PCM samples.
 	// Buffer that already-generated sentence before handing it to the real-time
@@ -241,10 +339,7 @@ func (p *Player) pumpSegment(ctx context.Context, segment *playbackSegment, stre
 			return
 		case frames, ok := <-stream.Frames():
 			if !ok {
-				p.mu.Lock()
-				frontend := p.frontend
-				p.mu.Unlock()
-				finalizeSegment(segment, frontend, debug, samples, inputRate, outputRate, stream.Err())
+				finalizeSegment(segment, debug, samples, inputRate, outputRate, stream.Err())
 				return
 			}
 			if len(frames) == 0 {
@@ -260,15 +355,18 @@ func (p *Player) pumpSegment(ctx context.Context, segment *playbackSegment, stre
 // (e.g. a cancelled turn) may already have produced audio worth playing, and
 // the caller still learns about the failure through the segment's terminal
 // PlaybackResult once that audio finishes.
-func finalizeSegment(segment *playbackSegment, frontend Frontend, debug *playerDebugRecorder, samples []float32, inputRate, outputRate int, streamErr error) {
+//
+// AEC reference is NOT pushed here. Bulk-pushing the whole utterance before the
+// device callback runs lets ProcessCapture drain the ref queue while the segment
+// is still waiting to play — so by the time speakers emit, the canceller has
+// nothing left and barge-in hears her own voice. onData feeds the reference
+// sample-clock-aligned as audio actually leaves the device (via aecIngress).
+func finalizeSegment(segment *playbackSegment, debug *playerDebugRecorder, samples []float32, inputRate, outputRate int, streamErr error) {
 	if debug != nil {
 		debug.captureSource(inputRate, samples)
 	}
 	if inputRate != outputRate {
 		samples = resample(samples, inputRate, outputRate)
-	}
-	if frontend != nil {
-		frontend.PushPlaybackReference(samples)
 	}
 	segment.append(float32ToPCM16(samples))
 	segment.finishInput(streamErr)
@@ -299,9 +397,11 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 	deviceConfig := malgo.DefaultDeviceConfig(malgo.Playback)
 	deviceConfig.Playback.Format = malgo.FormatS16
 	deviceConfig.Alsa.NoMMap = 1
-	// Larger periods reduce callback pressure on multi-channel displays.
-	deviceConfig.PeriodSizeInFrames = 512
-	deviceConfig.Periods = 3
+	// Larger periods reduce callback pressure on multi-channel displays. They
+	// also set the AEC reference offset: onData fills this buffer well before
+	// the frames are audible (see applyReferenceDelay).
+	deviceConfig.PeriodSizeInFrames = playbackPeriodFrames
+	deviceConfig.Periods = playbackPeriods
 	releaseDeviceID, err := selectDevice(ctx.Context, malgo.Playback, p.deviceName, &deviceConfig.Playback)
 	if err != nil {
 		_ = ctx.Uninit()
@@ -359,6 +459,9 @@ func (p *Player) ensureDevice(sampleRate int) (int, error) {
 	p.channels = deviceChannels
 	p.debug = debug
 	p.mu.Unlock()
+	// The negotiated rate sets the reference offset; a front-end registered
+	// before the device existed has been holding a zero delay until now.
+	p.applyReferenceDelay()
 	return deviceRate, nil
 }
 
@@ -458,6 +561,7 @@ func playbackRateCandidates(sourceRate int, preferredRate uint32) []uint32 {
 
 func (p *Player) onData(outputSamples, inputSamples []byte, frameCount uint32) {
 	clearBytes(outputSamples)
+	p.observedPeriodFrames.Store(int32(frameCount))
 
 	p.mu.Lock()
 	channels := p.channels
@@ -472,6 +576,8 @@ func (p *Player) onData(outputSamples, inputSamples []byte, frameCount uint32) {
 	}
 	monoBuf := p.monoScratch
 	debug := p.debug
+	ingress := p.aecIngress
+	deviceRate := p.sampleRate
 	p.mu.Unlock()
 	clearBytes(monoBuf)
 
@@ -488,6 +594,11 @@ func (p *Player) onData(outputSamples, inputSamples []byte, frameCount uint32) {
 		expandMonoS16LE(monoBuf[:writtenFrames*2], writtenFrames, channels, outputSamples)
 		if debug != nil {
 			debug.captureCallback(outputSamples, int(frameCount), writtenFrames)
+		}
+		// Callback-safe AEC handoff: copy into a pooled slot only (no alloc,
+		// no Frontend mutex). Worker resamples with preserved phase and pushes.
+		if ingress != nil && writtenFrames > 0 {
+			ingress.TryEnqueueS16(monoBuf[:writtenFrames*2], deviceRate)
 		}
 	}()
 

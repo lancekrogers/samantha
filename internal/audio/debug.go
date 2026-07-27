@@ -108,6 +108,11 @@ type playerDebugRecorder struct {
 	wg        sync.WaitGroup
 	sequence  atomic.Uint64
 	dropped   atomic.Uint64
+	// aecRefDrops is far-end blocks the playback callback could not hand to
+	// the AEC worker. Non-zero means the canceller ran on a gap-filled
+	// reference, which is the first thing to check when a debug-audio capture
+	// shows self-barge that the ERLE tests do not reproduce.
+	aecRefDrops atomic.Uint64
 }
 
 type debugAudioMetadata struct {
@@ -219,6 +224,15 @@ func (r *playerDebugRecorder) enqueue(event debugAudioEvent) bool {
 	}
 }
 
+// setAECReferenceDrops records the ingress drop count for summary.json. Called
+// on teardown, before close writes the summary.
+func (r *playerDebugRecorder) setAECReferenceDrops(n uint64) {
+	if r == nil {
+		return
+	}
+	r.aecRefDrops.Store(n)
+}
+
 func (r *playerDebugRecorder) close() {
 	if r == nil {
 		return
@@ -278,8 +292,9 @@ func (r *playerDebugRecorder) run(deviceRate, deviceChannels int) {
 		_ = wav.Close()
 	}
 	summary, _ := json.MarshalIndent(map[string]any{
-		"dropped_debug_events": r.dropped.Load(),
-		"source_segments":      sourceIndex,
+		"dropped_debug_events":         r.dropped.Load(),
+		"dropped_aec_reference_blocks": r.aecRefDrops.Load(),
+		"source_segments":              sourceIndex,
 	}, "", "  ")
 	_ = os.WriteFile(filepath.Join(r.dir, "summary.json"), append(summary, '\n'), 0o600)
 }

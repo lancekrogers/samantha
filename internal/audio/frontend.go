@@ -8,6 +8,15 @@ type Frontend interface {
 	Close() error
 }
 
+// ReferenceDelayer is optionally implemented by front-ends whose echo
+// canceller needs to know how long after PushPlaybackReference the audio is
+// actually audible. The player knows that number — it configured the device
+// buffer — but most Frontend implementations (passthrough, test doubles) have
+// no use for it, so it stays off the Frontend interface.
+type ReferenceDelayer interface {
+	SetReferenceDelay(samples int)
+}
+
 // PassthroughFrontend leaves audio unchanged while preserving the runtime hook
 // points needed for a future AEC/NS/AGC implementation.
 type PassthroughFrontend struct{}
