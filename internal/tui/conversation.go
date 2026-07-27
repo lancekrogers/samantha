@@ -204,6 +204,20 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 		m.insertClipboardText(msg.text)
 		return m, nil
 
+	case tea.MouseMsg:
+		// The viewport already implements wheel acceleration and bounds. Route
+		// only vertical wheel events here so clicks and drags do not interfere
+		// with the always-focused composer.
+		if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
+			// Strip shift: the viewport reads it as horizontal scroll, which is
+			// a no-op at the default horizontal step. Terminals that use shift
+			// as the selection modifier would otherwise give the user neither
+			// selection nor scrolling.
+			msg.Shift = false
+			return m.updateScroll(msg)
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		m.syncEditorFromTextarea()
 		// Page keys scroll history. Editing keys stay with the always-focused

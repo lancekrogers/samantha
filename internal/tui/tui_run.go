@@ -68,9 +68,20 @@ func run(cfg *config.Config, build RuntimeBuilder, meeting MeetingBuilder, start
 	// hang or mis-detect on bare PTYs (VHS/ttyd). Same pattern as festival.
 	forceTUIColorProfile()
 
-	// Do not enable Bubble Tea mouse reporting here. Claiming the mouse makes
-	// terminals send clicks and drags to Samantha instead of allowing native
-	// text selection, copy, and link activation.
+	// Cell-motion reporting makes wheel and trackpad events available to the
+	// conversation viewport, and avoids the noisier all-motion mode: pointer
+	// movement is reported only while a button is held.
+	//
+	// This is a deliberate trade, not a free win. Claiming the mouse means the
+	// terminal sends clicks and drags to Samantha rather than doing its own
+	// selection, so copying transcript text needs a modifier (option in iTerm2,
+	// fn in Terminal.app, shift in kitty). tui_mouse_enabled=false gives
+	// unmodified selection back; PgUp/PgDn scroll either way.
+	//
+	// The claim is not a startup option because only the conversation routes
+	// wheel events — App.Update takes it on entering that screen and releases
+	// it on leaving, so the launcher, settings and meeting screens keep
+	// unmodified selection.
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	m, runErr := p.Run()
 	final, _ := m.(App)

@@ -149,7 +149,43 @@ type startPipelineMsg struct {
 // quitMsg signals the app should exit.
 type quitMsg struct{}
 
+// Update wraps the screen dispatch so the mouse claim follows the active
+// screen. Conversation is the only screen that routes wheel events, so it is
+// the only one that should cost the user native text selection.
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	from := a.screen
+	model, cmd := a.update(msg)
+	next, ok := model.(App)
+	if !ok {
+		return model, cmd
+	}
+	if claim := next.mouseClaimCmd(from); claim != nil {
+		cmd = tea.Batch(cmd, claim)
+	}
+	return next, cmd
+}
+
+// mouseClaimCmd enables cell-motion reporting on entering the conversation and
+// releases it on leaving, so selection works unmodified everywhere else. Nil
+// when the claim does not change. Bubble Tea disables the mouse on exit
+// regardless, so a program that quits from conversation still restores it.
+func (a App) mouseClaimCmd(from screen) tea.Cmd {
+	was, now := from == screenConversation, a.screen == screenConversation
+	if was == now {
+		return nil
+	}
+	if now {
+		if a.cfg == nil || !a.cfg.TUIMouseEnabled {
+			return nil
+		}
+		return tea.EnableMouseCellMotion
+	}
+	// Release unconditionally: disabling a mouse that was never claimed is a
+	// no-op, and it keeps the claim from outliving a mid-session opt-out.
+	return tea.DisableMouse
+}
+
+func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" && a.screen == screenConversation && a.conversation.editor.selectionActive() {

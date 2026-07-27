@@ -287,7 +287,7 @@ func (m *conversationModel) cutSelection() {
 
 func (m conversationModel) vimFooterHelp() string {
 	if !m.vim.enabled {
-		return "enter send  ^J newline  ^G mic  ^O audio  ^T switch  PgUp/PgDn scroll"
+		return "enter send  ^J newline  ^G mic  ^O audio  ^T switch  wheel/PgUp/PgDn scroll"
 	}
 	if m.vim.mode == vimInsert {
 		return "INSERT  esc normal  enter send  ^J newline  tab complete"
