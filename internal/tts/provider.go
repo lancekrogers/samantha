@@ -2,6 +2,7 @@ package tts
 
 import (
 	"context"
+	"time"
 
 	"github.com/lancekrogers/samantha/internal/audio"
 )
@@ -16,6 +17,16 @@ type Provider interface {
 
 	// ListVoices returns available voices.
 	ListVoices(locale, gender string) []Voice
+}
+
+// FirstAudioGracer is optionally implemented by providers whose time-to-first
+// audible frame can exceed the pipeline's default playback-stall budget.
+// When present, the stall watchdog waits at least this long before aborting a
+// turn as "playback stalled" — otherwise a healthy but slow synthesis
+// (whole-utterance workers like Qwen3-TTS) is cut off mid-sentence and the
+// conversation injects the recovery reply.
+type FirstAudioGracer interface {
+	FirstAudioGrace() time.Duration
 }
 
 // SynthesisRequest describes a single synthesis call. Empty Voice and zero

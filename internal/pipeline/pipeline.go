@@ -61,7 +61,9 @@ type Pipeline struct {
 	// one recovery generation before LoadHistory rewrites the conversation.
 	OnCompactBackup func(turns []brain.Turn)
 
-	// PlaybackStallTimeout overrides the watchdog timeout; zero uses the default.
+	// PlaybackStallTimeout overrides the watchdog timeout and always wins when
+	// positive. Zero uses defaultPlaybackStallTimeout, or the primary TTS
+	// provider's FirstAudioGrace when that is larger.
 	PlaybackStallTimeout time.Duration
 
 	// BrainTurnTimeout bounds ThinkStream (model + tools) per turn. Zero uses

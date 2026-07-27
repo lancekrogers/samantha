@@ -180,6 +180,20 @@ func newQwen3TTS(binary, model string, timeout time.Duration, command qwenComman
 	return &Qwen3TTS{binary: binary, model: model, timeout: timeout, command: command}
 }
 
+// FirstAudioGrace reports how long the pipeline's playback-stall watchdog
+// should wait for the first audible frame. Managed Qwen generates whole
+// utterances before emitting audio_chunk messages, and a cold worker restart
+// can take tens of seconds — far past the 8s default stall budget.
+func (q *Qwen3TTS) FirstAudioGrace() time.Duration {
+	if q == nil {
+		return defaultQwenTTSTimeout
+	}
+	if q.timeout > 0 {
+		return q.timeout
+	}
+	return defaultQwenTTSTimeout
+}
+
 // Synthesize streams synthesized PCM frames for the given text.
 func (q *Qwen3TTS) Synthesize(ctx context.Context, text string) (*audio.PCMStream, error) {
 	result, err := q.SynthesizeRequest(ctx, SynthesisRequest{
