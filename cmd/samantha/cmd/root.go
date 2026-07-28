@@ -215,6 +215,7 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 			Output:       p.HasTTS() && p.Player != nil,
 			PersonaID:    binding.PersonaID,
 			AgentName:    binding.AgentName,
+			SessionCfg:   binding.Config(),
 			SessionID:    sess.ID,
 			InputDevice:  cfg.InputDevice,
 			OutputDevice: cfg.OutputDevice,

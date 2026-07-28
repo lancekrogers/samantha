@@ -156,6 +156,47 @@ func TestRuntimeReadyBindsAgentName(t *testing.T) {
 	}
 }
 
+// Session TTS chrome must follow the binding snapshot, not the live global
+// persona. Regression: starting uncle-fu while active is still samantha used
+// to show "tts kokoro · managed · mode static · voice af_heart".
+func TestRuntimeReadyBindsSessionTTSBadge(t *testing.T) {
+	rt := fakeRuntime()
+	rt.AgentName = "uncle fu"
+	rt.SessionCfg = &config.Config{
+		TTSProvider:  "qwen3-tts",
+		QwenTTSVoice: "Uncle_Fu",
+		// Empty model/binary → managed CustomVoice display path.
+	}
+	// Global app config still points at the default Kokoro persona.
+	app := wiredApp(func(context.Context, func(string, float64), string, string) (*ConversationRuntime, error) {
+		return rt, nil
+	})
+	app.cfg = &config.Config{TTSProvider: "kokoro", TTSVoice: "af_heart", ActivePersona: "samantha"}
+	app.conversation.cfg = app.cfg
+
+	model, _ := app.Update(startPipelineMsg{})
+	app = model.(App)
+
+	msg := buildRuntime(app.builder, app.runCtx, app.progress, app.slot, "", "uncle-fu")()
+	model, _ = app.Update(msg)
+	app = model.(App)
+
+	if app.conversation.agentName != "uncle fu" {
+		t.Fatalf("agentName = %q, want uncle fu", app.conversation.agentName)
+	}
+	badge := ttsBadgeLabel(app.conversation.cfg)
+	if !strings.Contains(badge, "qwen3-tts") || !strings.Contains(badge, "Uncle_Fu") {
+		t.Fatalf("session TTS badge = %q, want qwen3-tts · … · voice Uncle_Fu (not global kokoro)", badge)
+	}
+	if strings.Contains(badge, "kokoro") || strings.Contains(badge, "af_heart") {
+		t.Fatalf("session TTS badge leaked global default: %q", badge)
+	}
+	// App-level config must remain untouched so launcher/settings stay global.
+	if app.cfg.TTSProvider != "kokoro" || app.cfg.TTSVoice != "af_heart" {
+		t.Fatalf("global cfg mutated: provider=%q voice=%q", app.cfg.TTSProvider, app.cfg.TTSVoice)
+	}
+}
+
 func TestRuntimeBuildFailureQuitsWithError(t *testing.T) {
 	build := func(ctx context.Context, progress func(string, float64), _, _ string) (*ConversationRuntime, error) {
 		return nil, errors.New("no assets, no pipeline")

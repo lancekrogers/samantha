@@ -40,6 +40,27 @@ func TestConversationDisplaysConfiguredTTSProviderAndModel(t *testing.T) {
 	}
 }
 
+func TestConversationDisplaysSessionBoundUncleFuTTS(t *testing.T) {
+	// Mimic runtimeReadyMsg applying SessionCfg while global defaults stay Kokoro.
+	m := sizedConversation(t, 140, 24)
+	m.agentName = "uncle fu"
+	m.cfg = &config.Config{
+		TTSProvider:  "qwen3-tts",
+		QwenTTSVoice: "Uncle_Fu",
+	}
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "uncle fu") {
+		t.Fatalf("conversation header missing agent name:\n%s", view)
+	}
+	if !strings.Contains(view, "qwen3-tts") || !strings.Contains(view, "Uncle_Fu") {
+		t.Fatalf("conversation header missing session TTS (qwen3-tts / Uncle_Fu):\n%s", view)
+	}
+	if strings.Contains(view, "kokoro") || strings.Contains(view, "af_heart") {
+		t.Fatalf("conversation header shows global Kokoro default instead of session voice:\n%s", view)
+	}
+}
+
 func TestConversationAppendAndView(t *testing.T) {
 	m := sizedConversation(t, 80, 24)
 

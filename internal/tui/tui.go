@@ -489,6 +489,9 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			a.conversation.setStatus("Voice settings: "+msg.err.Error(), true)
 		} else {
+			// ReloadVoice rebuilds TTS from the live app config; keep the badge
+			// aligned with what subsequent utterances will actually use.
+			a.conversation.cfg = a.cfg
 			a.conversation.setStatus("Voice settings applied", false)
 		}
 		if msg.resumeVoice {
@@ -528,6 +531,11 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// a later persona switch must not relabel this conversation.
 		if msg.rt.AgentName != "" {
 			a.conversation.agentName = msg.rt.AgentName
+		}
+		// TTS badge / chrome must mirror the pipeline voice for this session,
+		// not the still-active global persona (e.g. uncle-fu vs samantha).
+		if msg.rt.SessionCfg != nil {
+			a.conversation.cfg = msg.rt.SessionCfg
 		}
 		a.conversation.setStatus("", false)
 		a.conversation.seedTranscript(msg.rt.Seed)
