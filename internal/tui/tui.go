@@ -489,9 +489,14 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			a.conversation.setStatus("Voice settings: "+msg.err.Error(), true)
 		} else {
-			// ReloadVoice rebuilds TTS from the live app config; keep the badge
-			// aligned with what subsequent utterances will actually use.
-			a.conversation.cfg = a.cfg
+			// ReloadVoice re-resolves the session persona binding. Prefer that
+			// snapshot for the badge so a global active_persona cannot relabel
+			// an in-flight uncle-fu conversation as kokoro/af_heart.
+			if a.runtime != nil && a.runtime.SessionCfg != nil {
+				a.conversation.cfg = a.runtime.SessionCfg
+			} else {
+				a.conversation.cfg = a.cfg
+			}
 			a.conversation.setStatus("Voice settings applied", false)
 		}
 		if msg.resumeVoice {
