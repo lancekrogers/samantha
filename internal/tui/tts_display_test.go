@@ -55,3 +55,16 @@ func TestTTSDisplayExplainsUnverifiedQwenVoiceModes(t *testing.T) {
 		t.Fatalf("Qwen voice status = %q, want actionable unverified explanation", got)
 	}
 }
+
+func TestTTSDisplayManagedQwenUncleFuVoice(t *testing.T) {
+	// Managed install (empty binary/model) with a persona voice like Uncle_Fu.
+	cfg := &config.Config{
+		TTSProvider:  "qwen3-tts",
+		QwenTTSVoice: "Uncle_Fu",
+	}
+	got := ttsBadgeLabel(cfg)
+	want := "tts qwen3-tts · managed CustomVoice 0.6B · mode customvoice · voice Uncle_Fu"
+	if got != want {
+		t.Fatalf("ttsBadgeLabel() = %q, want %q", got, want)
+	}
+}

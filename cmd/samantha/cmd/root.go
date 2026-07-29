@@ -208,13 +208,22 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 		}
 		wireCompact(p, cfg, sess, bus)
 
-		rt := &appTUI.ConversationRuntime{
+		// Capture the session persona id so Settings → ReloadVoice cannot swap
+		// this conversation onto a different identity's voice (e.g. uncle-fu
+		// mid-session must not become samantha/kokoro just because that is the
+		// live active_persona on disk).
+		sessionPersonaID := binding.PersonaID
+
+		// Declare first so ReloadVoice can update SessionCfg after install.
+		var rt *appTUI.ConversationRuntime
+		rt = &appTUI.ConversationRuntime{
 			Pipeline:     p,
 			Bus:          bus,
 			Voice:        p.STT != nil,
 			Output:       p.HasTTS() && p.Player != nil,
 			PersonaID:    binding.PersonaID,
 			AgentName:    binding.AgentName,
+			SessionCfg:   binding.Config(),
 			SessionID:    sess.ID,
 			InputDevice:  cfg.InputDevice,
 			OutputDevice: cfg.OutputDevice,
@@ -227,10 +236,18 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 				if err != nil {
 					return fmt.Errorf("reload config: %w", err)
 				}
-				if err := config.EnsureRuntimeAssets(reloadCtx, reloaded, config.AssetRequest{NeedTTS: true}, nil); err != nil {
+				// Re-apply the session persona on top of the reloaded app config
+				// so device/settings changes take effect without replacing the
+				// bound voice identity.
+				rebound, err := persona.ResolveBinding(reloaded, sessionPersonaID)
+				if err != nil {
+					return fmt.Errorf("resolve session persona: %w", err)
+				}
+				sessionCfg := rebound.Config()
+				if err := config.EnsureRuntimeAssets(reloadCtx, sessionCfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
 					return fmt.Errorf("ensure TTS assets: %w", err)
 				}
-				set, err := newTTSProviderSet(reloaded)
+				set, err := newTTSProviderSet(sessionCfg)
 				if err != nil {
 					return fmt.Errorf("init TTS: %w", err)
 				}
@@ -241,6 +258,10 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 					}
 					return fmt.Errorf("conversation is shutting down")
 				}
+				// SessionCfg is only published from ReloadVoice after a successful
+				// install and is consumed on the TUI update thread after
+				// voiceReloadedMsg — do not read it from other goroutines.
+				rt.SessionCfg = sessionCfg
 				if set.FallbackWarning != nil {
 					bus.Emit(events.Error{Stage: "tts-fallback", Message: set.FallbackWarning.Error()})
 				}

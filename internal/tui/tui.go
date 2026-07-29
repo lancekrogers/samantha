@@ -489,7 +489,23 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			a.conversation.setStatus("Voice settings: "+msg.err.Error(), true)
 		} else {
-			a.conversation.setStatus("Voice settings applied", false)
+			// ReloadVoice re-resolves the session persona binding. Prefer that
+			// snapshot for the badge so a global active_persona cannot relabel
+			// an in-flight uncle-fu conversation as kokoro/af_heart.
+			if a.runtime != nil && a.runtime.SessionCfg != nil {
+				a.conversation.cfg = a.runtime.SessionCfg
+			} else {
+				a.conversation.cfg = a.cfg
+			}
+			// Settings edits the active persona profile. When the open session
+			// is a different persona, ReloadVoice intentionally keeps the
+			// session voice — do not claim the conversation took Settings.
+			status := "Voice settings applied"
+			if a.runtime != nil && a.runtime.PersonaID != "" && a.cfg != nil &&
+				a.cfg.ActivePersona != "" && a.runtime.PersonaID != a.cfg.ActivePersona {
+				status = "Session voice preserved (settings apply to active persona / next sessions)"
+			}
+			a.conversation.setStatus(status, false)
 		}
 		if msg.resumeVoice {
 			return a, a.conversation.setInputMuted(false)
@@ -528,6 +544,11 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// a later persona switch must not relabel this conversation.
 		if msg.rt.AgentName != "" {
 			a.conversation.agentName = msg.rt.AgentName
+		}
+		// TTS badge / chrome must mirror the pipeline voice for this session,
+		// not the still-active global persona (e.g. uncle-fu vs samantha).
+		if msg.rt.SessionCfg != nil {
+			a.conversation.cfg = msg.rt.SessionCfg
 		}
 		a.conversation.setStatus("", false)
 		a.conversation.seedTranscript(msg.rt.Seed)

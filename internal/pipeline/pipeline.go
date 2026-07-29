@@ -282,7 +282,7 @@ func (p *Pipeline) speakBestEffort(ctx context.Context, sentence string, metrics
 	p.emit(events.GeneratingVoice{Sentence: sentence})
 
 	synthStarted := time.Now()
-	stream, _, err := p.synthesizeWithFallback(ctx, sentence)
+	stream, _, err := p.synthesizeWithFallback(ctx, sentence, nil)
 	if err != nil {
 		p.emit(events.Error{Stage: "tts", Message: fmt.Sprintf("TTS: %v", err)})
 		return
@@ -472,7 +472,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 		p.emit(events.GeneratingVoice{Sentence: response})
 
 		synthStarted := time.Now()
-		stream, usedFallback, err := p.synthesizeWithFallback(ctx, response)
+		stream, usedFallback, err := p.synthesizeWithFallback(ctx, response, nil)
 		if err != nil {
 			// Voice is best-effort in text mode: the text response still
 			// completed, so the turn is completed (degraded), not failed.
@@ -492,7 +492,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 		if err != nil {
 			if !usedFallback {
 				// usedFallback is not read again on this linear path; discard it.
-				playback, _, err = p.playFallback(ctx, response, err)
+				playback, _, err = p.playFallback(ctx, response, err, nil)
 			}
 			if err == nil {
 				// The fallback playback is ready; continue through the normal
@@ -656,13 +656,18 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 	// (not one goroutine per sentence) preserves playback order. Backpressure is
 	// unchanged: the pending gate keeps at most voiceQueueDepth sentences
 	// outstanding, so the buffered handoff below never blocks.
+	//
+	// stickFallback is turn-scoped: once any sentence falls back to Kokoro,
+	// remaining sentences stay on Kokoro so a flaky Qwen worker cannot flip
+	// mid-reply between persona voice and the fallback voice.
+	var stickFallback bool
 	synthQueue := make(chan string, voiceQueueDepth)
 	var synthQueueOnce sync.Once
 	closeSynthQueue := func() { synthQueueOnce.Do(func() { close(synthQueue) }) }
 	defer closeSynthQueue()
 	go func() {
 		for sentence := range synthQueue {
-			if !p.synthesizeSegment(streamCtx, loopDone, sentence, &audioStarted, playbackEvents) {
+			if !p.synthesizeSegment(streamCtx, loopDone, sentence, &audioStarted, playbackEvents, &stickFallback) {
 				// No playback was enqueued: release the pending slot so the
 				// loop's accounting and the intake gate stay correct.
 				sendPlaybackEvent(loopDone, playbackEvents, playbackEvent{kind: playbackNotEnqueued, sentence: sentence})
@@ -812,7 +817,11 @@ func discardPCMStream(stream *audio.PCMStream) {
 // Error events; failures after the turn context is canceled (cancel or barge-in)
 // are swallowed so teardown stays quiet. It never blocks on a full queue —
 // backpressure is the loop's job via the pending count.
-func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct{}, sentence string, audioStarted *atomic.Bool, out chan<- playbackEvent) bool {
+//
+// stickFallback, when non-nil, is turn-scoped sticky Kokoro fallback: after the
+// first successful primary→fallback switch, later sentences skip the primary so
+// one reply cannot alternate persona voice and Kokoro.
+func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct{}, sentence string, audioStarted *atomic.Bool, out chan<- playbackEvent, stickFallback *bool) bool {
 	if ctx.Err() != nil || p.OutputMuted() {
 		return false // canceled while queued: drain without synthesizing
 	}
@@ -820,7 +829,7 @@ func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct
 	p.emit(events.GeneratingVoice{Sentence: sentence})
 
 	synthStarted := time.Now()
-	stream, usedFallback, err := p.synthesizeWithFallback(ctx, sentence)
+	stream, usedFallback, err := p.synthesizeWithFallback(ctx, sentence, stickFallback)
 	if err != nil {
 		if ctx.Err() == nil {
 			p.emit(events.Error{Stage: "tts", Message: fmt.Sprintf("TTS: %v", err)})
@@ -838,7 +847,7 @@ func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct
 	if err != nil {
 		if !usedFallback {
 			// usedFallback is not read again on this linear path; discard it.
-			playback, _, err = p.playFallback(ctx, sentence, err)
+			playback, _, err = p.playFallback(ctx, sentence, err, stickFallback)
 		}
 		if err == nil {
 			// The fallback playback is ready; continue to enqueue its watcher.
@@ -866,10 +875,21 @@ func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct
 // synthesizeWithFallback retries a synchronous provider failure once with the
 // configured fallback. A Qwen worker failure is surfaced by PlayStream instead
 // and is handled by playFallback below because Player owns that stream.
-func (p *Pipeline) synthesizeWithFallback(ctx context.Context, text string) (*audio.PCMStream, bool, error) {
+//
+// stickFallback, when non-nil, latches true after the first successful switch so
+// later sentences in the same turn stay on Kokoro (one voice switch max per
+// reply, not uncle-fu / af_heart / uncle-fu thrashing).
+func (p *Pipeline) synthesizeWithFallback(ctx context.Context, text string, stickFallback *bool) (*audio.PCMStream, bool, error) {
 	primary, fallback := p.ttsProviders()
 	if primary == nil {
 		return nil, false, errors.New("TTS provider is not configured")
+	}
+	if stickFallback != nil && *stickFallback && p.canUseFallback(ctx, primary, fallback) {
+		fallbackStream, fallbackErr := fallback.Synthesize(ctx, text)
+		if fallbackErr != nil {
+			return nil, true, fmt.Errorf("kokoro fallback (sticky): %w", fallbackErr)
+		}
+		return fallbackStream, true, nil
 	}
 	stream, err := primary.Synthesize(ctx, text)
 	if err == nil {
@@ -878,26 +898,42 @@ func (p *Pipeline) synthesizeWithFallback(ctx context.Context, text string) (*au
 	if !p.canUseFallback(ctx, primary, fallback) || !shouldFallback(err) {
 		return nil, false, err
 	}
-	p.emit(events.Error{Stage: "tts-fallback", Message: fmt.Sprintf("primary TTS failed; retrying with Kokoro: %v", err)})
+	p.emit(events.Error{Stage: "tts-fallback", Message: ttsFallbackMessage("primary TTS failed", err, stickFallback != nil)})
 	fallbackStream, fallbackErr := fallback.Synthesize(ctx, text)
 	if fallbackErr != nil {
 		return nil, true, fmt.Errorf("primary TTS: %v; Kokoro fallback: %w", err, fallbackErr)
 	}
+	if stickFallback != nil {
+		*stickFallback = true
+	}
 	return fallbackStream, true, nil
+}
+
+// ttsFallbackMessage describes a Kokoro fallback switch. When sticky is true
+// the turn will stay on fallback for later sentences; otherwise only this
+// utterance is affected (speakBestEffort / text-mode paths).
+func ttsFallbackMessage(prefix string, err error, sticky bool) string {
+	if sticky {
+		return fmt.Sprintf("%s; speaking with Kokoro (different voice) for the rest of the reply: %v", prefix, err)
+	}
+	return fmt.Sprintf("%s; retrying this sentence with Kokoro (different voice): %v", prefix, err)
 }
 
 // playFallback retries an error returned after Player takes ownership of the
 // primary stream. This covers file-oriented native workers whose failure is
 // reported when the stream becomes ready.
-func (p *Pipeline) playFallback(ctx context.Context, text string, primaryErr error) (*audio.Playback, bool, error) {
+func (p *Pipeline) playFallback(ctx context.Context, text string, primaryErr error, stickFallback *bool) (*audio.Playback, bool, error) {
 	primary, fallback := p.ttsProviders()
 	if !p.canUseFallback(ctx, primary, fallback) || !shouldFallback(primaryErr) {
 		return nil, false, primaryErr
 	}
-	p.emit(events.Error{Stage: "tts-fallback", Message: fmt.Sprintf("primary playback TTS failed; retrying with Kokoro: %v", primaryErr)})
+	p.emit(events.Error{Stage: "tts-fallback", Message: ttsFallbackMessage("primary playback TTS failed", primaryErr, stickFallback != nil)})
 	stream, err := fallback.Synthesize(ctx, text)
 	if err != nil {
 		return nil, true, fmt.Errorf("primary playback TTS: %v; Kokoro fallback: %w", primaryErr, err)
+	}
+	if stickFallback != nil {
+		*stickFallback = true
 	}
 	playback, err := p.Player.PlayStream(ctx, stream)
 	return playback, true, err

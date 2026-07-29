@@ -48,7 +48,7 @@ func TestSynthesizeWithFallbackRetriesSynchronousProviderFailure(t *testing.T) {
 	fallback := &fakeTTS{}
 	p := &Pipeline{TTS: &errTTS{err: &tts.ProviderError{Provider: "qwen3-tts", Kind: tts.ProviderErrorUnavailable, Err: errors.New("qwen unavailable")}}, TTSFallback: fallback, Events: bus}
 
-	stream, usedFallback, err := p.synthesizeWithFallback(context.Background(), "hello")
+	stream, usedFallback, err := p.synthesizeWithFallback(context.Background(), "hello", nil)
 	if err != nil || !usedFallback {
 		t.Fatalf("synthesizeWithFallback() = stream=%v fallback=%v err=%v, want fallback success", stream != nil, usedFallback, err)
 	}
@@ -70,12 +70,62 @@ func TestSynthesizeWithFallbackDoesNotRetryPermanentInputFailure(t *testing.T) {
 	primaryErr := &tts.ProviderError{Provider: "qwen3-tts", Kind: tts.ProviderErrorInput, Err: tts.ErrUnsupportedFeature}
 	p := &Pipeline{TTS: &errTTS{err: primaryErr}, TTSFallback: fallback, Events: events.NewBus()}
 
-	stream, usedFallback, err := p.synthesizeWithFallback(context.Background(), "hello")
+	stream, usedFallback, err := p.synthesizeWithFallback(context.Background(), "hello", nil)
 	if stream != nil || usedFallback || !errors.Is(err, tts.ErrUnsupportedFeature) {
 		t.Fatalf("synthesizeWithFallback() = stream=%v fallback=%v err=%v, want permanent input error without fallback", stream != nil, usedFallback, err)
 	}
 	if calls := fallback.CallTimes(); len(calls) != 0 {
 		t.Fatalf("fallback calls = %d, want none for permanent input failure", len(calls))
+	}
+}
+
+// countingErrTTS fails every call and counts them so sticky fallback can prove
+// the primary is not re-tried after the first switch.
+type countingErrTTS struct {
+	err   error
+	calls atomic.Int32
+}
+
+func (c *countingErrTTS) Synthesize(context.Context, string) (*audio.PCMStream, error) {
+	c.calls.Add(1)
+	return nil, c.err
+}
+func (c *countingErrTTS) Available() bool                              { return true }
+func (c *countingErrTTS) ListVoices(locale, gender string) []tts.Voice { return nil }
+
+// Once Kokoro is used for a sentence, remaining sentences in the turn must not
+// re-attempt the flaky primary (that thrash is the "two voices" uncle-fu bug).
+func TestStickyFallbackSkipsPrimaryAfterFirstSwitch(t *testing.T) {
+	primary := &countingErrTTS{err: &tts.ProviderError{
+		Provider: "qwen3-tts",
+		Kind:     tts.ProviderErrorUnavailable,
+		Err:      errors.New("qwen unavailable"),
+	}}
+	fallback := &fakeTTS{}
+	p := &Pipeline{TTS: primary, TTSFallback: fallback, Events: events.NewBus()}
+
+	var stick bool
+	stream, used, err := p.synthesizeWithFallback(context.Background(), "first", &stick)
+	if err != nil || !used || !stick {
+		t.Fatalf("first synthesizeWithFallback() used=%v stick=%v err=%v, want fallback + sticky latch", used, stick, err)
+	}
+	for range stream.Frames() {
+	}
+	if primary.calls.Load() != 1 {
+		t.Fatalf("primary calls after first = %d, want 1", primary.calls.Load())
+	}
+
+	stream, used, err = p.synthesizeWithFallback(context.Background(), "second", &stick)
+	if err != nil || !used || !stick {
+		t.Fatalf("second synthesizeWithFallback() used=%v stick=%v err=%v, want sticky fallback", used, stick, err)
+	}
+	for range stream.Frames() {
+	}
+	if primary.calls.Load() != 1 {
+		t.Fatalf("primary calls after sticky second = %d, want 1 (no re-try)", primary.calls.Load())
+	}
+	if len(fallback.CallTimes()) != 2 {
+		t.Fatalf("fallback calls = %d, want 2", len(fallback.CallTimes()))
 	}
 }
 
@@ -97,7 +147,7 @@ func TestSynthesizeSegmentRetriesWhenProviderStreamFailsBeforeReady(t *testing.T
 	p := &Pipeline{TTS: failedStreamTTS{}, TTSFallback: fallback, Player: player, Events: bus}
 
 	out := make(chan playbackEvent, 2)
-	if !p.synthesizeSegment(context.Background(), make(chan struct{}), "hello", new(atomic.Bool), out) {
+	if !p.synthesizeSegment(context.Background(), make(chan struct{}), "hello", new(atomic.Bool), out, nil) {
 		t.Fatalf("synthesizeSegment() = false, want fallback playback enqueued; fallback event=%+v playback event=%+v calls=%d queued-events=%d", fallbackEvent, playbackErrEvent, len(fallback.CallTimes()), len(out))
 	}
 	if fallbackEvent.Stage != "tts-fallback" {
@@ -155,7 +205,7 @@ func TestSynthesizeSegmentEnqueuesPlayback(t *testing.T) {
 	var audioStarted atomic.Bool
 	out := make(chan playbackEvent, 4)
 
-	if !p.synthesizeSegment(context.Background(), make(chan struct{}), "hello world", &audioStarted, out) {
+	if !p.synthesizeSegment(context.Background(), make(chan struct{}), "hello world", &audioStarted, out, nil) {
 		t.Fatal("synthesizeSegment returned false, want true (playback enqueued)")
 	}
 	if !sawSegment.Load() || !sawGen.Load() {
@@ -229,7 +279,7 @@ func TestSynthesizeSegmentSkipsWhenMutedBeforeSynth(t *testing.T) {
 
 	var audioStarted atomic.Bool
 	out := make(chan playbackEvent, 1)
-	if p.synthesizeSegment(context.Background(), make(chan struct{}), "skip", &audioStarted, out) {
+	if p.synthesizeSegment(context.Background(), make(chan struct{}), "skip", &audioStarted, out, nil) {
 		t.Fatal("muted synthesizeSegment enqueued playback")
 	}
 	if len(out) != 0 {
@@ -244,7 +294,7 @@ func TestSynthesizeSegmentStopsAudioEnqueuedAfterMute(t *testing.T) {
 	result := make(chan bool, 1)
 
 	go func() {
-		result <- p.synthesizeSegment(context.Background(), make(chan struct{}), "late sentence", &audioStarted, make(chan playbackEvent, 1))
+		result <- p.synthesizeSegment(context.Background(), make(chan struct{}), "late sentence", &audioStarted, make(chan playbackEvent, 1), nil)
 	}()
 
 	select {
@@ -282,7 +332,7 @@ func TestSynthesizeSegmentTTSErrorEmitsErrorAndSkips(t *testing.T) {
 
 	var audioStarted atomic.Bool
 	out := make(chan playbackEvent, 1)
-	if p.synthesizeSegment(context.Background(), make(chan struct{}), "hi", &audioStarted, out) {
+	if p.synthesizeSegment(context.Background(), make(chan struct{}), "hi", &audioStarted, out, nil) {
 		t.Fatal("synthesizeSegment returned true on TTS error, want false")
 	}
 	if !sawErr || errEvent.Stage != "tts" {
@@ -306,7 +356,7 @@ func TestSynthesizeSegmentPlaybackErrorEmitsError(t *testing.T) {
 
 	var audioStarted atomic.Bool
 	out := make(chan playbackEvent, 1)
-	if p.synthesizeSegment(context.Background(), make(chan struct{}), "hi", &audioStarted, out) {
+	if p.synthesizeSegment(context.Background(), make(chan struct{}), "hi", &audioStarted, out, nil) {
 		t.Fatal("synthesizeSegment returned true on playback error, want false")
 	}
 	if !sawErr || errEvent.Stage != "playback" {
@@ -324,7 +374,7 @@ func TestSynthesizeSegmentPlaybackErrorEngineDrainsStream(t *testing.T) {
 		Events: events.NewBus(),
 	}
 	var audioStarted atomic.Bool
-	if p.synthesizeSegment(context.Background(), make(chan struct{}), "hi", &audioStarted, make(chan playbackEvent, 1)) {
+	if p.synthesizeSegment(context.Background(), make(chan struct{}), "hi", &audioStarted, make(chan playbackEvent, 1), nil) {
 		t.Fatal("expected false on playback error")
 	}
 	select {
@@ -349,7 +399,7 @@ func TestSynthesizeSegmentSuppressesErrorsAfterCancel(t *testing.T) {
 
 	var audioStarted atomic.Bool
 	out := make(chan playbackEvent, 1)
-	if p.synthesizeSegment(ctx, make(chan struct{}), "hi", &audioStarted, out) {
+	if p.synthesizeSegment(ctx, make(chan struct{}), "hi", &audioStarted, out, nil) {
 		t.Fatal("synthesizeSegment returned true with canceled ctx, want false")
 	}
 	if sawErr {

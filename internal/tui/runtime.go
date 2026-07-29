@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/lancekrogers/samantha/internal/brain"
+	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/listen"
 	"github.com/lancekrogers/samantha/internal/meeting"
@@ -29,8 +30,15 @@ type ConversationRuntime struct {
 	// PersonaID and AgentName identify the session binding this runtime was
 	// built from. The conversation renders this identity for its lifetime —
 	// later persona switches or edits must not relabel an in-flight session.
-	PersonaID    string
-	AgentName    string
+	PersonaID string
+	AgentName string
+	// SessionCfg is the binding-derived config snapshot (provider, voice, model
+	// routing). Conversation chrome such as the TTS badge must read this, not
+	// the live global app config — starting uncle-fu while the active persona
+	// is still samantha must not show kokoro/af_heart.
+	// Updated only from ReloadVoice after a successful TTS install; consumed on
+	// the Bubble Tea update thread after voiceReloadedMsg (no concurrent readers).
+	SessionCfg   *config.Config
 	SessionID    string
 	InputDevice  string
 	OutputDevice string
