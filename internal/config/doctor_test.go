@@ -21,8 +21,18 @@ func diagByName(diags []Diagnostic) map[string]Diagnostic {
 	return out
 }
 
+// healthyBrain fills the brain keys needed for an OK brain-provider diagnostic
+// so these tests assert on the STT/TTS/asset checks they care about. Without it
+// the default (ollama, no model) is itself a doctor error.
+func healthyBrain(cfg *Config) *Config {
+	cfg.BrainProvider = "ollama"
+	cfg.OllamaModel = "llama3"
+	cfg.OllamaHost = "http://localhost:11434"
+	return cfg
+}
+
 func TestDiagnoseHealthyHasNoErrors(t *testing.T) {
-	cfg := &Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro", VADEnabled: true}
+	cfg := healthyBrain(&Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro", VADEnabled: true})
 	dir := t.TempDir()
 	// Install every required asset.
 	m, _ := ManifestFor(cfg, DefaultAssetRequest(cfg))
@@ -43,7 +53,7 @@ func TestDiagnoseHealthyHasNoErrors(t *testing.T) {
 }
 
 func TestDiagnoseMissingAssetsAreWarnings(t *testing.T) {
-	cfg := &Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro", VADEnabled: true}
+	cfg := healthyBrain(&Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro", VADEnabled: true})
 	diags := Diagnose(cfg, t.TempDir(), okLookPath)
 
 	if HasErrors(diags) {
@@ -97,8 +107,25 @@ func TestDiagnoseBrainProvider(t *testing.T) {
 		wantRemediation string
 	}{
 		{
-			name:         "default claude found",
-			cfg:          Config{},
+			// Empty provider resolves to the ollama default, so a config that
+			// never named a model is itself the actionable error.
+			name:            "default ollama without model",
+			cfg:             Config{},
+			lookPath:        okLookPath,
+			wantSeverity:    SeverityError,
+			wantDetail:      "ollama_model is not configured",
+			wantRemediation: "samantha config ollama_model",
+		},
+		{
+			name:         "default provider with model found",
+			cfg:          Config{OllamaModel: "gemma", OllamaHost: "http://localhost:11434"},
+			lookPath:     okLookPath,
+			wantSeverity: SeverityOK,
+			wantDetail:   "connectivity is not probed",
+		},
+		{
+			name:         "selected claude found",
+			cfg:          Config{BrainProvider: "claude"},
 			lookPath:     okLookPath,
 			wantSeverity: SeverityOK,
 			wantDetail:   "claude CLI",
@@ -380,7 +407,7 @@ func TestDiagnoseCalibreOptional(t *testing.T) {
 // setup with assets present is healthy, and doctor never emits a microphone or
 // audio-device check (so batch-only setups are not failed for lacking a mic).
 func TestDiagnoseNeverRequiresMicrophone(t *testing.T) {
-	cfg := &Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro", VADEnabled: false}
+	cfg := healthyBrain(&Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro", VADEnabled: false})
 	dir := t.TempDir()
 	m, _ := ManifestFor(cfg, DefaultAssetRequest(cfg))
 	for _, a := range m.Assets {
@@ -511,7 +538,7 @@ func TestDiagnoseVoiceDevicesHealthy(t *testing.T) {
 }
 
 func TestDiagnoseWarnsOnBargeInWithoutFrontend(t *testing.T) {
-	cfg := &Config{STTProvider: "sherpa", TTSProvider: "kokoro", BargeInEnabled: true, VoiceFrontendEnabled: false}
+	cfg := healthyBrain(&Config{STTProvider: "sherpa", TTSProvider: "kokoro", BargeInEnabled: true, VoiceFrontendEnabled: false})
 	diags := Diagnose(cfg, t.TempDir(), func(string) (string, error) { return "", nil })
 	found := false
 	for _, d := range diags {

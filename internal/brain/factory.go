@@ -29,12 +29,12 @@ func Providers() []ProviderSpec {
 // NewProvider constructs the configured brain provider.
 func NewProvider(cfg *config.Config) (Provider, error) {
 	switch normalizeProvider(cfg.BrainProvider) {
-	case "", "claude":
+	case "", "ollama":
+		return NewOllama(cfg)
+	case "claude":
 		return New(cfg)
 	case "grok":
 		return NewGrok(cfg)
-	case "ollama":
-		return NewOllama(cfg)
 	default:
 		return nil, unsupportedProviderError("brain_provider", cfg.BrainProvider, providerSpecs)
 	}
@@ -48,15 +48,15 @@ var batchProviderSpecs = []ProviderSpec{
 
 // NewBatchProvider constructs the configured provider's batch adapter for
 // single-shot, history-free transforms. It mirrors NewProvider's provider
-// selection, so the default ("" / "claude") config resolves to Claude.
+// selection, so the default ("" / "ollama") config resolves to Ollama.
 func NewBatchProvider(cfg *config.Config) (BatchProvider, error) {
 	switch normalizeProvider(cfg.BrainProvider) {
-	case "", "claude":
+	case "", "ollama":
+		return newOllamaBatch(cfg)
+	case "claude":
 		return newClaudeBatch(cfg)
 	case "grok":
 		return newGrokBatch(cfg)
-	case "ollama":
-		return newOllamaBatch(cfg)
 	default:
 		return nil, unsupportedProviderError("batch brain_provider", cfg.BrainProvider, batchProviderSpecs)
 	}

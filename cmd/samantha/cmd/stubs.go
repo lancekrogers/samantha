@@ -158,7 +158,7 @@ var providersCmd = &cobra.Command{
 		fmt.Printf("  %s\n", sectionStyle.Render("Brain:"))
 		brainActive := strings.TrimSpace(cfg.BrainProvider)
 		if brainActive == "" {
-			brainActive = "claude"
+			brainActive = "ollama"
 		}
 		for _, spec := range brain.Providers() {
 			printProvider(brainActive == spec.Name, spec.Name, spec.Description)

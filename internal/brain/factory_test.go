@@ -47,18 +47,35 @@ func TestNewBatchProviderRejectsUnsupportedProvider(t *testing.T) {
 	}
 }
 
-// The default config leaves brain_provider empty and defaults to Claude, so the
-// batch factory must resolve "" and "claude" to the Claude adapter — never an
-// unsupported-provider error. Constructing it only requires the claude CLI on
-// PATH, so tolerate that being absent (mirrors how NewProvider's claude case is
-// left untested against a real CLI).
-func TestNewBatchProviderAcceptsDefaultClaude(t *testing.T) {
-	for _, provider := range []string{"", "claude"} {
+// The default config leaves brain_provider empty and defaults to Ollama, so the
+// batch factory must resolve every implemented name — plus "" — to a real
+// adapter and never to an unsupported-provider error. Construction touches the
+// environment (ollama server/model, claude CLI on PATH), so tolerate those
+// setup errors and assert only on the routing.
+func TestNewBatchProviderAcceptsImplementedProviders(t *testing.T) {
+	tolerated := []string{
+		"ollama_model not configured", // default config, no model chosen yet
+		"cannot connect to ollama",    // no local server in CI
+		"not found in ollama",         // server up, model not pulled
+		"claude CLI not found",
+		"grok CLI not found",
+	}
+	for _, provider := range []string{"", "ollama", "claude", "grok"} {
 		cfg := &config.Config{BrainProvider: provider}
 
 		_, err := NewBatchProvider(cfg)
-		if err != nil && !strings.Contains(err.Error(), "claude CLI not found") {
-			t.Fatalf("NewBatchProvider(%q) error = %q, want success or claude-CLI-not-found (never unsupported provider)", provider, err)
+		if err == nil {
+			continue
+		}
+		setupErr := false
+		for _, want := range tolerated {
+			if strings.Contains(err.Error(), want) {
+				setupErr = true
+				break
+			}
+		}
+		if !setupErr {
+			t.Fatalf("NewBatchProvider(%q) error = %q, want success or an environment setup error (never unsupported provider)", provider, err)
 		}
 	}
 }
