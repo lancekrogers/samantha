@@ -36,6 +36,14 @@ func ttsModelLabelForProvider(provider string, cfg *config.Config) string {
 		if cfg == nil {
 			return "unset"
 		}
+		// Managed selection (empty binary/model) prefers native package when present.
+		if qwenManagedNativeReady(cfg) {
+			tier := strings.TrimSpace(cfg.QwenTTSModelTier)
+			if tier == "" {
+				tier = managedqwen.DefaultModelTier
+			}
+			return "native " + tier
+		}
 		model := strings.TrimSpace(cfg.QwenTTSModel)
 		if managedqwen.UseManaged(cfg.QwenTTSBinary, model) {
 			return "managed CustomVoice 0.6B"
@@ -50,11 +58,26 @@ func ttsModelLabelForProvider(provider string, cfg *config.Config) string {
 }
 
 func ttsBinaryLabel(cfg *config.Config) string {
-	if cfg == nil || managedqwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
+	if cfg == nil {
+		return "managed worker"
+	}
+	if qwenManagedNativeReady(cfg) {
+		return "native worker"
+	}
+	if managedqwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
 		return "managed worker"
 	}
 	binary := strings.TrimSpace(cfg.QwenTTSBinary)
 	return filepath.Base(filepath.Clean(binary))
+}
+
+// qwenManagedNativeReady is true when config is the managed (empty path) Qwen
+// selection and a native package is installed under models_dir.
+func qwenManagedNativeReady(cfg *config.Config) bool {
+	if cfg == nil || !managedqwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
+		return false
+	}
+	return managedqwen.NativeInstalled(config.ModelsDirFrom(cfg))
 }
 
 // ttsBadgeLabel is used on the launcher and conversation header so the active
@@ -117,8 +140,11 @@ func ttsEffectiveVoiceLabelForProvider(provider string, cfg *config.Config) stri
 
 func ttsVoiceSelectionStatus(cfg *config.Config) string {
 	if strings.EqualFold(activeTTSProvider(cfg), "qwen3-tts") {
+		if qwenManagedNativeReady(cfg) {
+			return "Native package has no browsable presets on disk; open Qwen tab or re-run ensure"
+		}
 		if cfg == nil || managedqwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
-			return "Qwen preset voices are not installed; return to TTS and press enter on Qwen3-TTS to install"
+			return "Qwen preset voices are not installed; open Settings → Qwen or TTS and install"
 		}
 		return "Qwen voice controls are not verified by this worker; leave qwen_tts_mode/voice/language/instruction/reference settings empty and use the model-native default."
 	}

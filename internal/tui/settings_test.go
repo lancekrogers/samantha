@@ -367,8 +367,8 @@ func TestSettingsQwenVoiceSectionExplainsUnavailableModes(t *testing.T) {
 	m.width, m.height = 100, 20
 
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "not installed") || !strings.Contains(view, "press enter") {
-		t.Fatalf("Qwen voice section = %q, want managed-install guidance", view)
+	if !strings.Contains(view, "not installed") || !strings.Contains(strings.ToLower(view), "install") {
+		t.Fatalf("Qwen voice section = %q, want install guidance", view)
 	}
 }
 

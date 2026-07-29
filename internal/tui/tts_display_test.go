@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -34,7 +36,8 @@ func TestTTSDisplayIdentifiesQwenModelAndBinary(t *testing.T) {
 		t.Fatalf("Qwen provider detail = %q, want model and binary", detail)
 	}
 
-	kokoroCfg := &config.Config{TTSProvider: "kokoro"}
+	// Empty models dir: no native package → managed CustomVoice label.
+	kokoroCfg := &config.Config{TTSProvider: "kokoro", ModelsDir: t.TempDir()}
 	if got := ttsModelLabelForProvider("qwen3-tts", kokoroCfg); got != "managed CustomVoice 0.6B" {
 		t.Fatalf("unselected Qwen model label = %q, want managed model option", got)
 	}
@@ -58,13 +61,47 @@ func TestTTSDisplayExplainsUnverifiedQwenVoiceModes(t *testing.T) {
 
 func TestTTSDisplayManagedQwenUncleFuVoice(t *testing.T) {
 	// Managed install (empty binary/model) with a persona voice like Uncle_Fu.
+	// Isolate ModelsDir so a local native package does not flip the label.
 	cfg := &config.Config{
 		TTSProvider:  "qwen3-tts",
 		QwenTTSVoice: "Uncle_Fu",
+		ModelsDir:    t.TempDir(),
 	}
 	got := ttsBadgeLabel(cfg)
 	want := "tts qwen3-tts · managed CustomVoice 0.6B · mode customvoice · voice Uncle_Fu"
 	if got != want {
 		t.Fatalf("ttsBadgeLabel() = %q, want %q", got, want)
+	}
+}
+
+func TestTTSDisplayNativePackageLabel(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "qwen3-tts")
+	for _, p := range []string{
+		filepath.Join(root, "bin"),
+		filepath.Join(root, "models", "presets"),
+	} {
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(p, b string) {
+		if err := os.WriteFile(p, []byte(b), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(root, "bin", "qwen3-tts-worker"), "x")
+	_ = os.Chmod(filepath.Join(root, "bin", "qwen3-tts-worker"), 0o755)
+	write(filepath.Join(root, "models", "qwen3-tts-0.6b-f16.gguf"), "x")
+	write(filepath.Join(root, "models", "qwen3-tts-tokenizer-f16.gguf"), "x")
+	write(filepath.Join(root, "models", "presets", "presets.json"), "{}")
+
+	cfg := &config.Config{
+		TTSProvider: "qwen3-tts", ModelsDir: dir, QwenTTSModelTier: "0.6b",
+		QwenTTSVoice: "Vivian",
+	}
+	got := ttsBadgeLabel(cfg)
+	if !strings.Contains(got, "native 0.6b") || !strings.Contains(got, "Vivian") {
+		t.Fatalf("native badge = %q", got)
 	}
 }
