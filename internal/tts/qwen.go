@@ -24,6 +24,17 @@ const (
 	defaultQwenTTSTimeout = 120 * time.Second
 	maxQwenAudioDuration  = 2 * time.Hour
 	maxWorkerOutput       = 8 << 10
+
+	// Lab-measured stage-A warm TTFA ≈ full wall (qwen.latency.v1 worker_warmish).
+	// Stall watchdog FirstAudioGrace uses p95 headroom, not the mean:
+	//   warm_wall ~4–5s short phrase RTF~1.37 → p95 short ≈ 8s; long replies scale.
+	// Prefer configured timeout when larger so operators can raise the ceiling.
+	nativeWarmTTP95 = 8 * time.Second
+	// Cold ready (~6s measured) is paid once at session start, not every turn.
+	// If the warm session dies mid-conversation, restart cost is folded into grace.
+	nativeColdReadyP95 = 12 * time.Second
+	// Managed Python whole-utterance was ~6–9s process wall; keep prior default floor.
+	managedWarmTTP95 = 15 * time.Second
 )
 
 type limitedBuffer struct {
@@ -67,6 +78,7 @@ type Qwen3TTS struct {
 	binary              string
 	model               string
 	timeout             time.Duration
+	timeoutSet          bool // true when cfg.QwenTTSTimeout was explicitly set
 	command             qwenCommand
 	alive               atomic.Bool
 	mode                VoiceMode
@@ -163,11 +175,14 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 	}
 
 	timeout := defaultQwenTTSTimeout
+	timeoutSet := false
 	if cfg.QwenTTSTimeout > 0 {
 		timeout = time.Duration(cfg.QwenTTSTimeout) * time.Second
+		timeoutSet = true
 	}
 
 	q := newQwen3TTS(binaryPath, model, timeout, exec.CommandContext)
+	q.timeoutSet = timeoutSet
 	q.mode = VoiceMode(strings.TrimSpace(cfg.QwenTTSMode))
 	q.voice = strings.TrimSpace(cfg.QwenTTSVoice)
 	q.language = strings.TrimSpace(cfg.QwenTTSLanguage)
@@ -225,17 +240,38 @@ func newQwen3TTS(binary, model string, timeout time.Duration, command qwenComman
 }
 
 // FirstAudioGrace reports how long the pipeline's playback-stall watchdog
-// should wait for the first audible frame. Managed Qwen generates whole
-// utterances before emitting audio_chunk messages, and a cold worker restart
-// can take tens of seconds — far past the 8s default stall budget.
+// should wait for the first audible frame. Stage-A Qwen (native or managed)
+// generates whole utterances before PCM, so grace is driven by measured warm
+// TTFA p95 headroom, not the 8s pipeline default. An explicitly configured
+// qwen_tts_timeout raises the grace when larger than p95 (long-form audio).
 func (q *Qwen3TTS) FirstAudioGrace() time.Duration {
 	if q == nil {
-		return defaultQwenTTSTimeout
+		return managedWarmTTP95
 	}
-	if q.timeout > 0 {
+	p95 := managedWarmTTP95
+	if q.native {
+		// Warm turn + one unexpected restart (cold ready p95) for worst-case barge recovery.
+		p95 = nativeWarmTTP95 + nativeColdReadyP95
+	}
+	if q.timeoutSet && q.timeout > p95 {
 		return q.timeout
 	}
-	return defaultQwenTTSTimeout
+	return p95
+}
+
+// SoftCancel asks the warm worker to abandon the current request without
+// killing the process (stage A: between requests; stage B: mid-synth).
+func (q *Qwen3TTS) SoftCancel(requestID string) error {
+	if q == nil || !q.alive.Load() {
+		return &ProviderError{Provider: qwen3TTSProviderName, Operation: "cancel", Kind: ProviderErrorUnavailable, Err: errors.New("provider is closed")}
+	}
+	q.sessionMu.Lock()
+	defer q.sessionMu.Unlock()
+	if q.native && q.nativeSession != nil {
+		return q.nativeSession.sendCancel(requestID)
+	}
+	// Managed Python worker has no soft-cancel control message yet.
+	return nil
 }
 
 // Synthesize streams synthesized PCM frames for the given text.

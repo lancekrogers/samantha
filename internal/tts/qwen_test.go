@@ -236,17 +236,71 @@ func TestQwenSynthesizeRequestRejectsMalformedAndEmptyWAV(t *testing.T) {
 }
 
 func TestQwenFirstAudioGraceMatchesSynthTimeout(t *testing.T) {
+	// Explicit timeout above p95 raises grace (long-form operator ceiling).
 	q := newQwen3TTS("fake-qwen3-tts", t.TempDir(), 90*time.Second, nil)
+	q.timeoutSet = true
 	if got := q.FirstAudioGrace(); got != 90*time.Second {
-		t.Fatalf("FirstAudioGrace() = %v, want 90s synth timeout", got)
+		t.Fatalf("FirstAudioGrace() = %v, want 90s synth timeout (above p95 floor)", got)
 	}
-	// Zero-timeout constructor falls back to the package default.
+	// Default (unset) floors to measured warm-TTFA p95 headroom.
 	q = newQwen3TTS("fake-qwen3-tts", t.TempDir(), 0, nil)
-	if got := q.FirstAudioGrace(); got != defaultQwenTTSTimeout {
-		t.Fatalf("FirstAudioGrace() = %v, want default %v", got, defaultQwenTTSTimeout)
+	if got := q.FirstAudioGrace(); got != managedWarmTTP95 {
+		t.Fatalf("FirstAudioGrace() = %v, want managed p95 floor %v", got, managedWarmTTP95)
+	}
+	// Native path uses lab warm + cold-ready p95 headroom.
+	qn := newQwen3TTS("qwen3-tts-worker", t.TempDir(), 0, nil)
+	qn.native = true
+	wantNative := nativeWarmTTP95 + nativeColdReadyP95
+	if got := qn.FirstAudioGrace(); got != wantNative {
+		t.Fatalf("native FirstAudioGrace() = %v, want %v", got, wantNative)
 	}
 	// Compile-time check: pipeline stallTimeout type-asserts this interface.
 	var _ FirstAudioGracer = (*Qwen3TTS)(nil)
+}
+
+func TestNativeSoftCancelKeepsSession(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "qwen3-tts-worker")
+	source := `#!/usr/bin/env bash
+set -euo pipefail
+echo '{"type":"ready","protocol":"qwen3-tts-worker/v1","sample_rate":24000,"pcm_format":"f32le","streaming":false}'
+while IFS= read -r line; do
+  case "$line" in
+    *'"shutdown"'*) exit 0 ;;
+    *'"cancel"'*) continue ;;
+    *'"synthesize"'*)
+      echo '{"type":"pcm_meta","id":"x","sample_rate":24000,"format":"f32le","n_samples":1}'
+      python3 -c 'import sys,struct; sys.stdout.buffer.write(struct.pack("<f",0.2)); sys.stdout.buffer.write(b"\n")'
+      echo '{"type":"final","id":"x"}'
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(script, []byte(source), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	q, err := NewQwen3TTS(&config.Config{QwenTTSBinary: script, QwenTTSModel: t.TempDir(), QwenTTSTimeout: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Delete()
+	if err := q.SoftCancel("between"); err != nil {
+		t.Fatalf("SoftCancel: %v", err)
+	}
+	ctx := context.Background()
+	result, err := q.SynthesizeRequest(ctx, SynthesisRequest{Text: "after cancel"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for f := range result.Stream.Frames() {
+		n += len(f)
+	}
+	if n < 1 {
+		t.Fatalf("samples after soft cancel = %d", n)
+	}
+	if !q.Available() {
+		t.Fatal("provider should stay available after soft cancel")
+	}
 }
 
 func TestQwenSynthesizeRequestTimesOutAndCancelsWorker(t *testing.T) {
