@@ -95,6 +95,7 @@ type Qwen3TTS struct {
 	sessionMu           sync.Mutex
 	session             *managedQwenSession
 	nativeSession       *nativeQwenSession
+	nativeSessionRef    atomic.Pointer[nativeQwenSession]
 }
 
 // NewQwen3TTS resolves the native package, managed installation, or external CLI.
@@ -119,7 +120,7 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 			return nil, errors.New("qwen3-tts: qwen_tts_model is required for the native worker")
 		}
 		native = true
-	} else if install, ok := findNativeInstall(modelsDir); ok && managedqwen.UseManaged(binary, model) {
+	} else if install, ok := findNativeInstall(modelsDir, cfg.QwenTTSModelTier); ok && managedqwen.UseManaged(binary, model) {
 		// Product default: empty binary/model → use ensure-installed native package when present.
 		binary = install.Worker
 		model = install.ModelDir
@@ -218,6 +219,7 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 			return nil, fmt.Errorf("qwen3-tts: %w", err)
 		}
 		q.nativeSession = session
+		q.nativeSessionRef.Store(session)
 	} else if managed {
 		session, err := startManagedQwenSession(binaryPath, workerScript, model, startupTimeout)
 		if err != nil {
@@ -261,14 +263,14 @@ func (q *Qwen3TTS) FirstAudioGrace() time.Duration {
 
 // SoftCancel asks the warm worker to abandon the current request without
 // killing the process (stage A: between requests; stage B: mid-synth).
-func (q *Qwen3TTS) SoftCancel(requestID string) error {
+func (q *Qwen3TTS) SoftCancel(_ string) error {
 	if q == nil || !q.alive.Load() {
 		return &ProviderError{Provider: qwen3TTSProviderName, Operation: "cancel", Kind: ProviderErrorUnavailable, Err: errors.New("provider is closed")}
 	}
-	q.sessionMu.Lock()
-	defer q.sessionMu.Unlock()
-	if q.native && q.nativeSession != nil {
-		return q.nativeSession.sendCancel(requestID)
+	if q.native {
+		if session := q.nativeSessionRef.Load(); session != nil {
+			return session.CancelActive()
+		}
 	}
 	// Managed Python worker has no soft-cancel control message yet.
 	return nil
@@ -515,6 +517,7 @@ func (q *Qwen3TTS) ensureNativeSessionLocked(ctx context.Context) error {
 		return fmt.Errorf("start native worker: %w", err)
 	}
 	q.nativeSession = session
+	q.nativeSessionRef.Store(session)
 	return nil
 }
 
@@ -522,6 +525,7 @@ func (q *Qwen3TTS) discardNativeSessionLocked() {
 	if q.nativeSession == nil {
 		return
 	}
+	q.nativeSessionRef.Store(nil)
 	q.nativeSession.Close()
 	q.nativeSession = nil
 }

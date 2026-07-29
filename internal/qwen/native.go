@@ -2,6 +2,7 @@ package qwen
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -12,8 +13,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 )
 
@@ -84,10 +87,12 @@ type NativeStatus struct {
 // nativeInstallJSON is a subset of lab install.json (qwen3-tts-native.install.v1).
 type nativeInstallJSON struct {
 	Schema      string `json:"schema"`
+	Product     string `json:"product"`
 	RepoCommit  string `json:"repo_commit"`
 	EngineSHA   string `json:"engine_sha"`
 	OS          string `json:"os"`
 	Arch        string `json:"arch"`
+	BackendHint string `json:"backend_hint"`
 	TierDefault string `json:"tier_default"`
 	SampleRate  int    `json:"sample_rate"`
 	Protocol    string `json:"protocol"`
@@ -107,6 +112,7 @@ type nativeInstallJSON struct {
 	} `json:"models"`
 	Presets       string `json:"presets"`
 	PresetsSHA256 string `json:"presets_sha256"`
+	UserInstall   string `json:"user_install"`
 }
 
 type fileRef struct {
@@ -125,21 +131,26 @@ func InspectNative(modelsDir, preferredTier string) NativeStatus {
 		st.DefaultTier = preferredTier
 	}
 
-	st.WorkerReady = regularFile(p.Worker) || isExecutable(p.Worker)
-	st.PresetsReady = regularFile(p.PresetsJSON)
-
-	var install nativeInstallJSON
-	if data, err := os.ReadFile(p.InstallJSON); err == nil {
-		_ = json.Unmarshal(data, &install)
-		if install.TierDefault != "" {
-			st.DefaultTier = normalizeTier(install.TierDefault)
-			if preferredTier != "" {
-				st.DefaultTier = preferredTier
-			}
+	install, err := loadAndVerifyNativeInstall(p)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			st.Detail = "native Qwen3-TTS package is not installed"
+		} else {
+			st.Detail = "native Qwen3-TTS install manifest is invalid: " + err.Error()
 		}
-		st.EngineSHA = install.EngineSHA
-		st.RepoCommit = install.RepoCommit
+		return st
 	}
+
+	st.WorkerReady = isExecutable(p.Worker)
+	st.PresetsReady = true // loadAndVerifyNativeInstall verified the manifest entry.
+	if install.TierDefault != "" {
+		st.DefaultTier = normalizeTier(install.TierDefault)
+		if preferredTier != "" {
+			st.DefaultTier = preferredTier
+		}
+	}
+	st.EngineSHA = install.EngineSHA
+	st.RepoCommit = install.RepoCommit
 
 	// Discover tiers from install.json and/or on-disk GGUF names.
 	known := []string{DefaultModelTier, Tier1_7B}
@@ -151,6 +162,7 @@ func InspectNative(modelsDir, preferredTier string) NativeStatus {
 		if len(known) == 0 {
 			known = []string{DefaultModelTier, Tier1_7B}
 		}
+		sort.Strings(known)
 	}
 	for _, tier := range known {
 		if tierReady(p, install, tier) {
@@ -173,6 +185,197 @@ func InspectNative(modelsDir, preferredTier string) NativeStatus {
 		st.Detail = "native Qwen3-TTS installation is incomplete"
 	}
 	return st
+}
+
+func loadAndVerifyNativeInstall(p NativePaths) (nativeInstallJSON, error) {
+	data, err := os.ReadFile(p.InstallJSON)
+	if err != nil {
+		return nativeInstallJSON{}, err
+	}
+	var install nativeInstallJSON
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&install); err != nil {
+		return nativeInstallJSON{}, fmt.Errorf("decode install.json: %w", err)
+	}
+	if err := ensureJSONEOF(dec); err != nil {
+		return nativeInstallJSON{}, err
+	}
+	if install.Schema != nativeInstallSchema {
+		return nativeInstallJSON{}, fmt.Errorf("schema %q, want %q", install.Schema, nativeInstallSchema)
+	}
+	if install.OS != runtime.GOOS || install.Arch != runtime.GOARCH {
+		return nativeInstallJSON{}, fmt.Errorf("platform %s/%s, want %s/%s", install.OS, install.Arch, runtime.GOOS, runtime.GOARCH)
+	}
+	if install.Protocol != "qwen3-tts-worker/v1" {
+		return nativeInstallJSON{}, fmt.Errorf("protocol %q, want qwen3-tts-worker/v1", install.Protocol)
+	}
+	if install.SampleRate != 24000 {
+		return nativeInstallJSON{}, fmt.Errorf("sample_rate %d, want 24000", install.SampleRate)
+	}
+	defaultTier := normalizeTier(install.TierDefault)
+	if defaultTier == "" || defaultTier != install.TierDefault {
+		return nativeInstallJSON{}, fmt.Errorf("invalid tier_default %q", install.TierDefault)
+	}
+	if len(install.Models) == 0 {
+		return nativeInstallJSON{}, errors.New("models is empty")
+	}
+	if _, ok := install.Models[defaultTier]; !ok {
+		return nativeInstallJSON{}, fmt.Errorf("tier_default %q is not listed in models", defaultTier)
+	}
+
+	workerRel, err := filepath.Rel(p.Root, p.Worker)
+	if err != nil {
+		return nativeInstallJSON{}, fmt.Errorf("resolve worker path: %w", err)
+	}
+	workerRel = filepath.ToSlash(workerRel)
+	if install.Bin.Worker != workerRel {
+		return nativeInstallJSON{}, fmt.Errorf("worker path %q, want %q", install.Bin.Worker, workerRel)
+	}
+	if err := verifyNativeManifestFile(p.Root, install.Bin.Worker, install.Bin.WorkerSHA256, true); err != nil {
+		return nativeInstallJSON{}, fmt.Errorf("worker: %w", err)
+	}
+	for _, ref := range []struct {
+		name string
+		path string
+		sha  string
+	}{
+		{name: "cli", path: install.Bin.CLI, sha: install.Bin.CLISHA256},
+		{name: "lib", path: install.Bin.Lib, sha: install.Bin.LibSHA256},
+	} {
+		if ref.path == "" && ref.sha == "" {
+			continue
+		}
+		if ref.path == "" || ref.sha == "" {
+			return nativeInstallJSON{}, fmt.Errorf("%s path and sha256 must both be set", ref.name)
+		}
+		if err := verifyNativeManifestFile(p.Root, ref.path, ref.sha, false); err != nil {
+			return nativeInstallJSON{}, fmt.Errorf("%s: %w", ref.name, err)
+		}
+	}
+
+	presetsRel, err := filepath.Rel(p.Root, p.PresetsJSON)
+	if err != nil {
+		return nativeInstallJSON{}, fmt.Errorf("resolve presets path: %w", err)
+	}
+	presetsRel = filepath.ToSlash(presetsRel)
+	if install.Presets != presetsRel {
+		return nativeInstallJSON{}, fmt.Errorf("presets path %q, want %q", install.Presets, presetsRel)
+	}
+	if err := verifyNativeManifestFile(p.Root, install.Presets, install.PresetsSHA256, false); err != nil {
+		return nativeInstallJSON{}, fmt.Errorf("presets: %w", err)
+	}
+
+	for tier, model := range install.Models {
+		if normalized := normalizeTier(tier); normalized == "" || normalized != tier {
+			return nativeInstallJSON{}, fmt.Errorf("invalid model tier %q", tier)
+		}
+		if err := verifyNativeManifestFile(p.Root, model.TTS.Path, model.TTS.SHA256, false); err != nil {
+			return nativeInstallJSON{}, fmt.Errorf("model %s tts: %w", tier, err)
+		}
+		if err := verifyNativeManifestFile(p.Root, model.Tokenizer.Path, model.Tokenizer.SHA256, false); err != nil {
+			return nativeInstallJSON{}, fmt.Errorf("model %s tokenizer: %w", tier, err)
+		}
+	}
+	return install, nil
+}
+
+func ensureJSONEOF(dec *json.Decoder) error {
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("install.json contains multiple JSON values")
+		}
+		return fmt.Errorf("decode install.json trailing data: %w", err)
+	}
+	return nil
+}
+
+func verifyNativeManifestFile(root, manifestPath, wantSHA string, executable bool) error {
+	rel, err := cleanNativeManifestPath(manifestPath)
+	if err != nil {
+		return err
+	}
+	want, err := hex.DecodeString(strings.TrimSpace(wantSHA))
+	if err != nil || len(want) != sha256.Size {
+		return fmt.Errorf("invalid sha256 %q", wantSHA)
+	}
+	target := filepath.Join(root, filepath.FromSlash(rel))
+	info, err := os.Lstat(target)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("%q is not a regular file", manifestPath)
+	}
+	resolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return err
+	}
+	if err := requirePathWithinNative(root, resolved, manifestPath); err != nil {
+		return err
+	}
+	resolvedInfo, err := os.Stat(resolved)
+	if err != nil {
+		return err
+	}
+	if !resolvedInfo.Mode().IsRegular() {
+		return fmt.Errorf("%q does not resolve to a regular file", manifestPath)
+	}
+	if executable && resolvedInfo.Mode()&0o111 == 0 {
+		return fmt.Errorf("%q is not executable", manifestPath)
+	}
+	f, err := os.Open(resolved)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	got := h.Sum(nil)
+	if !bytes.Equal(got, want) {
+		return fmt.Errorf("sha256 mismatch for %q (got %s want %s)", manifestPath, hex.EncodeToString(got), strings.ToLower(wantSHA))
+	}
+	return nil
+}
+
+func cleanNativeManifestPath(manifestPath string) (string, error) {
+	nativePath := filepath.FromSlash(manifestPath)
+	if manifestPath == "" || strings.Contains(manifestPath, `\`) || path.IsAbs(manifestPath) ||
+		filepath.IsAbs(nativePath) || filepath.VolumeName(nativePath) != "" {
+		return "", fmt.Errorf("unsafe manifest path %q", manifestPath)
+	}
+	clean := path.Clean(manifestPath)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || clean != manifestPath {
+		return "", fmt.Errorf("unsafe manifest path %q", manifestPath)
+	}
+	return clean, nil
+}
+
+func requirePathWithinNative(root, target, original string) error {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return err
+	}
+	// Temp roots on macOS commonly spell /private/var as /var. Compare the
+	// resolved forms only when both paths exist; otherwise keep both lexical.
+	if resolvedRoot, rootErr := filepath.EvalSymlinks(rootAbs); rootErr == nil {
+		if resolvedTarget, targetErr := filepath.EvalSymlinks(targetAbs); targetErr == nil {
+			rootAbs = resolvedRoot
+			targetAbs = resolvedTarget
+		}
+	}
+	within, err := filepath.Rel(rootAbs, targetAbs)
+	if err != nil || within == ".." || strings.HasPrefix(within, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("unsafe path %q escapes install root", original)
+	}
+	return nil
 }
 
 func normalizeTier(t string) string {
@@ -466,6 +669,9 @@ func extractNativeTarGz(archivePath, destRoot string) error {
 		if strings.HasPrefix(hdr.Name, "/") || filepath.IsAbs(hdr.Name) {
 			return fmt.Errorf("native Qwen setup: refusing absolute path %q", hdr.Name)
 		}
+		if _, err := safeJoinNative(stage, hdr.Name); err != nil {
+			return err
+		}
 		if prefix == "" {
 			if parts := strings.SplitN(hdr.Name, "/", 2); len(parts) > 1 {
 				prefix = parts[0] + "/"
@@ -481,11 +687,20 @@ func extractNativeTarGz(archivePath, destRoot string) error {
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
+			if err := rejectNativeSymlinkComponents(stage, target); err != nil {
+				return err
+			}
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return err
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
+			if err := rejectNativeSymlinkComponents(stage, target); err != nil {
+				return err
+			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			if err := rejectNativeSymlinkComponents(stage, target); err != nil {
 				return err
 			}
 			out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(hdr.Mode)|0o644)
@@ -496,11 +711,17 @@ func extractNativeTarGz(archivePath, destRoot string) error {
 				out.Close()
 				return err
 			}
-			out.Close()
+			if err := out.Close(); err != nil {
+				return err
+			}
 		case tar.TypeSymlink:
-			// Allow relative symlinks that stay inside the package (dylib names).
-			if filepath.IsAbs(hdr.Linkname) || strings.HasPrefix(hdr.Linkname, "/") {
-				return fmt.Errorf("native Qwen setup: refusing absolute symlink %q", hdr.Linkname)
+			// Allow relative library aliases only when their logical target remains
+			// inside the package after the staged tree is promoted into destRoot.
+			if err := validateNativeArchiveSymlink(rel, hdr.Linkname); err != nil {
+				return err
+			}
+			if err := rejectNativeSymlinkComponents(stage, target); err != nil {
+				return err
 			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
@@ -518,8 +739,12 @@ func extractNativeTarGz(archivePath, destRoot string) error {
 	// Promote staged install.json / bin / models into destRoot (merge/replace).
 	for _, name := range []string{"install.json", "SHA256SUMS", "bin", "models"} {
 		src := filepath.Join(stage, name)
-		if _, err := os.Stat(src); err != nil {
+		info, err := os.Lstat(src)
+		if err != nil {
 			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("native Qwen setup: refusing top-level symlink %q", name)
 		}
 		dst := filepath.Join(destRoot, name)
 		if err := os.RemoveAll(dst); err != nil {
@@ -535,11 +760,56 @@ func extractNativeTarGz(archivePath, destRoot string) error {
 	return nil
 }
 
+func validateNativeArchiveSymlink(rel, linkname string) error {
+	nativeLink := filepath.FromSlash(linkname)
+	if linkname == "" || strings.Contains(linkname, `\`) || path.IsAbs(linkname) ||
+		filepath.IsAbs(nativeLink) || filepath.VolumeName(nativeLink) != "" {
+		return fmt.Errorf("native Qwen setup: refusing unsafe symlink %q -> %q", rel, linkname)
+	}
+	target := path.Clean(path.Join(path.Dir(filepath.ToSlash(rel)), linkname))
+	if target == ".." || strings.HasPrefix(target, "../") {
+		return fmt.Errorf("native Qwen setup: symlink %q -> %q escapes archive root", rel, linkname)
+	}
+	return nil
+}
+
+// rejectNativeSymlinkComponents prevents a later regular-file header from
+// following an earlier archive symlink. The final path is checked too because
+// os.OpenFile follows an existing symlink at that position.
+func rejectNativeSymlinkComponents(root, target string) error {
+	if err := requirePathWithinNative(root, target, target); err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return err
+	}
+	current := root
+	for _, component := range strings.Split(rel, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("native Qwen setup: refusing archive write through symlink %q", current)
+		}
+	}
+	return nil
+}
+
 func safeJoinNative(dir, rel string) (string, error) {
-	if filepath.IsAbs(rel) {
+	nativeRel := filepath.FromSlash(rel)
+	if filepath.IsAbs(nativeRel) || filepath.VolumeName(nativeRel) != "" {
 		return "", fmt.Errorf("unsafe absolute path %q", rel)
 	}
-	target := filepath.Join(dir, rel)
+	target := filepath.Join(dir, nativeRel)
 	within, err := filepath.Rel(dir, target)
 	if err != nil || within == ".." || strings.HasPrefix(within, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("unsafe path %q escapes archive root", rel)
@@ -548,9 +818,19 @@ func safeJoinNative(dir, rel string) (string, error) {
 }
 
 func copyPath(src, dst string) error {
-	info, err := os.Stat(src)
+	info, err := os.Lstat(src)
 	if err != nil {
 		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		linkname, err := os.Readlink(src)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		return os.Symlink(linkname, dst)
 	}
 	if info.IsDir() {
 		if err := os.MkdirAll(dst, 0o755); err != nil {

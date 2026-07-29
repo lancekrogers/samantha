@@ -764,8 +764,9 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 			metrics.interrupted = true
 			metrics.markBargeIn(req.At)
 			turn.to(TurnInterrupted)
-			// Soft-cancel warm native workers before hard-stop so the process
-			// stays loaded for the next turn (progressive segment path).
+			// Send the session's actual active request ID without waiting on the
+			// synthesis lock. Stage B workers can stop mid-synthesis; Stage A
+			// exits through the canceled context and is restarted by the provider.
 			p.softCancelTTS("barge-in")
 			cancel()
 			if cancelTurn != nil {

@@ -12,29 +12,14 @@ import (
 
 func TestBuildQwenItemsTierConsentCache(t *testing.T) {
 	dir := t.TempDir()
-	// Minimal native install tree
-	root := filepath.Join(dir, "qwen3-tts")
-	bin := filepath.Join(root, "bin")
-	models := filepath.Join(root, "models")
-	presets := filepath.Join(models, "presets")
-	cache := filepath.Join(root, "cache", "speaker-embeddings")
-	for _, d := range []string{bin, models, presets, cache} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
+	writeNativeTUITestInstall(t, dir)
+	cache := managedqwen.NativeInstallPaths(dir).CacheDir
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	touch := func(p string) {
-		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.WriteFile(filepath.Join(cache, "abc.emb"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	touch(filepath.Join(bin, "qwen3-tts-worker"))
-	_ = os.Chmod(filepath.Join(bin, "qwen3-tts-worker"), 0o755)
-	touch(filepath.Join(models, "qwen3-tts-0.6b-f16.gguf"))
-	touch(filepath.Join(models, "qwen3-tts-tokenizer-f16.gguf"))
-	touch(filepath.Join(presets, "presets.json"))
-	touch(filepath.Join(presets, "Vivian.q3te"))
-	touch(filepath.Join(cache, "abc.emb"))
 
 	cfg := &config.Config{
 		ModelsDir:        dir,

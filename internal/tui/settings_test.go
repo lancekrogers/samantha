@@ -260,9 +260,10 @@ func TestSettingsToolsSkillsRowOllamaOnly(t *testing.T) {
 }
 
 func TestSettingsSelectTTSProviderPersistsAndRefreshesVoices(t *testing.T) {
-	cfg := &config.Config{TTSProvider: "kokoro"}
+	modelsDir := t.TempDir()
+	writeNativeTUITestInstall(t, modelsDir)
+	cfg := &config.Config{TTSProvider: "kokoro", ModelsDir: modelsDir}
 	m := newSettings(cfg, nil)
-	m.qwenStatus = managedqwen.Status{Installed: true, RuntimeReady: true, ModelReady: true}
 	m.buildTTSItems()
 	m.section = sectionTTS
 	m.cursor = 1 // qwen3-tts
@@ -291,12 +292,13 @@ func TestSettingsSelectTTSProviderPersistsAndRefreshesVoices(t *testing.T) {
 func TestSettingsSelectTTSProviderWritesGlobalDefaultOnly(t *testing.T) {
 	// WI-c8884d §5.2: Settings writes global defaults even when a persona is
 	// active — persona voice stacks are edited under Personas, never here.
+	modelsDir := t.TempDir()
+	writeNativeTUITestInstall(t, modelsDir)
 	cfg := &config.Config{
 		ActivePersona: "reader", TTSProvider: "kokoro", TTSVoice: "af_heart",
-		QwenTTSMode: "customvoice", QwenTTSVoice: "Ryan",
+		QwenTTSMode: "customvoice", QwenTTSVoice: "Ryan", ModelsDir: modelsDir,
 	}
 	m := newSettings(cfg, nil)
-	m.qwenStatus = managedqwen.Status{Installed: true, RuntimeReady: true, ModelReady: true}
 	m.buildTTSItems()
 	m.section = sectionTTS
 	m.cursor = 1 // qwen3-tts

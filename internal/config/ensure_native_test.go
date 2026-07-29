@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/lancekrogers/samantha/internal/qwen"
@@ -42,31 +43,39 @@ func TestEnsureRuntimeAssetsNativeQwenTar(t *testing.T) {
 
 func writeTestNativeTar(t *testing.T, dir string) (path, shaHex string) {
 	t.Helper()
+	files := map[string]string{
+		"bin/qwen3-tts-worker":                "#!/bin/sh\n",
+		"models/qwen3-tts-0.6b-f16.gguf":      "tts",
+		"models/qwen3-tts-tokenizer-f16.gguf": "tok",
+		"models/presets/presets.json":         `{"voices":[{"name":"Vivian"}]}`,
+	}
 	install := map[string]any{
 		"schema": "qwen3-tts-native.install.v1", "tier_default": "0.6b",
-		"bin": map[string]string{"worker": "bin/qwen3-tts-worker"},
+		"os": runtime.GOOS, "arch": runtime.GOARCH,
+		"sample_rate": 24000, "protocol": "qwen3-tts-worker/v1",
+		"bin": map[string]string{
+			"worker": "bin/qwen3-tts-worker", "worker_sha256": testNativeSHA(files["bin/qwen3-tts-worker"]),
+		},
 		"models": map[string]any{
 			"0.6b": map[string]any{
-				"tts":       map[string]string{"path": "models/qwen3-tts-0.6b-f16.gguf"},
-				"tokenizer": map[string]string{"path": "models/qwen3-tts-tokenizer-f16.gguf"},
+				"tts": map[string]string{
+					"path": "models/qwen3-tts-0.6b-f16.gguf", "sha256": testNativeSHA(files["models/qwen3-tts-0.6b-f16.gguf"]),
+				},
+				"tokenizer": map[string]string{
+					"path": "models/qwen3-tts-tokenizer-f16.gguf", "sha256": testNativeSHA(files["models/qwen3-tts-tokenizer-f16.gguf"]),
+				},
 			},
 		},
-		"presets": "models/presets/presets.json",
+		"presets": "models/presets/presets.json", "presets_sha256": testNativeSHA(files["models/presets/presets.json"]),
 	}
 	b, _ := json.Marshal(install)
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
 	prefix := "pkg/"
-	files := map[string]string{
-		prefix + "install.json":                        string(b),
-		prefix + "bin/qwen3-tts-worker":                "#!/bin/sh\n",
-		prefix + "models/qwen3-tts-0.6b-f16.gguf":      "tts",
-		prefix + "models/qwen3-tts-tokenizer-f16.gguf": "tok",
-		prefix + "models/presets/presets.json":         `{"voices":[{"name":"Vivian"}]}`,
-	}
+	files["install.json"] = string(b)
 	for name, body := range files {
-		hdr := &tar.Header{Name: name, Mode: 0o755, Size: int64(len(body))}
+		hdr := &tar.Header{Name: prefix + name, Mode: 0o755, Size: int64(len(body))}
 		_ = tw.WriteHeader(hdr)
 		_, _ = tw.Write([]byte(body))
 	}
@@ -79,4 +88,9 @@ func writeTestNativeTar(t *testing.T, dir string) (path, shaHex string) {
 		t.Fatal(err)
 	}
 	return path, hex.EncodeToString(sum[:])
+}
+
+func testNativeSHA(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }

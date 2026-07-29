@@ -3,10 +3,11 @@ package config
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/lancekrogers/samantha/internal/qwen"
 )
 
 func okLookPath(name string) (string, error)   { return "/usr/bin/" + name, nil }
@@ -217,24 +218,8 @@ func TestDiagnoseWhisperCPPBinary(t *testing.T) {
 
 func TestDiagnoseQwenNativePackageInstall(t *testing.T) {
 	modelsDir := t.TempDir()
-	// Minimal native tree (worker + models + presets).
-	root := filepath.Join(modelsDir, "qwen3-tts")
-	bin := filepath.Join(root, "bin")
-	models := filepath.Join(root, "models")
-	presets := filepath.Join(models, "presets")
-	for _, d := range []string{bin, models, presets} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	touchFile(t, filepath.Join(bin, "qwen3-tts-worker"))
-	_ = os.Chmod(filepath.Join(bin, "qwen3-tts-worker"), 0o755)
-	touchFile(t, filepath.Join(models, "qwen3-tts-0.6b-f16.gguf"))
-	touchFile(t, filepath.Join(models, "qwen3-tts-tokenizer-f16.gguf"))
-	if err := os.WriteFile(filepath.Join(presets, "presets.json"), []byte(`{"voices":[{"name":"Vivian"}]}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "install.json"), []byte(`{"schema":"qwen3-tts-native.install.v1","tier_default":"0.6b","models":{"0.6b":{"tts":{"path":"models/qwen3-tts-0.6b-f16.gguf"},"tokenizer":{"path":"models/qwen3-tts-tokenizer-f16.gguf"}}}}`), 0o644); err != nil {
+	archive, sum := writeTestNativeTar(t, t.TempDir())
+	if _, err := qwen.EnsureNative(context.Background(), modelsDir, qwen.NativeEnsureOptions{URL: archive, SHA256: sum}, nil); err != nil {
 		t.Fatal(err)
 	}
 

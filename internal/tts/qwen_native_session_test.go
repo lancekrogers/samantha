@@ -2,15 +2,21 @@ package tts
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
+	managedqwen "github.com/lancekrogers/samantha/internal/qwen"
 )
 
 func TestIsNativeWorkerBinary(t *testing.T) {
@@ -39,13 +45,63 @@ func TestFindNativeInstall(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(install, "models", "qwen3-tts-0.6b-f16.gguf"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, ok := findNativeInstall(modelsDir)
+	writeNativeSessionTestManifest(t, modelsDir)
+	got, ok := findNativeInstall(modelsDir, "0.6b")
 	if !ok {
 		t.Fatal("expected native install")
 	}
 	if got.Worker != worker {
 		t.Fatalf("worker=%q want %q", got.Worker, worker)
 	}
+}
+
+func writeNativeSessionTestManifest(t *testing.T, modelsDir string) {
+	t.Helper()
+	p := managedqwen.NativeInstallPaths(modelsDir)
+	worker, err := os.ReadFile(p.Worker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ttsPath := filepath.Join(p.ModelDir, "qwen3-tts-0.6b-f16.gguf")
+	ttsModel, err := os.ReadFile(ttsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenizer := []byte("tokenizer")
+	presets := []byte(`{"voices":[{"name":"Vivian"}]}`)
+	for path, body := range map[string][]byte{
+		filepath.Join(p.ModelDir, "qwen3-tts-tokenizer-f16.gguf"): tokenizer,
+		p.PresetsJSON: presets,
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifest := map[string]any{
+		"schema": "qwen3-tts-native.install.v1", "os": runtime.GOOS, "arch": runtime.GOARCH,
+		"tier_default": "0.6b", "sample_rate": 24000, "protocol": nativeWorkerProtocol,
+		"bin": map[string]string{"worker": "bin/qwen3-tts-worker", "worker_sha256": nativeSessionSHA(worker)},
+		"models": map[string]any{"0.6b": map[string]any{
+			"tts":       map[string]string{"path": "models/qwen3-tts-0.6b-f16.gguf", "sha256": nativeSessionSHA(ttsModel)},
+			"tokenizer": map[string]string{"path": "models/qwen3-tts-tokenizer-f16.gguf", "sha256": nativeSessionSHA(tokenizer)},
+		}},
+		"presets": "models/presets/presets.json", "presets_sha256": nativeSessionSHA(presets),
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.InstallJSON, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func nativeSessionSHA(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 func TestNativeQwenSessionHandshakeAndPCM(t *testing.T) {
@@ -133,6 +189,31 @@ done
 		if math.Abs(float64(got[i]-samples[i])) > 1e-5 {
 			t.Fatalf("sample[%d]=%v want %v", i, got[i], samples[i])
 		}
+	}
+}
+
+func TestNativeQwenSessionRejectsIncompatibleHandshake(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		ready string
+		want  string
+	}{
+		{name: "empty protocol", ready: `{"type":"ready","sample_rate":24000,"pcm_format":"f32le"}`, want: "protocol"},
+		{name: "future protocol", ready: `{"type":"ready","protocol":"qwen3-tts-worker/v2","sample_rate":24000,"pcm_format":"f32le"}`, want: "protocol"},
+		{name: "wrong sample rate", ready: `{"type":"ready","protocol":"qwen3-tts-worker/v1","sample_rate":16000,"pcm_format":"f32le"}`, want: "sample rate"},
+		{name: "wrong pcm format", ready: `{"type":"ready","protocol":"qwen3-tts-worker/v1","sample_rate":24000,"pcm_format":"s16le"}`, want: "PCM format"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := filepath.Join(t.TempDir(), "qwen3-tts-worker")
+			source := "#!/usr/bin/env bash\nset -euo pipefail\necho '" + tc.ready + "'\nwhile IFS= read -r line; do [[ \"$line\" == *'\"shutdown\"'* ]] && exit 0; done\n"
+			if err := os.WriteFile(script, []byte(source), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			_, err := startNativeQwenSession(context.Background(), script, t.TempDir(), 5*time.Second)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error=%v, want %q rejection", err, tc.want)
+			}
+		})
 	}
 }
 

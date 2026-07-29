@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/lancekrogers/samantha/internal/audio"
+	managedqwen "github.com/lancekrogers/samantha/internal/qwen"
 )
 
 // nativeWorkerProtocol is frozen in projects/qwen3-tts-native/docs/PROTOCOL.md.
@@ -33,6 +34,9 @@ type nativeQwenSession struct {
 	wait   chan error
 
 	mu        sync.Mutex
+	writeMu   sync.Mutex
+	activeMu  sync.Mutex
+	activeID  string
 	closed    bool
 	request   uint64
 	modelDir  string
@@ -66,28 +70,12 @@ type nativeInstallPaths struct {
 }
 
 // findNativeInstall looks for a release package installed for product use.
-func findNativeInstall(modelsDir string) (nativeInstallPaths, bool) {
-	root := filepath.Join(modelsDir, "qwen3-tts")
-	worker := filepath.Join(root, "bin", "qwen3-tts-worker")
-	if _, err := os.Stat(worker); err != nil {
-		// allow .exe on windows
-		worker = filepath.Join(root, "bin", "qwen3-tts-worker.exe")
-		if _, err := os.Stat(worker); err != nil {
-			return nativeInstallPaths{}, false
-		}
-	}
-	modelDir := filepath.Join(root, "models")
-	if st, err := os.Stat(modelDir); err != nil || !st.IsDir() {
+func findNativeInstall(modelsDir, preferredTier string) (nativeInstallPaths, bool) {
+	status := managedqwen.InspectNative(modelsDir, preferredTier)
+	if !status.Installed {
 		return nativeInstallPaths{}, false
 	}
-	// Require at least the default tier GGUF or install.json at root.
-	gguf := filepath.Join(modelDir, "qwen3-tts-0.6b-f16.gguf")
-	if _, err := os.Stat(gguf); err != nil {
-		if _, err2 := os.Stat(filepath.Join(root, "install.json")); err2 != nil {
-			return nativeInstallPaths{}, false
-		}
-	}
-	return nativeInstallPaths{Root: root, Worker: worker, ModelDir: modelDir}, true
+	return nativeInstallPaths{Root: status.Root, Worker: status.Worker, ModelDir: status.ModelDir}, true
 }
 
 func startNativeQwenSession(ctx context.Context, workerBin, modelDir string, timeout time.Duration) (*nativeQwenSession, error) {
@@ -157,15 +145,17 @@ func startNativeQwenSession(ctx context.Context, workerBin, modelDir string, tim
 			s.Close()
 			return nil, fmt.Errorf("native worker handshake failed: type=%s%s", ready.Type, workerOutputSuffix(stderr.String(), ""))
 		}
-		if ready.Protocol != "" && ready.Protocol != nativeWorkerProtocol {
-			// Allow future minor protocol notes but require v1 prefix for now.
-			if !strings.HasPrefix(ready.Protocol, "qwen3-tts-worker/") {
-				s.Close()
-				return nil, fmt.Errorf("native worker protocol %q unsupported", ready.Protocol)
-			}
+		if ready.Protocol != nativeWorkerProtocol {
+			s.Close()
+			return nil, fmt.Errorf("native worker protocol %q unsupported; want %q", ready.Protocol, nativeWorkerProtocol)
 		}
-		if ready.SampleRate > 0 {
-			s.rate = ready.SampleRate
+		if ready.SampleRate != qwen3TTSSampleRate {
+			s.Close()
+			return nil, fmt.Errorf("native worker sample rate %d unsupported; want %d", ready.SampleRate, qwen3TTSSampleRate)
+		}
+		if ready.PCMFormat != "f32le" {
+			s.Close()
+			return nil, fmt.Errorf("native worker PCM format %q unsupported; want f32le", ready.PCMFormat)
 		}
 		s.streaming = ready.Streaming
 		s.presets = append([]string(nil), ready.Presets...)
@@ -259,9 +249,21 @@ func (s *nativeQwenSession) SynthesizeToStream(ctx context.Context, req Synthesi
 	if err != nil {
 		return err
 	}
-	if _, err := s.stdin.Write(append(data, '\n')); err != nil {
+	s.writeMu.Lock()
+	if err := ctx.Err(); err != nil {
+		s.writeMu.Unlock()
+		return err
+	}
+	s.activeMu.Lock()
+	s.activeID = id
+	s.activeMu.Unlock()
+	_, err = s.stdin.Write(append(data, '\n'))
+	s.writeMu.Unlock()
+	if err != nil {
+		s.clearActive(id)
 		return fmt.Errorf("write native worker request: %w", err)
 	}
+	defer s.clearActive(id)
 
 	rateSet := false
 	for {
@@ -351,8 +353,42 @@ func (s *nativeQwenSession) sendCancel(id string) error {
 	if err != nil {
 		return err
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	_, err = s.stdin.Write(append(b, '\n'))
 	return err
+}
+
+// CancelActive writes a cancellation for the session-generated request ID
+// without waiting for the synthesis/read lock. Stage A workers may only act on
+// it between requests, but the write remains prompt and Stage B can interrupt
+// mid-synthesis.
+func (s *nativeQwenSession) CancelActive() error {
+	if s == nil {
+		return nil
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.activeMu.Lock()
+	id := s.activeID
+	s.activeMu.Unlock()
+	if id == "" {
+		return nil
+	}
+	b, err := json.Marshal(map[string]string{"type": "cancel", "id": id})
+	if err != nil {
+		return err
+	}
+	_, err = s.stdin.Write(append(b, '\n'))
+	return err
+}
+
+func (s *nativeQwenSession) clearActive(id string) {
+	s.activeMu.Lock()
+	defer s.activeMu.Unlock()
+	if s.activeID == id {
+		s.activeID = ""
+	}
 }
 
 func (s *nativeQwenSession) readLine(ctx context.Context) (string, error) {
@@ -384,7 +420,9 @@ func (s *nativeQwenSession) Close() {
 	}
 	s.closed = true
 	if s.stdin != nil {
+		s.writeMu.Lock()
 		_, _ = s.stdin.Write([]byte(`{"type":"shutdown"}` + "\n"))
+		s.writeMu.Unlock()
 		_ = s.stdin.Close()
 	}
 	if s.cmd != nil && s.cmd.Process != nil {

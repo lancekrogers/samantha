@@ -642,10 +642,6 @@ func (m settingsModel) installManagedQwen(ctx context.Context) tea.Cmd {
 	return m.installQwenAssets(ctx)
 }
 
-func (m *settingsModel) activateManagedQwen() error {
-	return m.activateQwenAfterInstall()
-}
-
 func (m *settingsModel) activateQwenAfterInstall() error {
 	if err := m.saveManagedQwenDefaults(); err != nil {
 		return err

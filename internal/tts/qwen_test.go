@@ -303,6 +303,82 @@ done
 	}
 }
 
+func TestNativeSoftCancelUsesActiveIDWithoutBlocking(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "worker.log")
+	script := filepath.Join(dir, "qwen3-tts-worker")
+	source := fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+log_file=%q
+echo '{"type":"ready","protocol":"qwen3-tts-worker/v1","sample_rate":24000,"pcm_format":"f32le","streaming":true}'
+while IFS= read -r line; do
+  printf '%%s\n' "$line" >> "$log_file"
+  case "$line" in
+    *'"shutdown"'*) exit 0 ;;
+    *'"synthesize"'*) echo '{"type":"generating","id":"nqwen-1"}' ;;
+  esac
+done
+`, logPath)
+	if err := os.WriteFile(script, []byte(source), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	q, err := NewQwen3TTS(&config.Config{QwenTTSBinary: script, QwenTTSModel: t.TempDir(), QwenTTSTimeout: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Delete()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result, err := q.SynthesizeRequest(ctx, SynthesisRequest{Text: "cancel me"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForFileText(t, logPath, `"type":"synthesize"`)
+
+	done := make(chan error, 1)
+	go func() { done <- q.SoftCancel("barge-in") }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("SoftCancel: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SoftCancel blocked behind in-flight synthesis")
+	}
+	waitForFileText(t, logPath, `"type":"cancel"`)
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundActiveCancel := false
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if strings.Contains(line, `"type":"cancel"`) && strings.Contains(line, `"id":"nqwen-1"`) {
+			foundActiveCancel = true
+			break
+		}
+	}
+	if !foundActiveCancel {
+		t.Fatalf("worker log=%s, want cancel for active nqwen-1", data)
+	}
+	cancel()
+	for range result.Stream.Frames() {
+	}
+}
+
+func waitForFileText(t *testing.T, filename, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, _ := os.ReadFile(filename)
+		if strings.Contains(string(data), want) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	data, _ := os.ReadFile(filename)
+	t.Fatalf("timed out waiting for %q in %s", want, data)
+}
+
 func TestQwenSynthesizeRequestTimesOutAndCancelsWorker(t *testing.T) {
 	q := newQwen3TTS("fake-qwen3-tts", t.TempDir(), 25*time.Millisecond, fakeQwenCommand(nil, "sleep"))
 	q.alive.Store(true)

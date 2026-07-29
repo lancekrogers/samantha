@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -80,6 +81,129 @@ func TestEnsureNativeSHA256Mismatch(t *testing.T) {
 	}
 }
 
+func TestInspectNativeRejectsNonExecutableWorker(t *testing.T) {
+	modelsDir := t.TempDir()
+	archive, sum := writeFakeNativeTar(t, t.TempDir())
+	if _, err := EnsureNative(context.Background(), modelsDir, NativeEnsureOptions{URL: archive, SHA256: sum}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(NativeInstallPaths(modelsDir).Worker, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st := InspectNative(modelsDir, DefaultModelTier)
+	if st.Installed || st.WorkerReady {
+		t.Fatalf("status=%+v, want non-executable worker rejected", st)
+	}
+}
+
+func TestInspectNativeRejectsInvalidManifest(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(t *testing.T, p NativePaths)
+	}{
+		{
+			name: "corrupt checksum",
+			mutate: func(t *testing.T, p NativePaths) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(p.ModelDir, "qwen3-tts-0.6b-f16.gguf"), []byte("corrupt"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "wrong platform",
+			mutate: func(t *testing.T, p NativePaths) {
+				t.Helper()
+				data, err := os.ReadFile(p.InstallJSON)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data = bytes.Replace(data, []byte(`"os": "`+runtime.GOOS+`"`), []byte(`"os": "wrong-os"`), 1)
+				if err := os.WriteFile(p.InstallJSON, data, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "escaping path",
+			mutate: func(t *testing.T, p NativePaths) {
+				t.Helper()
+				data, err := os.ReadFile(p.InstallJSON)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data = bytes.Replace(data, []byte(`models/qwen3-tts-0.6b-f16.gguf`), []byte(`../qwen3-tts-0.6b-f16.gguf`), 1)
+				if err := os.WriteFile(p.InstallJSON, data, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			modelsDir := t.TempDir()
+			archive, sum := writeFakeNativeTar(t, t.TempDir())
+			if _, err := EnsureNative(context.Background(), modelsDir, NativeEnsureOptions{URL: archive, SHA256: sum}, nil); err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(t, NativeInstallPaths(modelsDir))
+			st := InspectNative(modelsDir, DefaultModelTier)
+			if st.Installed || !strings.Contains(st.Detail, "manifest is invalid") {
+				t.Fatalf("status=%+v, want invalid manifest", st)
+			}
+		})
+	}
+}
+
+func TestExtractNativeTarGzRejectsUnsafeSymlinks(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		entries []tar.Header
+	}{
+		{
+			name: "target escapes package",
+			entries: []tar.Header{
+				{Name: "pkg/bin", Typeflag: tar.TypeSymlink, Linkname: "../escape", Mode: 0o777},
+			},
+		},
+		{
+			name: "write follows prior symlink",
+			entries: []tar.Header{
+				{Name: "pkg/bin/link", Typeflag: tar.TypeSymlink, Linkname: "../models", Mode: 0o777},
+				{Name: "pkg/bin/link/pwned", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			archive := filepath.Join(t.TempDir(), "unsafe.tar.gz")
+			var buf bytes.Buffer
+			gz := gzip.NewWriter(&buf)
+			tw := tar.NewWriter(gz)
+			for i := range tc.entries {
+				if err := tw.WriteHeader(&tc.entries[i]); err != nil {
+					t.Fatal(err)
+				}
+				if tc.entries[i].Size > 0 {
+					if _, err := tw.Write([]byte("x")); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if err := tw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := gz.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(archive, buf.Bytes(), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := extractNativeTarGz(archive, filepath.Join(t.TempDir(), "qwen3-tts")); err == nil {
+				t.Fatal("expected unsafe symlink extraction to fail")
+			}
+		})
+	}
+}
+
 func TestNormalizeTier(t *testing.T) {
 	if normalizeTier("0.6B") != DefaultModelTier {
 		t.Fatal(normalizeTier("0.6B"))
@@ -91,52 +215,55 @@ func TestNormalizeTier(t *testing.T) {
 
 func writeFakeNativeTar(t *testing.T, dir string) (path, shaHex string) {
 	t.Helper()
+	presets := `{"schema":"qwen3-tts-native.presets.v1","voices":[{"name":"Vivian","path":"presets/Vivian.q3te"}]}`
+	files := map[string]string{
+		"bin/qwen3-tts-worker":                "#!/bin/sh\necho ready\n",
+		"bin/qwen3-tts-cli":                   "#!/bin/sh\n",
+		"models/qwen3-tts-0.6b-f16.gguf":      "gguf-tts",
+		"models/qwen3-tts-tokenizer-f16.gguf": "gguf-tok",
+		"models/presets/presets.json":         presets,
+		"models/presets/Vivian.q3te":          "Q3TE",
+	}
 	install := map[string]any{
 		"schema":       nativeInstallSchema,
 		"repo_commit":  "deadbeef",
 		"engine_sha":   "b3ba140",
-		"os":           "darwin",
-		"arch":         "arm64",
+		"os":           runtime.GOOS,
+		"arch":         runtime.GOARCH,
 		"tier_default": "0.6b",
 		"sample_rate":  24000,
 		"protocol":     "qwen3-tts-worker/v1",
 		"streaming":    false,
 		"bin": map[string]string{
-			"worker": "bin/qwen3-tts-worker",
-			"cli":    "bin/qwen3-tts-cli",
+			"worker":        "bin/qwen3-tts-worker",
+			"worker_sha256": sha256Text(files["bin/qwen3-tts-worker"]),
+			"cli":           "bin/qwen3-tts-cli",
+			"cli_sha256":    sha256Text(files["bin/qwen3-tts-cli"]),
 		},
 		"models": map[string]any{
 			"0.6b": map[string]any{
 				"quant": "f16",
 				"tts": map[string]string{
-					"path": "models/qwen3-tts-0.6b-f16.gguf", "sha256": "aa",
+					"path": "models/qwen3-tts-0.6b-f16.gguf", "sha256": sha256Text(files["models/qwen3-tts-0.6b-f16.gguf"]),
 				},
 				"tokenizer": map[string]string{
-					"path": "models/qwen3-tts-tokenizer-f16.gguf", "sha256": "bb",
+					"path": "models/qwen3-tts-tokenizer-f16.gguf", "sha256": sha256Text(files["models/qwen3-tts-tokenizer-f16.gguf"]),
 				},
 			},
 		},
-		"presets": "models/presets/presets.json",
+		"presets":        "models/presets/presets.json",
+		"presets_sha256": sha256Text(files["models/presets/presets.json"]),
 	}
 	installBytes, _ := json.MarshalIndent(install, "", "  ")
-	presets := `{"schema":"qwen3-tts-native.presets.v1","voices":[{"name":"Vivian","path":"presets/Vivian.q3te"}]}`
 
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
 	prefix := "qwen3-tts-native-test-darwin-arm64/"
-	files := map[string]string{
-		prefix + "install.json":                        string(installBytes) + "\n",
-		prefix + "SHA256SUMS":                          "deadbeef  ./install.json\n",
-		prefix + "bin/qwen3-tts-worker":                "#!/bin/sh\necho ready\n",
-		prefix + "bin/qwen3-tts-cli":                   "#!/bin/sh\n",
-		prefix + "models/qwen3-tts-0.6b-f16.gguf":      "gguf-tts",
-		prefix + "models/qwen3-tts-tokenizer-f16.gguf": "gguf-tok",
-		prefix + "models/presets/presets.json":         presets,
-		prefix + "models/presets/Vivian.q3te":          "Q3TE",
-	}
+	files["install.json"] = string(installBytes) + "\n"
+	files["SHA256SUMS"] = "deadbeef  ./install.json\n"
 	for name, body := range files {
-		hdr := &tar.Header{Name: name, Mode: 0o644, Size: int64(len(body))}
+		hdr := &tar.Header{Name: prefix + name, Mode: 0o644, Size: int64(len(body))}
 		if strings.HasSuffix(name, "worker") || strings.HasSuffix(name, "cli") {
 			hdr.Mode = 0o755
 		}
@@ -160,4 +287,9 @@ func writeFakeNativeTar(t *testing.T, dir string) (path, shaHex string) {
 		t.Fatal(err)
 	}
 	return path, hex.EncodeToString(sum[:])
+}
+
+func sha256Text(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }

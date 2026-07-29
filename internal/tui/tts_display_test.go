@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -76,25 +74,7 @@ func TestTTSDisplayManagedQwenUncleFuVoice(t *testing.T) {
 
 func TestTTSDisplayNativePackageLabel(t *testing.T) {
 	dir := t.TempDir()
-	root := filepath.Join(dir, "qwen3-tts")
-	for _, p := range []string{
-		filepath.Join(root, "bin"),
-		filepath.Join(root, "models", "presets"),
-	} {
-		if err := os.MkdirAll(p, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write := func(p, b string) {
-		if err := os.WriteFile(p, []byte(b), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write(filepath.Join(root, "bin", "qwen3-tts-worker"), "x")
-	_ = os.Chmod(filepath.Join(root, "bin", "qwen3-tts-worker"), 0o755)
-	write(filepath.Join(root, "models", "qwen3-tts-0.6b-f16.gguf"), "x")
-	write(filepath.Join(root, "models", "qwen3-tts-tokenizer-f16.gguf"), "x")
-	write(filepath.Join(root, "models", "presets", "presets.json"), "{}")
+	writeNativeTUITestInstall(t, dir)
 
 	cfg := &config.Config{
 		TTSProvider: "qwen3-tts", ModelsDir: dir, QwenTTSModelTier: "0.6b",
