@@ -15,7 +15,7 @@ func (m settingsModel) View() string {
 	var parts []string
 	parts = append(parts, headerStyle.Render("  Settings"))
 
-	tabs := []string{"Brain", "Brain model", "Tools", "TTS", "Qwen", "Voice", "Language", "Input", "Output", "Speakers", "Meeting"}
+	tabs := []string{"Brain", "Brain model", "Tools", "TTS", "Qwen", "Voice", "Language", "Speakers", "Input", "Output", "Meeting"}
 	var tabLine strings.Builder
 	for i, tab := range tabs {
 		style := dimStyle

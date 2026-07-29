@@ -26,9 +26,9 @@ const (
 	sectionQwen
 	sectionVoice
 	sectionLanguage
+	sectionSpeakers
 	sectionInput
 	sectionOutput
-	sectionSpeakers
 	sectionMeeting
 	settingsSectionCount
 )
