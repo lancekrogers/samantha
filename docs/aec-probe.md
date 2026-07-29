@@ -83,7 +83,13 @@ Switch the system input/output devices between runs, or set `input_device` /
 - **ERLE** is how much quieter the front-end's output is than its input. This is
   measured end-of-chain, so the noise suppressor and AGC are inside the number —
   which is the honest framing, because that is what VAD sees.
-- **confidence** below 0.3 means the delay peak is not trustworthy.
+- **confidence** is peak *prominence*, not raw correlation: how far the best lag
+  stands above every other candidate. Speech correlates with itself at many
+  lags, so a high raw score proves only that the two signals are related, which
+  was never in doubt. Below 0.3 the peak is not trustworthy.
+- **delay actually in use** is what the front-end applied. Runtime calibration
+  measures the live path and may replace the player's ring-derived estimate; the
+  line says which one is in force.
 
 ### What counts as a good outcome
 

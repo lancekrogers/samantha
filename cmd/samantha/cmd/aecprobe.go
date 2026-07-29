@@ -128,6 +128,7 @@ func runAECProbe(ctx context.Context, out interface{ Write([]byte) (int, error) 
 	//
 	// The recorded reference is what PushPlaybackReference received, already at
 	// the capture clock, and refAnchor places it in microphone coordinates.
+	effectiveDelay, calibrated, _ := recorder.EffectiveDelay()
 	anchor, anchored := recorder.ReferenceAnchor()
 	var measured int
 	var confidence float64
@@ -151,6 +152,8 @@ func runAECProbe(ctx context.Context, out interface{ Write([]byte) (int, error) 
 		CaptureRate:           aecprobe.Rate,
 		EstimatedDelaySamples: delaySamples,
 		DelayPublished:        delayPublished,
+		EffectiveDelaySamples: effectiveDelay,
+		DelayCalibrated:       calibrated,
 		MeasuredDelaySamples:  measured,
 		DelayConfidence:       confidence,
 		TapWindowSamples:      audio.EchoCancellerTaps(),
@@ -254,6 +257,12 @@ func deviceLabel(name string) string {
 func printProbeSummary(out interface{ Write([]byte) (int, error) }, r *aecprobe.Report, dir string) {
 	fmt.Fprintf(out, "\n─── AEC probe: %s ───\n", labelOrDefault(r.Label))
 	fmt.Fprintf(out, "  delay estimated by player : %d samples (%.2f ms)\n", r.EstimatedDelaySamples, r.EstimatedDelayMS)
+	source := "player estimate, calibration did not fire"
+	if r.DelayCalibrated {
+		source = "measured by runtime calibration"
+	}
+	fmt.Fprintf(out, "  delay actually in use     : %d samples (%.2f ms, %s)\n",
+		r.EffectiveDelaySamples, r.EffectiveDelayMS, source)
 	fmt.Fprintf(out, "  delay measured from chirp : %d samples (%.2f ms, confidence %.2f)\n",
 		r.MeasuredDelaySamples, r.MeasuredDelayMS, r.DelayConfidence)
 	fmt.Fprintf(out, "  residual for the filter   : %d samples (%.2f ms) against a %.2f ms tap window\n",

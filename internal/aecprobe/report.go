@@ -35,6 +35,12 @@ type Report struct {
 	EstimatedDelaySamples int     `json:"estimated_delay_samples"`
 	EstimatedDelayMS      float64 `json:"estimated_delay_ms"`
 	DelayPublished        bool    `json:"delay_published"`
+	// EffectiveDelaySamples is what the front-end is actually using. Runtime
+	// calibration may have replaced the player's estimate with a measurement of
+	// the live path, and a field run has to be able to say which.
+	EffectiveDelaySamples int     `json:"effective_delay_samples"`
+	EffectiveDelayMS      float64 `json:"effective_delay_ms"`
+	DelayCalibrated       bool    `json:"delay_calibrated"`
 	MeasuredDelaySamples  int     `json:"measured_delay_samples"`
 	MeasuredDelayMS       float64 `json:"measured_delay_ms"`
 	DelayConfidence       float64 `json:"delay_confidence"`
@@ -62,10 +68,18 @@ type Report struct {
 // the operator does not have to know what counts as a bad run.
 func (r *Report) Interpret() {
 	r.EstimatedDelayMS = samplesToMS(r.EstimatedDelaySamples)
+	r.EffectiveDelayMS = samplesToMS(r.EffectiveDelaySamples)
 	r.MeasuredDelayMS = samplesToMS(r.MeasuredDelaySamples)
 	r.TapWindowMS = samplesToMS(r.TapWindowSamples)
 
-	r.ResidualSamples = r.MeasuredDelaySamples - r.EstimatedDelaySamples
+	// Residual is measured against the offset in force, which is the calibrated
+	// one when calibration fired. Scoring against the player's estimate would
+	// understate the filter on exactly the runs where calibration helped.
+	applied := r.EstimatedDelaySamples
+	if r.DelayCalibrated && r.EffectiveDelaySamples > 0 {
+		applied = r.EffectiveDelaySamples
+	}
+	r.ResidualSamples = r.MeasuredDelaySamples - applied
 	r.ResidualMS = samplesToMS(r.ResidualSamples)
 	r.ResidualFitsTaps = r.ResidualSamples >= 0 && r.ResidualSamples < r.TapWindowSamples
 

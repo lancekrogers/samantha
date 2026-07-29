@@ -101,6 +101,28 @@ func (r *Recorder) SetReferenceDelay(samples int) {
 // Close releases the wrapped front-end.
 func (r *Recorder) Close() error { return r.inner.Close() }
 
+// referenceDelayReporter is implemented by front-ends that can measure the lag
+// themselves rather than accept the player's estimate.
+type referenceDelayReporter interface {
+	ReferenceDelay() (samples int, measured bool)
+}
+
+// EffectiveDelay reports the offset the wrapped front-end is actually using and
+// whether it measured that itself.
+//
+// This is not the same as PublishedDelay: the player publishes a ring-derived
+// estimate, and runtime calibration may have replaced it. Reporting only the
+// published value would leave a run unable to say whether calibration fired,
+// which is the one thing a field run most needs to answer.
+func (r *Recorder) EffectiveDelay() (samples int, calibrated bool, known bool) {
+	reporter, ok := r.inner.(referenceDelayReporter)
+	if !ok {
+		return 0, false, false
+	}
+	samples, calibrated = reporter.ReferenceDelay()
+	return samples, calibrated, true
+}
+
 // Streams returns copies of everything recorded so far.
 func (r *Recorder) Streams() (reference, micIn, micOut []float32) {
 	r.mu.Lock()

@@ -53,6 +53,27 @@ type VoiceFrontend struct {
 	ns       noiseSuppressor
 	agc      automaticGainControl
 	refs     sampleQueue
+
+	// staticDelay is the player's ring-derived estimate, kept as the fallback
+	// and as the floor a measurement must beat to be believed.
+	staticDelay int
+	// calibrate collects live audio so the true lag can be measured rather than
+	// inferred. Correlation runs on maybeCalibrate's caller, never on a device
+	// callback.
+	calibrate delayCalibrator
+	// noCalibration pins the offset to whatever was set explicitly. The ERLE
+	// suite needs it: those tests measure the filter against a stated delay, and
+	// a calibrator quietly correcting that delay would make them pass while
+	// measuring something else.
+	noCalibration bool
+}
+
+// pinReferenceDelay disables runtime calibration, so the offset stays wherever
+// SetReferenceDelay put it. Test-only seam.
+func (f *VoiceFrontend) pinReferenceDelay() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.noCalibration = true
 }
 
 // NewVoiceFrontend creates the default local audio front-end.
@@ -74,9 +95,12 @@ func (f *VoiceFrontend) ProcessCapture(samples []float32) []float32 {
 		return samples
 	}
 
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	// Observe the microphone before anything touches it. Correlating against
+	// the canceller's output would be circular: a working canceller removes the
+	// echo the calibrator is trying to find.
+	f.calibrate.observeMic(samples)
 
+	f.mu.Lock()
 	refs := f.refs.pop(len(samples))
 	out := make([]float32, len(samples))
 
@@ -88,7 +112,47 @@ func (f *VoiceFrontend) ProcessCapture(samples []float32) []float32 {
 
 	f.ns.Process(out)
 	f.agc.Process(out)
+	f.mu.Unlock()
+
+	// Correlation is O(maxLag*window) and must not run under the capture
+	// callback, so it happens only when a window is complete — roughly once per
+	// utterance — and after the audio path has already been serviced.
+	f.maybeCalibrate()
 	return out
+}
+
+// maybeCalibrate measures the true reference-to-echo lag when a complete window
+// is available and adopts it if it is believable.
+//
+// Running here rather than on a dedicated goroutine keeps VoiceFrontend free of
+// lifecycle: there is no worker to start, stop, or leak, and the work only
+// happens on a capture callback that has already finished its real job. A
+// window completes about once per utterance, so the cost is amortised.
+func (f *VoiceFrontend) maybeCalibrate() {
+	f.mu.Lock()
+	pinned := f.noCalibration
+	f.mu.Unlock()
+	if pinned {
+		return
+	}
+
+	ref, mic, ok := f.calibrate.takeWindow()
+	if !ok {
+		return
+	}
+
+	measured, confidence := CorrelateDelay(ref, mic, calibrationMaxLag, calibrationWindow)
+
+	f.mu.Lock()
+	staticDelay := f.staticDelay
+	f.mu.Unlock()
+
+	delay, believable := estimateReferenceDelay(measured, confidence, staticDelay)
+	if !believable || delay == f.calibrate.appliedDelay() {
+		return
+	}
+	f.calibrate.noteApplied(delay)
+	f.applyReferenceDelay(delay)
 }
 
 // SetReferenceDelay declares how far behind the push the far-end audio actually
@@ -103,6 +167,24 @@ func (f *VoiceFrontend) SetReferenceDelay(samples int) {
 	}
 
 	f.mu.Lock()
+	f.staticDelay = samples
+	measured := f.calibrate.appliedDelay()
+	f.mu.Unlock()
+
+	// A measurement of the live path beats a number derived from the ring, so
+	// do not let a device-rate change overwrite one. The measurement is
+	// discarded only when the device itself changes, which resets the
+	// calibrator through ResetCalibration.
+	if measured > samples {
+		return
+	}
+	f.applyReferenceDelay(samples)
+}
+
+// applyReferenceDelay installs an offset and drops the backlog built for the
+// previous one, which would otherwise be misaligned under the new offset.
+func (f *VoiceFrontend) applyReferenceDelay(samples int) {
+	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.refs.delay == samples {
 		return
@@ -111,11 +193,33 @@ func (f *VoiceFrontend) SetReferenceDelay(samples int) {
 	f.refs.samples = f.refs.samples[:0]
 }
 
+// ResetCalibration discards a measured delay and returns to the player's
+// estimate. The measurement describes one speaker-and-microphone path, so it is
+// invalid the moment the device changes.
+func (f *VoiceFrontend) ResetCalibration() {
+	f.mu.Lock()
+	staticDelay := f.staticDelay
+	f.mu.Unlock()
+
+	f.calibrate.forget()
+	f.applyReferenceDelay(staticDelay)
+}
+
+// ReferenceDelay reports the offset currently in use, and whether it came from
+// measuring the live path rather than from the ring-derived estimate.
+func (f *VoiceFrontend) ReferenceDelay() (samples int, measured bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.refs.delay, f.calibrate.appliedDelay() == f.refs.delay && f.refs.delay > 0
+}
+
 // PushPlaybackReference feeds far-end playback audio into the AEC reference path.
 func (f *VoiceFrontend) PushPlaybackReference(samples []float32) {
 	if len(samples) == 0 {
 		return
 	}
+
+	f.calibrate.observeReference(samples)
 
 	f.mu.Lock()
 	defer f.mu.Unlock()

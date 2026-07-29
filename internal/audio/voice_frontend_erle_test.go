@@ -50,6 +50,11 @@ func erleThroughFrontend(t *testing.T, refDelay, echoLag int) float64 {
 
 	run := func(feedRef bool) float64 {
 		f := NewVoiceFrontend()
+		// These cases measure the filter against a stated delay — including a
+		// deliberately wrong one, to prove the delay bug still reproduces.
+		// Runtime calibration would correct it and the test would pass while
+		// measuring something else entirely. Calibration has its own suite.
+		f.pinReferenceDelay()
 		f.SetReferenceDelay(refDelay)
 
 		var energy float64
@@ -188,6 +193,7 @@ func TestEchoCancellerPreservesNearEndDuringDoubleTalk(t *testing.T) {
 	near := farEndSpeech(total, 99) // the user, uncorrelated with playback
 
 	f := NewVoiceFrontend()
+	f.pinReferenceDelay()
 	f.SetReferenceDelay(refDelay)
 
 	var outEnergy, nearEnergy float64
@@ -225,6 +231,7 @@ func TestEchoCancellerPreservesNearEndDuringDoubleTalk(t *testing.T) {
 // first would be uncompensated.
 func TestReferenceDelayRePrimesAfterSilence(t *testing.T) {
 	f := NewVoiceFrontend()
+	f.pinReferenceDelay() // asserting on the queue, not on what calibration would choose
 	f.SetReferenceDelay(320)
 
 	push := make([]float32, 160)
