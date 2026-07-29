@@ -898,7 +898,7 @@ func (p *Pipeline) synthesizeWithFallback(ctx context.Context, text string, stic
 	if !p.canUseFallback(ctx, primary, fallback) || !shouldFallback(err) {
 		return nil, false, err
 	}
-	p.emit(events.Error{Stage: "tts-fallback", Message: fmt.Sprintf("primary TTS failed; speaking this sentence with Kokoro (different voice) for the rest of the reply: %v", err)})
+	p.emit(events.Error{Stage: "tts-fallback", Message: ttsFallbackMessage("primary TTS failed", err, stickFallback != nil)})
 	fallbackStream, fallbackErr := fallback.Synthesize(ctx, text)
 	if fallbackErr != nil {
 		return nil, true, fmt.Errorf("primary TTS: %v; Kokoro fallback: %w", err, fallbackErr)
@@ -909,6 +909,16 @@ func (p *Pipeline) synthesizeWithFallback(ctx context.Context, text string, stic
 	return fallbackStream, true, nil
 }
 
+// ttsFallbackMessage describes a Kokoro fallback switch. When sticky is true
+// the turn will stay on fallback for later sentences; otherwise only this
+// utterance is affected (speakBestEffort / text-mode paths).
+func ttsFallbackMessage(prefix string, err error, sticky bool) string {
+	if sticky {
+		return fmt.Sprintf("%s; speaking with Kokoro (different voice) for the rest of the reply: %v", prefix, err)
+	}
+	return fmt.Sprintf("%s; retrying this sentence with Kokoro (different voice): %v", prefix, err)
+}
+
 // playFallback retries an error returned after Player takes ownership of the
 // primary stream. This covers file-oriented native workers whose failure is
 // reported when the stream becomes ready.
@@ -917,7 +927,7 @@ func (p *Pipeline) playFallback(ctx context.Context, text string, primaryErr err
 	if !p.canUseFallback(ctx, primary, fallback) || !shouldFallback(primaryErr) {
 		return nil, false, primaryErr
 	}
-	p.emit(events.Error{Stage: "tts-fallback", Message: fmt.Sprintf("primary playback TTS failed; speaking this sentence with Kokoro (different voice) for the rest of the reply: %v", primaryErr)})
+	p.emit(events.Error{Stage: "tts-fallback", Message: ttsFallbackMessage("primary playback TTS failed", primaryErr, stickFallback != nil)})
 	stream, err := fallback.Synthesize(ctx, text)
 	if err != nil {
 		return nil, true, fmt.Errorf("primary playback TTS: %v; Kokoro fallback: %w", primaryErr, err)

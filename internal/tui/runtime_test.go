@@ -197,6 +197,54 @@ func TestRuntimeReadyBindsSessionTTSBadge(t *testing.T) {
 	}
 }
 
+// After Settings → ReloadVoice, the conversation badge must follow the
+// runtime SessionCfg (session persona), not the live global/active config.
+func TestVoiceReloadedKeepsSessionTTSBadge(t *testing.T) {
+	sessionCfg := &config.Config{
+		TTSProvider:  "qwen3-tts",
+		QwenTTSVoice: "Uncle_Fu",
+	}
+	rt := fakeRuntime()
+	rt.PersonaID = "uncle-fu"
+	rt.AgentName = "uncle fu"
+	rt.SessionCfg = sessionCfg
+	rt.ReloadVoice = func(context.Context) error {
+		// Simulate root.ReloadVoice: re-bind session persona onto SessionCfg.
+		rt.SessionCfg = &config.Config{
+			TTSProvider:  "qwen3-tts",
+			QwenTTSVoice: "Uncle_Fu",
+		}
+		return nil
+	}
+
+	app := wiredApp(func(context.Context, func(string, float64), string, string) (*ConversationRuntime, error) {
+		return rt, nil
+	})
+	app.cfg = &config.Config{
+		TTSProvider:   "kokoro",
+		TTSVoice:      "af_bella",
+		ActivePersona: "samantha",
+	}
+	app.runtime = rt
+	app.screen = screenConversation
+	app.conversation.cfg = app.cfg // wrongly global before reload msg
+
+	model, _ := app.Update(voiceReloadedMsg{err: nil, resumeVoice: false})
+	app = model.(App)
+
+	badge := ttsBadgeLabel(app.conversation.cfg)
+	if !strings.Contains(badge, "qwen3-tts") || !strings.Contains(badge, "Uncle_Fu") {
+		t.Fatalf("after reload badge = %q, want session qwen3-tts · Uncle_Fu", badge)
+	}
+	if strings.Contains(badge, "kokoro") || strings.Contains(badge, "af_bella") {
+		t.Fatalf("after reload badge leaked global active TTS: %q", badge)
+	}
+	status := app.conversation.status
+	if !strings.Contains(status, "Session voice preserved") {
+		t.Fatalf("status = %q, want session-preserved copy when persona ≠ active", status)
+	}
+}
+
 func TestRuntimeBuildFailureQuitsWithError(t *testing.T) {
 	build := func(ctx context.Context, progress func(string, float64), _, _ string) (*ConversationRuntime, error) {
 		return nil, errors.New("no assets, no pipeline")

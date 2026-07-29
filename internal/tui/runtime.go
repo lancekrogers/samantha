@@ -36,6 +36,8 @@ type ConversationRuntime struct {
 	// routing). Conversation chrome such as the TTS badge must read this, not
 	// the live global app config — starting uncle-fu while the active persona
 	// is still samantha must not show kokoro/af_heart.
+	// Updated only from ReloadVoice after a successful TTS install; consumed on
+	// the Bubble Tea update thread after voiceReloadedMsg (no concurrent readers).
 	SessionCfg   *config.Config
 	SessionID    string
 	InputDevice  string

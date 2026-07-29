@@ -258,6 +258,9 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 					}
 					return fmt.Errorf("conversation is shutting down")
 				}
+				// SessionCfg is only published from ReloadVoice after a successful
+				// install and is consumed on the TUI update thread after
+				// voiceReloadedMsg — do not read it from other goroutines.
 				rt.SessionCfg = sessionCfg
 				if set.FallbackWarning != nil {
 					bus.Emit(events.Error{Stage: "tts-fallback", Message: set.FallbackWarning.Error()})

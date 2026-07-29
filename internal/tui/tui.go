@@ -497,7 +497,15 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				a.conversation.cfg = a.cfg
 			}
-			a.conversation.setStatus("Voice settings applied", false)
+			// Settings edits the active persona profile. When the open session
+			// is a different persona, ReloadVoice intentionally keeps the
+			// session voice — do not claim the conversation took Settings.
+			status := "Voice settings applied"
+			if a.runtime != nil && a.runtime.PersonaID != "" && a.cfg != nil &&
+				a.cfg.ActivePersona != "" && a.runtime.PersonaID != a.cfg.ActivePersona {
+				status = "Session voice preserved (settings apply to active persona / next sessions)"
+			}
+			a.conversation.setStatus(status, false)
 		}
 		if msg.resumeVoice {
 			return a, a.conversation.setInputMuted(false)
