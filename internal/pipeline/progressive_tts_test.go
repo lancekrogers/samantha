@@ -155,8 +155,18 @@ func TestProgressiveTTSSegmentsFeedWorker(t *testing.T) {
 	}
 }
 
-// TestProgressiveMetricsBrainDoneVsFirstSegment documents the L7/product
-// comparison: FirstSegmentElapsed vs ModelCompleteElapsed on TurnMetrics.
+// TestProgressiveMetricsBrainDoneVsFirstSegment is the product measurement for
+// progressive TTS (festival task 02): compare brain-complete wall to first
+// voice segment handoff.
+//
+// On TurnMetrics events:
+//   - FirstSegmentElapsed  — first sentence entered the TTS synth queue
+//   - ModelCompleteElapsed — brain stream Done
+//
+// Progressive wins when FirstSegmentElapsed ≲ ModelCompleteElapsed for multi-
+// sentence replies (user hears speech before the model finishes the turn).
+// TTS-only cost for segment N is reflected in firstAudioReady / playback after
+// that segment's Synthesize returns.
 func TestProgressiveMetricsBrainDoneVsFirstSegment(t *testing.T) {
 	provider := &progressiveFakeTTS{delay: 5 * time.Millisecond}
 	player := newFakePlayer(5 * time.Millisecond)
