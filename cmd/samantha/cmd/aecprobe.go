@@ -97,12 +97,10 @@ func runAECProbe(ctx context.Context, out interface{ Write([]byte) (int, error) 
 	// what makes the speaker-to-mic delay measurable at all.
 	fmt.Fprintln(out, "[1/2] Measuring speaker-to-mic delay (chirp). Stay quiet…")
 	chirp := aecprobe.Chirp(aecProbeChirpSecs, aecProbeRate)
-	chirpStart := recorder.Mark()
 	if err := playThrough(ctx, player, chirp, aecProbeRate); err != nil {
 		return fmt.Errorf("play chirp: %w", err)
 	}
 	settle(ctx, 500*time.Millisecond)
-	chirpEnd := recorder.Mark()
 
 	// Let the reference queue drain so the ERLE phase starts from the same
 	// burst-reprime state a real utterance would.
@@ -122,13 +120,23 @@ func runAECProbe(ctx context.Context, out interface{ Write([]byte) (int, error) 
 	delaySamples, delayPublished := recorder.PublishedDelay()
 	refPushes, capChunks := recorder.Counts()
 
-	// The chirp was generated at the stimulus rate but the mic recording is at
-	// the capture rate, so correlate against a capture-rate copy of it.
-	chirpAtCaptureRate := aecprobe.Chirp(aecProbeChirpSecs, aecprobe.Rate)
-	chirpHeard := aecprobe.Slice(micIn, chirpStart, chirpEnd)
-	// Half a second of search covers anything short of a badly buffered
-	// Bluetooth path, and bounds the correlation cost.
-	measured, confidence := aecprobe.MeasureDelay(chirpAtCaptureRate, chirpHeard, aecprobe.Rate/2)
+	// Measure reference-pushed to echo-heard, which is the lag the canceller
+	// has to span. Correlating the *generated* chirp against the microphone
+	// instead would also count device initialisation and stream setup between
+	// the mark and the first audible sample — that inflated the first hardware
+	// runs to ~153-165ms and produced 12ms of scatter across identical runs.
+	//
+	// The recorded reference is what PushPlaybackReference received, already at
+	// the capture clock, and refAnchor places it in microphone coordinates.
+	anchor, anchored := recorder.ReferenceAnchor()
+	var measured int
+	var confidence float64
+	if anchored {
+		// Half a second of search covers anything short of a badly buffered
+		// Bluetooth path, and bounds the correlation cost.
+		measured, confidence = aecprobe.MeasureDelay(
+			reference, aecprobe.Slice(micIn, anchor, len(micIn)), aecprobe.Rate/2)
+	}
 
 	echoIn := aecprobe.Slice(micIn, echoStart, echoEnd)
 	echoOut := aecprobe.Slice(micOut, echoStart, echoEnd)

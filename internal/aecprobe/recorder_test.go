@@ -75,6 +75,39 @@ func TestRecorderKeepsRawMicSeparateFromProcessed(t *testing.T) {
 	}
 }
 
+// The anchor is what lets the delay be measured as reference-pushed to
+// echo-heard. Without it the only available measurement also counts device
+// initialisation and stream setup, which is what inflated the first hardware
+// runs to ~153-165ms with 12ms of scatter across identical runs.
+func TestRecorderAnchorsReferenceInMicrophoneCoordinates(t *testing.T) {
+	rec := NewRecorder(&mutatingFrontend{})
+
+	if _, ok := rec.ReferenceAnchor(); ok {
+		t.Fatal("anchor reported before any reference was pushed")
+	}
+
+	// Capture runs before playback starts, as it does in a real session.
+	rec.ProcessCapture(make([]float32, 160))
+	rec.ProcessCapture(make([]float32, 160))
+
+	rec.PushPlaybackReference(make([]float32, 80))
+	anchor, ok := rec.ReferenceAnchor()
+	if !ok {
+		t.Fatal("anchor not set after the first reference push")
+	}
+	if anchor != 320 {
+		t.Fatalf("anchor = %d, want 320 (mic samples recorded before playback began)", anchor)
+	}
+
+	// Later pushes must not move it: the anchor marks where playback started,
+	// not where the most recent block arrived.
+	rec.ProcessCapture(make([]float32, 160))
+	rec.PushPlaybackReference(make([]float32, 80))
+	if again, _ := rec.ReferenceAnchor(); again != 320 {
+		t.Fatalf("anchor moved to %d on a later push, want it pinned at 320", again)
+	}
+}
+
 func TestRecorderMarksTrackCaptureProgress(t *testing.T) {
 	rec := NewRecorder(&mutatingFrontend{})
 	if got := rec.Mark(); got != 0 {

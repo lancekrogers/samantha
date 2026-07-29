@@ -23,10 +23,16 @@ providers:
 aec-probe LABEL="":
     #!/usr/bin/env bash
     set -euo pipefail
+    # Accept both `just voice aec-probe macbook-builtin` and the LABEL=... form,
+    # because just takes recipe arguments positionally and the second spelling
+    # otherwise lands in metrics.json verbatim as "LABEL=macbook-builtin".
+    label="{{LABEL}}"
+    label="${label#LABEL=}"
     echo "Speaker at a normal listening level, no headphones, and stay quiet for ~20s."
+    echo "Aim for echo_rms above 0.02 — quieter than that and the result is meaningless."
     echo ""
-    if [ -n "{{LABEL}}" ]; then
-      go run ./cmd/samantha aec-probe --label "{{LABEL}}"
+    if [ -n "$label" ]; then
+      go run ./cmd/samantha aec-probe --label "$label"
     else
       go run ./cmd/samantha aec-probe
     fi
