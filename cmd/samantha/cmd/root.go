@@ -23,15 +23,17 @@ import (
 	"github.com/lancekrogers/samantha/internal/session"
 	"github.com/lancekrogers/samantha/internal/speaker"
 	"github.com/lancekrogers/samantha/internal/stt"
+	"github.com/lancekrogers/samantha/internal/transcript"
 	appTUI "github.com/lancekrogers/samantha/internal/tui"
 	"github.com/lancekrogers/samantha/internal/ui"
 )
 
 var (
-	textMode      bool
-	noVoice       bool
-	skipTUI       bool
-	debugAudioDir string
+	textMode          bool
+	noVoice           bool
+	skipTUI           bool
+	debugAudioDir     string
+	transcriptLogPath string
 )
 
 var rootCmd = &cobra.Command{
@@ -103,6 +105,22 @@ func init() {
 	rootCmd.Flags().BoolVar(&skipTUI, "no-tui", false, "Skip TUI launcher, start directly")
 	rootCmd.PersistentFlags().StringVar(&debugAudioDir, "debug-audio", "", "Record TTS source WAVs, exact device-output WAV, and callback timing (optional DIR)")
 	rootCmd.PersistentFlags().Lookup("debug-audio").NoOptDefVal = "auto"
+	rootCmd.PersistentFlags().StringVar(&transcriptLogPath, "transcript-log", "", "Append conversation events as JSONL to FILE (harnesses, field debugging)")
+}
+
+// attachTranscriptLog starts the JSONL event tap when --transcript-log is
+// set. The returned closer is a no-op otherwise. A tap that cannot open is a
+// startup error: a harness must never run blind believing it is recording.
+func attachTranscriptLog(bus *events.Bus) (func(), error) {
+	if transcriptLogPath == "" {
+		return func() {}, nil
+	}
+	w, err := transcript.NewWriter(transcriptLogPath)
+	if err != nil {
+		return nil, err
+	}
+	w.Attach(bus)
+	return func() { _ = w.Close() }, nil
 }
 
 // Execute runs the root command.
@@ -165,8 +183,13 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 		}
 
 		bus := events.NewBus()
+		closeTap, err := attachTranscriptLog(bus)
+		if err != nil {
+			return nil, fmt.Errorf("transcript log: %w", err)
+		}
 		p, cleanup, err := buildPipeline(ctx, cfg, bus, textMode, noVoice)
 		if err != nil {
+			closeTap()
 			return nil, fmt.Errorf("init pipeline: %w", err)
 		}
 
@@ -256,6 +279,7 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 				}
 				liveTTS.Close()
 				cleanup()
+				closeTap()
 			},
 		}
 		if resumed {
@@ -304,6 +328,11 @@ func startPipeline(cfg *config.Config, resumeSession *session.Session) error {
 	}
 
 	bus := events.NewBus()
+	closeTap, err := attachTranscriptLog(bus)
+	if err != nil {
+		return fmt.Errorf("transcript log: %w", err)
+	}
+	defer closeTap()
 	display := ui.New(bus, cfg.AgentName)
 
 	p, cleanup, err := buildPipeline(ctx, cfg, bus, textMode, noVoice)

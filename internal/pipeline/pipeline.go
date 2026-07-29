@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -251,6 +252,10 @@ func (p *Pipeline) recoverTurn(ctx context.Context, turn *turnConductor, metrics
 		speak = false
 	}
 	p.emit(events.Error{Stage: stage, Message: err.Error()})
+	// The bus is display plumbing; under the TUI fd 2 is redirected to
+	// native-diagnostics.log, making this the failure's durable record.
+	fmt.Fprintf(os.Stderr, "%s samantha: degraded turn stage=%s: %v\n",
+		time.Now().UTC().Format(time.RFC3339), stage, err)
 
 	response := brain.RecoveryReply
 	if partial = strings.TrimSpace(partial); partial != "" {
