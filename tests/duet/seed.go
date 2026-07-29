@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/lancekrogers/samantha/internal/config"
 )
 
 // appDir is the config layout samantha resolves under a fresh $HOME
@@ -31,13 +33,16 @@ func seedInstance(home string, s *Scenario, id string, inst *InstanceSpec) error
 
 	// Tools and skills both seed explicitly: ollama auto-enables them when
 	// the keys are absent (applyOllamaDefaults), and a duet run must be
-	// exactly what the scenario declares.
+	// exactly what the scenario declares. models_dir points at the real
+	// user cache — the default is $HOME-anchored and HOME is disposable
+	// here, so TTS/STT scenarios would otherwise re-download models per run.
 	cfg := map[string]any{
 		"agent_name":          inst.Persona.DisplayName,
 		"active_persona":      personaID,
 		"persona":             personaID,
 		"voice_tools_enabled": inst.Tools,
 		"skills_enabled":      inst.Tools,
+		"models_dir":          config.DefaultModelsDir(),
 	}
 	if inst.Brain.Provider != "" {
 		cfg["brain_provider"] = inst.Brain.Provider

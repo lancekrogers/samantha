@@ -77,6 +77,24 @@ type Pipeline struct {
 
 	// outputMuted is toggled by interactive clients while a turn may be active.
 	outputMuted atomic.Bool
+
+	// activeMetrics points at the in-flight turn's metrics so out-of-band
+	// interrupts (keystroke barge-in via StopPlayback) can stamp BargeIn.
+	activeMu      sync.Mutex
+	activeMetrics *turnMetrics
+}
+
+// trackMetrics registers the turn's metrics for out-of-band stamping; the
+// returned func clears the registration before terminal snapshotting.
+func (p *Pipeline) trackMetrics(m *turnMetrics) func() {
+	p.activeMu.Lock()
+	p.activeMetrics = m
+	p.activeMu.Unlock()
+	return func() {
+		p.activeMu.Lock()
+		p.activeMetrics = nil
+		p.activeMu.Unlock()
+	}
 }
 
 // brainTimeout returns the per-turn model deadline and whether it is armed.
@@ -166,9 +184,12 @@ type turnMetrics struct {
 	firstAudioReady  time.Time
 	playbackStart    time.Time
 	playbackComplete time.Time
-	bargeIn          time.Time
-	interrupted      bool
-	degraded         bool
+	// bargeInMu guards bargeIn: the voice watcher stamps it from the turn
+	// goroutine, keystroke barge-in from the TUI goroutine.
+	bargeInMu   sync.Mutex
+	bargeIn     time.Time
+	interrupted bool
+	degraded    bool
 }
 
 func newTurnMetrics() *turnMetrics {
@@ -186,8 +207,23 @@ func (m *turnMetrics) snapshot() events.TurnMetrics {
 		FirstAudioReadyElapsed:  m.elapsed(m.firstAudioReady),
 		PlaybackStartElapsed:    m.elapsed(m.playbackStart),
 		PlaybackCompleteElapsed: m.elapsed(m.playbackComplete),
-		BargeInElapsed:          m.elapsed(m.bargeIn),
+		BargeInElapsed:          m.elapsed(m.bargeInAt()),
 	}
+}
+
+// markBargeIn stamps the first barge-in moment; later marks are ignored.
+func (m *turnMetrics) markBargeIn(at time.Time) {
+	m.bargeInMu.Lock()
+	defer m.bargeInMu.Unlock()
+	if m.bargeIn.IsZero() {
+		m.bargeIn = at
+	}
+}
+
+func (m *turnMetrics) bargeInAt() time.Time {
+	m.bargeInMu.Lock()
+	defer m.bargeInMu.Unlock()
+	return m.bargeIn
 }
 
 func (m *turnMetrics) elapsed(ts time.Time) time.Duration {
@@ -311,9 +347,18 @@ func (p *Pipeline) speakBestEffort(ctx context.Context, sentence string, metrics
 
 // StopPlayback aborts audible TTS immediately. Used by the TUI when the user
 // types to barge in so speech does not continue until the turn context drains.
+// A stop that lands mid-playback is a barge-in and stamps the active turn's
+// metrics; the turn itself keeps streaming.
 func (p *Pipeline) StopPlayback() {
 	if p == nil || p.Player == nil {
 		return
+	}
+	if p.Player.IsPlaying() {
+		p.activeMu.Lock()
+		if m := p.activeMetrics; m != nil {
+			m.markBargeIn(time.Now())
+		}
+		p.activeMu.Unlock()
 	}
 	p.Player.Stop()
 }
@@ -322,6 +367,7 @@ func (p *Pipeline) StopPlayback() {
 // Returns the user's input text, or empty string if no speech was detected.
 func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 	metrics := newTurnMetrics()
+	defer p.trackMetrics(metrics)()
 	turn := p.newTurnConductor(metrics)
 
 	if p.Player != nil {
@@ -422,6 +468,7 @@ func (p *Pipeline) completeTextTurn(turn *turnConductor, metrics *turnMetrics, r
 // RunTurnTextMode runs a turn with text input instead of mic.
 func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	metrics := newTurnMetrics()
+	defer p.trackMetrics(metrics)()
 	turn := p.newTurnConductor(metrics)
 
 	turn.to(TurnThinking)
@@ -710,7 +757,7 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 			}
 			interrupted = true
 			metrics.interrupted = true
-			metrics.bargeIn = req.At
+			metrics.markBargeIn(req.At)
 			turn.to(TurnInterrupted)
 			cancel()
 			if cancelTurn != nil {

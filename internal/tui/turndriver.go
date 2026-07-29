@@ -377,6 +377,27 @@ func (m *conversationModel) beginTextBargeIn(text string) tea.Cmd {
 	return nil
 }
 
+// keystrokeBargeIn silences TTS the moment the user types a printable rune
+// while a response is in flight — the behavior the composer label promises
+// ("type to barge in"). Unlike the Enter path, only playback stops: the turn
+// keeps streaming so the reply text still lands, and the keystroke proceeds
+// into the composer as the start of the user's next message. vim-normal and
+// vim-visual keys never reach here, so transcript navigation stays silent.
+func (m *conversationModel) keystrokeBargeIn(msg tea.KeyMsg) {
+	if msg.Type != tea.KeyRunes || msg.Alt {
+		return
+	}
+	if m.turnState != turnVoiceResponding && m.turnState != turnTextRunning {
+		return
+	}
+	if m.deps.runner == nil {
+		return
+	}
+	if stopper, ok := m.deps.runner.(interface{ StopPlayback() }); ok {
+		stopper.StopPlayback()
+	}
+}
+
 // discardDraft drops a barged-in draft that /compact beat to the cancel drain.
 // The echo bubble stays as scrollback, but the pending-echo marker has to clear:
 // it suppresses the next matching UserInput bubble, so leaving it set would

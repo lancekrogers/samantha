@@ -64,21 +64,21 @@ func launchInstances(runDir, session, binPath string, s *Scenario) (map[string]*
 		if h == 0 {
 			h = 34
 		}
+		// The samantha command runs AS the window command — typing it into an
+		// interactive shell races login-shell init (instant prompts eat
+		// buffered keys and leave a half-pasted command at a PS2 prompt).
+		cmd := launchCommand(binPath, inst, s)
 		if i == 0 {
-			if err := tmuxRun("new-session", "-d", "-s", session, "-n", id, "-x", strconv.Itoa(w), "-y", strconv.Itoa(h)); err != nil {
+			if err := tmuxRun("new-session", "-d", "-s", session, "-n", id, "-x", strconv.Itoa(w), "-y", strconv.Itoa(h), cmd); err != nil {
 				return nil, err
 			}
 		} else {
-			if err := tmuxRun("new-window", "-t", session, "-n", id); err != nil {
+			if err := tmuxRun("new-window", "-t", session, "-n", id, cmd); err != nil {
 				return nil, err
 			}
 		}
-
-		cmd := launchCommand(binPath, inst, s)
-		if err := tmuxRun("send-keys", "-t", inst.Target, "-l", "--", cmd); err != nil {
-			return nil, err
-		}
-		if err := tmuxRun("send-keys", "-t", inst.Target, "Enter"); err != nil {
+		// Keep the pane alive after exit so pane.txt still captures crashes.
+		if err := tmuxRun("set-option", "-t", inst.Target, "remain-on-exit", "on"); err != nil {
 			return nil, err
 		}
 		instances[id] = inst
@@ -118,9 +118,11 @@ func launchCommand(binPath string, inst *Instance, s *Scenario) string {
 	for _, f := range inst.Spec.Flags {
 		b.WriteString(" " + shellQuote(f))
 	}
-	fmt.Fprintf(&b, " --transcript-log %s", shellQuote(inst.TapPath))
+	fmt.Fprintf(&b, " --transcript-log=%s", shellQuote(inst.TapPath))
 	if s.Capture.Audio {
-		fmt.Fprintf(&b, " --debug-audio %s", shellQuote(filepath.Join(inst.Dir, "audio")))
+		// = form is required: --debug-audio declares NoOptDefVal, so a
+		// space-separated value would be parsed as a positional command.
+		fmt.Fprintf(&b, " --debug-audio=%s", shellQuote(filepath.Join(inst.Dir, "audio")))
 	}
 	return b.String()
 }

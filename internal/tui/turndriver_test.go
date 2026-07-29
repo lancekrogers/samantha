@@ -665,3 +665,59 @@ func TestTurnWaitGroupTracksInFlightTurns(t *testing.T) {
 	}
 	wg.Wait() // must not deadlock: Done ran when the turn drained
 }
+
+// A bare printable rune while a response is in flight must stop playback
+// without canceling the turn — the composer label's "type to barge in"
+// promise (WI-dc9e33 B2). Only Enter escalates to a full barge-in.
+func TestKeystrokeBargesInWithoutCancelingTurn(t *testing.T) {
+	for _, state := range []turnState{turnVoiceResponding, turnTextRunning} {
+		runner := &fakeTurnRunner{}
+		m, _ := startedConversation(t, runner, true)
+		m.turnState = state
+		canceled := false
+		m.turnCancel = func() { canceled = true }
+
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+
+		if runner.stopped != 1 {
+			t.Fatalf("state %d: StopPlayback calls = %d, want 1", state, runner.stopped)
+		}
+		if canceled {
+			t.Fatalf("state %d: keystroke barge-in must not cancel the turn", state)
+		}
+		if m.turnState != state {
+			t.Fatalf("state %d: turnState changed to %d", state, m.turnState)
+		}
+		if m.input.Value() != "w" {
+			t.Fatalf("state %d: rune should land in composer, got %q", state, m.input.Value())
+		}
+	}
+}
+
+func TestKeystrokeBargeInIgnoresIdleAndNonTyping(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	m, _ := startedConversation(t, runner, true)
+
+	// Idle: typing is just drafting.
+	m.turnState = turnIdle
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if runner.stopped != 0 {
+		t.Fatal("idle typing must not stop playback")
+	}
+
+	// Alt-chords are commands, not drafting.
+	m.turnState = turnVoiceResponding
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}, Alt: true})
+	if runner.stopped != 0 {
+		t.Fatal("alt chord must not stop playback")
+	}
+
+	// vim-normal navigation scrolls the transcript; it is not drafting.
+	m.vim.enabled = true
+	m.vim.mode = vimNormal
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	if runner.stopped != 0 {
+		t.Fatal("vim-normal keys must not stop playback")
+	}
+	_ = m
+}
