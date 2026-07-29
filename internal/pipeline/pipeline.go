@@ -887,7 +887,7 @@ func (p *Pipeline) synthesizeWithFallback(ctx context.Context, text string, stic
 	if stickFallback != nil && *stickFallback && p.canUseFallback(ctx, primary, fallback) {
 		fallbackStream, fallbackErr := fallback.Synthesize(ctx, text)
 		if fallbackErr != nil {
-			return nil, true, fmt.Errorf("Kokoro fallback (sticky): %w", fallbackErr)
+			return nil, true, fmt.Errorf("kokoro fallback (sticky): %w", fallbackErr)
 		}
 		return fallbackStream, true, nil
 	}
