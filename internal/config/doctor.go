@@ -295,7 +295,7 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 func diagnoseBrainProvider(cfg *Config, lookPath func(string) (string, error)) Diagnostic {
 	provider := strings.ToLower(strings.TrimSpace(cfg.BrainProvider))
 	if provider == "" {
-		provider = "claude"
+		provider = "ollama"
 	}
 
 	switch provider {

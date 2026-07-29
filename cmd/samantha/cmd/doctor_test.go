@@ -36,6 +36,16 @@ func (f fakeVoiceChecker) PlaybackDevices(ctx context.Context) ([]string, error)
 	return f.playback, f.err
 }
 
+// healthyBrain fills the brain keys needed for an OK brain-provider diagnostic
+// so these tests assert on the STT/TTS/asset/hardware checks they care about.
+// Without it the default (ollama, no model) is itself a doctor error.
+func healthyBrain(cfg *config.Config) *config.Config {
+	cfg.BrainProvider = "ollama"
+	cfg.OllamaModel = "llama3"
+	cfg.OllamaHost = "http://localhost:11434"
+	return cfg
+}
+
 func runDoctorCmd(t *testing.T, cfg *config.Config, modelsDir string, lookPath func(string) (string, error), checker config.VoiceDeviceChecker, asJSON bool) (string, error) {
 	t.Helper()
 	cmd := &cobra.Command{}
@@ -46,7 +56,7 @@ func runDoctorCmd(t *testing.T, cfg *config.Config, modelsDir string, lookPath f
 }
 
 func TestDoctorWarningsExitZero(t *testing.T) {
-	cfg := &config.Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro", VADEnabled: true}
+	cfg := healthyBrain(&config.Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro", VADEnabled: true})
 	out, err := runDoctorCmd(t, cfg, t.TempDir(), okLookPath, nil, false)
 	if err != nil {
 		t.Fatalf("doctor with only warnings should exit 0, got %v", err)
@@ -57,7 +67,7 @@ func TestDoctorWarningsExitZero(t *testing.T) {
 }
 
 func TestDoctorErrorsExitNonZero(t *testing.T) {
-	cfg := &config.Config{STTProvider: "whispercpp", WhisperCPPModel: "base.en", WhisperCPPBinary: "whisper-cli", TTSProvider: "kokoro"}
+	cfg := healthyBrain(&config.Config{STTProvider: "whispercpp", WhisperCPPModel: "base.en", WhisperCPPBinary: "whisper-cli", TTSProvider: "kokoro"})
 	out, err := runDoctorCmd(t, cfg, t.TempDir(), failLookPath, nil, false)
 	if err == nil {
 		t.Fatal("doctor with a missing required binary should return an error")
@@ -68,7 +78,7 @@ func TestDoctorErrorsExitNonZero(t *testing.T) {
 }
 
 func TestDoctorJSON(t *testing.T) {
-	cfg := &config.Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro"}
+	cfg := healthyBrain(&config.Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro"})
 	out, err := runDoctorCmd(t, cfg, t.TempDir(), okLookPath, nil, true)
 	if err != nil {
 		t.Fatalf("doctor --json error = %v", err)
@@ -85,7 +95,7 @@ func TestDoctorJSON(t *testing.T) {
 // TestDoctorDefaultHasNoHardwareChecks locks in that the default doctor stays
 // read-only and hardware-free: no voice-device diagnostics without the flag.
 func TestDoctorDefaultHasNoHardwareChecks(t *testing.T) {
-	cfg := &config.Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro"}
+	cfg := healthyBrain(&config.Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro"})
 	for _, asJSON := range []bool{false, true} {
 		out, _ := runDoctorCmd(t, cfg, t.TempDir(), okLookPath, nil, asJSON)
 		for _, banned := range []string{"voice:", "microphone", "speaker"} {
@@ -97,7 +107,7 @@ func TestDoctorDefaultHasNoHardwareChecks(t *testing.T) {
 }
 
 func TestDoctorVoiceDevicesProbeFailureExitsNonZero(t *testing.T) {
-	cfg := &config.Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro"}
+	cfg := healthyBrain(&config.Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro"})
 	out, err := runDoctorCmd(t, cfg, t.TempDir(), okLookPath, fakeVoiceChecker{err: errors.New("backend broken")}, false)
 	if err == nil {
 		t.Fatal("failed device probe should return an error")
@@ -108,7 +118,7 @@ func TestDoctorVoiceDevicesProbeFailureExitsNonZero(t *testing.T) {
 }
 
 func TestDoctorVoiceDevicesTimeoutWarnsWithRemediation(t *testing.T) {
-	cfg := &config.Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro"}
+	cfg := healthyBrain(&config.Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro"})
 	// The fake honors ctx like the real checker; a pre-expired deadline
 	// simulates a wedged backend hitting the probe timeout.
 	cmd := &cobra.Command{}
@@ -130,7 +140,7 @@ func TestDoctorVoiceDevicesTimeoutWarnsWithRemediation(t *testing.T) {
 }
 
 func TestDoctorVoiceDevicesAddsDiagnostics(t *testing.T) {
-	cfg := &config.Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro"}
+	cfg := healthyBrain(&config.Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro"})
 	checker := fakeVoiceChecker{capture: []string{"Built-in Mic"}, playback: []string{"Built-in Speaker"}}
 	out, _ := runDoctorCmd(t, cfg, t.TempDir(), okLookPath, checker, false)
 	if !contains(out, "voice:microphone") || !contains(out, "Built-in Mic") {
@@ -142,7 +152,7 @@ func TestDoctorVoiceDevicesAddsDiagnostics(t *testing.T) {
 }
 
 func TestDoctorVoiceDevicesJSONIncludesDiagnostics(t *testing.T) {
-	cfg := &config.Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro"}
+	cfg := healthyBrain(&config.Config{STTProvider: "sherpa", WhisperModel: "base.en", TTSProvider: "kokoro"})
 	checker := fakeVoiceChecker{capture: []string{"Mic"}, playback: []string{"Speaker"}}
 	out, err := runDoctorCmd(t, cfg, t.TempDir(), okLookPath, checker, true)
 	if err != nil {

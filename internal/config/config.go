@@ -287,7 +287,10 @@ func setDefaults(v *viper.Viper) {
 	// by turning this off.
 	v.SetDefault("tui_mouse_enabled", true)
 
-	v.SetDefault("brain_provider", "claude")
+	// Local-first: the default brain is the local Ollama server. A fresh install
+	// with no ollama_model fails with an actionable message from NewOllama rather
+	// than silently routing to a cloud CLI.
+	v.SetDefault("brain_provider", "ollama")
 	v.SetDefault("grok_model", "")
 	v.SetDefault("ollama_model", "")
 	v.SetDefault("ollama_embedding_model", "nomic-embed-text")
@@ -455,20 +458,29 @@ func loadLocked() (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
-	applyOllamaDefaults(&cfg, v)
+	applyOllamaDefaults(&cfg, v, ollamaChosen(v))
 	cfg.ToolCommandTimeout = ClampToolCommandTimeout(cfg.ToolCommandTimeout)
 	return &cfg, nil
 }
 
+// ollamaChosen reports whether ollama came from a deliberate selection (config
+// key or env) rather than from the built-in default. Auto-enabling tools and
+// skills is a capability change, so an install that never named a provider
+// keeps them off even though the default provider is ollama.
+func ollamaChosen(v *viper.Viper) bool {
+	return v.InConfig("brain_provider") || os.Getenv("BRAIN_PROVIDER") != ""
+}
+
 // applyOllamaDefaults enables local Ollama capabilities when the user has not
 // explicitly configured them. An explicit false still wins, and remote serve
-// remains default-deny via remote_tools_enabled.
+// remains default-deny via remote_tools_enabled. chosen gates the auto-enable
+// on a deliberate provider selection — see ollamaChosen.
 //
 // Skills auto-on discovers project/user SKILL.md into the Ollama system prompt
 // when tools are also available; allowed-tools only constrain tools *after*
 // activation. Pre-activation base tools remain full when voice_tools_enabled.
-func applyOllamaDefaults(cfg *Config, v *viper.Viper) {
-	if !strings.EqualFold(strings.TrimSpace(cfg.BrainProvider), "ollama") {
+func applyOllamaDefaults(cfg *Config, v *viper.Viper, chosen bool) {
+	if !chosen || !strings.EqualFold(strings.TrimSpace(cfg.BrainProvider), "ollama") {
 		return
 	}
 
@@ -490,13 +502,15 @@ func applyOllamaDefaults(cfg *Config, v *viper.Viper) {
 // ApplyOllamaDefaults re-applies Ollama auto-enable rules to cfg using the
 // live viper state (explicit config/env still win). Call after switching
 // brain_provider so Settings display matches the next conversation Load().
+// Callers reach here by naming a provider (persona brain block, Settings), so
+// this counts as a deliberate selection.
 func ApplyOllamaDefaults(cfg *Config) {
 	if cfg == nil {
 		return
 	}
 	mu.RLock()
 	defer mu.RUnlock()
-	applyOllamaDefaults(cfg, v)
+	applyOllamaDefaults(cfg, v, true)
 }
 
 // SetAndSaveBrainProvider changes the brain provider and persists any
@@ -514,7 +528,7 @@ func SetAndSaveBrainProvider(cfg *Config, provider string) error {
 
 	next := *cfg
 	next.BrainProvider = provider
-	applyOllamaDefaults(&next, v)
+	applyOllamaDefaults(&next, v, true)
 
 	v.Set("brain_provider", provider)
 	if strings.EqualFold(strings.TrimSpace(provider), "ollama") {
