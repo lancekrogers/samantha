@@ -28,7 +28,7 @@ cancellation:
 One run per device class. Each takes about 20 seconds.
 
 ```bash
-just aec-probe LABEL=macbook-builtin
+just voice aec-probe macbook-builtin
 ```
 
 or directly:
@@ -39,8 +39,10 @@ samantha aec-probe --label macbook-builtin
 
 ### Before you start
 
-- **Volume at a normal listening level**, or louder. Too quiet is the most common
-  bad run — see below.
+- **Turn the volume up.** This is the most common bad run by a wide margin. On
+  macOS, system output around 31/100 produced an echo at 0.0094 RMS — less than
+  half of what the measurement needs. Aim for `echo_rms` above **0.02**; roughly
+  70/100 on built-in speakers. The probe tells you when you are under it.
 - **Nobody talking**, no music, no fans if avoidable. Both phases assume the mic
   hears only the speaker.
 - **Do not wear headphones** unless headphones *are* the device class you are
@@ -73,6 +75,11 @@ Switch the system input/output devices between runs, or set `input_device` /
   than the tap window**. Positive means the estimate under-counts, which the
   filter can absorb with taps. Negative means it over-counts, which no number of
   taps can fix.
+- **measured delay** is reference-pushed to echo-heard, correlated between the
+  two recorded streams. It deliberately does not include device initialisation
+  or stream setup — an earlier version measured from the generated stimulus
+  instead, which counted ~57 ms of startup as delay and scattered ~12 ms between
+  identical runs.
 - **ERLE** is how much quieter the front-end's output is than its input. This is
   measured end-of-chain, so the noise suppressor and AGC are inside the number —
   which is the honest framing, because that is what VAD sees.
@@ -92,17 +99,18 @@ Roughly, and pending the first real data set:
 The probe refuses to let a bad run look like a result. Any warning means fix the
 condition and run again rather than writing the number down.
 
-The one to watch for, because it looks like success:
+The one to watch for:
 
 ```
-ERLE of +21.8dB at only 0.0080 echo RMS is the noise suppressor gating
-near-silence, not echo cancellation
+echo RMS is only 0.0094: below 0.02 the noise suppressor gates near-silence
+and the +8.7dB ERLE reflects that, not echo cancellation
 ```
 
-A quiet microphone makes the noise suppressor gate everything, so ERLE reads
-superb while the canceller did nothing. **Raise the volume until `echo_rms` is
-above 0.02.** This was the first smoke run's result, and it is exactly the
-mistake this probe exists to prevent.
+A quiet microphone makes the noise suppressor gate everything, so ERLE describes
+the suppressor rather than the canceller. This does **not** only happen at
+implausible scores: the first real hardware runs returned +8.69 dB and +5.45 dB
+at ~0.010 RMS — believable numbers that disagreed with each other by 3 dB. If
+the level is low, the score means nothing regardless of how reasonable it looks.
 
 Others:
 

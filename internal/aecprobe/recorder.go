@@ -35,6 +35,17 @@ type Recorder struct {
 	delaySeen bool
 	refPushes int
 	capChunks int
+	// refAnchor is how many microphone samples had been recorded when the very
+	// first reference block arrived. It converts the reference stream — which
+	// only advances while audio plays — into microphone-stream coordinates, so
+	// the two can be correlated against each other.
+	//
+	// Without it the only available measurement is "stimulus generated" to
+	// "echo heard", which also counts device initialisation and stream setup.
+	// That inflated the first hardware runs to ~153-165ms with 12ms of
+	// run-to-run scatter that was pure scheduling jitter.
+	refAnchor    int
+	refAnchorSet bool
 }
 
 // NewRecorder wraps inner. inner is used, not replaced: the probe measures the
@@ -62,6 +73,10 @@ func (r *Recorder) ProcessCapture(samples []float32) []float32 {
 // PushPlaybackReference records the far-end reference as the AEC receives it.
 func (r *Recorder) PushPlaybackReference(samples []float32) {
 	r.mu.Lock()
+	if !r.refAnchorSet {
+		r.refAnchor = len(r.micIn)
+		r.refAnchorSet = true
+	}
 	r.reference = append(r.reference, samples...)
 	r.refPushes++
 	r.mu.Unlock()
@@ -111,6 +126,16 @@ func (r *Recorder) Counts() (refPushes, captureChunks int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.refPushes, r.capChunks
+}
+
+// ReferenceAnchor reports the microphone-stream offset at which the first
+// reference block was pushed, and whether any was. Correlating the reference
+// against micIn from this offset measures the lag the canceller actually has to
+// span: reference-pushed to echo-heard, with no device-setup time in it.
+func (r *Recorder) ReferenceAnchor() (offset int, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.refAnchor, r.refAnchorSet
 }
 
 // Mark returns the current length of the microphone recording. The probe takes

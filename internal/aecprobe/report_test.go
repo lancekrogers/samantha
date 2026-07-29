@@ -38,16 +38,28 @@ func TestInterpretFlagsUntrustworthyRuns(t *testing.T) {
 			want:   "nonlinear",
 		},
 		{
-			// The failure mode found by the first smoke run: a quiet mic makes
-			// the noise suppressor gate everything, ERLE reads superb, and a
-			// worthless run gets recorded as a good device result.
+			// Found by the first smoke run: a quiet mic makes the noise
+			// suppressor gate everything and ERLE reads superb.
 			name: "high ERLE off a near-silent echo",
 			report: Report{
 				DelayPublished: true, ReferencePushes: 10, CaptureChunks: 10,
 				DelayConfidence: 0.9, TapWindowSamples: 768,
 				ERLEdB: 21.75, EchoRMS: 0.008,
 			},
-			want: "noise suppressor gating near-silence",
+			want: "echo RMS is only",
+		},
+		{
+			// Found by the first real hardware runs, and the reason this check
+			// is no longer gated on an implausible score: two runs at ~0.010
+			// RMS returned +8.69dB and +5.45dB — believable numbers that passed
+			// silently while disagreeing with each other by 3dB.
+			name: "plausible ERLE off a too-quiet echo",
+			report: Report{
+				DelayPublished: true, ReferencePushes: 10, CaptureChunks: 10,
+				DelayConfidence: 0.9, TapWindowSamples: 768,
+				ERLEdB: 8.69, EchoRMS: 0.0100,
+			},
+			want: "Raise the output volume",
 		},
 		{
 			name: "estimate exceeds the measured delay",
@@ -89,6 +101,8 @@ func TestInterpretIsSilentOnAHealthyRun(t *testing.T) {
 		DelayConfidence: 0.85, TapWindowSamples: 768,
 		ERLEdB: 8.4, EchoRMS: 0.05, MicPeak: 0.4,
 	}
+	// 0.05 RMS is comfortably above quietEchoRMS; if that ever stops being
+	// true the "healthy" case below is not testing what it claims.
 	r.Interpret()
 
 	if len(r.Warnings) != 0 {

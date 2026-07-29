@@ -84,16 +84,20 @@ func (r *Report) Interpret() {
 		r.Warnings = append(r.Warnings,
 			"microphone heard almost nothing: raise output volume or move the mic closer, the ERLE number is meaningless")
 	}
-	// A quiet run reads as excellent cancellation, which is the most dangerous
-	// way for this probe to be wrong: the noise suppressor gates anything near
-	// its floor, so mic-out collapses whether or not the canceller did
-	// anything. Seen in the first smoke run — +21.75dB off an echo at 0.008
-	// RMS. Never let that be written down as a device result.
-	if r.ERLEdB > 15 && r.EchoRMS < quietEchoRMS {
+	// Any echo this quiet makes the ERLE number meaningless, whatever it says:
+	// the noise suppressor gates near its floor, so mic-out collapses whether
+	// or not the canceller did anything.
+	//
+	// This was originally gated on ERLE > 15, on the theory that only an
+	// implausibly good score needed challenging. The first real hardware runs
+	// disproved that — two runs at ~0.010 RMS returned +8.69dB and +5.45dB,
+	// plausible-looking numbers that passed silently while differing from each
+	// other by 3dB. Believability is not evidence; the level is.
+	if !r.SilentRun && r.EchoRMS < quietEchoRMS {
 		r.Warnings = append(r.Warnings, fmt.Sprintf(
-			"ERLE of %+.1fdB at only %.4f echo RMS is the noise suppressor gating near-silence, "+
-				"not echo cancellation: raise the volume until echo_rms is above %.2f and re-run",
-			r.ERLEdB, r.EchoRMS, quietEchoRMS))
+			"echo RMS is only %.4f: below %.2f the noise suppressor gates near-silence and the "+
+				"%+.1fdB ERLE reflects that, not echo cancellation. Raise the output volume and re-run",
+			r.EchoRMS, quietEchoRMS, r.ERLEdB))
 	}
 	if r.Clipped {
 		r.Warnings = append(r.Warnings,
