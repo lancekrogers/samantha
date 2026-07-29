@@ -39,3 +39,9 @@ func (p *PassthroughFrontend) PushPlaybackReference(samples []float32) {}
 func (p *PassthroughFrontend) Close() error {
 	return nil
 }
+
+// EchoCancellerTaps reports the adaptive filter length, in capture-rate
+// samples. Exported for the hardware probe: a measured echo delay is only
+// interpretable against the window the filter can actually span, and the probe
+// lives outside this package.
+func EchoCancellerTaps() int { return echoCancellerTaps }
