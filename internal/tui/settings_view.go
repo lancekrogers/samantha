@@ -15,7 +15,7 @@ func (m settingsModel) View() string {
 	var parts []string
 	parts = append(parts, headerStyle.Render("  Settings"))
 
-	tabs := []string{"Brain", "Brain model", "Tools", "TTS", "Qwen", "Voice", "Language", "Input", "Output", "Meeting"}
+	tabs := []string{"Brain", "Brain model", "Tools", "TTS", "Qwen", "Voice", "Language", "Input", "Output", "Speakers", "Meeting"}
 	var tabLine strings.Builder
 	for i, tab := range tabs {
 		style := dimStyle
@@ -178,6 +178,15 @@ func (m settingsModel) sectionListLines() []string {
 
 	case sectionOutput:
 		return m.deviceLines(m.outputItems, m.cfg.OutputDevice)
+
+	case sectionSpeakers:
+		items := m.speakerItems()
+		start, end := m.visibleRange(len(items))
+		lines := make([]string, 0, end-start)
+		for i := start; i < end; i++ {
+			lines = append(lines, m.itemLine(i, items[i]))
+		}
+		return lines
 
 	case sectionMeeting:
 		items := m.meetingItems()
