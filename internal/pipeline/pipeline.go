@@ -712,6 +712,11 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 	stalled := make(chan struct{})
 	watchdogArmed := false
 
+	// Progressive sentence TTS: brain.ChunkSentences emits each complete
+	// sentence as stream tokens arrive; we hand each segment to the warm TTS
+	// worker (native qwen3-tts-worker or Kokoro) without waiting for the full
+	// brain reply. That is the product progressive path for long replies.
+	//
 	// Synthesis runs on a single ordered worker so this loop keeps servicing
 	// barge-in and playback events while a sentence is being generated —
 	// PlayStream cannot return until the TTS engine has produced audio, and
@@ -765,6 +770,10 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 			metrics.interrupted = true
 			metrics.markBargeIn(req.At)
 			turn.to(TurnInterrupted)
+			// Send the session's actual active request ID without waiting on the
+			// synthesis lock. Stage B workers can stop mid-synthesis; Stage A
+			// exits through the canceled context and is restarted by the provider.
+			p.softCancelTTS("barge-in")
 			cancel()
 			if cancelTurn != nil {
 				cancelTurn()
@@ -859,6 +868,15 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 	}
 
 	return strings.TrimSpace(fullResponse.String()), interrupted, nil
+}
+
+// softCancelTTS asks the primary provider to abandon in-flight synthesis without
+// process kill when it implements tts.SoftCanceler (native qwen3-tts-worker).
+func (p *Pipeline) softCancelTTS(reason string) {
+	primary, _ := p.ttsProviders()
+	if sc, ok := primary.(tts.SoftCanceler); ok {
+		_ = sc.SoftCancel(reason)
+	}
 }
 
 // discardPCMStream drains a synthesized stream that will not be played so the

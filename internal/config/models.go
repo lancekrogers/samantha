@@ -129,8 +129,7 @@ func EnsureRuntimeAssets(ctx context.Context, cfg *Config, req AssetRequest, onP
 	}
 	if req.NeedTTS && cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), qwen.ProviderName) {
 		if qwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
-			_, err := qwen.Ensure(ctx, ModelsDirFrom(cfg), qwen.ProgressFunc(onProgress))
-			return err
+			return ensureQwenTTSAssets(ctx, cfg, onProgress)
 		}
 		return nil
 	}
@@ -215,6 +214,50 @@ func ensureManifest(ctx context.Context, manifest AssetManifest, dir string, onP
 // EnsureModels preserves the old behavior for callers that still need the default asset set.
 func EnsureModels(ctx context.Context, cfg *Config, onProgress func(name string, pct float64)) error {
 	return EnsureRuntimeAssets(ctx, cfg, DefaultAssetRequest(cfg), onProgress)
+}
+
+// ensureQwenTTSAssets installs native multi-tier packages when preferred/available,
+// otherwise falls back to the legacy managed Python path until cutover (festival 008).
+// Never expands the Python surface: native is tried first when PreferNative is on.
+func ensureQwenTTSAssets(ctx context.Context, cfg *Config, onProgress func(name string, pct float64)) error {
+	modelsDir := ModelsDirFrom(cfg)
+	tier := ""
+	url := ""
+	sha := ""
+	if cfg != nil {
+		tier = cfg.QwenTTSModelTier
+		url = qwen.ResolveNativeURL(cfg.QwenTTSNativeURL)
+		sha = qwen.ResolveNativeSHA256(cfg.QwenTTSNativeSHA256)
+	}
+
+	// Already have a verified native tree for the requested tier → skip Python entirely.
+	if qwen.InspectNative(modelsDir, tier).Installed {
+		if onProgress != nil {
+			onProgress("native Qwen3-TTS", 100)
+		}
+		return nil
+	}
+
+	if qwen.PreferNative() {
+		_, err := qwen.EnsureNative(ctx, modelsDir, qwen.NativeEnsureOptions{
+			URL: url, SHA256: sha, Tier: tier,
+		}, qwen.ProgressFunc(onProgress))
+		if err == nil {
+			return nil
+		}
+		// No URL configured: fall through to legacy Python so existing users keep working
+		// until cutover. If URL was set and install failed, fail closed (do not mask with Python).
+		if url != "" {
+			return err
+		}
+		// Prefer native but nothing installed and no tarball URL — try legacy managed.
+		if onProgress != nil {
+			onProgress("Qwen (legacy managed Python until native URL configured)", 0)
+		}
+	}
+
+	_, err := qwen.Ensure(ctx, modelsDir, qwen.ProgressFunc(onProgress))
+	return err
 }
 
 // archiveExtracted checks if all expected files/dirs exist.

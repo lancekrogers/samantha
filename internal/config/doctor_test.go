@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/lancekrogers/samantha/internal/qwen"
 )
 
 func okLookPath(name string) (string, error)   { return "/usr/bin/" + name, nil }
@@ -211,6 +213,37 @@ func TestDiagnoseWhisperCPPBinary(t *testing.T) {
 	present := diagByName(Diagnose(cfg, t.TempDir(), okLookPath))
 	if present["whispercpp-binary"].Severity != SeverityOK {
 		t.Errorf("present whisper.cpp binary should be OK: %+v", present["whispercpp-binary"])
+	}
+}
+
+func TestDiagnoseQwenNativePackageInstall(t *testing.T) {
+	modelsDir := t.TempDir()
+	archive, sum := writeTestNativeTar(t, t.TempDir())
+	if _, err := qwen.EnsureNative(context.Background(), modelsDir, qwen.NativeEnsureOptions{URL: archive, SHA256: sum}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &Config{STTProvider: "sherpa", TTSProvider: "qwen3-tts", QwenTTSModelTier: "0.6b"}
+	diags := diagByName(Diagnose(cfg, modelsDir, failLookPath))
+	if diags["tts-provider"].Severity != SeverityOK || !strings.Contains(diags["tts-provider"].Detail, "native") {
+		t.Fatalf("tts-provider = %+v, want native detail", diags["tts-provider"])
+	}
+	if diags["qwen3-tts-binary"].Severity != SeverityOK {
+		t.Fatalf("binary = %+v", diags["qwen3-tts-binary"])
+	}
+	if diags["qwen3-tts-model"].Severity != SeverityOK {
+		t.Fatalf("model = %+v", diags["qwen3-tts-model"])
+	}
+}
+
+func TestDiagnoseQwenManagedMissingPrefersNativeRemediation(t *testing.T) {
+	cfg := &Config{STTProvider: "sherpa", TTSProvider: "qwen3-tts"}
+	d := diagByName(Diagnose(cfg, t.TempDir(), failLookPath))["qwen3-tts-binary"]
+	if d.Severity != SeverityError || !strings.Contains(d.Remediation, "qwen_tts_native_url") {
+		t.Fatalf("missing managed/native = %+v, want native URL remediation", d)
+	}
+	if strings.Contains(d.Detail, "only Python") {
+		t.Fatalf("detail should mention both paths: %q", d.Detail)
 	}
 }
 

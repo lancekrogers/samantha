@@ -29,6 +29,13 @@ type FirstAudioGracer interface {
 	FirstAudioGrace() time.Duration
 }
 
+// SoftCanceler is optionally implemented by warm-worker TTS providers.
+// Pipeline barge-in and turn cancel should SoftCancel the in-flight request
+// without killing the worker process (reload cost).
+type SoftCanceler interface {
+	SoftCancel(requestID string) error
+}
+
 // SynthesisRequest describes a single synthesis call. Empty Voice and zero
 // Speed fall back to the provider's configured defaults.
 type SynthesisRequest struct {

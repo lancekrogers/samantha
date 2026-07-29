@@ -72,12 +72,21 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 		binary := strings.TrimSpace(cfg.QwenTTSBinary)
 		model := strings.TrimSpace(cfg.QwenTTSModel)
 		managed := qwen.UseManaged(binary, model)
+		native := qwen.InspectNative(modelsDir, cfg.QwenTTSModelTier)
 		providerDetail := "qwen3-tts (external default-voice worker)"
 		controlsDetail := "external model-native default/static synthesis"
 		controlsRemediation := "clear unsupported voice controls for the external worker"
-		if managed {
-			providerDetail = "qwen3-tts (managed CustomVoice presets)"
+		if managed && native.Installed {
+			providerDetail = "qwen3-tts (native warm worker + CustomVoice presets)"
+			controlsDetail = "native CustomVoice speaker selection"
+			controlsRemediation = "select a speaker and mode advertised in Settings → Voice"
+		} else if managed {
+			providerDetail = "qwen3-tts (managed CustomVoice presets; prefer native package)"
 			controlsDetail = "managed CustomVoice speaker selection"
+			controlsRemediation = "select a speaker and mode advertised in Settings → Voice"
+		} else if isNativeWorkerBinary(binary) {
+			providerDetail = "qwen3-tts (explicit native worker)"
+			controlsDetail = "native CustomVoice speaker selection"
 			controlsRemediation = "select a speaker and mode advertised in Settings → Voice"
 		}
 		diags = append(diags, Diagnostic{
@@ -101,24 +110,42 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 		}
 
 		if managed {
-			status := qwen.Inspect(modelsDir)
-			if status.RuntimeReady {
-				diags = append(diags, Diagnostic{Name: "qwen3-tts-binary", Severity: SeverityOK, Detail: status.Python})
+			if native.Installed {
+				diags = append(diags, Diagnostic{Name: "qwen3-tts-binary", Severity: SeverityOK, Detail: native.Worker})
+				diags = append(diags, Diagnostic{Name: "qwen3-tts-model", Severity: SeverityOK, Detail: native.ModelDir + " (tier " + native.DefaultTier + ")"})
+				if len(native.TiersReady) > 0 {
+					diags = append(diags, Diagnostic{
+						Name: "qwen3-tts-tiers", Severity: SeverityOK,
+						Detail: "ready: " + strings.Join(native.TiersReady, ", "),
+					})
+				}
+				if len(native.TiersMissing) > 0 {
+					diags = append(diags, Diagnostic{
+						Name: "qwen3-tts-tiers-optional", Severity: SeverityWarn,
+						Detail:      "not in package: " + strings.Join(native.TiersMissing, ", "),
+						Remediation: "install a multi-tier native release or keep qwen_tts_model_tier=0.6b",
+					})
+				}
 			} else {
-				diags = append(diags, Diagnostic{
-					Name: "qwen3-tts-binary", Severity: SeverityError,
-					Detail:      "managed Qwen runtime is not installed",
-					Remediation: "open Settings → TTS, select Qwen3-TTS, and install preset voices",
-				})
-			}
-			if status.ModelReady {
-				diags = append(diags, Diagnostic{Name: "qwen3-tts-model", Severity: SeverityOK, Detail: status.Model})
-			} else {
-				diags = append(diags, Diagnostic{
-					Name: "qwen3-tts-model", Severity: SeverityError,
-					Detail:      "managed Qwen CustomVoice model is not installed",
-					Remediation: "open Settings → TTS, select Qwen3-TTS, and install preset voices",
-				})
+				status := qwen.Inspect(modelsDir)
+				if status.RuntimeReady {
+					diags = append(diags, Diagnostic{Name: "qwen3-tts-binary", Severity: SeverityOK, Detail: status.Python + " (legacy Python; prefer native tarball)"})
+				} else {
+					diags = append(diags, Diagnostic{
+						Name: "qwen3-tts-binary", Severity: SeverityError,
+						Detail:      "native Qwen package and legacy managed runtime are not installed",
+						Remediation: "set qwen_tts_native_url to a release tarball and run 'samantha models ensure --tts'",
+					})
+				}
+				if status.ModelReady {
+					diags = append(diags, Diagnostic{Name: "qwen3-tts-model", Severity: SeverityOK, Detail: status.Model})
+				} else {
+					diags = append(diags, Diagnostic{
+						Name: "qwen3-tts-model", Severity: SeverityError,
+						Detail:      "Qwen models are not installed",
+						Remediation: "set qwen_tts_native_url and run 'samantha models ensure --tts'",
+					})
+				}
 			}
 		} else {
 			if binary == "" {
