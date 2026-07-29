@@ -1053,3 +1053,32 @@ func TestRunTurnBrainErrorJoinsInterruptWatcher(t *testing.T) {
 		t.Fatalf("capture subscriptions after error return = %d, want 0 (watcher joined)", n)
 	}
 }
+
+// A StopPlayback landing mid-playback is a barge-in: it must stamp the
+// active turn's metrics (so harness/report see barge_in_s) while an idle
+// stop stays metric-silent (WI-dc9e33 B2).
+func TestStopPlaybackStampsBargeInOnActiveTurn(t *testing.T) {
+	player := newFakePlayer(time.Second)
+	player.playing.Store(true)
+	p := &Pipeline{Player: player}
+
+	m := newTurnMetrics()
+	clear := p.trackMetrics(m)
+	p.StopPlayback()
+	clear()
+	if m.bargeInAt().IsZero() {
+		t.Fatal("mid-playback StopPlayback must stamp the barge-in metric")
+	}
+
+	player.playing.Store(false)
+	m2 := newTurnMetrics()
+	clear2 := p.trackMetrics(m2)
+	p.StopPlayback()
+	clear2()
+	if !m2.bargeInAt().IsZero() {
+		t.Fatal("idle StopPlayback must not fake a barge-in")
+	}
+
+	// No active turn registered: must not panic.
+	p.StopPlayback()
+}
