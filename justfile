@@ -77,6 +77,11 @@ demo-persona-switch: build
     just _optimize-demo-gif demos/persona-switch.gif
     ls -lh demos/persona-switch.gif
 
+# Duet harness: scripted multi-instance conversation in tmux with full
+# artifact capture (tests/duet/README.md). Usage: just duet crosstalk
+duet scenario="crosstalk" *flags="": build
+    go run ./tests/duet -scenario tests/duet/scenarios/{{scenario}}.yaml {{flags}}
+
 # Personas → Create: boxed form wizard + vim system-prompt editor.
 demo-persona-create: build
     #!/usr/bin/env bash

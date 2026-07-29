@@ -1,0 +1,57 @@
+# Two personas with different models talk to each other — the field setup
+# that surfaced WI-dc9e33's bugs, reproducible. Text in/out (-t -n): no TTS
+# assets needed, so this runs anywhere ollama is up.
+name: crosstalk
+description: uncle fu and aunt flo argue about efficiency across two models
+duration: 240s
+
+defaults:
+  flags: ["-t", "-n"]
+  brain: { provider: ollama }
+
+instances:
+  a:
+    persona:
+      display_name: "uncle fu"
+      system_prompt: |
+        You are uncle fu, a warm contrarian who thinks the modern obsession
+        with efficiency is killing the soul of the human experience. Keep
+        replies to 2-3 conversational sentences, no formatting, no emojis.
+        Always end with a question or a challenge to keep the debate going.
+    brain: { model: "qwen3:8b" }
+  b:
+    persona:
+      display_name: "aunt flo"
+      system_prompt: |
+        You are aunt flo, a pragmatic optimizer who believes efficiency buys
+        people freedom and time. Keep replies to 2-3 conversational
+        sentences, no formatting, no emojis. Push back with concrete examples.
+    brain: { model: "llama3.2:latest" }
+
+triggers:
+  - id: opener
+    when: { at: 5s }
+    target: a
+    action:
+      type: keys
+      text: "tell aunt flo why the obsession with efficiency is overrated"
+      typing: human
+      submit: true
+
+bridge:
+  mode: text
+  pairs: [[a, b]]
+  max_exchanges: 6
+  min_gap: 2s
+  idle: 90s
+  degraded_policy: continue
+
+capture:
+  tmux_history: true
+
+# Conversation-mechanics assertions only; leakage (tool_leak_lines) is
+# reported here but asserted in voice-channel.yaml once B4's fixes land.
+expect:
+  - { metric: exchanges_completed, op: ">=", value: 4 }
+  - { instance: a, metric: tool_calls, op: "==", value: 0 }
+  - { instance: b, metric: tool_calls, op: "==", value: 0 }

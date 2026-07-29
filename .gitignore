@@ -44,3 +44,6 @@ tests/fixtures/meetings/*.m4a
 tests/fixtures/meetings/*.webm
 tests/fixtures/meetings/*.mp3
 tests/fixtures/meetings/*-speaker-analysis.json
+
+# duet harness run artifacts
+runs/
