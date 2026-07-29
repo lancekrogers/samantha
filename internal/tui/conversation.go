@@ -726,8 +726,11 @@ func (m *conversationModel) handleEvent(e events.Event) {
 	case events.SpeakingComplete:
 		m.appendActivity("output", "complete", e.Elapsed)
 		// A degraded turn speaks its recovery line after the Error event; the
-		// error status must survive that playback finishing.
-		if !m.statusErr {
+		// error status must survive that playback finishing. Still leave
+		// ModeSpeaking so the EQ/label does not stay "Speaking" forever.
+		if m.statusErr {
+			m.setVoiceMode(anim.ModeError)
+		} else {
 			m.setVoiceMode(anim.ModeIdle)
 			m.setStatus("", false)
 		}
@@ -785,9 +788,13 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		// ended on a path that skipped ResponseReady (cancel/failure). Fold the
 		// partial into the transcript instead of leaving it pinned beneath it,
 		// where it reads as a duplicated fragment of the reply (WI-dc9e33 B1).
-		if m.streamingAgent != "" {
-			m.appendTranscript(renderAgentTurn(m.agentName, m.streamingAgent), "")
+		// Clear the live buffer *before* appendTranscript: that helper refreshes
+		// the viewport immediately, and leaving streamingAgent set would render
+		// the same text twice (transcript bubble + live buffer) with no later
+		// refresh on a bare interrupted metrics event.
+		if partial := m.streamingAgent; partial != "" {
 			m.streamingAgent = ""
+			m.appendTranscript(renderAgentTurn(m.agentName, partial), "")
 		}
 		// Idle no-speech timeouts restart listening every ~listen_timeout
 		// seconds. Logging each one floods Activity without helping the user.

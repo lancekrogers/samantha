@@ -604,9 +604,16 @@ func TestErrorStatusSurvivesRecoverySequence(t *testing.T) {
 	}
 	m.handleEvent(events.GeneratingVoice{Sentence: "I hit an error."})
 	m.handleEvent(events.SpeakingStarted{Text: "I hit an error."})
+	if m.voiceMode != anim.ModeSpeaking {
+		t.Fatalf("voiceMode during recovery speak = %v, want ModeSpeaking", m.voiceMode)
+	}
 	m.handleEvent(events.SpeakingComplete{})
 	if !m.statusErr || !strings.Contains(m.status, "boom") {
 		t.Fatalf("status wiped by the recovery speak path: %q err=%v", m.status, m.statusErr)
+	}
+	// Preserving the error text must not leave the UI stuck animating "Speaking".
+	if m.voiceMode != anim.ModeError {
+		t.Fatalf("voiceMode after recovery SpeakingComplete = %v, want ModeError", m.voiceMode)
 	}
 
 	// The next turn's activity replaces the error.
@@ -633,5 +640,11 @@ func TestOrphanedStreamFoldsIntoTranscriptOnTurnEnd(t *testing.T) {
 	joined := strings.Join(m.transcript, "\n")
 	if !strings.Contains(joined, "interesting scenery") {
 		t.Fatalf("partial not folded into transcript:\n%s", joined)
+	}
+	// appendTranscript refreshes immediately: if streamingAgent is cleared
+	// after the append, View renders the bubble twice (transcript + live).
+	view := stripANSI(m.View())
+	if got := strings.Count(view, "interesting scenery"); got != 1 {
+		t.Fatalf("View shows partial %d times, want 1 (no live-buffer duplicate):\n%s", got, view)
 	}
 }
