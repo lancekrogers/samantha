@@ -1,0 +1,49 @@
+# B1 probe: instance a's ollama traffic runs through the harness fault proxy,
+# which passes startup checks (/api/tags, model validation) through to the
+# real host but fails /api/chat with 500 — a deterministic turn-time brain
+# failure, landing exactly where field failures do. The run proves a degraded
+# turn now leaves a diagnosable trail: an error record with the real message
+# in the tap (and native-diagnostics.log via fd 2), exactly one recovery
+# sentence, and a degraded metrics record.
+name: degraded-probe
+description: force a turn-time brain failure; assert the error trail is visible
+duration: 90s
+
+defaults:
+  flags: ["-t", "-n"]
+  brain: { provider: ollama }
+
+instances:
+  a:
+    persona:
+      display_name: "doomed"
+      system_prompt: "You are doomed, a test persona whose chats always fail."
+    brain: { model: "llama3.2:latest" }
+    fault: chat_error
+  b:
+    persona:
+      display_name: "witness"
+      system_prompt: "You are the witness. Reply in one short sentence."
+    brain: { model: "llama3.2:latest" }
+
+triggers:
+  - id: provoke
+    when: { at: 5s }
+    target: a
+    action:
+      type: keys
+      text: "hello there"
+      typing: instant
+      submit: true
+
+bridge:
+  mode: none
+  idle: 45s
+
+capture:
+  tmux_history: true
+
+expect:
+  - { instance: a, metric: degraded_turns, op: ">=", value: 1 }
+  # The whole point of B1: the failure must carry its real error message.
+  - { instance: a, metric: errors, op: ">=", value: 1 }

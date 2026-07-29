@@ -571,3 +571,67 @@ func TestConversationUsesFullWidthAtLargeTerminalSizes(t *testing.T) {
 		}
 	}
 }
+
+// The real error message must land in the durable Activity pane, not just
+// the transient status line (WI-dc9e33 B1/F1.1).
+func TestErrorMessageReachesActivity(t *testing.T) {
+	m := sizedConversation(t, 80, 24)
+	m.ready = true
+
+	m.handleEvent(events.Error{Stage: "brain", Message: "ollama stream: connection refused"})
+
+	found := false
+	for _, a := range m.activity {
+		if a.stage == "error" && strings.Contains(a.detail, "connection refused") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("activity missing error message: %+v", m.activity)
+	}
+}
+
+// recoverTurn emits Error then ResponseReady then speaks; the error status
+// must survive until the next turn writes over it (WI-dc9e33 B1/F1.2).
+func TestErrorStatusSurvivesRecoverySequence(t *testing.T) {
+	m := sizedConversation(t, 80, 24)
+	m.ready = true
+
+	m.handleEvent(events.Error{Stage: "brain", Message: "boom"})
+	m.handleEvent(events.ResponseReady{Response: "I hit an error.", Degraded: true})
+	if !m.statusErr || !strings.Contains(m.status, "boom") {
+		t.Fatalf("status wiped by ResponseReady: %q err=%v", m.status, m.statusErr)
+	}
+	m.handleEvent(events.GeneratingVoice{Sentence: "I hit an error."})
+	m.handleEvent(events.SpeakingStarted{Text: "I hit an error."})
+	m.handleEvent(events.SpeakingComplete{})
+	if !m.statusErr || !strings.Contains(m.status, "boom") {
+		t.Fatalf("status wiped by the recovery speak path: %q err=%v", m.status, m.statusErr)
+	}
+
+	// The next turn's activity replaces the error.
+	m.handleEvent(events.ThinkingStarted{})
+	if m.statusErr {
+		t.Fatalf("error status should clear on next turn, got %q", m.status)
+	}
+}
+
+// A turn that ends without ResponseReady (cancel/failure path) must fold its
+// streamed partial into the transcript, not leave it pinned beneath it as a
+// duplicated-looking fragment (WI-dc9e33 B1/F1.5).
+func TestOrphanedStreamFoldsIntoTranscriptOnTurnEnd(t *testing.T) {
+	m := sizedConversation(t, 80, 24)
+	m.ready = true
+
+	m.handleEvent(events.ThinkingStarted{})
+	m.handleEvent(events.ResponseDelta{Text: "the interesting scenery along the way"})
+	m.handleEvent(events.TurnMetrics{Outcome: "interrupted"})
+
+	if m.streamingAgent != "" {
+		t.Fatalf("streamingAgent = %q after terminal metrics, want empty", m.streamingAgent)
+	}
+	joined := strings.Join(m.transcript, "\n")
+	if !strings.Contains(joined, "interesting scenery") {
+		t.Fatalf("partial not folded into transcript:\n%s", joined)
+	}
+}

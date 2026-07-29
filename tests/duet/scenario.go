@@ -53,7 +53,10 @@ type InstanceSpec struct {
 	// live run showed two tool-enabled models goading each other into
 	// executing real host commands. Opt in per scenario when tool behavior
 	// is the thing under test.
-	Tools bool              `yaml:"tools"`
+	Tools bool `yaml:"tools"`
+	// Fault injects a deterministic failure via a local proxy in front of
+	// the instance's ollama host. Supported: chat_error (turn-time 500).
+	Fault string            `yaml:"fault"`
 	Flags []string          `yaml:"flags"`
 	Env   map[string]string `yaml:"env"`
 	Pane  PaneSpec          `yaml:"pane"`
@@ -183,6 +186,9 @@ func (s *Scenario) validate() error {
 			if _, err := os.Stat(full); err != nil {
 				return fmt.Errorf("instance %s: system_prompt_file: %w", id, err)
 			}
+		}
+		if inst.Fault != "" && inst.Fault != faultChatError {
+			return fmt.Errorf("instance %s: fault must be %q", id, faultChatError)
 		}
 	}
 	for i, t := range s.Triggers {

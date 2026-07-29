@@ -298,9 +298,15 @@ func (p *Pipeline) recoverTurn(ctx context.Context, turn *turnConductor, metrics
 	p.emit(events.Error{Stage: stage, Message: err.Error()})
 	logDegradedTurn(stage, err)
 
+	// Ollama's stream layer may already have recovered out loud (streaming
+	// RecoveryReply itself) before the turn died; appending a second copy is
+	// how the field capture showed the same apology twice.
 	response := brain.RecoveryReply
 	if partial = strings.TrimSpace(partial); partial != "" {
-		response = partial + "\n\n" + brain.RecoveryReply
+		response = partial
+		if !strings.HasSuffix(partial, brain.RecoveryReply) {
+			response = partial + "\n\n" + brain.RecoveryReply
+		}
 	}
 	p.emit(events.ResponseReady{Response: response, Degraded: true})
 
