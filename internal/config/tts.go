@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/lancekrogers/samantha/internal/qwen"
@@ -31,6 +32,11 @@ func ValidateQwenTTSConfig(cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("nil config")
 	}
+	// Product native worker (qwen3-tts-worker) accepts CustomVoice-class presets
+	// like the managed path; one-shot CLI remains default/static only.
+	if isNativeWorkerBinary(cfg.QwenTTSBinary) {
+		return validateQwenPresetVoiceConfig(cfg, "native qwen3-tts-worker")
+	}
 	if !qwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
 		var unsupported []string
 		if mode := strings.TrimSpace(cfg.QwenTTSMode); mode != "" && !strings.EqualFold(mode, "static") {
@@ -52,10 +58,19 @@ func ValidateQwenTTSConfig(cfg *Config) error {
 			unsupported = append(unsupported, "qwen_tts_reference_text")
 		}
 		if len(unsupported) > 0 {
-			return fmt.Errorf("external Qwen3-TTS worker supports only model-native default/static synthesis; clear unsupported settings: %s", strings.Join(unsupported, ", "))
+			return fmt.Errorf("external Qwen3-TTS CLI supports only model-native default/static synthesis; clear unsupported settings: %s", strings.Join(unsupported, ", "))
 		}
 		return nil
 	}
+	return validateQwenPresetVoiceConfig(cfg, "managed Qwen3-TTS")
+}
+
+func isNativeWorkerBinary(path string) bool {
+	base := strings.ToLower(filepath.Base(strings.TrimSpace(path)))
+	return base == "qwen3-tts-worker" || base == "qwen3-tts-worker.exe"
+}
+
+func validateQwenPresetVoiceConfig(cfg *Config, label string) error {
 	var unsupported []string
 	mode := strings.ToLower(strings.TrimSpace(cfg.QwenTTSMode))
 	if mode != "" && mode != "static" && mode != "customvoice" {
@@ -63,7 +78,7 @@ func ValidateQwenTTSConfig(cfg *Config) error {
 	}
 	if voice := strings.TrimSpace(cfg.QwenTTSVoice); voice != "" && !strings.EqualFold(voice, "default") {
 		if _, found := qwen.CanonicalVoice(voice); !found {
-			return fmt.Errorf("unsupported qwen_tts_voice %q for the managed CustomVoice model", voice)
+			return fmt.Errorf("unsupported qwen_tts_voice %q for the %s CustomVoice model", voice, label)
 		}
 	}
 	if language := strings.TrimSpace(cfg.QwenTTSLanguage); language != "" {
@@ -76,14 +91,18 @@ func ValidateQwenTTSConfig(cfg *Config) error {
 	if strings.TrimSpace(cfg.QwenTTSInstruction) != "" {
 		unsupported = append(unsupported, "qwen_tts_instruction")
 	}
-	if strings.TrimSpace(cfg.QwenTTSReferenceAudio) != "" {
-		unsupported = append(unsupported, "qwen_tts_reference_audio")
-	}
-	if strings.TrimSpace(cfg.QwenTTSReferenceText) != "" {
-		unsupported = append(unsupported, "qwen_tts_reference_text")
+	// Managed Python path still rejects ref audio; native stage A accepts
+	// ref_wav at the protocol layer but product clone UX is not fully landed.
+	if strings.HasPrefix(label, "managed") {
+		if strings.TrimSpace(cfg.QwenTTSReferenceAudio) != "" {
+			unsupported = append(unsupported, "qwen_tts_reference_audio")
+		}
+		if strings.TrimSpace(cfg.QwenTTSReferenceText) != "" {
+			unsupported = append(unsupported, "qwen_tts_reference_text")
+		}
 	}
 	if len(unsupported) == 0 {
 		return nil
 	}
-	return fmt.Errorf("managed Qwen3-TTS currently supports preset CustomVoice synthesis; clear unsupported settings: %s", strings.Join(unsupported, ", "))
+	return fmt.Errorf("%s currently supports preset CustomVoice synthesis; clear unsupported settings: %s", label, strings.Join(unsupported, ", "))
 }

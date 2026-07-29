@@ -15,7 +15,7 @@ func (m settingsModel) View() string {
 	var parts []string
 	parts = append(parts, headerStyle.Render("  Settings"))
 
-	tabs := []string{"Brain", "Brain model", "Tools", "TTS", "Voice", "Language", "Input", "Output", "Meeting"}
+	tabs := []string{"Brain", "Brain model", "Tools", "TTS", "Qwen", "Voice", "Language", "Input", "Output", "Meeting"}
 	var tabLine strings.Builder
 	for i, tab := range tabs {
 		style := dimStyle
@@ -117,6 +117,17 @@ func (m settingsModel) sectionListLines() []string {
 				active = " ✓"
 			}
 			lines = append(lines, m.itemLine(i, item.provider+" — "+item.detail+active))
+		}
+		return lines
+
+	case sectionQwen:
+		if len(m.qwenItems) == 0 {
+			return []string{dimStyle.Render("  Qwen options load when Settings opens")}
+		}
+		start, end := m.visibleRange(len(m.qwenItems))
+		lines := make([]string, 0, end-start)
+		for i := start; i < end; i++ {
+			lines = append(lines, m.itemLine(i, m.qwenItems[i].label))
 		}
 		return lines
 

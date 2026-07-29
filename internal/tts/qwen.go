@@ -24,6 +24,17 @@ const (
 	defaultQwenTTSTimeout = 120 * time.Second
 	maxQwenAudioDuration  = 2 * time.Hour
 	maxWorkerOutput       = 8 << 10
+
+	// Lab-measured stage-A warm TTFA ≈ full wall (qwen.latency.v1 worker_warmish).
+	// Stall watchdog FirstAudioGrace uses p95 headroom, not the mean:
+	//   warm_wall ~4–5s short phrase RTF~1.37 → p95 short ≈ 8s; long replies scale.
+	// Prefer configured timeout when larger so operators can raise the ceiling.
+	nativeWarmTTP95 = 8 * time.Second
+	// Cold ready (~6s measured) is paid once at session start, not every turn.
+	// If the warm session dies mid-conversation, restart cost is folded into grace.
+	nativeColdReadyP95 = 12 * time.Second
+	// Managed Python whole-utterance was ~6–9s process wall; keep prior default floor.
+	managedWarmTTP95 = 15 * time.Second
 )
 
 type limitedBuffer struct {
@@ -56,13 +67,18 @@ func (b *limitedBuffer) String() string {
 // seam makes the provider testable without downloading or vendoring models.
 type qwenCommand func(context.Context, string, ...string) *exec.Cmd
 
-// Qwen3TTS implements the optional Qwen3-TTS provider. Empty binary/model
-// configuration selects Samantha's managed official qwen-tts worker; explicit
-// paths retain the qwen3-tts.cpp-compatible external CLI.
+// Qwen3TTS implements the optional Qwen3-TTS provider.
+//
+// Resolution order:
+//  1. Explicit native worker binary (qwen3-tts-worker) + model dir
+//  2. Installed native package under models_dir/qwen3-tts/ (preferred over Python)
+//  3. Managed Python CustomVoice worker (legacy until cutover)
+//  4. External one-shot qwen3-tts-cli (lab/debug only)
 type Qwen3TTS struct {
 	binary              string
 	model               string
 	timeout             time.Duration
+	timeoutSet          bool // true when cfg.QwenTTSTimeout was explicitly set
 	command             qwenCommand
 	alive               atomic.Bool
 	mode                VoiceMode
@@ -72,16 +88,17 @@ type Qwen3TTS struct {
 	referenceAudio      string
 	referenceTranscript string
 	consent             bool
-	managed             bool
+	managed             bool // managed Python JSONL worker (legacy product path)
+	native              bool // native qwen3-tts-worker protocol (product path)
 	workerScript        string
 	startupTimeout      time.Duration
 	sessionMu           sync.Mutex
 	session             *managedQwenSession
+	nativeSession       *nativeQwenSession
+	nativeSessionRef    atomic.Pointer[nativeQwenSession]
 }
 
-// NewQwen3TTS resolves the managed installation or validates the configured
-// external worker/model. Managed workers complete a capability handshake after
-// loading the model and stay alive across synthesis requests.
+// NewQwen3TTS resolves the native package, managed installation, or external CLI.
 func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 	if cfg == nil {
 		return nil, errors.New("qwen3-tts: nil config")
@@ -92,14 +109,29 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 
 	binary := strings.TrimSpace(cfg.QwenTTSBinary)
 	model := strings.TrimSpace(cfg.QwenTTSModel)
-	managed := managedqwen.UseManaged(binary, model)
+	modelsDir := config.ModelsDirFrom(cfg)
+	managed := false
+	native := false
 	workerScript := ""
-	if managed {
-		status := managedqwen.Inspect(config.ModelsDirFrom(cfg))
+
+	// Prefer explicit native worker binary.
+	if binary != "" && isNativeWorkerBinary(binary) {
+		if model == "" {
+			return nil, errors.New("qwen3-tts: qwen_tts_model is required for the native worker")
+		}
+		native = true
+	} else if install, ok := findNativeInstall(modelsDir, cfg.QwenTTSModelTier); ok && managedqwen.UseManaged(binary, model) {
+		// Product default: empty binary/model → use ensure-installed native package when present.
+		binary = install.Worker
+		model = install.ModelDir
+		native = true
+	} else if managedqwen.UseManaged(binary, model) {
+		status := managedqwen.Inspect(modelsDir)
 		if !status.Installed {
-			return nil, errors.New("qwen3-tts: managed preset voices are not installed; open Settings → TTS and select Qwen3-TTS to install")
+			return nil, errors.New("qwen3-tts: managed preset voices are not installed; open Settings → TTS and select Qwen3-TTS to install (or install native package under models/qwen3-tts)")
 		}
 		binary, model, workerScript = status.Python, status.Model, status.Worker
+		managed = true
 	} else {
 		if binary == "" {
 			binary = "qwen3-tts-cli"
@@ -107,16 +139,33 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 		if model == "" {
 			return nil, errors.New("qwen3-tts: qwen_tts_model is required for an external worker")
 		}
-	}
-	binaryPath, err := exec.LookPath(binary)
-	if err != nil {
-		return nil, fmt.Errorf("qwen3-tts: native worker %q not found: %w", binary, err)
-	}
-	if !filepath.IsAbs(binaryPath) {
-		binaryPath, err = filepath.Abs(binaryPath)
-		if err != nil {
-			return nil, fmt.Errorf("qwen3-tts: resolve native worker %q: %w", binary, err)
+		if isNativeWorkerBinary(binary) {
+			native = true
 		}
+	}
+
+	var binaryPath string
+	var err error
+	if filepath.IsAbs(binary) {
+		binaryPath = binary
+		if _, err := os.Stat(binaryPath); err != nil {
+			return nil, fmt.Errorf("qwen3-tts: native worker %q not found: %w", binary, err)
+		}
+	} else {
+		binaryPath, err = exec.LookPath(binary)
+		if err != nil {
+			return nil, fmt.Errorf("qwen3-tts: native worker %q not found: %w", binary, err)
+		}
+		if !filepath.IsAbs(binaryPath) {
+			binaryPath, err = filepath.Abs(binaryPath)
+			if err != nil {
+				return nil, fmt.Errorf("qwen3-tts: resolve native worker %q: %w", binary, err)
+			}
+		}
+	}
+	if isNativeWorkerBinary(binaryPath) {
+		native = true
+		managed = false
 	}
 	modelInfo, err := os.Stat(model)
 	if err != nil {
@@ -127,11 +176,14 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 	}
 
 	timeout := defaultQwenTTSTimeout
+	timeoutSet := false
 	if cfg.QwenTTSTimeout > 0 {
 		timeout = time.Duration(cfg.QwenTTSTimeout) * time.Second
+		timeoutSet = true
 	}
 
 	q := newQwen3TTS(binaryPath, model, timeout, exec.CommandContext)
+	q.timeoutSet = timeoutSet
 	q.mode = VoiceMode(strings.TrimSpace(cfg.QwenTTSMode))
 	q.voice = strings.TrimSpace(cfg.QwenTTSVoice)
 	q.language = strings.TrimSpace(cfg.QwenTTSLanguage)
@@ -140,8 +192,9 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 	q.referenceTranscript = cfg.QwenTTSReferenceText
 	q.consent = cfg.QwenTTSConsent
 	q.managed = managed
+	q.native = native
 	q.workerScript = workerScript
-	if managed {
+	if managed || native {
 		if q.mode == "" || q.mode == VoiceModeStatic {
 			q.mode = VoiceModeCustomVoice
 		}
@@ -157,14 +210,22 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 		}
 	}
 	q.alive.Store(true)
-	if managed {
-		startupTimeout := max(timeout, 10*time.Minute)
+	startupTimeout := max(timeout, 10*time.Minute)
+	q.startupTimeout = startupTimeout
+	if native {
+		session, err := startNativeQwenSession(context.Background(), binaryPath, model, startupTimeout)
+		if err != nil {
+			q.alive.Store(false)
+			return nil, fmt.Errorf("qwen3-tts: %w", err)
+		}
+		q.nativeSession = session
+		q.nativeSessionRef.Store(session)
+	} else if managed {
 		session, err := startManagedQwenSession(binaryPath, workerScript, model, startupTimeout)
 		if err != nil {
 			q.alive.Store(false)
 			return nil, fmt.Errorf("qwen3-tts: %w", err)
 		}
-		q.startupTimeout = startupTimeout
 		q.session = session
 	}
 	return q, nil
@@ -181,17 +242,38 @@ func newQwen3TTS(binary, model string, timeout time.Duration, command qwenComman
 }
 
 // FirstAudioGrace reports how long the pipeline's playback-stall watchdog
-// should wait for the first audible frame. Managed Qwen generates whole
-// utterances before emitting audio_chunk messages, and a cold worker restart
-// can take tens of seconds — far past the 8s default stall budget.
+// should wait for the first audible frame. Stage-A Qwen (native or managed)
+// generates whole utterances before PCM, so grace is driven by measured warm
+// TTFA p95 headroom, not the 8s pipeline default. An explicitly configured
+// qwen_tts_timeout raises the grace when larger than p95 (long-form audio).
 func (q *Qwen3TTS) FirstAudioGrace() time.Duration {
 	if q == nil {
-		return defaultQwenTTSTimeout
+		return managedWarmTTP95
 	}
-	if q.timeout > 0 {
+	p95 := managedWarmTTP95
+	if q.native {
+		// Warm turn + one unexpected restart (cold ready p95) for worst-case barge recovery.
+		p95 = nativeWarmTTP95 + nativeColdReadyP95
+	}
+	if q.timeoutSet && q.timeout > p95 {
 		return q.timeout
 	}
-	return defaultQwenTTSTimeout
+	return p95
+}
+
+// SoftCancel asks the warm worker to abandon the current request without
+// killing the process (stage A: between requests; stage B: mid-synth).
+func (q *Qwen3TTS) SoftCancel(_ string) error {
+	if q == nil || !q.alive.Load() {
+		return &ProviderError{Provider: qwen3TTSProviderName, Operation: "cancel", Kind: ProviderErrorUnavailable, Err: errors.New("provider is closed")}
+	}
+	if q.native {
+		if session := q.nativeSessionRef.Load(); session != nil {
+			return session.CancelActive()
+		}
+	}
+	// Managed Python worker has no soft-cancel control message yet.
+	return nil
 }
 
 // Synthesize streams synthesized PCM frames for the given text.
@@ -223,7 +305,7 @@ func (q *Qwen3TTS) SynthesizeRequest(ctx context.Context, req SynthesisRequest) 
 	if strings.TrimSpace(req.Text) == "" {
 		return SynthesisResult{}, &ProviderError{Provider: qwen3TTSProviderName, Operation: "synthesize", Kind: ProviderErrorInput, Err: errors.New("text is empty")}
 	}
-	if q.managed {
+	if q.managed || q.native {
 		if req.Mode == "" || req.Mode == VoiceModeStatic {
 			req.Mode = VoiceModeCustomVoice
 		}
@@ -240,11 +322,14 @@ func (q *Qwen3TTS) SynthesizeRequest(ctx context.Context, req SynthesisRequest) 
 			req.Language = language
 		}
 		if req.Speed != 0 {
-			return SynthesisResult{}, qwenUnsupported("speech speed", "the managed CustomVoice worker does not expose speed control")
+			return SynthesisResult{}, qwenUnsupported("speech speed", "the Qwen CustomVoice worker does not expose speed control")
 		}
-		if strings.TrimSpace(req.ReferenceAudio) != "" || strings.TrimSpace(req.ReferenceTranscript) != "" {
-			return SynthesisResult{}, qwenUnsupported("reference voice", "installable approved-clone support has not landed yet")
+		if q.managed {
+			if strings.TrimSpace(req.ReferenceAudio) != "" || strings.TrimSpace(req.ReferenceTranscript) != "" {
+				return SynthesisResult{}, qwenUnsupported("reference voice", "installable approved-clone support has not landed yet")
+			}
 		}
+		// Native stage A supports preset + optional ref_wav; transcript not required by worker.
 		if err := ValidateRequest(q.Capabilities(), req); err != nil {
 			return SynthesisResult{}, err
 		}
@@ -271,8 +356,15 @@ func (q *Qwen3TTS) SynthesizeRequest(ctx context.Context, req SynthesisRequest) 
 			return SynthesisResult{}, qwenUnsupported("reference voice", "reference-audio cloning is not exposed by the external native CLI")
 		}
 	}
-	if err := validateQwenReference(req); err != nil {
-		return SynthesisResult{}, err
+	if !q.native {
+		if err := validateQwenReference(req); err != nil {
+			return SynthesisResult{}, err
+		}
+	} else if ref := strings.TrimSpace(req.ReferenceAudio); ref != "" {
+		// Native worker accepts ref_wav without transcript; still bound file existence.
+		if _, err := os.Stat(ref); err != nil {
+			return SynthesisResult{}, &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate reference", Kind: ProviderErrorInput, Err: fmt.Errorf("reference audio is unavailable")}
+		}
 	}
 	if req.Mode == VoiceModeApprovedClone && !q.consent {
 		return SynthesisResult{}, &ProviderError{Provider: qwen3TTSProviderName, Operation: "validate request", Kind: ProviderErrorInput, Err: errors.New("explicit consent is required for approved voice cloning")}
@@ -311,6 +403,14 @@ func qwenUnsupported(feature, detail string) error {
 func (q *Qwen3TTS) synthesize(ctx context.Context, req SynthesisRequest, stream *audio.PCMStream) {
 	runCtx, cancel := context.WithTimeout(ctx, q.timeout)
 	defer cancel()
+	if q.native {
+		if err := q.synthesizeNativeStream(runCtx, req, stream); err != nil {
+			stream.CloseWithError(managedWorkerError(err))
+			return
+		}
+		stream.Close()
+		return
+	}
 	if q.managed {
 		// Managed path streams float32 PCM over JSONL (no temp WAV required).
 		// Model generation is still whole-utterance; see worker.py comments.
@@ -371,6 +471,63 @@ func (q *Qwen3TTS) synthesize(ctx context.Context, req SynthesisRequest, stream 
 	}
 
 	q.streamWorkerWAV(ctx, outputPath, stream)
+}
+
+// synthesizeNativeStream serializes the product native worker and restarts once
+// on unexpected process/protocol failure (same policy as managed).
+func (q *Qwen3TTS) synthesizeNativeStream(ctx context.Context, req SynthesisRequest, stream *audio.PCMStream) error {
+	q.sessionMu.Lock()
+	defer q.sessionMu.Unlock()
+
+	if !q.alive.Load() {
+		return &ProviderError{Provider: qwen3TTSProviderName, Operation: "synthesize", Kind: ProviderErrorUnavailable, Err: errors.New("provider is closed")}
+	}
+	if err := q.ensureNativeSessionLocked(ctx); err != nil {
+		return err
+	}
+
+	err := q.nativeSession.SynthesizeToStream(ctx, req, stream)
+	if err == nil {
+		return nil
+	}
+	q.discardNativeSessionLocked()
+	if ctx.Err() != nil || !managedWorkerRestartable(err) {
+		return err
+	}
+	if restartErr := q.ensureNativeSessionLocked(ctx); restartErr != nil {
+		return fmt.Errorf("native worker failed (%v); restart failed: %w", err, restartErr)
+	}
+	if retryErr := q.nativeSession.SynthesizeToStream(ctx, req, stream); retryErr != nil {
+		q.discardNativeSessionLocked()
+		return fmt.Errorf("native worker failed after one restart: %w", retryErr)
+	}
+	return nil
+}
+
+func (q *Qwen3TTS) ensureNativeSessionLocked(ctx context.Context) error {
+	if q.nativeSession != nil {
+		return nil
+	}
+	timeout := q.startupTimeout
+	if timeout <= 0 {
+		timeout = max(q.timeout, 10*time.Minute)
+	}
+	session, err := startNativeQwenSession(ctx, q.binary, q.model, timeout)
+	if err != nil {
+		return fmt.Errorf("start native worker: %w", err)
+	}
+	q.nativeSession = session
+	q.nativeSessionRef.Store(session)
+	return nil
+}
+
+func (q *Qwen3TTS) discardNativeSessionLocked() {
+	if q.nativeSession == nil {
+		return
+	}
+	q.nativeSessionRef.Store(nil)
+	q.nativeSession.Close()
+	q.nativeSession = nil
 }
 
 // synthesizeManagedStream serializes access to the persistent model worker and
@@ -556,10 +713,10 @@ func workerOutputSuffix(stderr, stdout string) string {
 // Available returns true while this provider may start native workers.
 func (q *Qwen3TTS) Available() bool { return q.alive.Load() }
 
-// ListVoices reports speakers advertised by the managed model handshake. The
-// external compatibility contract has no verified voice discovery mechanism.
+// ListVoices reports speakers advertised by the managed/native handshake.
+// The external CLI contract has no verified voice discovery mechanism.
 func (q *Qwen3TTS) ListVoices(locale, gender string) []Voice {
-	if !q.managed {
+	if !q.managed && !q.native {
 		return nil
 	}
 	var voices []Voice
@@ -580,8 +737,8 @@ func (q *Qwen3TTS) ListVoices(locale, gender string) []Voice {
 	return voices
 }
 
-// Capabilities reports the managed worker/model handshake or the baseline
-// guarantees of the external compatibility adapter.
+// Capabilities reports the managed/native worker handshake or the baseline
+// guarantees of the external CLI adapter.
 func (q *Qwen3TTS) Capabilities() ProviderCapabilities {
 	caps := ProviderCapabilities{
 		Provider:               qwen3TTSProviderName,
@@ -589,19 +746,30 @@ func (q *Qwen3TTS) Capabilities() ProviderCapabilities {
 		ModelReady:             q.model != "" && q.Available(),
 		SampleRates:            []int{qwen3TTSSampleRate},
 		SupportsCancellation:   true,
-		SupportsReferenceAudio: false,
+		SupportsReferenceAudio: q.native, // native stage A accepts ref_wav
 		SupportsSpeed:          false,
 	}
-	if !q.managed {
+	if !q.managed && !q.native {
 		return caps
 	}
 	q.sessionMu.Lock()
 	defer q.sessionMu.Unlock()
 	registry := managedqwen.CustomVoices()
 	voiceNames := make([]string, 0, len(registry))
-	if q.session != nil && len(q.session.voices) > 0 {
+	switch {
+	case q.native && q.nativeSession != nil && len(q.nativeSession.presets) > 0:
+		voiceNames = append(voiceNames, q.nativeSession.presets...)
+	case q.managed && q.session != nil && len(q.session.voices) > 0:
 		voiceNames = append(voiceNames, q.session.voices...)
-	} else {
+	case q.native:
+		if names := loadNativePresetsFromDisk(q.model); len(names) > 0 {
+			voiceNames = names
+		} else {
+			for _, voice := range registry {
+				voiceNames = append(voiceNames, voice.Name)
+			}
+		}
+	default:
 		for _, voice := range registry {
 			voiceNames = append(voiceNames, voice.Name)
 		}
@@ -615,18 +783,27 @@ func (q *Qwen3TTS) Capabilities() ProviderCapabilities {
 				break
 			}
 		}
+		friendly := voice.Description
+		if friendly == "" {
+			friendly = name
+		}
 		voices = append(voices, Voice{
-			Name: voice.Name, FriendlyName: voice.Description,
+			Name: voice.Name, FriendlyName: friendly,
 			Gender: "preset", Locale: voice.NativeLanguage,
 		})
 	}
 	caps.Modes = []VoiceModeCapability{{
 		ID: VoiceModeCustomVoice, Voices: voices, SupportsInstruction: false,
+		RequiresReferenceAudio: false,
 	}}
-	if q.session != nil && len(q.session.languages) > 0 {
+	if q.managed && q.session != nil && len(q.session.languages) > 0 {
 		caps.Languages = append([]string(nil), q.session.languages...)
 	} else {
 		caps.Languages = managedqwen.SupportedLanguages()
+	}
+	// Stage A: streaming=false at protocol layer; PCM still arrives as one chunk post-synth.
+	if q.native && q.nativeSession != nil {
+		caps.SupportsStreaming = q.nativeSession.streaming
 	}
 	caps.SupportsPreview = true
 	return caps
@@ -634,12 +811,21 @@ func (q *Qwen3TTS) Capabilities() ProviderCapabilities {
 
 func (q *Qwen3TTS) Status() ProviderStatus {
 	available := q.Available()
-	detail := "external native worker and model configured"
-	if q.managed {
+	detail := "external native CLI and model configured"
+	if q.native {
+		detail = "native qwen3-tts-worker warm session ready"
+	} else if q.managed {
 		detail = "managed CustomVoice runtime and preset speakers ready"
 	}
 	if !available {
 		detail = "provider is closed"
+	} else if q.native {
+		q.sessionMu.Lock()
+		workerReady := q.nativeSession != nil
+		q.sessionMu.Unlock()
+		if !workerReady {
+			detail = "native worker stopped; it will restart on the next request"
+		}
 	} else if q.managed {
 		q.sessionMu.Lock()
 		workerReady := q.session != nil
@@ -658,4 +844,5 @@ func (q *Qwen3TTS) Delete() {
 	q.sessionMu.Lock()
 	defer q.sessionMu.Unlock()
 	q.discardManagedSessionLocked()
+	q.discardNativeSessionLocked()
 }
