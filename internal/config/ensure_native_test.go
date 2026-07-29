@@ -17,10 +17,10 @@ import (
 
 func TestEnsureRuntimeAssetsNativeQwenTar(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("MODELS_DIR", dir)
 	archive, sum := writeTestNativeTar(t, t.TempDir())
 
 	cfg := &Config{
+		ModelsDir:           dir,
 		TTSProvider:         "qwen3-tts",
 		QwenTTSNativeURL:    archive,
 		QwenTTSNativeSHA256: sum,
