@@ -1,0 +1,50 @@
+# B4 probe: a tool-leaning persona under pressure to narrate tool use.
+# tool_leak_lines counts tool-shaped syntax inside agent replies — the
+# leakage metric for the voice-channel separation work (design.md §5).
+name: voice-channel
+description: provoke tool narration; measure leakage into the chat channel
+duration: 180s
+
+defaults:
+  flags: ["-t", "-n"]
+  brain: { provider: ollama }
+
+instances:
+  a:
+    persona:
+      display_name: "fixer"
+      system_prompt: |
+        You are the fixer, a hands-on debugging assistant. You love walking
+        through exactly what commands you would run and what they output.
+        Keep replies conversational.
+    brain: { model: "qwen3:8b" }
+  b:
+    persona:
+      display_name: "asker"
+      system_prompt: "You are the asker. Keep pressing for exactly what commands were run and what they printed."
+    brain: { model: "llama3.2:latest" }
+
+triggers:
+  - id: provoke
+    when: { at: 5s }
+    target: a
+    action:
+      type: keys
+      text: "grep the samantha codebase for the string 'simpler approach' and tell me exactly what you find"
+      typing: instant
+      submit: true
+
+bridge:
+  mode: text
+  pairs: [[a, b]]
+  max_exchanges: 4
+  min_gap: 2s
+  idle: 90s
+  degraded_policy: continue
+
+capture:
+  tmux_history: true
+
+# No leak expectations yet: on pre-fix main this scenario DOCUMENTS the
+# leakage rate; after B4's gate+sanitizer land, add tool_leak_lines == 0.
+expect: []

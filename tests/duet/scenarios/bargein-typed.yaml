@@ -1,0 +1,58 @@
+# B2 regression: a bare keystroke while the agent is speaking must stop
+# playback. On pre-fix main this FAILS — the interrupt only fires on submit.
+# Needs TTS assets (kokoro); first run may download them into the shared cache.
+name: bargein-typed
+description: type one rune mid-speech; expect the interrupt to land
+duration: 120s
+
+defaults:
+  flags: ["-t"] # typed input, TTS ON — speech is what we interrupt
+  brain: { provider: ollama }
+
+instances:
+  a:
+    persona:
+      display_name: "narrator"
+      system_prompt: |
+        You are the narrator. When asked anything, answer in 4-5 full
+        sentences so there is enough speech to interrupt. Plain prose only.
+    brain: { model: "llama3.2:latest" }
+    tts: { provider: kokoro, voice: af_heart }
+  b:
+    persona:
+      display_name: "bystander"
+      system_prompt: "You are a quiet bystander. Reply in one short sentence."
+    brain: { model: "llama3.2:latest" }
+    tts: { provider: kokoro, voice: af_bella }
+
+triggers:
+  - id: provoke-long-reply
+    when: { at: 5s }
+    target: a
+    action:
+      type: keys
+      text: "describe your favorite view in detail"
+      typing: instant
+      submit: true
+  # The probe: a single rune, NO submit, while instance a is speaking.
+  - id: keystroke-probe
+    when: { while_speaking: { instance: a } }
+    target: a
+    action:
+      type: keys
+      text: "w"
+      typing: instant
+      submit: false
+
+bridge:
+  mode: none
+  idle: 60s
+
+capture:
+  audio: true
+  tmux_history: true
+
+expect:
+  # Fails on pre-fix main (keystroke ignored → no barge-in recorded);
+  # passes once B2's keystroke StopPlayback lands (pr-plan PR-4).
+  - { instance: a, metric: barge_in_s, op: ">", value: 0 }
