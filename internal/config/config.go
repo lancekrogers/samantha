@@ -30,7 +30,13 @@ type Config struct {
 	QwenTTSReferenceAudio string  `mapstructure:"qwen_tts_reference_audio"`
 	QwenTTSReferenceText  string  `mapstructure:"qwen_tts_reference_text"`
 	QwenTTSConsent        bool    `mapstructure:"qwen_tts_consent"`
-	OutputDevice          string  `mapstructure:"output_device"`
+	// QwenTTSModelTier selects 0.6b (default) or 1.7b when the native package includes it.
+	QwenTTSModelTier string `mapstructure:"qwen_tts_model_tier"`
+	// QwenTTSNativeURL is the release tarball (https://… or file://…/…tar.gz) for models ensure.
+	QwenTTSNativeURL string `mapstructure:"qwen_tts_native_url"`
+	// QwenTTSNativeSHA256 is the optional sha256 of that compressed tarball.
+	QwenTTSNativeSHA256 string `mapstructure:"qwen_tts_native_sha256"`
+	OutputDevice        string `mapstructure:"output_device"`
 
 	// STT
 	STTProvider          string `mapstructure:"stt_provider"`
@@ -258,6 +264,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("qwen_tts_reference_audio", "")
 	v.SetDefault("qwen_tts_reference_text", "")
 	v.SetDefault("qwen_tts_consent", false)
+	v.SetDefault("qwen_tts_model_tier", "0.6b")
+	v.SetDefault("qwen_tts_native_url", "")
+	v.SetDefault("qwen_tts_native_sha256", "")
 	v.SetDefault("output_device", "")
 
 	v.SetDefault("stt_provider", "sherpa")
@@ -399,6 +408,9 @@ func loadLocked() (*Config, error) {
 		"qwen_tts_reference_audio":   "QWEN_TTS_REFERENCE_AUDIO",
 		"qwen_tts_reference_text":    "QWEN_TTS_REFERENCE_TEXT",
 		"qwen_tts_consent":           "QWEN_TTS_CONSENT",
+		"qwen_tts_model_tier":        "QWEN_TTS_MODEL_TIER",
+		"qwen_tts_native_url":        "QWEN_TTS_NATIVE_URL",
+		"qwen_tts_native_sha256":     "QWEN_TTS_NATIVE_SHA256",
 		"output_device":              "OUTPUT_DEVICE",
 		"stt_provider":               "STT_PROVIDER",
 		"input_device":               "INPUT_DEVICE",
