@@ -236,6 +236,14 @@ func (c *turnConductor) finish(terminal TurnState) {
 	c.p.emit(m)
 }
 
+// logDegradedTurn writes the underlying error to stderr with a timestamp and
+// stage. Under the TUI fd 2 is redirected to native-diagnostics.log, so this
+// is the durable record for degraded turns (bus Error flashes and can vanish).
+func logDegradedTurn(stage string, err error) {
+	fmt.Fprintf(os.Stderr, "%s samantha: degraded turn stage=%s: %v\n",
+		time.Now().UTC().Format(time.RFC3339), stage, err)
+}
+
 // recoverTurn closes out a turn that died on a hard brain/tool failure with a
 // user-visible (and spoken, when possible) recovery reply instead of silence.
 // The error becomes activity detail, the transcript keeps any partial reply
@@ -252,10 +260,7 @@ func (p *Pipeline) recoverTurn(ctx context.Context, turn *turnConductor, metrics
 		speak = false
 	}
 	p.emit(events.Error{Stage: stage, Message: err.Error()})
-	// The bus is display plumbing; under the TUI fd 2 is redirected to
-	// native-diagnostics.log, making this the failure's durable record.
-	fmt.Fprintf(os.Stderr, "%s samantha: degraded turn stage=%s: %v\n",
-		time.Now().UTC().Format(time.RFC3339), stage, err)
+	logDegradedTurn(stage, err)
 
 	response := brain.RecoveryReply
 	if partial = strings.TrimSpace(partial); partial != "" {
@@ -728,6 +733,7 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 					// while the failure lands in the activity feed.
 					metrics.degraded = true
 					p.emit(events.Error{Stage: "brain", Message: result.Err.Error()})
+					logDegradedTurn("brain", result.Err)
 					continue
 				}
 				if p.Player != nil {
@@ -1080,6 +1086,7 @@ func (p *Pipeline) collectTextStream(ctx context.Context, stream *brain.Stream, 
 				// reply; keep it and surface the failure as activity detail.
 				metrics.degraded = true
 				p.emit(events.Error{Stage: "brain", Message: res.Err.Error()})
+				logDegradedTurn("brain", res.Err)
 				break
 			}
 			// Return any partial text so the caller's recovery path can keep

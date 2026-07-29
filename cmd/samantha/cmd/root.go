@@ -204,6 +204,7 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 			sess, err = session.Load(sessionID)
 			if err != nil {
 				cleanup()
+				closeTap()
 				return nil, fmt.Errorf("load session: %w", err)
 			}
 		}
