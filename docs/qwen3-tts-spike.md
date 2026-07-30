@@ -1,106 +1,102 @@
-# Qwen3-TTS managed provider
+# Qwen3-TTS product path (native-only)
 
-Samantha supports Qwen3-TTS as an optional local provider while keeping Kokoro
-as the default and fallback. The normal product path is fully managed: select
-Qwen3-TTS in TUI Settings and Samantha installs the runtime and recommended
-CustomVoice model below `models_dir/qwen3-tts`.
+Samantha supports Qwen3-TTS as an optional local TTS provider while keeping
+Kokoro as the default and fallback. **Product inference is native-only**: a
+`qwen3-tts-worker` binary plus GGUF models under `models_dir/qwen3-tts`. There
+is no managed Python / uv / torch runtime on the product path after cutover
+(festival SN0001 phase 008).
 
-## Managed setup
+## Native package setup
 
-Settings installs pinned components:
+Settings → TTS → Qwen3-TTS (or CLI below) installs a release tarball when
+`qwen_tts_native_url` (or `SAMANTHA_QWEN_NATIVE_URL`) is set:
 
-- uv `0.11.30`, isolated below the Samantha model directory;
-- uv-managed Python `3.12`;
-- official `qwen-tts==0.1.1`;
-- `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` at revision
-  `85e237c12c027371202489a0ec509ded67b5e4b5`;
-- Samantha's versioned worker adapter.
+- layout under `models_dir/qwen3-tts/` (`bin/qwen3-tts-worker`, `models/*.gguf`, presets);
+- multi-tier packages may include 0.6B and 1.7B; product default tier is `0.6b`;
+- optional `qwen_tts_native_sha256` / `SAMANTHA_QWEN_NATIVE_SHA256` for verify.
 
-uv is installed with its official versioned installer in unmanaged mode, so it
-does not modify shell profiles. uv's Python, package cache, worker, model, and
-installation marker all remain under Samantha's configured model directory.
-The Hugging Face snapshot is public and revision-pinned.
+Build and package the worker in the lab repo `qwen3-tts-native` (Metal / CUDA /
+CPU). Samantha only downloads, inspects, and runs the installed package.
 
-The equivalent CLI setup, after configuring `tts_provider: qwen3-tts`, is:
+Equivalent CLI after `tts_provider: qwen3-tts`:
 
 ```text
+# configure qwen_tts_native_url to a release tarball for your OS/arch
 samantha models ensure --tts
 samantha models status --tts
 samantha doctor
 samantha voices
 ```
 
-No system Python or manually installed Qwen executable is required.
+No system Python or `qwen-tts` PyPI package is required for synthesis.
+
+### Legacy Python trees
+
+Older Samantha installs may still have a uv/Python tree under
+`models_dir/qwen3-tts` (`worker/qwen_worker.py`, `runtime/`, `bin/uv`). That
+tree is **not** used for inference. `doctor` reports it as an error with
+remediation; product ensure installs the native package instead. To remove the
+old tree after native is installed, quarantine via the helpers in
+`internal/qwen` (`DetectLegacyPython` / `QuarantineLegacyPython`) or delete
+the quarantine path manually.
 
 ## Preset voices
 
-The managed CustomVoice model exposes its nine model-native speakers:
+CustomVoice-class presets (nine model-native speakers) ship with the native
+package:
 
 ```text
 Vivian  Serena  Uncle_Fu  Dylan  Eric  Ryan  Aiden  Ono_Anna  Sohee
 ```
 
-Settings → Voice lists only voices belonging to the active provider, and
-Settings → Language exposes the model's supported language list. Preview
-and normal synthesis send the selected Qwen speaker and language to the
-official `generate_custom_voice` API. The pinned 0.6B tier does not advertise
-instruction control. Batch rendering
-also records the model revision, worker version, mode, language, and speaker in
-its synthesis identity and manifest.
+Settings → Voice lists presets when the native package is installed.
+Settings → Language exposes the supported language list. Preview and normal
+synthesis send the selected speaker and language to the native worker JSONL
+protocol. Progressive sentence TTS is handled in the Go pipeline (chunk →
+synth queue); stage-A engine generation remains whole-utterance per sentence.
+
+Batch rendering records native model identity (tier + worker), mode, language,
+and speaker in its synthesis identity and manifest.
 
 ## Worker lifecycle
 
-Samantha starts one isolated Python worker and loads the selected model once.
-The worker and Go provider communicate over a versioned JSON-lines protocol.
-Each request writes a validated WAV into a Samantha-owned temporary directory;
-Go validates its sample rate, duration, and content before streaming PCM into
-the existing playback pipeline.
+Samantha starts one native `qwen3-tts-worker` process and keeps it warm.
+Go and the worker speak a versioned JSONL control channel with float32 PCM
+frames. Soft-cancel is supported on the native path for barge-in / progressive
+pipeline interruption.
 
-Context cancellation and timeouts terminate a wedged worker process group but
-leave the provider usable; the next request starts a fresh worker. An
-unexpected crash receives one supervised restart and one retry before the
-configured one-sentence Kokoro fallback is considered. Local conversation and
-remote serving use the same fallback construction. Preview, speaker tests, and
-batch narration remain fail-closed so Samantha cannot disguise a broken Qwen
-speaker or produce a mixed-voice audiobook. Worker stdout is reserved for
-protocol messages and stderr is bounded before it is attached to provider
-errors.
+Context cancellation and timeouts terminate a wedged process group but leave
+the provider usable; the next request starts a fresh worker. Unexpected
+protocol failure receives one supervised restart and one retry before the
+configured Kokoro one-sentence fallback (conversation / remote). Preview,
+speaker tests, and batch narration remain fail-closed.
 
-Run `just qwen-live` after installing the managed model to write real Vivian,
-Ryan, and cancellation-recovery WAVs under the Samantha cache for listening.
-The embedded worker redirects third-party import diagnostics away from its
-JSONL stdout channel, while the Go reader defensively skips non-protocol lines.
-This is required because the pinned Python stack can print optional SoX,
-joblib, or accelerator notices during model import.
+## Configuration
 
-The 2026-07-21 macOS run passed with distinct Vivian/Ryan output and successful
-post-cancellation recovery. The preset CustomVoice path did not require a
-system SoX installation.
-
-## External-worker compatibility
-
-Advanced users may set both fields below to keep using the earlier
-qwen3-tts.cpp-compatible contract:
+Product default (empty binary and model → managed selection → native package):
 
 ```yaml
 tts_provider: qwen3-tts
-qwen_tts_binary: qwen3-tts-cli
-qwen_tts_model: /path/to/native/model
+# leave qwen_tts_binary and qwen_tts_model empty
+qwen_tts_model_tier: 0.6b   # or 1.7b when present in the package
+qwen_tts_voice: Vivian
+qwen_tts_language: Auto
+qwen_tts_native_url: https://example.invalid/qwen3-tts-native-….tar.gz
 ```
 
-That adapter invokes:
+### Explicit external worker (lab / advanced)
 
-```text
-qwen3-tts-cli -m <model-directory> -t <text> -o <temporary-wav>
+```yaml
+tts_provider: qwen3-tts
+qwen_tts_binary: /path/to/qwen3-tts-worker
+qwen_tts_model: /path/to/native/model-dir
 ```
 
-Because that contract exposes no verified speaker or language flags, it remains
-limited to the external model's default voice. Named CustomVoice speakers are a
-feature of Samantha's managed official worker.
+One-shot `qwen3-tts-cli` remains available for debug; it is not the product
+warm path.
 
-## Current mode boundary
+## Lab repository
 
-This release installs and exposes CustomVoice preset speakers. The provider
-contract already carries VoiceDesign and approved-clone fields, but those modes
-remain unavailable until their separate model installers and consent-aware TUI
-flows land. Reference-audio validation and consent gates remain in place.
+Engine packaging, platform smoke, and CUDA validation live in
+`qwen3-tts-native` (standalone lab; not a Go library for Samantha). See that
+repo’s `docs/PLATFORMS.md` and `docs/DISTRIBUTION.md`.

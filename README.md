@@ -11,7 +11,7 @@ It captures speech, transcribes it locally, streams the prompt through an AI cod
 - Local speech-to-text with sherpa-onnx Whisper by default.
 - Optional streaming STT through sherpa-onnx Zipformer and utterance-final STT through whisper.cpp.
 - Local text-to-speech with Kokoro through sherpa-onnx.
-- Optional managed Qwen3-TTS with installable CustomVoice presets (Kokoro remains the default).
+- Optional native Qwen3-TTS (`qwen3-tts-worker` + GGUF package) with CustomVoice-class presets (Kokoro remains the default).
 - Claude CLI and Ollama brain providers.
 - Voice activity detection with Silero.
 - Streaming playback, barge-in handling, and session resume.
@@ -37,8 +37,9 @@ Implemented providers:
 | Audio | miniaudio through malgo |
 
 Runtime model files are downloaded on first use and stored under `models_dir`.
-Qwen's isolated runtime and preset-voice model can also be installed directly
-from TUI Settings; users do not need to install Python or a Qwen CLI.
+The optional native Qwen3-TTS package (`qwen3-tts-worker` + GGUF) installs under
+`models_dir/qwen3-tts` from TUI Settings or `models ensure --tts` when
+`qwen_tts_native_url` is set — no product Python/uv runtime.
 
 ## Requirements
 
@@ -234,12 +235,12 @@ INSERT to NORMAL.
 Microphone and speaker devices can be selected from the **Input** and
 **Output** sections in TUI Settings. The **TTS** section selects the active
 text-to-speech provider and shows its configured model context. Kokoro exposes
-the static voice picker. Selecting an uninstalled **Qwen3-TTS** row installs a
-Samantha-owned Python runtime, the pinned official `qwen-tts` package, and the
-recommended CustomVoice 0.6B model. After setup, the **Voice** section lists
-Qwen's nine model-native preset speakers; press `p` to preview and `Enter` to
-select one. The **Language** section selects Qwen's synthesis language (use
-**Auto** unless a book or conversation needs an explicit language). Returning
+the static voice picker. Selecting an uninstalled **Qwen3-TTS** row installs the
+native multi-tier package when `qwen_tts_native_url` is configured (worker binary
++ GGUF models under `models_dir/qwen3-tts`). After setup, the **Voice** section
+lists Qwen's nine CustomVoice-class preset speakers; press `p` to preview and
+`Enter` to select one. The **Language** section selects Qwen's synthesis language
+(use **Auto** unless a book or conversation needs an explicit language). Returning
 from Settings replaces the provider used by subsequent utterances in an
 already-running conversation; no Samantha restart is required. The launcher
 and conversation header show the active TTS provider/model/mode/voice badge.
@@ -248,10 +249,9 @@ An empty device config value follows the current operating-system default.
 The first Qwen installation is a large download. It is isolated below
 `models_dir/qwen3-tts`, can be inspected with `samantha models status --tts`,
 and can also be installed non-interactively after selecting Qwen with
-`samantha models ensure --tts`. Samantha keeps the model loaded in one managed
-worker for the lifetime of the provider. Advanced users can still set both
-`qwen_tts_binary` and `qwen_tts_model` to use the older external CLI contract;
-that compatibility path supports only its model-native default voice.
+`samantha models ensure --tts`. Samantha keeps the model loaded in one native
+warm worker for the lifetime of the provider. Advanced users can set both
+`qwen_tts_binary` and `qwen_tts_model` to point at an explicit worker/model dir.
 
 ### Personas (voice agents)
 
@@ -547,12 +547,14 @@ Prompt bodies stay in `prompts/` (see `samantha prompts`).
 | `voice_fallback_provider` | `kokoro` | `VOICE_FALLBACK_PROVIDER` | One-sentence runtime fallback after the selected provider fails; set empty/disabled to turn it off |
 | `tts_voice` | `af_heart` | `TTS_VOICE` | Kokoro voice name |
 | `speech_speed` | `0.95` | | Playback speed |
-| `qwen_tts_binary` | empty | `QWEN_TTS_BINARY` | Empty uses Samantha's managed worker; set with `qwen_tts_model` for an advanced external CLI override |
-| `qwen_tts_model` | empty | `QWEN_TTS_MODEL` | Empty uses the managed pinned CustomVoice model; otherwise an external worker model directory |
-| `qwen_tts_timeout` | `120` | `QWEN_TTS_TIMEOUT` | Per-request managed/external worker timeout in seconds |
-| `qwen_tts_mode` | empty | `QWEN_TTS_MODE` | Managed setup resolves empty to `customvoice` |
-| `qwen_tts_voice` | empty | `QWEN_TTS_VOICE` | Managed CustomVoice speaker; setup resolves empty to `Vivian` |
-| `qwen_tts_language` | empty | `QWEN_TTS_LANGUAGE` | Managed synthesis language; setup resolves empty to `Auto` |
+| `qwen_tts_binary` | empty | `QWEN_TTS_BINARY` | Empty uses the native package worker under `models_dir/qwen3-tts`; set with `qwen_tts_model` for an explicit external worker |
+| `qwen_tts_model` | empty | `QWEN_TTS_MODEL` | Empty uses the native package model dir; otherwise an external worker model directory |
+| `qwen_tts_model_tier` | `0.6b` | `QWEN_TTS_MODEL_TIER` | Preferred native tier (`0.6b` or `1.7b` when present) |
+| `qwen_tts_native_url` | empty | `SAMANTHA_QWEN_NATIVE_URL` | Release tarball URL for `models ensure --tts` native install |
+| `qwen_tts_timeout` | `120` | `QWEN_TTS_TIMEOUT` | Per-request native/external worker timeout in seconds |
+| `qwen_tts_mode` | empty | `QWEN_TTS_MODE` | Product setup resolves empty to `customvoice` |
+| `qwen_tts_voice` | empty | `QWEN_TTS_VOICE` | CustomVoice-class speaker; setup resolves empty to `Vivian` |
+| `qwen_tts_language` | empty | `QWEN_TTS_LANGUAGE` | Synthesis language; setup resolves empty to `Auto` |
 | `qwen_tts_instruction` | empty | `QWEN_TTS_INSTRUCTION` | Reserved for an installable instruction-capable Qwen model tier |
 | `qwen_tts_reference_audio` | empty | `QWEN_TTS_REFERENCE_AUDIO` | Authorized local reference WAV for an approved clone workflow |
 | `qwen_tts_reference_text` | empty | `QWEN_TTS_REFERENCE_TEXT` | Transcript required by the approved clone workflow |
@@ -713,7 +715,7 @@ go test ./internal/stt ./internal/endpoint ./internal/audio
 
 # Real-provider smoke (needs models + whisper.cpp binary for that provider):
 go test -tags integration ./tests/voiceflow      # fixture-driven pipeline flow
-just qwen-live                                   # real managed voices + cancel/restart WAVs
+just qwen-live                                   # real native Qwen voices + cancel/restart WAVs
 samantha listen                                  # manual: speak a short command
 ```
 

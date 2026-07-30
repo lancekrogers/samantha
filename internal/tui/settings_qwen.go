@@ -261,10 +261,8 @@ func qwenUsesPresets(cfg *config.Config, native managedqwen.NativeStatus, manage
 	if !managedqwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
 		return false
 	}
-	if native.Installed {
-		return true
-	}
-	return managed.Installed
+	// Presets only when native package is installed (no legacy Python product path).
+	return native.Installed
 }
 
 func qwenPresetVoices(cfg *config.Config, native managedqwen.NativeStatus) []tts.Voice {

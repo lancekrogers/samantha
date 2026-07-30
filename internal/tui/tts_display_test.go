@@ -34,13 +34,13 @@ func TestTTSDisplayIdentifiesQwenModelAndBinary(t *testing.T) {
 		t.Fatalf("Qwen provider detail = %q, want model and binary", detail)
 	}
 
-	// Empty models dir: no native package → managed CustomVoice label.
+	// Empty models dir: no native package → not-installed native label.
 	kokoroCfg := &config.Config{TTSProvider: "kokoro", ModelsDir: t.TempDir()}
-	if got := ttsModelLabelForProvider("qwen3-tts", kokoroCfg); got != "managed CustomVoice 0.6B" {
-		t.Fatalf("unselected Qwen model label = %q, want managed model option", got)
+	if got := ttsModelLabelForProvider("qwen3-tts", kokoroCfg); got != "native package (not installed)" {
+		t.Fatalf("unselected Qwen model label = %q, want not-installed native package", got)
 	}
-	if detail := ttsProviderDetail(tts.ProviderSpec{Name: "qwen3-tts"}, kokoroCfg); !strings.Contains(detail, "managed CustomVoice 0.6B") || !strings.Contains(detail, "managed worker") {
-		t.Fatalf("unselected Qwen provider detail = %q, want managed setup copy", detail)
+	if detail := ttsProviderDetail(tts.ProviderSpec{Name: "qwen3-tts"}, kokoroCfg); !strings.Contains(detail, "native package (not installed)") || !strings.Contains(detail, "native worker (not installed)") {
+		t.Fatalf("unselected Qwen provider detail = %q, want native package copy", detail)
 	}
 }
 
@@ -58,7 +58,7 @@ func TestTTSDisplayExplainsUnverifiedQwenVoiceModes(t *testing.T) {
 }
 
 func TestTTSDisplayManagedQwenUncleFuVoice(t *testing.T) {
-	// Managed install (empty binary/model) with a persona voice like Uncle_Fu.
+	// Product selection (empty binary/model) with a persona voice like Uncle_Fu.
 	// Isolate ModelsDir so a local native package does not flip the label.
 	cfg := &config.Config{
 		TTSProvider:  "qwen3-tts",
@@ -66,7 +66,7 @@ func TestTTSDisplayManagedQwenUncleFuVoice(t *testing.T) {
 		ModelsDir:    t.TempDir(),
 	}
 	got := ttsBadgeLabel(cfg)
-	want := "tts qwen3-tts · managed CustomVoice 0.6B · mode customvoice · voice Uncle_Fu"
+	want := "tts qwen3-tts · native package (not installed) · mode customvoice · voice Uncle_Fu"
 	if got != want {
 		t.Fatalf("ttsBadgeLabel() = %q, want %q", got, want)
 	}

@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Native product install lives under models_dir/qwen3-tts/ (release tarball layout).
@@ -26,6 +27,8 @@ const (
 	NativeRootName      = "qwen3-tts"
 	DefaultModelTier    = "0.6b"
 	Tier1_7B            = "1.7b"
+	// installerTimeout bounds download + extract for EnsureNative.
+	installerTimeout = 30 * time.Minute
 )
 
 // NativePaths is the ensure install tree (see lab docs/DISTRIBUTION.md).
@@ -913,16 +916,10 @@ func ResolveNativeSHA256(configured string) string {
 	return strings.TrimSpace(os.Getenv("SAMANTHA_QWEN_NATIVE_SHA256"))
 }
 
-// PreferNative reports whether product path should use native package when
-// binary/model are empty (managed selection). Always true once native is the
-// intended product; still allows explicit external CLI/worker paths.
+// PreferNative is always true after cutover (native-only product path).
+// Kept for callers/tests; SAMANTHA_QWEN_PREFER_NATIVE no longer disables native.
 func PreferNative() bool {
-	// Feature flag for gradual rollout; default on so ensure installs native first.
-	v := strings.TrimSpace(os.Getenv("SAMANTHA_QWEN_PREFER_NATIVE"))
-	if v == "" {
-		return true
-	}
-	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+	return true
 }
 
 // NativeInstalled is a shorthand for InspectNative(...).Installed with default tier.

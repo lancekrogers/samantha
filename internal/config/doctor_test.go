@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -271,6 +272,26 @@ func TestDiagnoseQwenManagedMissingPrefersNativeRemediation(t *testing.T) {
 	}
 	if strings.Contains(d.Detail, "only Python") {
 		t.Fatalf("detail should mention both paths: %q", d.Detail)
+	}
+}
+
+func TestDiagnoseQwenLegacyPythonTree(t *testing.T) {
+	modelsDir := t.TempDir()
+	p := qwen.ManagedPaths(modelsDir)
+	if err := os.MkdirAll(filepath.Dir(p.Worker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Worker, []byte("# legacy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{STTProvider: "sherpa", TTSProvider: "qwen3-tts"}
+	diags := diagByName(Diagnose(cfg, modelsDir, failLookPath))
+	leg := diags["qwen3-tts-legacy-python"]
+	if leg.Severity != SeverityError || !strings.Contains(leg.Detail, "legacy") {
+		t.Fatalf("legacy diag = %+v", leg)
+	}
+	if diags["qwen3-tts-binary"].Severity != SeverityError {
+		t.Fatalf("binary should still error without native: %+v", diags["qwen3-tts-binary"])
 	}
 }
 

@@ -11,7 +11,6 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
-	managedqwen "github.com/lancekrogers/samantha/internal/qwen"
 	"github.com/lancekrogers/samantha/internal/tts"
 )
 
@@ -320,8 +319,9 @@ func TestSettingsSelectTTSProviderWritesGlobalDefaultOnly(t *testing.T) {
 
 func TestSettingsInstallsQwenBeforeActivatingProvider(t *testing.T) {
 	// qwen3-tts-cli with no model was the old persisted default. It now follows
-	// the managed setup path so existing users are not stranded after upgrade.
-	cfg := &config.Config{TTSProvider: "kokoro", QwenTTSBinary: "qwen3-tts-cli", ModelsDir: t.TempDir()}
+	// the native package ensure path so existing users are not stranded after upgrade.
+	dir := t.TempDir()
+	cfg := &config.Config{TTSProvider: "kokoro", QwenTTSBinary: "qwen3-tts-cli", ModelsDir: dir}
 	m := newSettings(cfg, nil)
 	m.section = sectionTTS
 	m.cursor = 1
@@ -330,13 +330,14 @@ func TestSettingsInstallsQwenBeforeActivatingProvider(t *testing.T) {
 		saved[key] = value
 		return nil
 	}
-	m.ensureQwen = func(context.Context, string, managedqwen.ProgressFunc) (managedqwen.Status, error) {
-		return managedqwen.Status{Installed: true, RuntimeReady: true, ModelReady: true}, nil
+	m.ensureTTSAssets = func(context.Context, *config.Config) error {
+		writeNativeTUITestInstall(t, dir)
+		return nil
 	}
 
 	cmd := m.selectCurrent()
 	if cmd == nil || !m.qwenInstalling {
-		t.Fatal("selecting an uninstalled Qwen provider did not start managed setup")
+		t.Fatal("selecting an uninstalled Qwen provider did not start native setup")
 	}
 	if cfg.TTSProvider != "kokoro" || len(saved) != 0 {
 		t.Fatalf("provider changed before setup completed: cfg=%q saved=%v", cfg.TTSProvider, saved)
@@ -347,8 +348,11 @@ func TestSettingsInstallsQwenBeforeActivatingProvider(t *testing.T) {
 	if cfg.TTSProvider != "qwen3-tts" || saved["tts_provider"] != "qwen3-tts" {
 		t.Fatalf("successful setup did not activate Qwen: cfg=%q saved=%v", cfg.TTSProvider, saved)
 	}
-	if len(m.voiceItems) != 9 || m.voiceItems[0].Name != "Vivian" {
-		t.Fatalf("installed voices = %+v, want Qwen presets", m.voiceItems)
+	if !m.nativeStatus.Installed {
+		t.Fatalf("native status not marked installed after ensure: %+v", m.nativeStatus)
+	}
+	if len(m.voiceItems) == 0 {
+		t.Fatalf("installed voices empty, want Qwen presets")
 	}
 }
 

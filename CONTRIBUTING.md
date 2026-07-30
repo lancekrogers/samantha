@@ -20,6 +20,23 @@ Voice-mode development requires local microphone and speaker access. Integration
 - Include tests for behavior changes where practical.
 - Do not include local config, model files, binaries, credentials, or generated review notes.
 
+### Agent / PR reject list (Qwen TTS)
+
+**One-liner:** Product Qwen3-TTS is native-only (`qwen3-tts-worker` + GGUF under
+`models_dir/qwen3-tts`); never reintroduce managed Python/uv/torch at inference.
+
+Reject PRs that:
+
+- Embed or ensure a Python `worker.py` / `qwen_worker.py` for product TTS
+- Install or pin `uv`, torch, or `qwen-tts` for Samantha voice sessions
+- Treat a legacy uv tree under `models_dir/qwen3-tts` as a ready product runtime
+- Add a dual “Python until native URL is set” product fallback
+- Claim Base-only cutover (0.6B + 1.7B tiers remain in scope for packaging)
+
+Offline HF→GGUF conversion in the **lab** (`qwen3-tts-native`) may use Python;
+that must not enter the Samantha process tree during synthesis. See
+`docs/adr/0002-no-managed-python-tts-runtime.md` and `docs/qwen3-tts-spike.md`.
+
 ## Reporting Issues
 
 When filing a bug, include:
