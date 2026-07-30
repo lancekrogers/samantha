@@ -236,8 +236,8 @@ Microphone and speaker devices can be selected from the **Input** and
 **Output** sections in TUI Settings. The **TTS** section selects the active
 text-to-speech provider and shows its configured model context. Kokoro exposes
 the static voice picker. Selecting an uninstalled **Qwen3-TTS** row installs the
-native multi-tier package when `qwen_tts_native_url` is configured (worker binary
-+ GGUF models under `models_dir/qwen3-tts`). After setup, the **Voice** section
+native multi-tier package (worker binary + GGUF under `models_dir/qwen3-tts`;
+uses the published platform release by default). After setup, the **Voice** section
 lists Qwen's nine CustomVoice-class preset speakers; press `p` to preview and
 `Enter` to select one. The **Language** section selects Qwen's synthesis language
 (use **Auto** unless a book or conversation needs an explicit language). Returning
