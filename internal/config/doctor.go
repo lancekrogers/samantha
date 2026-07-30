@@ -126,6 +126,9 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 						Remediation: "install a multi-tier native release or keep qwen_tts_model_tier=0.6b",
 					})
 				}
+				if d := qwenTierRAMAdvice(native.DefaultTier, systemMemoryBytes()); d != nil {
+					diags = append(diags, *d)
+				}
 			} else {
 				// Product path is native-only. Legacy Python trees are never ready.
 				leg := qwen.DetectLegacyPython(modelsDir)

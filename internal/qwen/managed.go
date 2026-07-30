@@ -234,10 +234,9 @@ type LegacyPythonInstall struct {
 // DetectLegacyPython finds old managed Python installs under modelsDir/qwen3-tts.
 func DetectLegacyPython(modelsDir string) LegacyPythonInstall {
 	p := ManagedPaths(modelsDir)
-	workerPy := p.Worker
 	// Also detect historical path names.
 	candidates := []string{
-		workerPy,
+		p.Worker,
 		filepath.Join(p.Root, "worker", "worker.py"),
 		filepath.Join(p.Root, "worker.py"),
 	}
@@ -245,7 +244,6 @@ func DetectLegacyPython(modelsDir string) LegacyPythonInstall {
 	for _, c := range candidates {
 		if regularFile(c) {
 			hasWorker = true
-			workerPy = c
 			break
 		}
 	}

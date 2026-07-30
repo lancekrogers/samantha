@@ -275,6 +275,20 @@ func TestDiagnoseQwenManagedMissingPrefersNativeRemediation(t *testing.T) {
 	}
 }
 
+func TestQwenTierRAMAdvice(t *testing.T) {
+	ok := qwenTierRAMAdvice("0.6b", 16<<30)
+	if ok == nil || ok.Severity != SeverityOK {
+		t.Fatalf("%+v", ok)
+	}
+	warn := qwenTierRAMAdvice("0.6b", 4<<30)
+	if warn == nil || warn.Severity != SeverityWarn || !strings.Contains(warn.Remediation, "Kokoro") {
+		t.Fatalf("%+v", warn)
+	}
+	if qwenTierRAMAdvice("0.6b", 0) != nil {
+		t.Fatal("unknown RAM should skip")
+	}
+}
+
 func TestDiagnoseQwenLegacyPythonTree(t *testing.T) {
 	modelsDir := t.TempDir()
 	p := qwen.ManagedPaths(modelsDir)
