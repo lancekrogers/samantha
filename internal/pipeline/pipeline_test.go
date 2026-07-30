@@ -1082,3 +1082,37 @@ func TestStopPlaybackStampsBargeInOnActiveTurn(t *testing.T) {
 	// No active turn registered: must not panic.
 	p.StopPlayback()
 }
+
+// recoverTurn must not append a second RecoveryReply when the ollama stream
+// layer already recovered out loud into the partial (WI-dc9e33 B1/F1.4).
+func TestRecoverTurnDoesNotDuplicateRecoveryReply(t *testing.T) {
+	bus := events.NewBus()
+	var got []string
+	events.Subscribe(bus, func(e events.ResponseReady) { got = append(got, e.Response) })
+
+	p := &Pipeline{Events: bus}
+	cases := []struct {
+		partial string
+		want    string
+	}{
+		{"", brain.RecoveryReply},
+		{"partial thought", "partial thought\n\n" + brain.RecoveryReply},
+		{"partial thought\n\n" + brain.RecoveryReply, "partial thought\n\n" + brain.RecoveryReply},
+	}
+	for _, tc := range cases {
+		metrics := newTurnMetrics()
+		turn := p.newTurnConductor(metrics)
+		p.recoverTurn(context.Background(), turn, metrics, tc.partial, errors.New("boom"))
+	}
+	if len(got) != len(cases) {
+		t.Fatalf("ResponseReady count = %d, want %d", len(got), len(cases))
+	}
+	for i, tc := range cases {
+		if got[i] != tc.want {
+			t.Fatalf("case %d: response = %q, want %q", i, got[i], tc.want)
+		}
+		if n := strings.Count(got[i], brain.RecoveryReply); n != 1 {
+			t.Fatalf("case %d: RecoveryReply appears %d times", i, n)
+		}
+	}
+}

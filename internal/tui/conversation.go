@@ -707,7 +707,11 @@ func (m *conversationModel) handleEvent(e events.Event) {
 	case events.GeneratingVoice:
 		m.appendActivity("voice", "synthesizing", 0)
 		m.setVoiceMode(anim.ModeSynthesizing)
-		m.setStatus("Synthesizing voice", false)
+		// A degraded turn synthesizes its recovery line right after the Error
+		// event; the error status outranks voice-progress chatter (F1.2).
+		if !m.statusErr {
+			m.setStatus("Synthesizing voice", false)
+		}
 
 	case events.VoiceGenerated:
 		m.appendActivity("voice", "generated", e.Elapsed)
@@ -715,12 +719,21 @@ func (m *conversationModel) handleEvent(e events.Event) {
 	case events.SpeakingStarted:
 		m.appendActivity("output", "playing", 0)
 		m.setVoiceMode(anim.ModeSpeaking)
-		m.setStatus("Speaking", false)
+		if !m.statusErr {
+			m.setStatus("Speaking", false)
+		}
 
 	case events.SpeakingComplete:
 		m.appendActivity("output", "complete", e.Elapsed)
-		m.setVoiceMode(anim.ModeIdle)
-		m.setStatus("", false)
+		// A degraded turn speaks its recovery line after the Error event; the
+		// error status must survive that playback finishing. Still leave
+		// ModeSpeaking so the EQ/label does not stay "Speaking" forever.
+		if m.statusErr {
+			m.setVoiceMode(anim.ModeError)
+		} else {
+			m.setVoiceMode(anim.ModeIdle)
+			m.setStatus("", false)
+		}
 
 	case events.SpeakingInterrupted:
 		m.appendActivity("output", "interrupted: "+e.Reason, 0)
@@ -736,7 +749,11 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		m.appendActivity("turn", "response ready", 0)
 		// Text-only / no-TTS turns never emit SpeakingComplete; clear the
 		// thinking status here so it does not stick after a successful reply.
-		if m.voiceMode != anim.ModeSpeaking && m.voiceMode != anim.ModeSynthesizing {
+		// An error status is exempt: recoverTurn emits Error then ResponseReady
+		// back-to-back, and clearing here erased the error one frame after it
+		// rendered. Errors persist until the next turn's activity writes over
+		// them.
+		if m.voiceMode != anim.ModeSpeaking && m.voiceMode != anim.ModeSynthesizing && !m.statusErr {
 			m.setVoiceMode(anim.ModeIdle)
 			m.setStatus("", false)
 		}
@@ -767,6 +784,18 @@ func (m *conversationModel) handleEvent(e events.Event) {
 
 	case events.TurnMetrics:
 		m.lastMetrics = e
+		// Terminal event with the live stream buffer still set means the turn
+		// ended on a path that skipped ResponseReady (cancel/failure). Fold the
+		// partial into the transcript instead of leaving it pinned beneath it,
+		// where it reads as a duplicated fragment of the reply (WI-dc9e33 B1).
+		// Clear the live buffer *before* appendTranscript: that helper refreshes
+		// the viewport immediately, and leaving streamingAgent set would render
+		// the same text twice (transcript bubble + live buffer) with no later
+		// refresh on a bare interrupted metrics event.
+		if partial := m.streamingAgent; partial != "" {
+			m.streamingAgent = ""
+			m.appendTranscript(renderAgentTurn(m.agentName, partial), "")
+		}
 		// Idle no-speech timeouts restart listening every ~listen_timeout
 		// seconds. Logging each one floods Activity without helping the user.
 		if e.Outcome == "timed_out" {
@@ -782,7 +811,12 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		}
 
 	case events.Error:
-		m.appendActivity("error", e.Stage, 0)
+		// The Activity pane is the durable surface — it must carry the real
+		// message, not just the stage name. The status line clears on the next
+		// event; an opaque "error brain" entry is how degraded qwen turns went
+		// undiagnosable for weeks (WI-dc9e33 B1).
+		detail := strings.TrimSpace(strings.TrimPrefix(e.Stage+": "+e.Message, ": "))
+		m.appendActivity("error", detail, 0)
 		msg := e.Message
 		if e.Stage != "" {
 			msg = "[" + e.Stage + "] " + e.Message

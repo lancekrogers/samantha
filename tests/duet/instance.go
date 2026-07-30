@@ -22,6 +22,8 @@ type Instance struct {
 	Dir     string // run artifact dir for this instance
 	TapPath string
 	Target  string // tmux target (session:window)
+
+	stopFault func() // shuts down this instance's fault proxy, if any
 }
 
 // tmuxRun executes one tmux command.
@@ -52,6 +54,18 @@ func launchInstances(runDir, session, binPath string, s *Scenario) (map[string]*
 			Dir:     filepath.Join(runDir, id),
 			TapPath: filepath.Join(runDir, id, "transcript.jsonl"),
 			Target:  session + ":" + id,
+		}
+		if spec.Fault != "" {
+			upstream := spec.Brain.Host
+			if upstream == "" {
+				upstream = "http://localhost:11434"
+			}
+			proxyURL, stop, err := startFaultProxy(spec.Fault, upstream)
+			if err != nil {
+				return nil, fmt.Errorf("fault %s: %w", id, err)
+			}
+			spec.Brain.Host = proxyURL
+			inst.stopFault = stop
 		}
 		if err := seedInstance(inst.Home, s, id, spec); err != nil {
 			return nil, fmt.Errorf("seed %s: %w", id, err)
@@ -188,6 +202,9 @@ func shutdownInstances(instances map[string]*Instance, session string, keep bool
 		src := filepath.Join(inst.Home, appDir, "logs", "native-diagnostics.log")
 		if data, err := os.ReadFile(src); err == nil {
 			_ = os.WriteFile(filepath.Join(inst.Dir, "native-diagnostics.log"), data, 0o644)
+		}
+		if inst.stopFault != nil {
+			inst.stopFault()
 		}
 	}
 	if keep {
