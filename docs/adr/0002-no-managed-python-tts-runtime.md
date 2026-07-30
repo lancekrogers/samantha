@@ -20,8 +20,9 @@ forbid Python at inference and forbid expanding that surface.
 2. **Ensure** installs only the native tarball (`qwen_tts_native_url` /
    `SAMANTHA_QWEN_NATIVE_URL`). There is no uv/torch ensure and no embedded
    worker script in the product binary.
-3. **Legacy** uv/Python trees under `models_dir/qwen3-tts` are detected by
-   doctor as errors and may be quarantined; they are never used for synthesis.
+3. **Old trees:** if a pre-cutover uv/Python directory remains under
+   `models_dir/qwen3-tts`, delete it by hand and re-ensure. No product
+   migrator, dual path, or quarantine CLI is maintained (solo/dev installs).
 4. **Offline convert** (HF → GGUF) may still use Python in the lab repo
    (`qwen3-tts-native`); that is CI/dev only, never the Samantha process tree
    during voice sessions.

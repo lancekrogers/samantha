@@ -191,8 +191,6 @@ func (m *settingsModel) buildTTSItems() {
 				detail = "installing Qwen assets…"
 			case managed && m.nativeStatus.Installed:
 				detail = fmt.Sprintf("native worker · tier %s · presets ready", m.nativeStatus.DefaultTier)
-			case managed && m.qwenStatus.LegacyPython:
-				detail = "legacy Python tree · install native package (Settings → Qwen)"
 			case managed:
 				detail = "native package not installed · open Qwen tab or enter to install"
 			}
@@ -339,8 +337,6 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 		m.buildLanguageItems()
 		if m.nativeStatus.Installed {
 			m.message = "Native Qwen package ready; open Voice for presets, Qwen tab for tier/consent/cache"
-		} else if m.qwenStatus.LegacyPython {
-			m.message = "Legacy Python Qwen tree found; set qwen_tts_native_url and re-run install (Python is not a product runtime)"
 		} else {
 			m.message = "Qwen activated; install the native package (qwen_tts_native_url + models ensure --tts) before synthesis"
 		}

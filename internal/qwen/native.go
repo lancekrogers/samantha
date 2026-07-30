@@ -402,6 +402,11 @@ func isExecutable(path string) bool {
 	return !info.IsDir() && info.Mode()&0o111 != 0
 }
 
+func regularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
 func tierReady(p NativePaths, install nativeInstallJSON, tier string) bool {
 	tier = normalizeTier(tier)
 	if m, ok := install.Models[tier]; ok {

@@ -30,15 +30,8 @@ samantha voices
 
 No system Python or `qwen-tts` PyPI package is required for synthesis.
 
-### Legacy Python trees
-
-Older Samantha installs may still have a uv/Python tree under
-`models_dir/qwen3-tts` (`worker/qwen_worker.py`, `runtime/`, `bin/uv`). That
-tree is **not** used for inference. `doctor` reports it as an error with
-remediation; product ensure installs the native package instead. To remove the
-old tree after native is installed, quarantine via the helpers in
-`internal/qwen` (`DetectLegacyPython` / `QuarantineLegacyPython`) or delete
-the quarantine path manually.
+If an old uv/Python tree is still under `models_dir/qwen3-tts`, delete that
+directory and re-run ensure. There is no product migrator or Python runtime.
 
 ## Preset voices
 

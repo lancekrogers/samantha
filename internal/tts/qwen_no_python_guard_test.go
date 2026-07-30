@@ -55,13 +55,9 @@ func TestManagedSelectionResolvesNativeWorkerNotPython(t *testing.T) {
 	if strings.Contains(base, "python") || strings.HasSuffix(base, ".py") {
 		t.Fatalf("product worker is Python: %q", install.Worker)
 	}
-	// Status from Inspect must not advertise Python as the product worker.
 	st := managedqwen.Inspect(dir)
-	if st.LegacyPython {
-		t.Fatal("fixture should not be legacy python")
-	}
-	if !st.Installed || st.Python != "" {
-		t.Fatalf("Inspect product status = %+v, want native Installed with empty Python", st)
+	if !st.Installed {
+		t.Fatalf("Inspect product status = %+v, want native Installed", st)
 	}
 	workerBase := strings.ToLower(filepath.Base(st.Worker))
 	if workerBase == "python" || workerBase == "python3" || strings.HasSuffix(workerBase, ".py") {

@@ -322,7 +322,7 @@ func runClean(t *testing.T, cfg *config.Config, modelsDir string, unused, dryRun
 	cmd.SetContext(context.Background())
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
-	err := runModelsClean(cmd, cfg, modelsDir, unused, false, dryRun, yes, asJSON)
+	err := runModelsClean(cmd, cfg, modelsDir, unused, dryRun, yes, asJSON)
 	return buf.String(), err
 }
 
@@ -334,8 +334,8 @@ func TestModelsCleanFlagValidation(t *testing.T) {
 		yes     bool
 		wantErr string
 	}{
-		{"bare clean requires --unused or --legacy-qwen", false, false, false, "--unused or --legacy-qwen"},
-		{"bare clean with --dry-run still requires scope", false, true, false, "--unused or --legacy-qwen"},
+		{"bare clean requires --unused", false, false, false, "--unused is required"},
+		{"bare clean with --dry-run still requires --unused", false, true, false, "--unused is required"},
 		{"clean requires an explicit mode", true, false, false, "choose exactly one"},
 		{"clean rejects two explicit modes", true, true, true, "choose exactly one"},
 	}
