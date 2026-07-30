@@ -154,3 +154,11 @@ func (f *FakeEngine) Close() error {
 	f.Closed = true
 	return nil
 }
+
+// IsClosed reads Closed under the lock, for tests that assert teardown from a
+// goroutine other than the one that closed the engine.
+func (f *FakeEngine) IsClosed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Closed
+}

@@ -446,6 +446,30 @@ current-speaker footer use the same palette. These are voice clusters, not
 enrolled names or identity claims. Continue from the review screen to the
 configured routing flow.
 
+### Speaker labels in chat
+
+Meeting diarization is offline — it runs when a recording stops, so live meeting
+lines carry no labels. Labeling **chat** turns is a separate, live path with its
+own switch under **Settings → Speakers → Speaker labels in chat**. With it on, a
+voice conversation prefixes each user bubble with `speaker-1…N` and colors the
+bubble border to match, and the footer shows the current speaker.
+
+The same tab tunes the two levers that decide label quality:
+
+| Row | Key | Effect |
+|---|---|---|
+| Match threshold | `speaker.live.threshold` | Lower merges similar voices onto one label; higher splits a voice into a fresh `speaker-N` more readily |
+| Analysis window | `speaker.live.window_ms` | Shorter labels a turn sooner; longer gives the embedder more voice to work with |
+
+Labels are enrollment-free: the first sight of a voice registers `speaker-N` and
+later turns re-match against it. Only the embedding model is needed, so chat
+labels do not require the pyannote segmentation model that meetings use.
+
+In an open conversation, `/speakers on|off|status` toggles labeling for that
+session and loads the model on first use — no restart. Settings persists the
+choice for future conversations. Live analysis needs microphone capture, so it
+is unavailable in `--text` mode.
+
 The meetings directory contains one visible item per recording:
 
 ```text

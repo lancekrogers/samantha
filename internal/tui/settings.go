@@ -26,6 +26,7 @@ const (
 	sectionQwen
 	sectionVoice
 	sectionLanguage
+	sectionSpeakers
 	sectionInput
 	sectionOutput
 	sectionMeeting
@@ -440,6 +441,8 @@ func (m *settingsModel) currentListLen() int {
 		return len(m.inputItems)
 	case sectionOutput:
 		return len(m.outputItems)
+	case sectionSpeakers:
+		return len(m.speakerItems())
 	case sectionMeeting:
 		return len(m.meetingItems())
 	}
@@ -607,6 +610,8 @@ func (m *settingsModel) selectCurrent() tea.Cmd {
 			m.cfg.InputDevice = name
 			m.message = "Microphone set to " + deviceLabel(name)
 		}
+	case sectionSpeakers:
+		m.selectSpeakerItem()
 	case sectionMeeting:
 		m.selectMeetingItem()
 	case sectionOutput:

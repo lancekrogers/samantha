@@ -10,63 +10,82 @@ import (
 	"github.com/lancekrogers/samantha/internal/speaker"
 )
 
-// prepareLiveSpeaker builds a live speaker adapter when config enables it.
-// On any setup failure it returns an unavailable adapter so conversation still
-// starts; detail explains the degraded status for the event bus / UI.
+// prepareLiveSpeaker builds the live speaker controller for a conversation.
 //
-// stop must be called before adapter.Close so the capture feed drains first;
-// it also closes the analyzer (and its engine).
+// The engine is loaded lazily: config that enables live analysis gets it
+// switched on here, and config that does not still gets a working controller so
+// /speakers on can turn labels on mid-session. Only a runtime that cannot feed
+// audio at all (--text, no capture) is permanently unavailable; detail explains
+// that on the event bus.
+//
+// stop tears the chain down in order (feed, adapter, analyzer/engine) and is
+// safe to call when no engine was ever built.
 func prepareLiveSpeaker(
 	ctx context.Context,
 	cfg *config.Config,
 	capture speaker.CaptureSource,
 	_ func(string, float64),
-) (adapter *speaker.LiveAdapter, stop func(), detail string) {
-	noopStop := func() {}
+) (controller *speaker.LazyLive, stop func(), detail string) {
 	sp := speaker.FromAppConfig(cfg)
-	if !sp.LiveActive() {
-		return speaker.NewLiveAdapter(ctx, nil, 4), noopStop, ""
-	}
+
 	if textMode || capture == nil {
-		return speaker.NewLiveAdapter(ctx, nil, 4), noopStop,
+		unavailable := speaker.NewLazyLive(ctx, sp, nil, nil,
+			"microphone capture is required (not available in --text mode)")
+		return unavailable, func() { _ = unavailable.Close() },
 			"live speakers unavailable: microphone capture is required (not available in --text mode)"
 	}
 
-	// Prefer live-only engine (embedding) so chat does not require pyannote.
-	// Fall back to the full meeting engine when live-only init fails.
-	engine, err := speaker.NewSherpaLiveEngine(sp, config.ModelsDirFrom(cfg))
-	if err != nil {
-		engine, err = speaker.NewSherpaEngine(sp, config.ModelsDirFrom(cfg))
-	}
-	if err != nil {
-		return speaker.NewLiveAdapter(ctx, nil, 4), noopStop,
-			fmt.Sprintf("live speakers unavailable: %v", err)
-	}
+	modelsDir := config.ModelsDirFrom(cfg)
+	engineCfg := sp.Normalize()
+	engineCfg.Enabled = true
+	engineCfg.Live.Enabled = true
+	build := liveSpeakerEngineBuilder(ctx, cfg, config.EnsureRuntimeAssets,
+		func() (speaker.Engine, error) {
+			// Prefer live-only engine (embedding) so chat does not require pyannote.
+			return speaker.NewSherpaLiveEngine(engineCfg, modelsDir)
+		}, func() (speaker.Engine, error) {
+			// Fall back to the full meeting engine when live-only init fails.
+			return speaker.NewSherpaEngine(engineCfg, modelsDir)
+		})
 
-	analyzer, err := speaker.NewAnalyzer(sp, engine)
-	if err != nil {
-		_ = engine.Close()
-		return speaker.NewLiveAdapter(ctx, nil, 4), noopStop,
-			fmt.Sprintf("live speakers unavailable: %v", err)
-	}
+	controller = speaker.NewLazyLive(ctx, sp, capture, build, "")
+	stop = func() { _ = controller.Close() }
 
-	adapter = speaker.NewLiveAdapter(ctx, analyzer, 4)
-	stopFeed, feedErr := speaker.StartLiveFeed(ctx, capture, adapter, sp.Live.WindowMS)
-	if feedErr != nil {
-		_ = adapter.Close()
-		_ = analyzer.Close()
-		return speaker.NewLiveAdapter(ctx, nil, 4), noopStop,
-			fmt.Sprintf("live speakers unavailable: %v", feedErr)
+	if !sp.LiveActive() {
+		// Off by config, but reachable: no model is loaded until /speakers on.
+		return controller, stop, ""
 	}
+	controller.SetEnabled(true)
+	return controller, stop, "live speakers starting (auto-label speaker-1..N)"
+}
 
-	stop = func() {
-		if stopFeed != nil {
-			stopFeed()
+// liveSpeakerEngineBuilder ensures the managed embedding before the lazy first
+// build. EnsureRuntimeAssets verifies existing files and skips their download,
+// so repeated application starts remain network-free once TitaNet is present.
+// A copied, enabled config is used only for manifest selection; /speakers on is
+// session-local and must not silently persist the setting.
+func liveSpeakerEngineBuilder(
+	ctx context.Context,
+	cfg *config.Config,
+	ensure ensureAssetsFunc,
+	buildLive speaker.EngineBuilder,
+	buildFull speaker.EngineBuilder,
+) speaker.EngineBuilder {
+	assetCfg := config.Config{}
+	if cfg != nil {
+		assetCfg = *cfg
+	}
+	assetCfg.Speaker.Enabled = true
+	assetCfg.Speaker.Live.Enabled = true
+
+	return func() (speaker.Engine, error) {
+		if err := ensure(ctx, &assetCfg, config.AssetRequest{NeedSpeaker: true}, nil); err != nil {
+			return nil, fmt.Errorf("ensure live speaker model: %w", err)
 		}
-		// Adapter workers may still be finishing IdentifySegment; close
-		// adapter first so process() exits, then free the analyzer/engine.
-		_ = adapter.Close()
-		_ = analyzer.Close()
+		engine, err := buildLive()
+		if err != nil && buildFull != nil {
+			engine, err = buildFull()
+		}
+		return engine, err
 	}
-	return adapter, stop, "live speakers active (auto-label speaker-1..N)"
 }
