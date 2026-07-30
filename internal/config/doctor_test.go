@@ -304,6 +304,9 @@ func TestDiagnoseQwenLegacyPythonTree(t *testing.T) {
 	if leg.Severity != SeverityError || !strings.Contains(leg.Detail, "legacy") {
 		t.Fatalf("legacy diag = %+v", leg)
 	}
+	if !strings.Contains(leg.Remediation, "clean --legacy-qwen") {
+		t.Fatalf("remediation should mention clean --legacy-qwen: %+v", leg)
+	}
 	if diags["qwen3-tts-binary"].Severity != SeverityError {
 		t.Fatalf("binary should still error without native: %+v", diags["qwen3-tts-binary"])
 	}

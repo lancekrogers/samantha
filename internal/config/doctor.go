@@ -129,6 +129,15 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 				if d := qwenTierRAMAdvice(native.DefaultTier, systemMemoryBytes()); d != nil {
 					diags = append(diags, *d)
 				}
+				// Native ready, but co-located legacy leftovers still matter for disk/migration.
+				if leg := qwen.DetectLegacyPython(modelsDir); leg.Present {
+					diags = append(diags, Diagnostic{
+						Name:        "qwen3-tts-legacy-python",
+						Severity:    SeverityWarn,
+						Detail:      leg.Detail,
+						Remediation: "run 'samantha models clean --legacy-qwen --yes' to quarantine leftover Python/uv trees (native package is kept)",
+					})
+				}
 			} else {
 				// Product path is native-only. Legacy Python trees are never ready.
 				leg := qwen.DetectLegacyPython(modelsDir)
@@ -137,14 +146,14 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 						Name:        "qwen3-tts-legacy-python",
 						Severity:    SeverityError,
 						Detail:      leg.Detail,
-						Remediation: "set qwen_tts_native_url and run 'samantha models ensure --tts', then quarantine the old tree (legacy Python is not a product runtime)",
+						Remediation: "set qwen_tts_native_url and run 'samantha models ensure --tts', then 'samantha models clean --legacy-qwen --yes'",
 					})
 				}
 				diags = append(diags, Diagnostic{
 					Name:        "qwen3-tts-binary",
 					Severity:    SeverityError,
 					Detail:      "native Qwen3-TTS package is not installed under models/qwen3-tts",
-					Remediation: "set qwen_tts_native_url to a release tarball and run 'samantha models ensure --tts'",
+					Remediation: "set qwen_tts_native_url (or SAMANTHA_QWEN_NATIVE_URL) to a release tarball and run 'samantha models ensure --tts'",
 				})
 				diags = append(diags, Diagnostic{
 					Name:        "qwen3-tts-model",

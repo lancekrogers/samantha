@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"time"
 )
 
 const (
@@ -120,9 +122,10 @@ func ManagedPaths(modelsDir string) Paths {
 	venv := filepath.Join(root, "runtime", "qwen-tts-"+PackageVersion)
 	python := filepath.Join(venv, "bin", "python")
 	uv := filepath.Join(binDir, "uv")
-	if fileExists(filepath.Join(venv, "Scripts", "python.exe")) {
+	// Windows layout (or a leftover Scripts tree on any OS).
+	if runtime.GOOS == "windows" || fileExists(filepath.Join(venv, "Scripts", "python.exe")) {
 		python = filepath.Join(venv, "Scripts", "python.exe")
-		uv += ".exe"
+		uv = filepath.Join(binDir, "uv.exe")
 	}
 	return Paths{
 		Root:          root,
@@ -158,11 +161,12 @@ type Status struct {
 type ProgressFunc func(stage string, pct float64)
 
 // Inspect reports product readiness: native package installed, or legacy
-// Python tree present (not product-ready).
+// Python tree present (not product-ready). Co-located legacy leftovers set
+// LegacyPython even when native is installed.
 func Inspect(modelsDir string) Status {
 	ns := InspectNative(modelsDir, DefaultModelTier)
 	if ns.Installed {
-		return Status{
+		st := Status{
 			Installed:    true,
 			RuntimeReady: true,
 			ModelReady:   true,
@@ -171,6 +175,11 @@ func Inspect(modelsDir string) Status {
 			Model:        ns.ModelDir,
 			Detail:       ns.Detail,
 		}
+		if leg := DetectLegacyPython(modelsDir); leg.Present {
+			st.LegacyPython = true
+			st.Detail = ns.Detail + "; " + leg.Detail
+		}
+		return st
 	}
 	if leg := DetectLegacyPython(modelsDir); leg.Present {
 		p := ManagedPaths(modelsDir)
@@ -187,12 +196,12 @@ func Inspect(modelsDir string) Status {
 	}
 	return Status{
 		Root:   NativeInstallPaths(modelsDir).Root,
-		Detail: "native Qwen3-TTS package is not installed; set qwen_tts_native_url and run models ensure --tts",
+		Detail: "native Qwen3-TTS package is not installed; set qwen_tts_native_url (or SAMANTHA_QWEN_NATIVE_URL) and run models ensure --tts",
 	}
 }
 
 // Ensure installs the product native package only (no Python/uv).
-// Requires QWEN3_TTS_NATIVE_URL / qwen_tts_native_url when not already installed.
+// Requires qwen_tts_native_url or SAMANTHA_QWEN_NATIVE_URL when not already installed.
 func Ensure(ctx context.Context, modelsDir string, progress ProgressFunc) (Status, error) {
 	if strings.TrimSpace(modelsDir) == "" {
 		return Status{}, errors.New("qwen ensure: models directory is empty")
@@ -247,15 +256,23 @@ func DetectLegacyPython(modelsDir string) LegacyPythonInstall {
 			break
 		}
 	}
-	hasPython := regularFile(p.Python) || dirExists(p.Venv)
-	hasUV := regularFile(p.UV)
+	hasPython := regularFile(p.Python) ||
+		regularFile(filepath.Join(p.Venv, "bin", "python")) ||
+		regularFile(filepath.Join(p.Venv, "Scripts", "python.exe")) ||
+		dirExists(p.Venv)
+	hasUV := regularFile(p.UV) ||
+		regularFile(filepath.Join(p.BinDir, "uv")) ||
+		regularFile(filepath.Join(p.BinDir, "uv.exe"))
 	modelPresent := regularFile(filepath.Join(p.Model, "config.json")) ||
 		dirExists(filepath.Join(p.Root, "models", "customvoice-0.6b"))
+	if matches, _ := filepath.Glob(filepath.Join(p.Root, "models", "customvoice-*")); len(matches) > 0 {
+		modelPresent = true
+	}
 	if !hasWorker && !hasPython && !hasUV && !modelPresent {
 		return LegacyPythonInstall{}
 	}
 	detail := "legacy Python/uv Qwen install detected under " + p.Root +
-		" — product path is native-only; run models ensure --tts with qwen_tts_native_url, then remove the legacy tree (doctor can quarantine)"
+		" — product path is native-only; set qwen_tts_native_url and run models ensure --tts, then run 'samantha models clean --legacy-qwen --yes' to quarantine leftovers"
 	return LegacyPythonInstall{
 		Present:        true,
 		Root:           p.Root,
@@ -265,33 +282,71 @@ func DetectLegacyPython(modelsDir string) LegacyPythonInstall {
 	}
 }
 
-// QuarantineLegacyPython renames the legacy Python tree out of the way so it
-// cannot be used as a product runtime. Native package under the same root's
-// sibling layout (qwen3-tts with bin/worker + models/*.gguf) is left intact
-// when already native-shaped.
+// QuarantineLegacyPython renames or strips the legacy Python tree so it cannot
+// be used as a product runtime. When a native package already occupies the same
+// root, only Python-only subtrees are removed (native bin/GGUF/presets kept).
 func QuarantineLegacyPython(modelsDir string) (string, error) {
 	leg := DetectLegacyPython(modelsDir)
 	if !leg.Present {
 		return "", nil
 	}
-	// If root already looks like a native package, only remove python/worker/runtime subtrees.
 	ns := InspectNative(modelsDir, DefaultModelTier)
 	if ns.Installed {
-		p := ManagedPaths(modelsDir)
-		for _, sub := range []string{p.Venv, p.UVCache, p.PythonRoot, filepath.Dir(p.Worker), p.UV} {
-			_ = os.RemoveAll(sub)
+		if err := removeLegacyPythonSubtrees(modelsDir); err != nil {
+			return "", err
 		}
-		// Remove worker.py if nested under native root
-		_ = os.Remove(p.Worker)
-		return p.Root + " (python subtrees removed; native package kept)", nil
+		if still := DetectLegacyPython(modelsDir); still.Present {
+			return "", fmt.Errorf("quarantine legacy python: leftovers still present under %s", still.Root)
+		}
+		return ManagedPaths(modelsDir).Root + " (python subtrees removed; native package kept)", nil
 	}
-	// Full tree is legacy: move aside.
+	// Full tree is legacy: move aside with a unique destination.
 	src := leg.Root
-	dst := src + ".legacy-python-quarantine"
+	dst := uniqueQuarantinePath(src)
 	if err := os.Rename(src, dst); err != nil {
 		return "", fmt.Errorf("quarantine legacy python tree: %w", err)
 	}
 	return dst, nil
+}
+
+// removeLegacyPythonSubtrees deletes Python-only paths under modelsDir/qwen3-tts
+// while leaving native package assets (worker binary, GGUF, presets, install.json).
+func removeLegacyPythonSubtrees(modelsDir string) error {
+	p := ManagedPaths(modelsDir)
+	// Fixed legacy layout paths.
+	for _, sub := range []string{
+		p.Venv, p.UVCache, p.PythonRoot,
+		filepath.Dir(p.Worker), // worker/
+		p.Worker,
+		filepath.Join(p.Root, "worker.py"),
+		filepath.Join(p.Root, "worker", "worker.py"),
+		filepath.Join(p.BinDir, "uv"),
+		filepath.Join(p.BinDir, "uv.exe"),
+		p.Model, // models/customvoice-0.6b
+	} {
+		if err := os.RemoveAll(sub); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove legacy path %s: %w", sub, err)
+		}
+	}
+	// Any customvoice-* HF snapshots.
+	matches, _ := filepath.Glob(filepath.Join(p.Root, "models", "customvoice-*"))
+	for _, m := range matches {
+		if err := os.RemoveAll(m); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove legacy model %s: %w", m, err)
+		}
+	}
+	// Stale Python install marker only when it is not a native install.json.
+	// Native packages also use install.json at the root; never delete that.
+	// Legacy marker had schema samantha-managed; if native is installed, leave install.json alone.
+	return nil
+}
+
+func uniqueQuarantinePath(src string) string {
+	base := src + ".legacy-python-quarantine"
+	if !fileExists(base) && !dirExists(base) {
+		return base
+	}
+	return fmt.Sprintf("%s-%d", base, time.Now().Unix())
 }
 
 func regularFile(path string) bool {

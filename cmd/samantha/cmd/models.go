@@ -14,13 +14,14 @@ import (
 )
 
 var (
-	modelsStatusJSON  bool
-	modelsStatusScope scopeFlags
-	modelsEnsureScope scopeFlags
-	modelsCleanUnused bool
-	modelsCleanDryRun bool
-	modelsCleanYes    bool
-	modelsCleanJSON   bool
+	modelsStatusJSON       bool
+	modelsStatusScope      scopeFlags
+	modelsEnsureScope      scopeFlags
+	modelsCleanUnused      bool
+	modelsCleanDryRun      bool
+	modelsCleanYes         bool
+	modelsCleanJSON        bool
+	modelsCleanLegacyQwen  bool
 )
 
 // scopeFlags narrows a models command to specific asset kinds. Flags combine as
@@ -93,9 +94,12 @@ func runModelsStatus(cmd *cobra.Command, cfg *config.Config, modelsDir string, r
 		})
 		if leg := managedqwen.DetectLegacyPython(modelsDir); leg.Present {
 			statuses = append(statuses, config.AssetStatus{
-				ID: "tts.qwen3.legacy-python", Name: "Legacy Python Qwen tree (quarantine)",
+				ID: "tts.qwen3.legacy-python", Name: "Legacy Python Qwen tree",
 				Provider: managedqwen.ProviderName, Mode: "legacy", Kind: config.AssetKindTTS,
-				Installed: false, Missing: []string{leg.Root},
+				// Not an ensure target: present but not a product runtime.
+				Installed: false,
+				Detail:    "present — quarantine with 'samantha models clean --legacy-qwen --yes' (not fixed by models ensure)",
+				Missing:   []string{leg.Root},
 			})
 		}
 	}
@@ -117,7 +121,13 @@ func runModelsStatus(cmd *cobra.Command, cfg *config.Config, modelsDir string, r
 	missing := 0
 	for _, s := range statuses {
 		state := "installed"
-		if !s.Installed {
+		switch {
+		case strings.TrimSpace(s.Detail) != "":
+			state = s.Detail
+			if !s.Installed && s.Mode != "legacy" {
+				missing++
+			}
+		case !s.Installed:
 			state = "missing — run 'samantha models ensure'"
 			missing++
 		}
@@ -180,16 +190,20 @@ var modelsCleanCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runModelsClean(cmd, cfg, config.ModelsDir(), modelsCleanUnused, modelsCleanDryRun, modelsCleanYes, modelsCleanJSON)
+		return runModelsClean(cmd, cfg, config.ModelsDir(), modelsCleanUnused, modelsCleanLegacyQwen, modelsCleanDryRun, modelsCleanYes, modelsCleanJSON)
 	},
 }
 
 // runModelsClean lists the paths under modelsDir that the currently required
 // manifest (the full default request for cfg) does not claim, or deletes them
-// when --yes is explicitly set.
-func runModelsClean(cmd *cobra.Command, cfg *config.Config, modelsDir string, unused, dryRun, yes, asJSON bool) error {
+// when --yes is explicitly set. With legacyQwen, quarantines leftover Python
+// Qwen trees via managedqwen.QuarantineLegacyPython instead.
+func runModelsClean(cmd *cobra.Command, cfg *config.Config, modelsDir string, unused, legacyQwen, dryRun, yes, asJSON bool) error {
+	if legacyQwen {
+		return runModelsCleanLegacyQwen(cmd, modelsDir, dryRun, yes, asJSON)
+	}
 	if !unused {
-		return fmt.Errorf("models clean: --unused is required (only unused-asset cleanup is supported)")
+		return fmt.Errorf("models clean: --unused or --legacy-qwen is required")
 	}
 	if dryRun == yes {
 		return fmt.Errorf("models clean: choose exactly one of --dry-run or --yes")
@@ -205,7 +219,9 @@ func runModelsClean(cmd *cobra.Command, cfg *config.Config, modelsDir string, un
 	}
 	if cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), managedqwen.ProviderName) &&
 		managedqwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
-		// Keep the native package tree; legacy Python subtrees may be cleaned.
+		// models clean --unused never mutates models/qwen3-tts while a native
+		// package is installed (top-level candidates would delete the whole tree).
+		// Use --legacy-qwen to strip co-located Python leftovers safely.
 		qwenRoot := managedqwen.NativeInstallPaths(modelsDir).Root
 		nativeOK := managedqwen.InspectNative(modelsDir, cfg.QwenTTSModelTier).Installed
 		kept := candidates[:0]
@@ -213,7 +229,6 @@ func runModelsClean(cmd *cobra.Command, cfg *config.Config, modelsDir string, un
 			rel, relErr := filepath.Rel(qwenRoot, candidate.Path)
 			underQwen := relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 			if underQwen && nativeOK {
-				// Preserve native install assets.
 				continue
 			}
 			kept = append(kept, candidate)
@@ -264,6 +279,47 @@ func runModelsClean(cmd *cobra.Command, cfg *config.Config, modelsDir string, un
 	return nil
 }
 
+func runModelsCleanLegacyQwen(cmd *cobra.Command, modelsDir string, dryRun, yes, asJSON bool) error {
+	if dryRun == yes {
+		return fmt.Errorf("models clean --legacy-qwen: choose exactly one of --dry-run or --yes")
+	}
+	out := cmd.OutOrStdout()
+	leg := managedqwen.DetectLegacyPython(modelsDir)
+	type payload struct {
+		Present bool   `json:"present"`
+		Root    string `json:"root,omitempty"`
+		Detail  string `json:"detail,omitempty"`
+		Action  string `json:"action,omitempty"`
+		Result  string `json:"result,omitempty"`
+	}
+	if !leg.Present {
+		p := payload{Present: false, Detail: "no legacy Python Qwen tree detected"}
+		if asJSON {
+			return json.NewEncoder(out).Encode(p)
+		}
+		fmt.Fprintln(out, "  No legacy Python Qwen tree to quarantine.")
+		return nil
+	}
+	if dryRun {
+		p := payload{Present: true, Root: leg.Root, Detail: leg.Detail, Action: "dry-run"}
+		if asJSON {
+			return json.NewEncoder(out).Encode(p)
+		}
+		fmt.Fprintf(out, "  Legacy Python Qwen tree at %s\n  %s\n  Dry run — nothing quarantined. Re-run with --yes.\n", leg.Root, leg.Detail)
+		return nil
+	}
+	dst, err := managedqwen.QuarantineLegacyPython(modelsDir)
+	if err != nil {
+		return fmt.Errorf("models clean --legacy-qwen: %w", err)
+	}
+	p := payload{Present: true, Root: leg.Root, Action: "quarantined", Result: dst}
+	if asJSON {
+		return json.NewEncoder(out).Encode(p)
+	}
+	fmt.Fprintf(out, "  Quarantined legacy Python Qwen tree → %s\n", dst)
+	return nil
+}
+
 // formatBytes renders a byte count with a binary unit suffix.
 func formatBytes(n int64) string {
 	const unit = 1024
@@ -283,6 +339,7 @@ func init() {
 	modelsStatusScope.register(modelsStatusCmd)
 	modelsEnsureScope.register(modelsEnsureCmd)
 	modelsCleanCmd.Flags().BoolVar(&modelsCleanUnused, "unused", false, "Select assets not required by the current configuration")
+	modelsCleanCmd.Flags().BoolVar(&modelsCleanLegacyQwen, "legacy-qwen", false, "Quarantine leftover managed Python/uv Qwen trees under models/qwen3-tts")
 	modelsCleanCmd.Flags().BoolVar(&modelsCleanDryRun, "dry-run", false, "Preview removable assets without deleting anything")
 	modelsCleanCmd.Flags().BoolVar(&modelsCleanYes, "yes", false, "Delete unused model assets without prompting")
 	modelsCleanCmd.Flags().BoolVar(&modelsCleanJSON, "json", false, "Output machine-readable JSON")

@@ -335,6 +335,9 @@ type AssetStatus struct {
 	Kind      AssetKind `json:"kind"`
 	Installed bool      `json:"installed"`
 	Missing   []string  `json:"missing,omitempty"`
+	// Detail is optional human state when Installed/Missing is not enough
+	// (e.g. legacy trees that ensure will not remove).
+	Detail string `json:"detail,omitempty"`
 }
 
 // installPaths returns the absolute paths that must exist for the asset to be
