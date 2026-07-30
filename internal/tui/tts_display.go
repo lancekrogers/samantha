@@ -46,7 +46,7 @@ func ttsModelLabelForProvider(provider string, cfg *config.Config) string {
 		}
 		model := strings.TrimSpace(cfg.QwenTTSModel)
 		if managedqwen.UseManaged(cfg.QwenTTSBinary, model) {
-			return "managed CustomVoice 0.6B"
+			return "native package (not installed)"
 		}
 		if model == "" {
 			return "unset"
@@ -65,7 +65,7 @@ func ttsBinaryLabel(cfg *config.Config) string {
 		return "native worker"
 	}
 	if managedqwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
-		return "managed worker"
+		return "native worker (not installed)"
 	}
 	binary := strings.TrimSpace(cfg.QwenTTSBinary)
 	return filepath.Base(filepath.Clean(binary))

@@ -323,8 +323,12 @@ func populateTTSMetadata(opts *render.Options, cfg *config.Config) {
 		opts.TTSModel = strings.TrimSpace(cfg.QwenTTSModel)
 		opts.TTSWorker = strings.TrimSpace(cfg.QwenTTSBinary)
 		if managedqwen.UseManaged(opts.TTSWorker, opts.TTSModel) {
-			opts.TTSModel = managedqwen.DefaultModelID + "@" + managedqwen.DefaultModelRevision
-			opts.TTSWorker = "samantha-managed/qwen-tts@" + managedqwen.PackageVersion
+			tier := strings.TrimSpace(cfg.QwenTTSModelTier)
+			if tier == "" {
+				tier = managedqwen.DefaultModelTier
+			}
+			opts.TTSModel = "native/qwen3-tts/" + tier
+			opts.TTSWorker = "samantha-native/qwen3-tts-worker"
 		}
 		opts.TTSMode = strings.TrimSpace(cfg.QwenTTSMode)
 		if opts.TTSMode == "" {
@@ -368,8 +372,12 @@ func synthIdentityFor(cfg *config.Config) string {
 		binary := strings.TrimSpace(cfg.QwenTTSBinary)
 		managed := managedqwen.UseManaged(binary, model)
 		if managed {
-			id += "/model=" + managedqwen.DefaultModelID + "@" + managedqwen.DefaultModelRevision
-			id += "/worker=samantha-managed/qwen-tts@" + managedqwen.PackageVersion
+			tier := strings.TrimSpace(cfg.QwenTTSModelTier)
+			if tier == "" {
+				tier = managedqwen.DefaultModelTier
+			}
+			id += "/model=native/qwen3-tts/" + tier
+			id += "/worker=samantha-native/qwen3-tts-worker"
 		} else if model != "" {
 			id += "/model=" + model
 		}

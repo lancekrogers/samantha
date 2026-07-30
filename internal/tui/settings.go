@@ -191,12 +191,8 @@ func (m *settingsModel) buildTTSItems() {
 				detail = "installing Qwen assets…"
 			case managed && m.nativeStatus.Installed:
 				detail = fmt.Sprintf("native worker · tier %s · presets ready", m.nativeStatus.DefaultTier)
-			case managed && m.qwenStatus.Installed:
-				detail = fmt.Sprintf("managed CustomVoice · %d preset voices · ready", len(managedqwen.CustomVoices()))
-			case managed && m.qwenStatus.RuntimeReady && m.qwenStatus.ModelReady:
-				detail = "on disk · enter to repair install marker"
 			case managed:
-				detail = "not installed · open Qwen tab or enter to install"
+				detail = "native package not installed · open Qwen tab or enter to install"
 			}
 		}
 		m.ttsItems = append(m.ttsItems, ttsSettingItem{
@@ -342,7 +338,7 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 		if m.nativeStatus.Installed {
 			m.message = "Native Qwen package ready; open Voice for presets, Qwen tab for tier/consent/cache"
 		} else {
-			m.message = "Qwen preset voices installed and activated; open Voice to preview and select"
+			m.message = "Qwen activated; install the native package (qwen_tts_native_url + models ensure --tts) before synthesis"
 		}
 
 	case qwenInstallProgressMsg:
@@ -524,7 +520,7 @@ func (m *settingsModel) selectCurrent() tea.Cmd {
 		if m.cursor < len(m.ttsItems) {
 			provider := m.ttsItems[m.cursor].provider
 			if provider == managedqwen.ProviderName && !m.nativeStatus.Installed &&
-				managedqwen.UseManaged(m.cfg.QwenTTSBinary, m.cfg.QwenTTSModel) && !m.qwenStatus.Installed {
+				managedqwen.UseManaged(m.cfg.QwenTTSBinary, m.cfg.QwenTTSModel) {
 				if m.qwenInstalling {
 					return nil
 				}
@@ -532,7 +528,7 @@ func (m *settingsModel) selectCurrent() tea.Cmd {
 				m.qwenInstallCancel = cancel
 				m.qwenInstalling = true
 				m.qwenInstallEvents = newEventBridge(16)
-				m.message = "Installing Qwen TTS (native package preferred when URL set)…"
+				m.message = "Installing native Qwen3-TTS package…"
 				m.buildTTSItems()
 				m.buildQwenItems()
 				return tea.Batch(m.qwenInstallEvents.wait(), m.installQwenAssets(ctx))
@@ -541,7 +537,7 @@ func (m *settingsModel) selectCurrent() tea.Cmd {
 			if saveConfig == nil {
 				saveConfig = config.SetAndSave
 			}
-			if provider == managedqwen.ProviderName && (m.nativeStatus.Installed || m.qwenStatus.Installed) {
+			if provider == managedqwen.ProviderName && m.nativeStatus.Installed {
 				if err := m.saveManagedQwenDefaults(); err != nil {
 					m.message = fmt.Sprintf("Failed to save Qwen voice defaults: %v", err)
 					return nil

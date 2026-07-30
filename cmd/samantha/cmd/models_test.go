@@ -246,11 +246,11 @@ func TestModelsStatusJSONIsMachineReadable(t *testing.T) {
 }
 
 func TestModelsStatusReportsManagedQwenPresetVoices(t *testing.T) {
-	cfg := &config.Config{TTSProvider: "qwen3-tts", ModelsDir: t.TempDir()}
+	cfg := &config.Config{TTSProvider: "qwen3-tts", ModelsDir: t.TempDir(), QwenTTSModelTier: "0.6b"}
 	out := runStatusScoped(t, cfg, scopeFlags{tts: true}, cfg.ModelsDir, false)
-	for _, want := range []string{"Qwen3-TTS CustomVoice 0.6B", "qwen3-tts/customvoice", "missing"} {
+	for _, want := range []string{"Qwen3-TTS native package", "qwen3-tts/customvoice", "missing"} {
 		if !contains(out, want) {
-			t.Errorf("managed Qwen status missing %q:\n%s", want, out)
+			t.Errorf("native Qwen status missing %q:\n%s", want, out)
 		}
 	}
 }

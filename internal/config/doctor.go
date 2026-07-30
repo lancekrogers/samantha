@@ -81,9 +81,9 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 			controlsDetail = "native CustomVoice speaker selection"
 			controlsRemediation = "select a speaker and mode advertised in Settings → Voice"
 		} else if managed {
-			providerDetail = "qwen3-tts (managed CustomVoice presets; prefer native package)"
-			controlsDetail = "managed CustomVoice speaker selection"
-			controlsRemediation = "select a speaker and mode advertised in Settings → Voice"
+			providerDetail = "qwen3-tts (product path; native package required)"
+			controlsDetail = "native CustomVoice speaker selection"
+			controlsRemediation = "install native package (qwen_tts_native_url + models ensure --tts)"
 		} else if isNativeWorkerBinary(binary) {
 			providerDetail = "qwen3-tts (explicit native worker)"
 			controlsDetail = "native CustomVoice speaker selection"
@@ -126,26 +126,22 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 						Remediation: "install a multi-tier native release or keep qwen_tts_model_tier=0.6b",
 					})
 				}
+				if d := qwenTierRAMAdvice(native.DefaultTier, systemMemoryBytes()); d != nil {
+					diags = append(diags, *d)
+				}
 			} else {
-				status := qwen.Inspect(modelsDir)
-				if status.RuntimeReady {
-					diags = append(diags, Diagnostic{Name: "qwen3-tts-binary", Severity: SeverityOK, Detail: status.Python + " (legacy Python; prefer native tarball)"})
-				} else {
-					diags = append(diags, Diagnostic{
-						Name: "qwen3-tts-binary", Severity: SeverityError,
-						Detail:      "native Qwen package and legacy managed runtime are not installed",
-						Remediation: "set qwen_tts_native_url to a release tarball and run 'samantha models ensure --tts'",
-					})
-				}
-				if status.ModelReady {
-					diags = append(diags, Diagnostic{Name: "qwen3-tts-model", Severity: SeverityOK, Detail: status.Model})
-				} else {
-					diags = append(diags, Diagnostic{
-						Name: "qwen3-tts-model", Severity: SeverityError,
-						Detail:      "Qwen models are not installed",
-						Remediation: "set qwen_tts_native_url and run 'samantha models ensure --tts'",
-					})
-				}
+				diags = append(diags, Diagnostic{
+					Name:        "qwen3-tts-binary",
+					Severity:    SeverityError,
+					Detail:      "native Qwen3-TTS package is not installed under models/qwen3-tts",
+					Remediation: "set qwen_tts_native_url (or SAMANTHA_QWEN_NATIVE_URL) to a release tarball and run 'samantha models ensure --tts' (delete any old Python tree under that path first if present)",
+				})
+				diags = append(diags, Diagnostic{
+					Name:        "qwen3-tts-model",
+					Severity:    SeverityError,
+					Detail:      "native Qwen GGUF models are not installed",
+					Remediation: "set qwen_tts_native_url and run 'samantha models ensure --tts'",
+				})
 			}
 		} else {
 			if binary == "" {
@@ -164,7 +160,7 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 			if model == "" {
 				diags = append(diags, Diagnostic{
 					Name: "qwen3-tts-model", Severity: SeverityError, Detail: "qwen_tts_model is not configured",
-					Remediation: "set qwen_tts_model or clear qwen_tts_binary to use managed setup",
+					Remediation: "set qwen_tts_model, or clear qwen_tts_binary/model to use the native package under models/qwen3-tts",
 				})
 			} else if info, err := os.Stat(model); err != nil || !info.IsDir() {
 				diags = append(diags, Diagnostic{

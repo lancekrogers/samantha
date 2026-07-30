@@ -216,9 +216,7 @@ func EnsureModels(ctx context.Context, cfg *Config, onProgress func(name string,
 	return EnsureRuntimeAssets(ctx, cfg, DefaultAssetRequest(cfg), onProgress)
 }
 
-// ensureQwenTTSAssets installs native multi-tier packages when preferred/available,
-// otherwise falls back to the legacy managed Python path until cutover (festival 008).
-// Never expands the Python surface: native is tried first when PreferNative is on.
+// ensureQwenTTSAssets installs the native multi-tier package only (no Python/uv).
 func ensureQwenTTSAssets(ctx context.Context, cfg *Config, onProgress func(name string, pct float64)) error {
 	modelsDir := ModelsDirFrom(cfg)
 	tier := ""
@@ -230,7 +228,6 @@ func ensureQwenTTSAssets(ctx context.Context, cfg *Config, onProgress func(name 
 		sha = qwen.ResolveNativeSHA256(cfg.QwenTTSNativeSHA256)
 	}
 
-	// Already have a verified native tree for the requested tier → skip Python entirely.
 	if qwen.InspectNative(modelsDir, tier).Installed {
 		if onProgress != nil {
 			onProgress("native Qwen3-TTS", 100)
@@ -238,25 +235,9 @@ func ensureQwenTTSAssets(ctx context.Context, cfg *Config, onProgress func(name 
 		return nil
 	}
 
-	if qwen.PreferNative() {
-		_, err := qwen.EnsureNative(ctx, modelsDir, qwen.NativeEnsureOptions{
-			URL: url, SHA256: sha, Tier: tier,
-		}, qwen.ProgressFunc(onProgress))
-		if err == nil {
-			return nil
-		}
-		// No URL configured: fall through to legacy Python so existing users keep working
-		// until cutover. If URL was set and install failed, fail closed (do not mask with Python).
-		if url != "" {
-			return err
-		}
-		// Prefer native but nothing installed and no tarball URL — try legacy managed.
-		if onProgress != nil {
-			onProgress("Qwen (legacy managed Python until native URL configured)", 0)
-		}
-	}
-
-	_, err := qwen.Ensure(ctx, modelsDir, qwen.ProgressFunc(onProgress))
+	_, err := qwen.EnsureNative(ctx, modelsDir, qwen.NativeEnsureOptions{
+		URL: url, SHA256: sha, Tier: tier,
+	}, qwen.ProgressFunc(onProgress))
 	return err
 }
 

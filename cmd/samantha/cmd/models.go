@@ -77,15 +77,19 @@ func runModelsStatus(cmd *cobra.Command, cfg *config.Config, modelsDir string, r
 	statuses := manifest.Status(modelsDir)
 	if req.NeedTTS && cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), managedqwen.ProviderName) &&
 		managedqwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
-		qwenStatus := managedqwen.Inspect(modelsDir)
+		native := managedqwen.InspectNative(modelsDir, cfg.QwenTTSModelTier)
 		missing := []string(nil)
-		if !qwenStatus.Installed {
-			missing = []string{qwenStatus.Root}
+		if !native.Installed {
+			missing = []string{native.Root}
+		}
+		name := "Qwen3-TTS native package"
+		if native.DefaultTier != "" {
+			name += " (" + native.DefaultTier + ")"
 		}
 		statuses = append(statuses, config.AssetStatus{
-			ID: "tts.qwen3.customvoice-0.6b", Name: "Qwen3-TTS CustomVoice 0.6B",
+			ID: "tts.qwen3.native", Name: name,
 			Provider: managedqwen.ProviderName, Mode: "customvoice", Kind: config.AssetKindTTS,
-			Installed: qwenStatus.Installed, Missing: missing,
+			Installed: native.Installed, Missing: missing,
 		})
 	}
 
@@ -107,7 +111,11 @@ func runModelsStatus(cmd *cobra.Command, cfg *config.Config, modelsDir string, r
 	for _, s := range statuses {
 		state := "installed"
 		if !s.Installed {
-			state = "missing — run 'samantha models ensure'"
+			if d := strings.TrimSpace(s.Detail); d != "" {
+				state = d
+			} else {
+				state = "missing — run 'samantha models ensure'"
+			}
 			missing++
 		}
 		mode := ""
@@ -194,11 +202,15 @@ func runModelsClean(cmd *cobra.Command, cfg *config.Config, modelsDir string, un
 	}
 	if cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), managedqwen.ProviderName) &&
 		managedqwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
-		qwenRoot := managedqwen.ManagedPaths(modelsDir).Root
+		// Preserve models/qwen3-tts when a native package is installed (the whole
+		// tree is one clean candidate). Delete that directory by hand if junk remains.
+		qwenRoot := managedqwen.NativeInstallPaths(modelsDir).Root
+		nativeOK := managedqwen.InspectNative(modelsDir, cfg.QwenTTSModelTier).Installed
 		kept := candidates[:0]
 		for _, candidate := range candidates {
 			rel, relErr := filepath.Rel(qwenRoot, candidate.Path)
-			if relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			underQwen := relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+			if underQwen && nativeOK {
 				continue
 			}
 			kept = append(kept, candidate)

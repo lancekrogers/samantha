@@ -71,9 +71,9 @@ type qwenCommand func(context.Context, string, ...string) *exec.Cmd
 //
 // Resolution order:
 //  1. Explicit native worker binary (qwen3-tts-worker) + model dir
-//  2. Installed native package under models_dir/qwen3-tts/ (preferred over Python)
-//  3. Managed Python CustomVoice worker (legacy until cutover)
-//  4. External one-shot qwen3-tts-cli (lab/debug only)
+//  2. Installed native package under models_dir/qwen3-tts/ (product default)
+//  3. External one-shot qwen3-tts-cli / worker (lab/debug only)
+// There is no managed Python product path after cutover.
 type Qwen3TTS struct {
 	binary              string
 	model               string
@@ -88,17 +88,18 @@ type Qwen3TTS struct {
 	referenceAudio      string
 	referenceTranscript string
 	consent             bool
-	managed             bool // managed Python JSONL worker (legacy product path)
+	managed             bool // always false after cutover (kept for test seams)
 	native              bool // native qwen3-tts-worker protocol (product path)
 	workerScript        string
 	startupTimeout      time.Duration
 	sessionMu           sync.Mutex
-	session             *managedQwenSession
+	session             *managedQwenSession // legacy tests only; product never sets managed
 	nativeSession       *nativeQwenSession
 	nativeSessionRef    atomic.Pointer[nativeQwenSession]
 }
 
-// NewQwen3TTS resolves the native package, managed installation, or external CLI.
+// NewQwen3TTS resolves the native package or an explicit external CLI/worker.
+// Product managed selection (empty binary/model) requires models_dir/qwen3-tts.
 func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 	if cfg == nil {
 		return nil, errors.New("qwen3-tts: nil config")
@@ -121,17 +122,13 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 		}
 		native = true
 	} else if install, ok := findNativeInstall(modelsDir, cfg.QwenTTSModelTier); ok && managedqwen.UseManaged(binary, model) {
-		// Product default: empty binary/model → use ensure-installed native package when present.
+		// Product default: empty binary/model → ensure-installed native package.
 		binary = install.Worker
 		model = install.ModelDir
 		native = true
 	} else if managedqwen.UseManaged(binary, model) {
-		status := managedqwen.Inspect(modelsDir)
-		if !status.Installed {
-			return nil, errors.New("qwen3-tts: managed preset voices are not installed; open Settings → TTS and select Qwen3-TTS to install (or install native package under models/qwen3-tts)")
-		}
-		binary, model, workerScript = status.Python, status.Model, status.Worker
-		managed = true
+		// No Python product path: require native package.
+		return nil, errors.New("qwen3-tts: native package is not installed under models/qwen3-tts; set qwen_tts_native_url and run models ensure --tts (Settings → Qwen)")
 	} else {
 		if binary == "" {
 			binary = "qwen3-tts-cli"
@@ -413,7 +410,7 @@ func (q *Qwen3TTS) synthesize(ctx context.Context, req SynthesisRequest, stream 
 	}
 	if q.managed {
 		// Managed path streams float32 PCM over JSONL (no temp WAV required).
-		// Model generation is still whole-utterance; see worker.py comments.
+		// Model generation is still whole-utterance at the engine layer (stage A).
 		if err := q.synthesizeManagedStream(runCtx, req, stream); err != nil {
 			stream.CloseWithError(managedWorkerError(err))
 			return
