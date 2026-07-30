@@ -125,12 +125,12 @@ func Inspect(modelsDir string) Status {
 	}
 	return Status{
 		Root:   NativeInstallPaths(modelsDir).Root,
-		Detail: "native Qwen3-TTS package is not installed; set qwen_tts_native_url (or SAMANTHA_QWEN_NATIVE_URL) and run models ensure --tts",
+		Detail: "native Qwen3-TTS package is not installed; run models ensure --tts (uses published platform release, or set qwen_tts_native_url)",
 	}
 }
 
 // Ensure installs the product native package only (no Python/uv).
-// Requires qwen_tts_native_url or SAMANTHA_QWEN_NATIVE_URL when not already installed.
+// Uses the published platform release by default when qwen_tts_native_url is empty.
 func Ensure(ctx context.Context, modelsDir string, progress ProgressFunc) (Status, error) {
 	if strings.TrimSpace(modelsDir) == "" {
 		return Status{}, errors.New("qwen ensure: models directory is empty")

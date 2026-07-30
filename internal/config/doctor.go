@@ -83,7 +83,7 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 		} else if managed {
 			providerDetail = "qwen3-tts (product path; native package required)"
 			controlsDetail = "native CustomVoice speaker selection"
-			controlsRemediation = "install native package (qwen_tts_native_url + models ensure --tts)"
+			controlsRemediation = "run 'samantha models ensure --tts' to install the native package"
 		} else if isNativeWorkerBinary(binary) {
 			providerDetail = "qwen3-tts (explicit native worker)"
 			controlsDetail = "native CustomVoice speaker selection"
@@ -134,13 +134,13 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 					Name:        "qwen3-tts-binary",
 					Severity:    SeverityError,
 					Detail:      "native Qwen3-TTS package is not installed under models/qwen3-tts",
-					Remediation: "set qwen_tts_native_url (or SAMANTHA_QWEN_NATIVE_URL) to a release tarball and run 'samantha models ensure --tts' (delete any old Python tree under that path first if present)",
+					Remediation: "run 'samantha models ensure --tts' (downloads the published platform package; override with qwen_tts_native_url if needed)",
 				})
 				diags = append(diags, Diagnostic{
 					Name:        "qwen3-tts-model",
 					Severity:    SeverityError,
 					Detail:      "native Qwen GGUF models are not installed",
-					Remediation: "set qwen_tts_native_url and run 'samantha models ensure --tts'",
+					Remediation: "run 'samantha models ensure --tts'",
 				})
 			}
 		} else {

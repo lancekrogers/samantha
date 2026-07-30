@@ -266,11 +266,8 @@ func TestDiagnoseQwenNativePackageInstall(t *testing.T) {
 func TestDiagnoseQwenManagedMissingPrefersNativeRemediation(t *testing.T) {
 	cfg := &Config{STTProvider: "sherpa", TTSProvider: "qwen3-tts"}
 	d := diagByName(Diagnose(cfg, t.TempDir(), failLookPath))["qwen3-tts-binary"]
-	if d.Severity != SeverityError || !strings.Contains(d.Remediation, "qwen_tts_native_url") {
-		t.Fatalf("missing managed/native = %+v, want native URL remediation", d)
-	}
-	if strings.Contains(d.Detail, "only Python") {
-		t.Fatalf("detail should mention both paths: %q", d.Detail)
+	if d.Severity != SeverityError || !strings.Contains(d.Remediation, "models ensure --tts") {
+		t.Fatalf("missing native = %+v, want models ensure remediation", d)
 	}
 }
 

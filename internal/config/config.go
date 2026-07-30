@@ -266,6 +266,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("qwen_tts_reference_text", "")
 	v.SetDefault("qwen_tts_consent", false)
 	v.SetDefault("qwen_tts_model_tier", "0.6b")
+	// Empty → published platform release from qwen3-tts-native (see internal/qwen DefaultNativeRelease).
 	v.SetDefault("qwen_tts_native_url", "")
 	v.SetDefault("qwen_tts_native_sha256", "")
 	v.SetDefault("output_device", "")

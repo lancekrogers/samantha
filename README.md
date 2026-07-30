@@ -38,8 +38,8 @@ Implemented providers:
 
 Runtime model files are downloaded on first use and stored under `models_dir`.
 The optional native Qwen3-TTS package (`qwen3-tts-worker` + GGUF) installs under
-`models_dir/qwen3-tts` from TUI Settings or `models ensure --tts` when
-`qwen_tts_native_url` is set — no product Python/uv runtime.
+`models_dir/qwen3-tts` from TUI Settings or `models ensure --tts`, using the
+published platform release by default — no product Python/uv runtime.
 
 ## Requirements
 
@@ -551,7 +551,8 @@ Prompt bodies stay in `prompts/` (see `samantha prompts`).
 | `qwen_tts_binary` | empty | `QWEN_TTS_BINARY` | Empty uses the native package worker under `models_dir/qwen3-tts`; set with `qwen_tts_model` for an explicit external worker |
 | `qwen_tts_model` | empty | `QWEN_TTS_MODEL` | Empty uses the native package model dir; otherwise an external worker model directory |
 | `qwen_tts_model_tier` | `0.6b` | `QWEN_TTS_MODEL_TIER` | Preferred native tier (`0.6b` or `1.7b` when present) |
-| `qwen_tts_native_url` | empty | `SAMANTHA_QWEN_NATIVE_URL` | Release tarball URL for `models ensure --tts` native install |
+| `qwen_tts_native_url` | platform release | `QWEN_TTS_NATIVE_URL` / `SAMANTHA_QWEN_NATIVE_URL` | Empty uses the published `qwen3-tts-native` release for this OS/arch; override for custom builds |
+| `qwen_tts_native_sha256` | platform release | `QWEN_TTS_NATIVE_SHA256` / `SAMANTHA_QWEN_NATIVE_SHA256` | Archive digest matching the default or configured URL |
 | `qwen_tts_timeout` | `120` | `QWEN_TTS_TIMEOUT` | Per-request native/external worker timeout in seconds |
 | `qwen_tts_mode` | empty | `QWEN_TTS_MODE` | Product setup resolves empty to `customvoice` |
 | `qwen_tts_voice` | empty | `QWEN_TTS_VOICE` | CustomVoice-class speaker; setup resolves empty to `Vivian` |
