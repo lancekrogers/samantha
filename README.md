@@ -782,6 +782,17 @@ just voice voices
 just voice providers
 ```
 
+## Documentation
+
+| Doc | Topic |
+|-----|--------|
+| [docs/serve-protocol.md](docs/serve-protocol.md) | Remote serve HTTPS + WebSocket contract for clients |
+| [docs/qwen3-tts-spike.md](docs/qwen3-tts-spike.md) | Native Qwen3-TTS product path (worker + GGUF) |
+| [docs/flexprice.md](docs/flexprice.md) | Monetization evaluation (usage/credits/plans; not integrated) |
+| [docs/digimata-tools.md](docs/digimata-tools.md) | digimata org tools (Flexprice, saasy, kdb, quill) and fit |
+| [docs/aec-probe.md](docs/aec-probe.md) | AEC / voice-frontend probe notes |
+| [docs/adr/](docs/adr/) | Architecture decision records |
+
 ## License
 
 Samantha is released under the Apache License 2.0. Copyright 2026 Obedience Corp. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
