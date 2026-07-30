@@ -72,8 +72,20 @@ func TestLoadDefaults(t *testing.T) {
 	if !cfg.VADEnabled {
 		t.Error("VADEnabled = false, want true")
 	}
-	if cfg.VoiceToolsEnabled {
-		t.Error("VoiceToolsEnabled = true, want false")
+	if !cfg.VoiceToolsEnabled {
+		t.Error("VoiceToolsEnabled = false, want true (local tools default on)")
+	}
+	if !cfg.SkillsEnabled {
+		t.Error("SkillsEnabled = false, want true (agent skills default on)")
+	}
+	if !cfg.Speaker.Enabled {
+		t.Error("Speaker.Enabled = false, want true")
+	}
+	if !cfg.Speaker.Live.Enabled {
+		t.Error("Speaker.Live.Enabled = false, want true (speakers in chat default on)")
+	}
+	if !cfg.Speaker.Meeting.Enabled {
+		t.Error("Speaker.Meeting.Enabled = false, want true (meeting diarization default on)")
 	}
 	if cfg.BargeInEnabled {
 		t.Error("BargeInEnabled = true, want false")
@@ -560,8 +572,8 @@ func TestSkillsConfigDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
-	if cfg.SkillsEnabled {
-		t.Error("SkillsEnabled default = true, want false")
+	if !cfg.SkillsEnabled {
+		t.Error("SkillsEnabled default = false, want true")
 	}
 	if cfg.SkillsDir != "" {
 		t.Errorf("SkillsDir field = %q, want empty default", cfg.SkillsDir)

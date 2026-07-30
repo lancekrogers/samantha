@@ -434,23 +434,24 @@ Spoken stop phrases end the session like Ctrl+C and are **not** appended to the
 meeting transcript. Meeting bundles and internal directories are created mode
 `0700`; documents and machine data are `0600` (owner-only).
 
-Optional local speaker diarization is available under **Settings → Meeting →
-Speaker diarization**. The first enabled meeting installs Samantha's managed
-pyannote segmentation and NeMo TitaNet models, then captures 16 kHz PCM through
-a non-blocking subscriber while STT continues normally. When recording stops,
-the recorder visibly moves from `queued` to `running` to `complete` (or
+Meeting speaker diarization is **on by default** (**Settings → Meeting →
+Speaker diarization**). The first meeting that needs models installs Samantha's
+managed pyannote segmentation and NeMo TitaNet packs, then captures 16 kHz PCM
+through a non-blocking subscriber while STT continues normally. When recording
+stops, the recorder visibly moves from `queued` to `running` to `complete` (or
 `error`) and opens a review screen with anonymous `speaker-1…N` labels beside
 attributed turns. Each speaker label has a stable, distinct color in labeled
 live turns and throughout the review. Live conversation voice bubbles and the
 current-speaker footer use the same palette. These are voice clusters, not
 enrolled names or identity claims. Continue from the review screen to the
-configured routing flow.
+configured routing flow. Turn the feature off in Settings if you do not want
+offline diarization.
 
 ### Speaker labels in chat
 
 Meeting diarization is offline — it runs when a recording stops, so live meeting
-lines carry no labels. Labeling **chat** turns is a separate, live path with its
-own switch under **Settings → Speakers → Speaker labels in chat**. With it on, a
+lines carry no labels. Labeling **chat** turns is a separate, live path
+(**Settings → Speakers → Speaker labels in chat**), also **on by default**. A
 voice conversation prefixes each user bubble with `speaker-1…N` and colors the
 bubble border to match, and the footer shows the current speaker.
 
@@ -535,7 +536,7 @@ Prompt bodies stay in `prompts/` (see `samantha prompts`).
 | `claude_session_warn_tokens` | `60000` | `CLAUDE_SESSION_WARN_TOKENS` | Replayed-prompt size at which a visible warning appears (log + activity feed), once per CLI session. Nothing is dropped. `0` disables the warning. |
 
 > **Upgrading:** installs that saved settings while `claude_max_session_tokens` defaulted to `60000` still carry that value in `config.yaml` and keep the silent session drops. Delete the key (or set `0`) to adopt the warn-only default — `samantha doctor` flags this.
-| `voice_tools_enabled` | `false` (auto-`true` for Ollama when unset) | `VOICE_TOOLS_ENABLED` | Enable tool calls (`list_files` / `read_file` / `write_file` / `run_command` / `web_search` / `fetch_url` for Ollama). Ollama enables this automatically unless you set the key or env explicitly to `false`. Remote `samantha serve` still uses `remote_tools_enabled` (default off). |
+| `voice_tools_enabled` | `true` | `VOICE_TOOLS_ENABLED` | Local tools (`list_files` / `read_file` / `write_file` / `run_command` / `web_search` / `fetch_url` for Ollama). Default on; set `false` to disable. Switching brain provider to Ollama also re-enables when the key was dumped false. Remote `samantha serve` still uses `remote_tools_enabled` (default off). |
 | `tool_command_timeout` | `30` (clamped 1–120) | `TOOL_COMMAND_TIMEOUT` | Maximum seconds for one local `run_command` invocation. The whole brain turn has its own timeout. |
 | `remote_tools_enabled` | `false` | | Allow network-triggered turns from `samantha serve` to invoke tools; keep off unless remote clients are trusted. |
 | `calibre_enabled` | `false` | `CALIBRE_ENABLED` | Opt in to Calibre library browse/search, TUI Library + picker, and `--from-library` |
@@ -578,7 +579,7 @@ Prompt bodies stay in `prompts/` (see `samantha prompts`).
 | `agent_name` | `Samantha` | | Display name |
 | `persona` | `samantha` | `PERSONA` | Prompt document name for the interactive persona |
 | `prompts_dir` | empty | `PROMPTS_DIR` | Prompt document directory; defaults to `~/.obey/agents/voice/festival-voice/prompts` when unset |
-| `skills_enabled` | `false` (auto-`true` for local Ollama when unset) | `SKILLS_ENABLED` | Enable Agent Skills (`SKILL.md`) for the Ollama provider. Ollama enables discovery automatically unless you set the key or env explicitly to `false`. Discovers project/workspace/user skill frontmatter into the system prompt; not a pre-activation sandbox. Claude/Grok already discover skills via their CLIs. |
+| `skills_enabled` | `true` | `SKILLS_ENABLED` | Agent Skills (`SKILL.md`) discovery for Ollama. Default on; set `false` to disable. Discovers project/workspace/user skill frontmatter into the system prompt; not a pre-activation sandbox. Claude/Grok already discover skills via their CLIs. |
 | `skills_dir` | empty | `SKILLS_DIR` | Extra Samantha skills root (after project/workspace/user harness dirs); defaults to `~/.obey/agents/voice/festival-voice/skills` when unset. |
 | `models_dir` | `~/.cache/festival-voice/models` | `MODELS_DIR` | Model download directory |
 | `language` | `en-US` | | Recognition language |
@@ -588,8 +589,8 @@ Prompt bodies stay in `prompts/` (see `samantha prompts`).
 
 ### Agent Skills (Ollama)
 
-With `skills_enabled=true` (the default for local Ollama unless explicitly
-disabled), the Ollama provider discovers Agent Skills via the
+With `skills_enabled=true` (the product default unless explicitly disabled), the
+Ollama provider discovers Agent Skills via the
 cross-client **`.agents/skills`** convention
 ([agentskills.io](https://agentskills.io/client-implementation/adding-skills-support))
 — **project/workspace then user** — plus Samantha's own skills root:

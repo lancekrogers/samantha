@@ -143,8 +143,9 @@ type Config struct {
 	// from profile prompts.turn; not a user-facing top-level config key.
 	TurnPrompt string `mapstructure:"-"`
 
-	// Skills (Agent Skills / SKILL.md). Ollama loads the catalog by default when
-	// SkillsEnabled is not explicitly disabled. See internal/skills.
+	// Skills (Agent Skills / SKILL.md). On by default; set false to disable.
+	// Ollama also re-enables on provider switch when the key is unset. See
+	// internal/skills.
 	SkillsEnabled bool   `mapstructure:"skills_enabled"`
 	SkillsDir     string `mapstructure:"skills_dir"`
 
@@ -315,7 +316,11 @@ func setDefaults(v *viper.Viper) {
 	// tool-heavy turn can add thousands. 60k leaves a long voice conversation
 	// untouched while flagging a runaway session before TTFT suffers.
 	v.SetDefault("claude_session_warn_tokens", 60000)
-	v.SetDefault("voice_tools_enabled", false)
+	// Local tools and Agent Skills are on by default so a fresh install can
+	// use file tools and SKILL.md discovery without hunting Settings. Explicit
+	// false (config key or env) still wins. Remote serve stays default-deny
+	// via remote_tools_enabled.
+	v.SetDefault("voice_tools_enabled", true)
 	v.SetDefault("tool_command_timeout", 30)
 	v.SetDefault("remote_tools_enabled", false)
 
@@ -330,7 +335,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("active_persona", "samantha")
 	v.SetDefault("persona", "samantha")
 	v.SetDefault("prompts_dir", "")
-	v.SetDefault("skills_enabled", false)
+	v.SetDefault("skills_enabled", true)
 	v.SetDefault("skills_dir", "")
 	v.SetDefault("models_dir", DefaultModelsDir())
 
@@ -347,15 +352,17 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("meeting.route.body", "full")
 	v.SetDefault("meeting.route.destinations", []any{})
 
-	// Speaker analysis off by default.
-	v.SetDefault("speaker.enabled", false)
+	// Speaker analysis on by default: live chat labels + offline meeting
+	// diarization. Models install on first use (conversation start / meeting
+	// end). Explicit false still wins.
+	v.SetDefault("speaker.enabled", true)
 	v.SetDefault("speaker.threshold", 0.6)
 	v.SetDefault("speaker.enrollment_dir", "")
-	v.SetDefault("speaker.live.enabled", false)
+	v.SetDefault("speaker.live.enabled", true)
 	v.SetDefault("speaker.live.mode", "indicator")
 	v.SetDefault("speaker.live.threshold", 0.0) // 0 → inherit speaker.threshold
 	v.SetDefault("speaker.live.window_ms", 1500)
-	v.SetDefault("speaker.meeting.enabled", false)
+	v.SetDefault("speaker.meeting.enabled", true)
 	v.SetDefault("speaker.meeting.record_audio", false)
 	v.SetDefault("speaker.meeting.num_speakers", 0)
 	v.SetDefault("speaker.models.embedding", "")
