@@ -1,51 +1,29 @@
 package aecprobe
 
-import "math"
+import (
+	"math"
+
+	"github.com/lancekrogers/samantha/internal/audio"
+)
 
 // MeasureDelay finds the lag, in samples, that best aligns want inside got.
 //
 // This is the number the whole exercise exists to produce. referenceDelaySamples
 // infers output latency from (Periods-1)*PeriodSizeInFrames and an assumed
-// period count; nothing has ever checked it against a speaker and a microphone.
-// Cross-correlating the played chirp against the recording answers it directly.
+// period count; measuring it against a real speaker and microphone is what
+// showed it under-counting by 60ms on built-in hardware.
 //
-// Returns the lag and a confidence in [0,1] — the peak's normalized correlation.
-// A low confidence means the peak is not trustworthy: too quiet, too noisy, or
-// the chirp never actually played.
+// Delegates to audio.CorrelateDelay so the probe and the runtime calibrator
+// cannot drift apart on what "the delay" means.
+//
+// Returns the lag and a confidence in [0,1] — the peak's normalized
+// correlation. A low confidence means the peak is not trustworthy: too quiet,
+// too noisy, or the stimulus never actually played.
 func MeasureDelay(want, got []float32, maxLagSamples int) (lag int, confidence float64) {
-	if len(want) == 0 || len(got) == 0 || maxLagSamples <= 0 {
-		return 0, 0
-	}
-	// Correlate over a window of the stimulus, not all of it: the sweep's
-	// autocorrelation peak is sharp, and a shorter window keeps this O(lag*win)
-	// instead of O(lag*len).
-	win := min(len(want), Rate) // up to 1s of stimulus
-	ref := want[:win]
-
-	refEnergy := energy(ref)
-	if refEnergy <= 0 {
-		return 0, 0
-	}
-
-	bestLag, bestScore := 0, 0.0
-	for lag := 0; lag <= maxLagSamples && lag+win <= len(got); lag++ {
-		seg := got[lag : lag+win]
-		segEnergy := energy(seg)
-		if segEnergy <= 0 {
-			continue
-		}
-		var dot float64
-		for i := range ref {
-			dot += float64(ref[i]) * float64(seg[i])
-		}
-		// Normalized cross-correlation: comparable across gain differences, so
-		// a quiet mic does not read as a worse match than a loud one.
-		score := math.Abs(dot) / math.Sqrt(refEnergy*segEnergy)
-		if score > bestScore {
-			bestScore, bestLag = score, lag
-		}
-	}
-	return bestLag, bestScore
+	// Correlate over up to a second of the stimulus: the sweep's
+	// autocorrelation peak is sharp, and a bounded window keeps this
+	// O(maxLag*window) rather than O(maxLag*len).
+	return audio.CorrelateDelay(want, got, maxLagSamples, Rate)
 }
 
 // ERLE reports echo return loss enhancement in dB: how much quieter the
