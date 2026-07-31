@@ -453,7 +453,7 @@ type NativeEnsureOptions struct {
 // EnsureNative installs or verifies the native release package under modelsDir/qwen3-tts.
 // It never installs Python. When URL is empty and the package is already present, it
 // only verifies the requested tier. When URL is empty and missing, it returns a
-// clear remediation error (set qwen_tts_native_url / SAMANTHA_QWEN_NATIVE_URL).
+// clear remediation error (no URL and no published default for this platform).
 func EnsureNative(ctx context.Context, modelsDir string, opt NativeEnsureOptions, progress ProgressFunc) (NativeStatus, error) {
 	if strings.TrimSpace(modelsDir) == "" {
 		return NativeStatus{}, errors.New("native Qwen setup: models directory is empty")
@@ -484,13 +484,16 @@ func EnsureNative(ctx context.Context, modelsDir string, opt NativeEnsureOptions
 
 	url := strings.TrimSpace(opt.URL)
 	if url == "" {
-		url = strings.TrimSpace(os.Getenv("SAMANTHA_QWEN_NATIVE_URL"))
+		url = ResolveNativeURL("")
+	}
+	if strings.TrimSpace(opt.SHA256) == "" {
+		opt.SHA256 = ResolveNativeSHA256("")
 	}
 	if url == "" {
 		if status.Installed {
 			return status, nil
 		}
-		return status, fmt.Errorf("native Qwen3-TTS is not installed; set qwen_tts_native_url (or SAMANTHA_QWEN_NATIVE_URL) to a release tarball, then run models ensure --tts")
+		return status, fmt.Errorf("native Qwen3-TTS is not installed; no published package for %s/%s — set qwen_tts_native_url to a release tarball, then run models ensure --tts", runtime.GOOS, runtime.GOARCH)
 	}
 
 	if progress != nil {
@@ -905,20 +908,36 @@ func fixDylibNames(binDir string) {
 	}
 }
 
-// ResolveNativeURL returns configured URL or env override (tests/operators).
+// ResolveNativeURL returns configured URL, env override, or the published
+// platform default release asset when available.
 func ResolveNativeURL(configured string) string {
 	if v := strings.TrimSpace(configured); v != "" {
 		return v
 	}
-	return strings.TrimSpace(os.Getenv("SAMANTHA_QWEN_NATIVE_URL"))
+	if v := strings.TrimSpace(os.Getenv("SAMANTHA_QWEN_NATIVE_URL")); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("QWEN_TTS_NATIVE_URL")); v != "" {
+		return v
+	}
+	url, _ := DefaultNativeRelease()
+	return url
 }
 
-// ResolveNativeSHA256 returns configured archive checksum or env override.
+// ResolveNativeSHA256 returns configured archive checksum, env override, or the
+// published platform default digest matching DefaultNativeRelease.
 func ResolveNativeSHA256(configured string) string {
 	if v := strings.TrimSpace(configured); v != "" {
 		return v
 	}
-	return strings.TrimSpace(os.Getenv("SAMANTHA_QWEN_NATIVE_SHA256"))
+	if v := strings.TrimSpace(os.Getenv("SAMANTHA_QWEN_NATIVE_SHA256")); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("QWEN_TTS_NATIVE_SHA256")); v != "" {
+		return v
+	}
+	_, sha := DefaultNativeRelease()
+	return sha
 }
 
 // PreferNative is always true after cutover (native-only product path).
