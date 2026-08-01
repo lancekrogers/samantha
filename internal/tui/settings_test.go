@@ -330,7 +330,7 @@ func TestSettingsInstallsQwenBeforeActivatingProvider(t *testing.T) {
 		saved[key] = value
 		return nil
 	}
-	m.ensureTTSAssets = func(context.Context, *config.Config) error {
+	m.ensureTTSAssets = func(context.Context, *config.Config, func(string, float64)) error {
 		writeNativeTUITestInstall(t, dir)
 		return nil
 	}
@@ -509,7 +509,7 @@ func newPreviewTestModel(player *fakePreviewPlayer, created *int) settingsModel 
 			}
 			return player
 		},
-		ensureTTSAssets: func(context.Context, *config.Config) error {
+		ensureTTSAssets: func(context.Context, *config.Config, func(string, float64)) error {
 			return nil
 		},
 		newTTSProvider: func(*config.Config) (tts.Provider, func(), error) {

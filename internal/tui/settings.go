@@ -68,7 +68,9 @@ type settingsModel struct {
 	previewCancel    context.CancelFunc
 	previewPlayer    audio.Engine
 	newPreviewPlayer func() audio.Engine
-	ensureTTSAssets  func(context.Context, *config.Config) error
+	// ensureTTSAssets installs TTS assets; onProgress may be nil (preview) or
+	// feed the Settings install progress bridge.
+	ensureTTSAssets  func(ctx context.Context, cfg *config.Config, onProgress func(name string, pct float64)) error
 	newTTSProvider   func(*config.Config) (tts.Provider, func(), error)
 	saveConfig       func(string, any) error
 	message          string
@@ -89,8 +91,8 @@ func newSettings(cfg *config.Config, providers []discovery.ProviderInfo) setting
 			return audio.NewPlayerWithDevice(cfg.OutputDevice)
 		},
 		deviceChecker: audio.NewDeviceChecker(),
-		ensureTTSAssets: func(ctx context.Context, cfg *config.Config) error {
-			return config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedTTS: true}, nil)
+		ensureTTSAssets: func(ctx context.Context, cfg *config.Config, onProgress func(name string, pct float64)) error {
+			return config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedTTS: true}, onProgress)
 		},
 		newTTSProvider: tts.NewProvider,
 		saveConfig:     config.SetAndSave,
@@ -338,7 +340,7 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 		if m.nativeStatus.Installed {
 			m.message = "Native Qwen package ready; open Voice for presets, Qwen tab for tier/consent/cache"
 		} else {
-			m.message = "Qwen activated; install the native package (qwen_tts_native_url + models ensure --tts) before synthesis"
+			m.message = "Qwen activated; open Settings → Qwen → Install package (or run models ensure --tts)"
 		}
 
 	case qwenInstallProgressMsg:
@@ -528,7 +530,7 @@ func (m *settingsModel) selectCurrent() tea.Cmd {
 				m.qwenInstallCancel = cancel
 				m.qwenInstalling = true
 				m.qwenInstallEvents = newEventBridge(16)
-				m.message = "Installing native Qwen3-TTS package…"
+				m.message = "Installing native Qwen3-TTS package (large download)…"
 				m.buildTTSItems()
 				m.buildQwenItems()
 				return tea.Batch(m.qwenInstallEvents.wait(), m.installQwenAssets(ctx))

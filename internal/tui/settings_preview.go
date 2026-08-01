@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/tts"
 )
 
@@ -68,7 +69,13 @@ func (m settingsModel) previewVoice(ctx context.Context, id int64, voice tts.Voi
 		// clobber the newer preview's message or "playing" indicator.
 		quiet := voicePreviewDoneMsg{id: id, voice: voice.Name}
 
-		if err := m.ensureTTSAssets(ctx, &cfg); err != nil {
+		ensure := m.ensureTTSAssets
+		if ensure == nil {
+			ensure = func(ctx context.Context, cfg *config.Config, _ func(string, float64)) error {
+				return config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedTTS: true}, nil)
+			}
+		}
+		if err := ensure(ctx, &cfg, nil); err != nil {
 			if errors.Is(err, context.Canceled) {
 				return quiet
 			}
