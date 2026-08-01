@@ -216,19 +216,20 @@ func (m *settingsModel) selectQwenItem() tea.Cmd {
 		m.qwenInstallCancel = cancel
 		m.qwenInstalling = true
 		m.qwenInstallEvents = newEventBridge(16)
-		m.message = "Installing Qwen TTS assets (native package preferred when URL set)…"
+		m.message = "Installing native Qwen3-TTS package (large download)…"
 		m.buildQwenItems()
 		return tea.Batch(m.qwenInstallEvents.wait(), m.installQwenAssets(ctx))
 	}
 	return nil
 }
 
-// installQwenAssets runs ensure for TTS; prefers native tarball when configured.
+// installQwenAssets runs models ensure --tts for the native package and streams
+// progress into the Settings status line via qwenInstallProgressMsg.
 func (m settingsModel) installQwenAssets(ctx context.Context) tea.Cmd {
 	ensureAssets := m.ensureTTSAssets
 	if ensureAssets == nil {
-		ensureAssets = func(ctx context.Context, cfg *config.Config) error {
-			return config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedTTS: true}, nil)
+		ensureAssets = func(ctx context.Context, cfg *config.Config, onProgress func(string, float64)) error {
+			return config.EnsureRuntimeAssets(ctx, cfg, config.AssetRequest{NeedTTS: true}, onProgress)
 		}
 	}
 	events := m.qwenInstallEvents
@@ -236,16 +237,23 @@ func (m settingsModel) installQwenAssets(ctx context.Context) tea.Cmd {
 	// Ensure path keys off qwen3-tts provider.
 	cfgCopy.TTSProvider = managedqwen.ProviderName
 	return func() tea.Msg {
-		err := ensureAssets(ctx, &cfgCopy)
-		// Progress bridge has no fine-grained stages for EnsureRuntimeAssets.
+		progress := func(name string, pct float64) {
+			if events == nil {
+				return
+			}
+			events.send(qwenInstallProgressMsg{stage: name, pct: pct})
+		}
+		progress("starting download", 1)
+		err := ensureAssets(ctx, &cfgCopy, progress)
 		if events != nil {
-			events.send(qwenInstallProgressMsg{stage: "Qwen assets", pct: 100})
+			if err == nil {
+				events.send(qwenInstallProgressMsg{stage: "complete", pct: 100})
+			}
 			events.send(qwenInstallProgressClosedMsg{})
 		}
-		// Prefer reporting native status after ensure.
 		st := managedqwen.InspectNative(config.ModelsDirFrom(&cfgCopy), cfgCopy.QwenTTSModelTier)
-		legacy := managedqwen.Inspect(config.ModelsDirFrom(&cfgCopy))
-		return qwenInstallDoneMsg{status: legacy, native: st, err: err}
+		status := managedqwen.Inspect(config.ModelsDirFrom(&cfgCopy))
+		return qwenInstallDoneMsg{status: status, native: st, err: err}
 	}
 }
 
