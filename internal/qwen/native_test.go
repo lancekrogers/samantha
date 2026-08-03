@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestInspectNativeEmpty(t *testing.T) {
@@ -102,10 +103,10 @@ func TestInspectNativeRejectsInvalidManifest(t *testing.T) {
 		mutate func(t *testing.T, p NativePaths)
 	}{
 		{
-			name: "corrupt checksum",
+			name: "missing model file",
 			mutate: func(t *testing.T, p NativePaths) {
 				t.Helper()
-				if err := os.WriteFile(filepath.Join(p.ModelDir, "qwen3-tts-0.6b-f16.gguf"), []byte("corrupt"), 0o644); err != nil {
+				if err := os.Remove(filepath.Join(p.ModelDir, "qwen3-tts-0.6b-f16.gguf")); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -147,10 +148,70 @@ func TestInspectNativeRejectsInvalidManifest(t *testing.T) {
 			}
 			tc.mutate(t, NativeInstallPaths(modelsDir))
 			st := InspectNative(modelsDir, DefaultModelTier)
-			if st.Installed || !strings.Contains(st.Detail, "manifest is invalid") {
+			if st.Installed {
+				t.Fatalf("status=%+v, want not installed", st)
+			}
+			// Missing weights leave the manifest valid but model incomplete;
+			// path/schema issues surface as an invalid manifest.
+			if tc.name != "missing model file" && !strings.Contains(st.Detail, "manifest is invalid") {
 				t.Fatalf("status=%+v, want invalid manifest", st)
 			}
 		})
+	}
+}
+
+// VerifyNativeInstall is the only path that re-hashes package bytes. Inspect
+// must stay presence-only so TUI status chips never stream multi-GB GGUFs.
+func TestVerifyNativeInstallRejectsCorruptChecksum(t *testing.T) {
+	modelsDir := t.TempDir()
+	archive, sum := writeFakeNativeTar(t, t.TempDir())
+	if _, err := EnsureNative(context.Background(), modelsDir, NativeEnsureOptions{URL: archive, SHA256: sum}, nil); err != nil {
+		t.Fatal(err)
+	}
+	p := NativeInstallPaths(modelsDir)
+	if err := os.WriteFile(filepath.Join(p.ModelDir, "qwen3-tts-0.6b-f16.gguf"), []byte("corrupt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Presence-only inspect still reports the package as present.
+	st := InspectNative(modelsDir, DefaultModelTier)
+	if !st.Installed {
+		t.Fatalf("InspectNative after content corruption = %+v, want still installed (presence-only)", st)
+	}
+	err := VerifyNativeInstall(modelsDir)
+	if err == nil || !strings.Contains(err.Error(), "sha256") {
+		t.Fatalf("VerifyNativeInstall() = %v, want sha256 mismatch", err)
+	}
+}
+
+// InspectNative must stay cheap even when the real package has multi-GB weights.
+// A prior bug re-hashed GGUFs on every TUI View frame via ttsBadgeLabel.
+func TestInspectNativeDoesNotHashWeights(t *testing.T) {
+	modelsDir := t.TempDir()
+	archive, sum := writeFakeNativeTar(t, t.TempDir())
+	if _, err := EnsureNative(context.Background(), modelsDir, NativeEnsureOptions{URL: archive, SHA256: sum}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Inflate the model file so a mistaken full-hash path would blow the budget.
+	big := make([]byte, 32<<20) // 32 MiB
+	for i := range big {
+		big[i] = byte(i)
+	}
+	if err := os.WriteFile(filepath.Join(NativeInstallPaths(modelsDir).ModelDir, "qwen3-tts-0.6b-f16.gguf"), big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Warm page cache, then require inspect to stay well under a hash of 32 MiB.
+	_ = InspectNative(modelsDir, DefaultModelTier)
+	start := time.Now()
+	for i := 0; i < 50; i++ {
+		st := InspectNative(modelsDir, DefaultModelTier)
+		if !st.Installed {
+			t.Fatalf("InspectNative = %+v, want installed", st)
+		}
+	}
+	elapsed := time.Since(start)
+	// Hashing 50 × 32 MiB is hundreds of ms even on SSD; presence is sub-ms.
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("InspectNative x50 took %v; likely re-hashing weights (budget 200ms)", elapsed)
 	}
 }
 
