@@ -217,6 +217,22 @@ func TestMeetingDiarizingChrome(t *testing.T) {
 	}
 }
 
+func TestMeetingAbandonDiarizeCancelsAnalysis(t *testing.T) {
+	m := sizedMeeting(t, 80, 24)
+	m.markStopping()
+	m.sessionPhase = meetingSessionDiarizing
+	cancelled := false
+	m.analysisCancel = func() { cancelled = true }
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	mm := updated.(meetingModel)
+	if !cancelled {
+		t.Fatal("ctrl+c during diarize must cancel analysis")
+	}
+	if mm.analysisCancel != nil {
+		t.Fatal("analysisCancel should clear after abandon")
+	}
+}
+
 func TestMeetingStopPhraseSinkSendsDurableMsg(t *testing.T) {
 	ch := make(chan tea.Msg, 4)
 	cancelled := false

@@ -450,6 +450,12 @@ enrolled names or identity claims. Continue from the review screen to the
 configured routing flow. Turn the feature off in Settings if you do not want
 offline diarization.
 
+During **Diarizing**, **Ctrl+C** again abandons speaker analysis and still opens
+the review screen with the transcript intact (analysis status cancelled/error).
+Re-running diarization on a past meeting needs retained audio
+(`speaker.meeting.record_audio` / **Record audio for analysis**); without it the
+working PCM is discarded after Finalize.
+
 ### Speaker labels in chat
 
 Meeting diarization is offline — it runs when a recording stops, so live meeting

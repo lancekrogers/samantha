@@ -95,14 +95,17 @@ type meetingModel struct {
 	started      time.Time
 	stoppedAt    time.Time // zero while still recording; freezes elapsed when set
 	sessionPhase meetingSessionPhase
-	utterances   int
-	notes        int
-	bookmarks    int
-	errors       int
-	quitting     bool
-	loopDone     bool
-	loopErr      error
-	analysis     meeting.AnalysisResult
+	// analysisCancel aborts FinalizeSpeakers when the user abandons mid-diarize.
+	// Set by the listen-loop goroutine; cleared when the loop finishes.
+	analysisCancel context.CancelFunc
+	utterances     int
+	notes          int
+	bookmarks      int
+	errors         int
+	quitting       bool
+	loopDone       bool
+	loopErr        error
+	analysis       meeting.AnalysisResult
 }
 
 // RunMeeting launches a standalone Bubble Tea meeting recorder (CLI path).
@@ -205,6 +208,12 @@ func meetingTickCmd() tea.Cmd {
 	return tea.Tick(meetingTickInterval, func(t time.Time) tea.Msg { return meetingTickMsg(t) })
 }
 
+// meetingAnalysisCancelMsg registers the cancel func for mid-diarize abandon.
+type meetingAnalysisCancelMsg struct{ cancel context.CancelFunc }
+
+// meetingAnalysisCancelClearMsg drops the cancel handle after Finalize returns.
+type meetingAnalysisCancelClearMsg struct{}
+
 func (m *meetingModel) startLoop() tea.Cmd {
 	ch := make(chan tea.Msg, 256)
 	opts := m.opts
@@ -230,12 +239,22 @@ func (m *meetingModel) startLoop() tea.Cmd {
 		if opts.FinalizeSpeakers != nil {
 			sendMeeting(ch, meetingSpeakerStatusMsg{status: meeting.AnalysisRunning, detail: "diarizing captured audio…"})
 			analysisCtx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+			sendMeeting(ch, meetingAnalysisCancelMsg{cancel: cancel})
 			var analysisErr error
 			analysis, analysisErr = opts.FinalizeSpeakers(analysisCtx)
 			cancel()
-			if analysisErr != nil && analysis.Error == "" {
-				analysis.Status = meeting.AnalysisError
-				analysis.Error = analysisErr.Error()
+			sendMeeting(ch, meetingAnalysisCancelClearMsg{})
+			if analysisErr != nil {
+				if analysis.Error == "" {
+					analysis.Error = analysisErr.Error()
+				}
+				if analysis.Status == "" || analysis.Status == meeting.AnalysisRunning || analysis.Status == meeting.AnalysisComplete {
+					analysis.Status = meeting.AnalysisError
+				}
+				if analysisCtx.Err() != nil && !strings.Contains(strings.ToLower(analysis.Error), "cancel") {
+					analysis.Error = "speaker analysis cancelled"
+					analysis.Status = meeting.AnalysisError
+				}
 			}
 			sendMeeting(ch, meetingSpeakerStatusMsg{status: analysis.Status, detail: meetingAnalysisDetail(analysis)})
 		}
@@ -290,6 +309,14 @@ func (m meetingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case meetingStopRequestedMsg:
 		m.markStopping()
+		return m, nil
+
+	case meetingAnalysisCancelMsg:
+		m.analysisCancel = msg.cancel
+		return m, nil
+
+	case meetingAnalysisCancelClearMsg:
+		m.analysisCancel = nil
 		return m, nil
 
 	case tea.KeyMsg:
@@ -367,6 +394,14 @@ func (m meetingModel) elapsed() time.Duration {
 }
 
 func (m meetingModel) requestStop() (meetingModel, tea.Cmd) {
+	// Second stop (or stop during diarize) abandons offline analysis so the
+	// user is not stuck waiting on multi-minute Finalize.
+	if m.sessionPhase == meetingSessionDiarizing && m.analysisCancel != nil {
+		m.analysisCancel()
+		m.analysisCancel = nil
+		m.status = "Cancelling speaker analysis…"
+		m.statusErr = false
+	}
 	m.markStopping()
 	if m.opts.Cancel != nil {
 		m.opts.Cancel()
@@ -442,6 +477,10 @@ func (m meetingModel) handleListenMsg(msg tea.Msg) (meetingModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case meetingStopRequestedMsg:
 		m.markStopping()
+	case meetingAnalysisCancelMsg:
+		m.analysisCancel = msg.cancel
+	case meetingAnalysisCancelClearMsg:
+		m.analysisCancel = nil
 	case meetingPhaseMsg:
 		// After stop, ignore STT phase flips so "Listening" does not overwrite
 		// Stopping/Diarizing chrome.
