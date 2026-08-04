@@ -123,7 +123,23 @@ type fileRef struct {
 	SHA256 string `json:"sha256"`
 }
 
+// nativeFileVerify selects how strictly manifest files are checked.
+//
+// Presence is for InspectNative / status chips / TUI: path safety + exists +
+// executable bit only. Full SHA-256 of multi-GB GGUFs must never run on the
+// Bubble Tea render path — that was re-hashing ~2 GiB on every keystroke.
+// Hash is for EnsureNative after extract (and explicit integrity checks).
+type nativeFileVerify int
+
+const (
+	nativeFilePresent nativeFileVerify = iota
+	nativeFileHash
+)
+
 // InspectNative reports whether a product native package is installed and which tiers are ready.
+//
+// It deliberately does not re-hash model weights. Call VerifyNativeInstall when
+// a full integrity check is required (post-install, doctor, Force ensure).
 func InspectNative(modelsDir, preferredTier string) NativeStatus {
 	p := NativeInstallPaths(modelsDir)
 	st := NativeStatus{
@@ -134,7 +150,7 @@ func InspectNative(modelsDir, preferredTier string) NativeStatus {
 		st.DefaultTier = preferredTier
 	}
 
-	install, err := loadAndVerifyNativeInstall(p)
+	install, err := loadAndVerifyNativeInstall(p, nativeFilePresent)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			st.Detail = "native Qwen3-TTS package is not installed"
@@ -145,7 +161,7 @@ func InspectNative(modelsDir, preferredTier string) NativeStatus {
 	}
 
 	st.WorkerReady = isExecutable(p.Worker)
-	st.PresetsReady = true // loadAndVerifyNativeInstall verified the manifest entry.
+	st.PresetsReady = true // loadAndVerifyNativeInstall confirmed the presets path exists.
 	if install.TierDefault != "" {
 		st.DefaultTier = normalizeTier(install.TierDefault)
 		if preferredTier != "" {
@@ -190,7 +206,16 @@ func InspectNative(modelsDir, preferredTier string) NativeStatus {
 	return st
 }
 
-func loadAndVerifyNativeInstall(p NativePaths) (nativeInstallJSON, error) {
+// VerifyNativeInstall re-checks the on-disk package against install.json
+// SHA-256 digests. This is intentionally separate from InspectNative so status
+// chips and TUI frames stay O(stat), not O(model size).
+func VerifyNativeInstall(modelsDir string) error {
+	p := NativeInstallPaths(modelsDir)
+	_, err := loadAndVerifyNativeInstall(p, nativeFileHash)
+	return err
+}
+
+func loadAndVerifyNativeInstall(p NativePaths, mode nativeFileVerify) (nativeInstallJSON, error) {
 	data, err := os.ReadFile(p.InstallJSON)
 	if err != nil {
 		return nativeInstallJSON{}, err
@@ -235,7 +260,7 @@ func loadAndVerifyNativeInstall(p NativePaths) (nativeInstallJSON, error) {
 	if install.Bin.Worker != workerRel {
 		return nativeInstallJSON{}, fmt.Errorf("worker path %q, want %q", install.Bin.Worker, workerRel)
 	}
-	if err := verifyNativeManifestFile(p.Root, install.Bin.Worker, install.Bin.WorkerSHA256, true); err != nil {
+	if err := verifyNativeManifestFile(p.Root, install.Bin.Worker, install.Bin.WorkerSHA256, true, mode); err != nil {
 		return nativeInstallJSON{}, fmt.Errorf("worker: %w", err)
 	}
 	for _, ref := range []struct {
@@ -252,7 +277,7 @@ func loadAndVerifyNativeInstall(p NativePaths) (nativeInstallJSON, error) {
 		if ref.path == "" || ref.sha == "" {
 			return nativeInstallJSON{}, fmt.Errorf("%s path and sha256 must both be set", ref.name)
 		}
-		if err := verifyNativeManifestFile(p.Root, ref.path, ref.sha, false); err != nil {
+		if err := verifyNativeManifestFile(p.Root, ref.path, ref.sha, false, mode); err != nil {
 			return nativeInstallJSON{}, fmt.Errorf("%s: %w", ref.name, err)
 		}
 	}
@@ -265,7 +290,7 @@ func loadAndVerifyNativeInstall(p NativePaths) (nativeInstallJSON, error) {
 	if install.Presets != presetsRel {
 		return nativeInstallJSON{}, fmt.Errorf("presets path %q, want %q", install.Presets, presetsRel)
 	}
-	if err := verifyNativeManifestFile(p.Root, install.Presets, install.PresetsSHA256, false); err != nil {
+	if err := verifyNativeManifestFile(p.Root, install.Presets, install.PresetsSHA256, false, mode); err != nil {
 		return nativeInstallJSON{}, fmt.Errorf("presets: %w", err)
 	}
 
@@ -273,10 +298,10 @@ func loadAndVerifyNativeInstall(p NativePaths) (nativeInstallJSON, error) {
 		if normalized := normalizeTier(tier); normalized == "" || normalized != tier {
 			return nativeInstallJSON{}, fmt.Errorf("invalid model tier %q", tier)
 		}
-		if err := verifyNativeManifestFile(p.Root, model.TTS.Path, model.TTS.SHA256, false); err != nil {
+		if err := verifyNativeManifestFile(p.Root, model.TTS.Path, model.TTS.SHA256, false, mode); err != nil {
 			return nativeInstallJSON{}, fmt.Errorf("model %s tts: %w", tier, err)
 		}
-		if err := verifyNativeManifestFile(p.Root, model.Tokenizer.Path, model.Tokenizer.SHA256, false); err != nil {
+		if err := verifyNativeManifestFile(p.Root, model.Tokenizer.Path, model.Tokenizer.SHA256, false, mode); err != nil {
 			return nativeInstallJSON{}, fmt.Errorf("model %s tokenizer: %w", tier, err)
 		}
 	}
@@ -294,14 +319,10 @@ func ensureJSONEOF(dec *json.Decoder) error {
 	return nil
 }
 
-func verifyNativeManifestFile(root, manifestPath, wantSHA string, executable bool) error {
+func verifyNativeManifestFile(root, manifestPath, wantSHA string, executable bool, mode nativeFileVerify) error {
 	rel, err := cleanNativeManifestPath(manifestPath)
 	if err != nil {
 		return err
-	}
-	want, err := hex.DecodeString(strings.TrimSpace(wantSHA))
-	if err != nil || len(want) != sha256.Size {
-		return fmt.Errorf("invalid sha256 %q", wantSHA)
 	}
 	target := filepath.Join(root, filepath.FromSlash(rel))
 	info, err := os.Lstat(target)
@@ -327,6 +348,15 @@ func verifyNativeManifestFile(root, manifestPath, wantSHA string, executable boo
 	}
 	if executable && resolvedInfo.Mode()&0o111 == 0 {
 		return fmt.Errorf("%q is not executable", manifestPath)
+	}
+	// Presence-only: enough for status chips. Full content hashing of multi-GB
+	// weights is reserved for post-install integrity (nativeFileHash).
+	if mode == nativeFilePresent {
+		return nil
+	}
+	want, err := hex.DecodeString(strings.TrimSpace(wantSHA))
+	if err != nil || len(want) != sha256.Size {
+		return fmt.Errorf("invalid sha256 %q", wantSHA)
 	}
 	f, err := os.Open(resolved)
 	if err != nil {
@@ -533,6 +563,11 @@ func EnsureNative(ctx context.Context, modelsDir string, opt NativeEnsureOptions
 
 	if progress != nil {
 		progress("native Qwen3-TTS verify", 90)
+	}
+	// Full digest check once after extract — not on every later InspectNative.
+	if err := VerifyNativeInstall(modelsDir); err != nil {
+		status = InspectNative(modelsDir, tier)
+		return status, fmt.Errorf("native Qwen setup: package verification failed: %w", err)
 	}
 	status = InspectNative(modelsDir, tier)
 	if !status.Installed {
