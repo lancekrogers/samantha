@@ -53,6 +53,22 @@ type meetingLoopDoneMsg struct {
 type meetingTickMsg time.Time
 type meetingNoteErrMsg struct{ err error }
 
+// meetingStopRequestedMsg is a durable signal that the user (or stop phrase)
+// asked to end capture. It freezes the session clock before the listen loop
+// drains, so the UI does not keep looking live while STT/diarize finish.
+type meetingStopRequestedMsg struct{}
+
+// meetingSessionPhase is the recorder lifecycle after beginRecording.
+// Distinct from meetingPhaseMsg (STT listening/hearing/transcribing).
+type meetingSessionPhase int
+
+const (
+	meetingSessionRecording meetingSessionPhase = iota
+	meetingSessionStopping
+	meetingSessionDiarizing
+	meetingSessionDone
+)
+
 // meetingModel is the live recorder: EQ + timeline + note composer + bookmarks.
 type meetingModel struct {
 	opts MeetingOpts
@@ -76,15 +92,17 @@ type meetingModel struct {
 	reducedMotion bool
 	voiceTicking  bool
 
-	started    time.Time
-	utterances int
-	notes      int
-	bookmarks  int
-	errors     int
-	quitting   bool
-	loopDone   bool
-	loopErr    error
-	analysis   meeting.AnalysisResult
+	started      time.Time
+	stoppedAt    time.Time // zero while still recording; freezes elapsed when set
+	sessionPhase meetingSessionPhase
+	utterances   int
+	notes        int
+	bookmarks    int
+	errors       int
+	quitting     bool
+	loopDone     bool
+	loopErr      error
+	analysis     meeting.AnalysisResult
 }
 
 // RunMeeting launches a standalone Bubble Tea meeting recorder (CLI path).
@@ -167,6 +185,8 @@ func (m *meetingModel) beginRecording(opts MeetingOpts) tea.Cmd {
 	m.loopErr = nil
 	m.analysis = meeting.AnalysisResult{}
 	m.partial = ""
+	m.stoppedAt = time.Time{}
+	m.sessionPhase = meetingSessionRecording
 	if m.opts.SpeakerStatus == "" {
 		m.opts.SpeakerStatus = meeting.AnalysisDisabled
 	}
@@ -265,8 +285,11 @@ func (m meetingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case meetingSpeakerStatusMsg:
-		m.opts.SpeakerStatus = msg.status
-		m.opts.SpeakerError = msg.detail
+		m.applySpeakerStatus(msg)
+		return m, nil
+
+	case meetingStopRequestedMsg:
+		m.markStopping()
 		return m, nil
 
 	case tea.KeyMsg:
@@ -300,8 +323,51 @@ func (m meetingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
-func (m meetingModel) requestStop() (meetingModel, tea.Cmd) {
+// markStopping freezes the recording clock and moves into the Stopping session
+// phase. Idempotent: later stop keys / stop-phrase echoes do not advance stoppedAt.
+func (m *meetingModel) markStopping() {
+	if m.stoppedAt.IsZero() {
+		m.stoppedAt = time.Now()
+	}
+	if m.sessionPhase == meetingSessionRecording {
+		m.sessionPhase = meetingSessionStopping
+	}
 	m.quitting = true
+	m.partial = ""
+	if m.sessionPhase == meetingSessionStopping {
+		m.status = "Stopping capture…"
+		m.statusErr = false
+	}
+}
+
+func (m *meetingModel) applySpeakerStatus(msg meetingSpeakerStatusMsg) {
+	m.opts.SpeakerStatus = msg.status
+	m.opts.SpeakerError = msg.detail
+	if msg.status == meeting.AnalysisRunning && m.sessionPhase != meetingSessionDone {
+		if m.stoppedAt.IsZero() {
+			m.stoppedAt = time.Now()
+		}
+		m.sessionPhase = meetingSessionDiarizing
+		m.quitting = true
+		m.status = "Diarizing speakers…"
+		m.statusErr = false
+	}
+}
+
+// elapsed returns the duration to show in the header: frozen once stop is
+// requested so diarization time does not look like live REC.
+func (m meetingModel) elapsed() time.Duration {
+	if !m.stoppedAt.IsZero() {
+		return m.stoppedAt.Sub(m.started)
+	}
+	if m.started.IsZero() {
+		return 0
+	}
+	return time.Since(m.started)
+}
+
+func (m meetingModel) requestStop() (meetingModel, tea.Cmd) {
+	m.markStopping()
 	if m.opts.Cancel != nil {
 		m.opts.Cancel()
 	}
@@ -374,7 +440,14 @@ func (m *meetingModel) setFlash(s string) {
 
 func (m meetingModel) handleListenMsg(msg tea.Msg) (meetingModel, tea.Cmd) {
 	switch msg := msg.(type) {
+	case meetingStopRequestedMsg:
+		m.markStopping()
 	case meetingPhaseMsg:
+		// After stop, ignore STT phase flips so "Listening" does not overwrite
+		// Stopping/Diarizing chrome.
+		if m.sessionPhase != meetingSessionRecording {
+			return m, nil
+		}
 		switch string(msg) {
 		case "listening":
 			m.voiceMode = anim.ModeListening
@@ -391,6 +464,9 @@ func (m meetingModel) handleListenMsg(msg tea.Msg) (meetingModel, tea.Cmd) {
 			m.statusErr = false
 		}
 	case meetingLevelMsg:
+		if m.sessionPhase != meetingSessionRecording {
+			return m, nil
+		}
 		level := float64(msg)
 		if level < 0 {
 			level = 0
@@ -408,11 +484,17 @@ func (m meetingModel) handleListenMsg(msg tea.Msg) (meetingModel, tea.Cmd) {
 			m.status = "Hearing speech"
 		}
 	case meetingPartialMsg:
+		if m.sessionPhase != meetingSessionRecording {
+			return m, nil
+		}
 		m.partial = string(msg)
 		if m.voiceMode == anim.ModeListening {
 			m.voiceMode = anim.ModeHearing
 		}
 	case meetingUtteranceMsg:
+		if m.sessionPhase != meetingSessionRecording {
+			return m, nil
+		}
 		u := listen.Utterance(msg)
 		m.utterances++
 		m.partial = ""
@@ -424,18 +506,24 @@ func (m meetingModel) handleListenMsg(msg tea.Msg) (meetingModel, tea.Cmd) {
 			renderLiveMeetingUtterance(u.Text),
 		))
 	case meetingErrorMsg:
+		if m.sessionPhase != meetingSessionRecording {
+			return m, nil
+		}
 		m.errors++
 		m.statusErr = true
 		m.status = "Transcription error (retrying)"
 		m.appendLine(errorStyle.Render(fmt.Sprintf("  error: %v", msg.err)))
 	case meetingSpeakerStatusMsg:
-		m.opts.SpeakerStatus = msg.status
-		m.opts.SpeakerError = msg.detail
+		m.applySpeakerStatus(msg)
 	case meetingLoopDoneMsg:
 		m.loopDone = true
 		m.loopErr = msg.err
 		m.analysis = msg.analysis
 		m.voiceMode = anim.ModeIdle
+		m.sessionPhase = meetingSessionDone
+		if m.stoppedAt.IsZero() {
+			m.stoppedAt = time.Now()
+		}
 		if msg.err != nil {
 			m.statusErr = true
 			m.status = msg.err.Error()

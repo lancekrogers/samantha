@@ -163,6 +163,82 @@ func TestMeetingStopKeys(t *testing.T) {
 	if !mm.quitting || !cancelled {
 		t.Fatalf("ctrl+c quitting=%v cancelled=%v", mm.quitting, cancelled)
 	}
+	if mm.stoppedAt.IsZero() || mm.sessionPhase != meetingSessionStopping {
+		t.Fatalf("ctrl+c must freeze clock: stoppedAt zero=%v phase=%v", mm.stoppedAt.IsZero(), mm.sessionPhase)
+	}
+}
+
+func TestMeetingStopPhraseFreezesClock(t *testing.T) {
+	m := sizedMeeting(t, 80, 24)
+	m.started = time.Now().Add(-2 * time.Minute)
+	m, _ = m.handleListenMsg(meetingStopRequestedMsg{})
+	if m.stoppedAt.IsZero() || m.sessionPhase != meetingSessionStopping {
+		t.Fatalf("stop phrase: stoppedAt zero=%v phase=%v", m.stoppedAt.IsZero(), m.sessionPhase)
+	}
+	frozen := m.elapsed()
+	time.Sleep(20 * time.Millisecond)
+	if m.elapsed() != frozen {
+		t.Fatalf("elapsed must freeze after stop: before=%v after=%v", frozen, m.elapsed())
+	}
+	// STT phase must not revive live chrome.
+	m, _ = m.handleListenMsg(meetingPhaseMsg("listening"))
+	if m.sessionPhase != meetingSessionStopping || m.status != "Stopping capture…" {
+		t.Fatalf("after stop, STT phase ignored: phase=%v status=%q", m.sessionPhase, m.status)
+	}
+	view := m.View()
+	if strings.Contains(view, "● REC") {
+		t.Fatalf("view still shows live REC after stop:\n%s", view)
+	}
+	if !strings.Contains(view, "Stopping") {
+		t.Fatalf("view missing Stopping chrome:\n%s", view)
+	}
+}
+
+func TestMeetingDiarizingChrome(t *testing.T) {
+	m := sizedMeeting(t, 80, 24)
+	m.markStopping()
+	m, _ = m.handleListenMsg(meetingSpeakerStatusMsg{
+		status: meeting.AnalysisRunning,
+		detail: "diarizing captured audio…",
+	})
+	if m.sessionPhase != meetingSessionDiarizing {
+		t.Fatalf("phase=%v want diarizing", m.sessionPhase)
+	}
+	view := m.View()
+	if strings.Contains(view, "● REC") {
+		t.Fatalf("REC during diarize:\n%s", view)
+	}
+	if !strings.Contains(view, "Diarizing") {
+		t.Fatalf("missing Diarizing chrome:\n%s", view)
+	}
+	// Speaker line still carries engine detail.
+	if !strings.Contains(view, "diarizing captured audio") {
+		t.Fatalf("missing speaker status detail:\n%s", view)
+	}
+}
+
+func TestMeetingStopPhraseSinkSendsDurableMsg(t *testing.T) {
+	ch := make(chan tea.Msg, 4)
+	cancelled := false
+	sink := &meetingUISink{
+		ch:      ch,
+		phrases: meeting.StopPhraseSet(nil),
+		stop:    func() { cancelled = true },
+	}
+	if err := sink.OnUtterance(listen.Utterance{Text: "stop recording"}); err != nil {
+		t.Fatal(err)
+	}
+	if !cancelled {
+		t.Fatal("expected Cancel after stop phrase")
+	}
+	select {
+	case msg := <-ch:
+		if _, ok := msg.(meetingStopRequestedMsg); !ok {
+			t.Fatalf("got %#v, want meetingStopRequestedMsg", msg)
+		}
+	default:
+		t.Fatal("expected durable meetingStopRequestedMsg")
+	}
 }
 
 func TestFormatMeetingDuration(t *testing.T) {
@@ -359,7 +435,16 @@ func TestMeetingUISinkOmitsStopPhraseFromLog(t *testing.T) {
 	}
 	select {
 	case msg := <-ch:
-		t.Fatalf("stop phrase must not emit UI utterance, got %#v", msg)
+		// Durable stop chrome signal is intentional; must not be an utterance.
+		if _, ok := msg.(meetingStopRequestedMsg); !ok {
+			t.Fatalf("stop phrase must emit meetingStopRequestedMsg only, got %#v", msg)
+		}
+	default:
+		t.Fatal("expected durable meetingStopRequestedMsg for stop phrase")
+	}
+	select {
+	case msg := <-ch:
+		t.Fatalf("no further UI messages after stop signal, got %#v", msg)
 	default:
 	}
 }

@@ -53,6 +53,9 @@ type meetingUISink struct {
 
 func (s *meetingUISink) OnUtterance(u listen.Utterance) error {
 	if s.phrases != nil && s.phrases[meeting.NormalizeStopPhrase(u.Text)] {
+		// Durable UI signal first so the session clock freezes even if the
+		// listen loop takes a while to drain after Cancel.
+		sendMeeting(s.ch, meetingStopRequestedMsg{})
 		if s.stop != nil {
 			s.stop()
 		}
