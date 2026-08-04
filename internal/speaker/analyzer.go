@@ -95,6 +95,9 @@ func (a *Analyzer) Finalize(ctx context.Context, samples []float32) (Timeline, e
 	if err != nil {
 		return Timeline{}, err
 	}
+	// Soft cleanup for over-split auto clustering (and harmless when N is fixed):
+	// reassign tiny speaker-N fragments onto dominant talkers.
+	tl = MergeSparseLabels(tl, MergeOpts{})
 	tl.FinalizedAt = time.Now()
 
 	summary := Observation{
