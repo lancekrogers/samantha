@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -230,6 +231,87 @@ func TestMeetingAbandonDiarizeCancelsAnalysis(t *testing.T) {
 	}
 	if mm.analysisCancel != nil {
 		t.Fatal("analysisCancel should clear after abandon")
+	}
+}
+
+func TestApplySpeakerStatusRunningOnlyAfterStop(t *testing.T) {
+	m := sizedMeeting(t, 80, 24)
+	// Demo-style pre-stop running status must not freeze capture chrome.
+	m.applySpeakerStatus(meetingSpeakerStatusMsg{status: meeting.AnalysisRunning, detail: "diarizing…"})
+	if m.sessionPhase != meetingSessionRecording {
+		t.Fatalf("pre-stop AnalysisRunning must not change phase, got %v", m.sessionPhase)
+	}
+	if m.quitting {
+		t.Fatal("pre-stop AnalysisRunning must not set quitting")
+	}
+	// Utterances still accepted.
+	m, _ = m.handleListenMsg(meetingUtteranceMsg(listen.Utterance{Text: "still live", At: time.Now()}))
+	if m.utterances != 1 {
+		t.Fatalf("utterances = %d, want 1 while recording", m.utterances)
+	}
+	// After stop, running promotes to diarizing.
+	m.markStopping()
+	m.applySpeakerStatus(meetingSpeakerStatusMsg{status: meeting.AnalysisRunning, detail: "diarizing captured audio…"})
+	if m.sessionPhase != meetingSessionDiarizing {
+		t.Fatalf("post-stop AnalysisRunning → diarizing, got %v", m.sessionPhase)
+	}
+}
+
+func TestRunMeetingFinalizeAbandonUnblocks(t *testing.T) {
+	ch := make(chan tea.Msg, 16)
+	started := make(chan struct{})
+	finalize := func(ctx context.Context) (meeting.AnalysisResult, error) {
+		close(started)
+		// Simulate multi-minute sherpa Process: ignore cancel until return.
+		select {
+		case <-ctx.Done():
+			// Still sleep past cancel to prove UI does not wait.
+			time.Sleep(200 * time.Millisecond)
+			return meeting.AnalysisResult{Status: meeting.AnalysisError, Error: ctx.Err().Error()}, nil
+		case <-time.After(30 * time.Second):
+			return meeting.AnalysisResult{Status: meeting.AnalysisComplete, SpeakerCount: 1}, nil
+		}
+	}
+	done := make(chan meeting.AnalysisResult, 1)
+	go func() {
+		done <- runMeetingFinalize(ch, finalize)
+	}()
+	// Wait until finalize started and cancel is registered, then abandon.
+	<-started
+	// Drain until we see cancel registration (or timeout).
+	var cancel context.CancelFunc
+	deadline := time.After(2 * time.Second)
+drain:
+	for {
+		select {
+		case msg := <-ch:
+			if m, ok := msg.(meetingAnalysisCancelMsg); ok {
+				cancel = m.cancel
+				break drain
+			}
+		case <-deadline:
+			t.Fatal("timeout waiting for analysis cancel registration")
+		}
+	}
+	cancel()
+	select {
+	case got := <-done:
+		if got.Status != meeting.AnalysisError || got.Error != "speaker analysis cancelled" {
+			t.Fatalf("abandon result = %+v", got)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("runMeetingFinalize must return promptly on cancel without waiting for finalize sleep")
+	}
+}
+
+func TestNormalizeMeetingAnalysisResultCancelWithoutGoError(t *testing.T) {
+	// SpeakerSession often returns (result with Error, nil).
+	got := normalizeMeetingAnalysisResult(meeting.AnalysisResult{
+		Status: meeting.AnalysisError,
+		Error:  "context canceled",
+	}, nil, false)
+	if got.Error != "speaker analysis cancelled" {
+		t.Fatalf("got %+v", got)
 	}
 }
 

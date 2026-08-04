@@ -45,6 +45,23 @@ func TestMergeSparseLabelsNoopWhenAlreadyFew(t *testing.T) {
 	}
 }
 
+func TestMergeSparseLabelsAutoAbsorbsTinyPartner(t *testing.T) {
+	// 400ms is under 2s floor and under 1% of ~60s total → auto merge absorbs.
+	tl := Timeline{Observations: []Observation{
+		{StartMS: 0, EndMS: 60_000, Label: "speaker-1", State: StateStable},
+		{StartMS: 60_000, EndMS: 60_400, Label: "speaker-2", State: StateStable},
+	}}
+	merged := MergeSparseLabels(tl, MergeOpts{})
+	if DistinctSpeakerLabels(merged) != 1 {
+		t.Fatalf("auto merge should absorb 400ms partner: %v", SortedSpeakerLabels(merged))
+	}
+	// Fixed-N product path does not call merge (Analyzer NumSpeakers > 0), so
+	// the original timeline still has both labels.
+	if DistinctSpeakerLabels(tl) != 2 {
+		t.Fatalf("unmerged timeline must keep both labels: %v", SortedSpeakerLabels(tl))
+	}
+}
+
 func TestMergeSparseLabelsIgnoresNonAnonymous(t *testing.T) {
 	tl := Timeline{Observations: []Observation{
 		{StartMS: 0, EndMS: 50_000, Label: "speaker-1", State: StateStable},

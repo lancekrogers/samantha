@@ -446,13 +446,16 @@ beside attributed turns.
 `speaker.meeting.num_speakers`): cycle **Auto** (0) or a fixed count (**2 / 3 / 4**).
 Auto lets the clusterer choose how many voices to invent and can **over-split**
 long 1:1 interviews; set **2** for two-person calls. These are voice clusters, not
-enrolled names or identity claims. Continue from the review screen to the
-configured routing flow. Turn the feature off in Settings if you do not want
-offline diarization.
+enrolled names or identity claims. Each speaker label keeps a stable, distinct
+color in attributed turns and on the review screen; live conversation bubbles
+and the current-speaker footer use the same palette. Continue from the review
+screen to the configured routing flow. Turn the feature off in Settings if you
+do not want offline diarization.
 
-During **Diarizing**, **Ctrl+C** again abandons speaker analysis and still opens
-the review screen with the transcript intact (analysis status cancelled/error).
-Re-running diarization on a past meeting needs retained audio
+During **Diarizing**, **Ctrl+C** again abandons speaker analysis and opens the
+review screen with the transcript intact (analysis status cancelled). Native
+model work may still finish in the background after abandon; the TUI does not
+wait on it. Re-running diarization on a past meeting needs retained audio
 (`speaker.meeting.record_audio` / **Record audio for analysis**); without it the
 working PCM is discarded after Finalize.
 

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -237,32 +238,83 @@ func (m *meetingModel) startLoop() tea.Cmd {
 		err := listen.LoopWithHooks(opts.Ctx, capture, provider, sink, hooks)
 		var analysis meeting.AnalysisResult
 		if opts.FinalizeSpeakers != nil {
-			sendMeeting(ch, meetingSpeakerStatusMsg{status: meeting.AnalysisRunning, detail: "diarizing captured audio…"})
-			analysisCtx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
-			sendMeeting(ch, meetingAnalysisCancelMsg{cancel: cancel})
-			var analysisErr error
-			analysis, analysisErr = opts.FinalizeSpeakers(analysisCtx)
-			cancel()
-			sendMeeting(ch, meetingAnalysisCancelClearMsg{})
-			if analysisErr != nil {
-				if analysis.Error == "" {
-					analysis.Error = analysisErr.Error()
-				}
-				if analysis.Status == "" || analysis.Status == meeting.AnalysisRunning || analysis.Status == meeting.AnalysisComplete {
-					analysis.Status = meeting.AnalysisError
-				}
-				if analysisCtx.Err() != nil && !strings.Contains(strings.ToLower(analysis.Error), "cancel") {
-					analysis.Error = "speaker analysis cancelled"
-					analysis.Status = meeting.AnalysisError
-				}
-			}
-			sendMeeting(ch, meetingSpeakerStatusMsg{status: analysis.Status, detail: meetingAnalysisDetail(analysis)})
+			analysis = runMeetingFinalize(ch, opts.FinalizeSpeakers)
 		}
 		// Loop completion must not be dropped: UI uses it to exit cleanly.
 		sendMeeting(ch, meetingLoopDoneMsg{err: err, analysis: analysis})
 	}()
 
 	return tea.Batch(waitMeetingCh(ch), demoMeetingSpeakerStatusCmds())
+}
+
+// runMeetingFinalize runs offline speaker analysis without blocking UI abandon.
+// Native sherpa Process is not interruptible mid-call; we still cancel the
+// context and open results immediately when the user abandons, while a
+// background Finalize may finish later (artifacts optional).
+func runMeetingFinalize(ch chan<- tea.Msg, finalize func(context.Context) (meeting.AnalysisResult, error)) meeting.AnalysisResult {
+	sendMeeting(ch, meetingSpeakerStatusMsg{status: meeting.AnalysisRunning, detail: "diarizing captured audio…"})
+	analysisCtx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	sendMeeting(ch, meetingAnalysisCancelMsg{cancel: cancel})
+
+	type finalizeResult struct {
+		analysis meeting.AnalysisResult
+		err      error
+	}
+	done := make(chan finalizeResult, 1)
+	go func() {
+		a, e := finalize(analysisCtx)
+		done <- finalizeResult{analysis: a, err: e}
+	}()
+
+	var analysis meeting.AnalysisResult
+	var analysisErr error
+	abandoned := false
+	select {
+	case r := <-done:
+		analysis, analysisErr = r.analysis, r.err
+	case <-analysisCtx.Done():
+		// Abandon: do not wait for multi-minute native Process.
+		abandoned = true
+		analysis = meeting.AnalysisResult{
+			Status: meeting.AnalysisError,
+			Error:  "speaker analysis cancelled",
+		}
+		analysisErr = analysisCtx.Err()
+		go func() { <-done }() // drain when native work eventually returns
+	}
+	cancel()
+	sendMeeting(ch, meetingAnalysisCancelClearMsg{})
+	// Normalize before/without relying on analysisCtx after cancel() — cancel
+	// always sets ctx.Err() even when Finalize already completed successfully.
+	analysis = normalizeMeetingAnalysisResult(analysis, analysisErr, abandoned)
+	sendMeeting(ch, meetingSpeakerStatusMsg{status: analysis.Status, detail: meetingAnalysisDetail(analysis)})
+	return analysis
+}
+
+// normalizeMeetingAnalysisResult maps cancel/errors into a stable UI result.
+// SpeakerSession often returns (result, nil) with Error filled in — check the
+// Go error and result text, not only analysisErr != nil.
+func normalizeMeetingAnalysisResult(analysis meeting.AnalysisResult, analysisErr error, abandoned bool) meeting.AnalysisResult {
+	if analysisErr != nil && analysis.Error == "" {
+		analysis.Error = analysisErr.Error()
+	}
+	cancelled := abandoned ||
+		errors.Is(analysisErr, context.Canceled) ||
+		strings.Contains(strings.ToLower(analysis.Error), "cancel")
+	if cancelled {
+		analysis.Status = meeting.AnalysisError
+		analysis.Error = "speaker analysis cancelled"
+		return analysis
+	}
+	if analysisErr != nil {
+		if analysis.Status == "" || analysis.Status == meeting.AnalysisRunning || analysis.Status == meeting.AnalysisComplete {
+			analysis.Status = meeting.AnalysisError
+		}
+		if analysis.Error == "" {
+			analysis.Error = analysisErr.Error()
+		}
+	}
+	return analysis
 }
 
 func (m meetingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -370,10 +422,10 @@ func (m *meetingModel) markStopping() {
 func (m *meetingModel) applySpeakerStatus(msg meetingSpeakerStatusMsg) {
 	m.opts.SpeakerStatus = msg.status
 	m.opts.SpeakerError = msg.detail
-	if msg.status == meeting.AnalysisRunning && m.sessionPhase != meetingSessionDone {
-		if m.stoppedAt.IsZero() {
-			m.stoppedAt = time.Now()
-		}
+	// Only promote session chrome when capture has already stopped. Scripted
+	// demos emit AnalysisRunning while STT is still live; treating that as
+	// end-of-capture freezes the multi-speaker tape.
+	if msg.status == meeting.AnalysisRunning && m.sessionPhase == meetingSessionStopping {
 		m.sessionPhase = meetingSessionDiarizing
 		m.quitting = true
 		m.status = "Diarizing speakers…"
