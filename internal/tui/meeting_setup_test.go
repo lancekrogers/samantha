@@ -257,4 +257,55 @@ func TestSettingsMeetingDiarizationToggle(t *testing.T) {
 	if strings.Contains(view, "Live conversation") || strings.Contains(view, "Live mode") {
 		t.Fatalf("live speaker rows should not be under Meeting:\n%s", view)
 	}
+	if !strings.Contains(view, "Expected speakers") {
+		t.Fatalf("meeting settings missing num_speakers row:\n%s", view)
+	}
+}
+
+func TestSettingsMeetingNumSpeakersCycle(t *testing.T) {
+	cfg := &config.Config{}
+	m := newSettings(cfg, nil)
+	m.section = sectionMeeting
+	m.cursor = meetingRowNumSpeakers
+	var lastKey string
+	var lastVal any
+	m.saveConfig = func(key string, value any) error {
+		lastKey, lastVal = key, value
+		return nil
+	}
+	// 0 (auto) → 2
+	m.selectCurrent()
+	if lastKey != "speaker.meeting.num_speakers" || lastVal != 2 {
+		t.Fatalf("save = %s %#v, want num_speakers 2", lastKey, lastVal)
+	}
+	if cfg.Speaker.Meeting.NumSpeakers != 2 {
+		t.Fatalf("cfg num_speakers = %d", cfg.Speaker.Meeting.NumSpeakers)
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Expected speakers: 2") {
+		t.Fatalf("view after set 2:\n%s", view)
+	}
+	// 2 → 3 → 4 → 0
+	m.selectCurrent()
+	m.selectCurrent()
+	m.selectCurrent()
+	if cfg.Speaker.Meeting.NumSpeakers != 0 || lastVal != 0 {
+		t.Fatalf("cycle back to auto: cfg=%d saved=%v", cfg.Speaker.Meeting.NumSpeakers, lastVal)
+	}
+}
+
+func TestNextMeetingNumSpeakers(t *testing.T) {
+	if got := nextMeetingNumSpeakers(0); got != 2 {
+		t.Fatalf("0 → %d, want 2", got)
+	}
+	if got := nextMeetingNumSpeakers(2); got != 3 {
+		t.Fatalf("2 → %d, want 3", got)
+	}
+	if got := nextMeetingNumSpeakers(4); got != 0 {
+		t.Fatalf("4 → %d, want 0", got)
+	}
+	// Out-of-band YAML value enters near 3 then advances.
+	if got := nextMeetingNumSpeakers(3); got != 4 {
+		t.Fatalf("3 → %d, want 4", got)
+	}
 }
