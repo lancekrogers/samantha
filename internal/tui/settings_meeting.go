@@ -13,6 +13,7 @@ import (
 // Meeting settings row indices — keep in lockstep with meetingItems().
 const (
 	meetingRowDiarization = iota
+	meetingRowNumSpeakers
 	meetingRowRecordAudio
 	meetingRowMode
 	meetingRowDefault
@@ -22,6 +23,10 @@ const (
 	meetingRowRefresh
 	meetingRowCount
 )
+
+// meetingNumSpeakerChoices cycles Auto (0) then fixed cluster counts for 1:1
+// and small-group meetings. Keep short so Enter cycles quickly.
+var meetingNumSpeakerChoices = []int{0, 2, 3, 4}
 
 // meetingItems lists Meeting settings: speaker diarization + notes routing.
 // Live conversation speaker analysis is controlled in chat via /speakers, not here.
@@ -53,6 +58,7 @@ func (m settingsModel) meetingItems() []string {
 	recordAudioOn := m.cfg.Speaker.Meeting.RecordAudio
 	return []string{
 		fmt.Sprintf("Speaker diarization — %s", enabledLabel(diarizationOn)),
+		fmt.Sprintf("Expected speakers: %s", meetingNumSpeakersLabel(m.cfg.Speaker.Meeting.NumSpeakers)),
 		fmt.Sprintf("Record audio for analysis — %s", enabledLabel(recordAudioOn)),
 		fmt.Sprintf("Route mode: %s", mode),
 		fmt.Sprintf("Default destination: %s", def),
@@ -61,6 +67,30 @@ func (m settingsModel) meetingItems() []string {
 		fmt.Sprintf("Picker destinations: %s", availLabel),
 		"Refresh destinations (camp list + config)",
 	}
+}
+
+func meetingNumSpeakersLabel(n int) string {
+	if n <= 0 {
+		return "Auto (can over-split long meetings)"
+	}
+	return fmt.Sprintf("%d (set 2 for 1:1 interviews)", n)
+}
+
+// nextMeetingNumSpeakers cycles Auto → 2 → 3 → 4 → Auto. Values outside the
+// list (e.g. hand-edited YAML) enter at the nearest choice then step forward.
+func nextMeetingNumSpeakers(current int) int {
+	idx := 0
+	best := -1
+	for i, choice := range meetingNumSpeakerChoices {
+		delta := choice - current
+		if delta < 0 {
+			delta = -delta
+		}
+		if best < 0 || delta < best {
+			best, idx = delta, i
+		}
+	}
+	return meetingNumSpeakerChoices[(idx+1)%len(meetingNumSpeakerChoices)]
 }
 
 func (m *settingsModel) selectMeetingItem() {
@@ -93,6 +123,14 @@ func (m *settingsModel) selectMeetingItem() {
 		}
 		m.cfg.Speaker.Meeting.Enabled = false
 		m.message = "Speaker diarization OFF (live /speakers unchanged)"
+	case meetingRowNumSpeakers:
+		next := nextMeetingNumSpeakers(m.cfg.Speaker.Meeting.NumSpeakers)
+		if err := saveConfig("speaker.meeting.num_speakers", next); err != nil {
+			m.message = fmt.Sprintf("Failed to save speaker.meeting.num_speakers: %v", err)
+			return
+		}
+		m.cfg.Speaker.Meeting.NumSpeakers = next
+		m.message = fmt.Sprintf("Expected speakers: %s", meetingNumSpeakersLabel(next))
 	case meetingRowRecordAudio:
 		next := !m.cfg.Speaker.Meeting.RecordAudio
 		if err := saveConfig("speaker.meeting.record_audio", next); err != nil {

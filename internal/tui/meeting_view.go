@@ -68,8 +68,18 @@ func (m meetingModel) View() string {
 	w := max(m.width, 1)
 	styles := voiceAnimStyles()
 
+	// Live REC only while capture is active. After stop, show honest phase so
+	// diarization time never looks like the meeting is still recording.
 	rec := errorStyle.Bold(true).Render("● REC")
-	elapsed := formatMeetingDuration(time.Since(m.started).Round(time.Second))
+	switch m.sessionPhase {
+	case meetingSessionStopping:
+		rec = warningStyle.Bold(true).Render("Stopping")
+	case meetingSessionDiarizing:
+		rec = statusStyle.Bold(true).Render("Diarizing")
+	case meetingSessionDone:
+		rec = dimStyle.Bold(true).Render("Stopped")
+	}
+	elapsed := formatMeetingDuration(m.elapsed().Round(time.Second))
 	header := fmt.Sprintf("%s  %s  %s  %s",
 		headerStyle.Render("Meeting"),
 		normalStyle.Render(m.opts.Description),

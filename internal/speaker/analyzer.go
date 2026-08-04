@@ -95,6 +95,11 @@ func (a *Analyzer) Finalize(ctx context.Context, samples []float32) (Timeline, e
 	if err != nil {
 		return Timeline{}, err
 	}
+	// Soft cleanup only for auto clustering (NumSpeakers == 0). Fixed N must
+	// keep short-turn partners the clusterer already separated.
+	if cfg.Meeting.NumSpeakers == 0 {
+		tl = MergeSparseLabels(tl, MergeOpts{})
+	}
 	tl.FinalizedAt = time.Now()
 
 	summary := Observation{
