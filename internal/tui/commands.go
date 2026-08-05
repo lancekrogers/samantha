@@ -267,6 +267,9 @@ func (m *conversationModel) configureLiveSpeakers(args []string) {
 		return
 	}
 	m.liveSpeaker.SetEnabled(enabled)
+	if !enabled {
+		m.stickyLive.Clear()
+	}
 	stats = m.liveSpeaker.Stats()
 	m.liveSpeakerStats = stats
 	m.liveSpeakerStatsKnown = true

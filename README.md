@@ -434,23 +434,33 @@ Spoken stop phrases end the session like Ctrl+C and are **not** appended to the
 meeting transcript. Meeting bundles and internal directories are created mode
 `0700`; documents and machine data are `0600` (owner-only).
 
-Meeting speaker diarization is **on by default** (**Settings → Meeting →
-Speaker diarization**). The first meeting that needs models installs Samantha's
-managed pyannote segmentation and NeMo TitaNet packs, then captures 16 kHz PCM
-through a non-blocking subscriber while STT continues normally. When recording
-stops, the recorder shows **Stopping** then **Diarizing** (the REC timer freezes
-at stop) before opening a review screen with anonymous `speaker-1…N` labels
-beside attributed turns.
+Meeting speaker analysis has two layers (both **on by default**):
+
+1. **Live provisional labels while recording** (**Settings → Meeting → Live
+   labels while recording**, key `speaker.meeting.live`) — the same embedding
+   path as chat. Finalized STT lines get a colored `speaker-N` glyph (or 🎤
+   when unknown). Labels can revise on the latest line as the engine catches
+   up; brief empty gaps hold the last good label for a few seconds. A footer
+   line marks these as **provisional**.
+2. **Offline diarization on stop** (**Settings → Meeting → Speaker
+   diarization**) — the review-screen source of truth. When recording stops,
+   the recorder shows **Stopping** then **Diarizing** (the REC timer freezes
+   at stop) before opening review with attributed `speaker-1…N` turns.
+
+Live labels and offline results may disagree; that is expected. The live
+scrollback is left as-shown; review uses the offline timeline. The first
+session that needs models installs Samantha's managed packs (embedding for
+live; pyannote segmentation + NeMo TitaNet for offline), then captures 16 kHz
+PCM through a non-blocking subscriber so STT is never blocked.
 
 **Expected speakers** (**Settings → Meeting → Expected speakers**, key
-`speaker.meeting.num_speakers`): cycle **Auto** (0) or a fixed count (**2 / 3 / 4**).
-Auto lets the clusterer choose how many voices to invent and can **over-split**
-long 1:1 interviews; set **2** for two-person calls. These are voice clusters, not
-enrolled names or identity claims. Each speaker label keeps a stable, distinct
-color in attributed turns and on the review screen; live conversation bubbles
-and the current-speaker footer use the same palette. Continue from the review
-screen to the configured routing flow. Turn the feature off in Settings if you
-do not want offline diarization.
+`speaker.meeting.num_speakers`) applies to **offline clustering only**: cycle
+**Auto** (0) or a fixed count (**2 / 3 / 4**). Auto can **over-split** long
+1:1 interviews; set **2** for two-person calls. These are voice clusters, not
+enrolled names or identity claims. Each label keeps a stable color on review
+and on live chat/meeting rows (shared palette). Continue from the review
+screen to the configured routing flow. Turn either layer off in Settings if
+you do not want it.
 
 During **Diarizing**, **Ctrl+C** again abandons speaker analysis and opens the
 review screen with the transcript intact (analysis status cancelled). Native
@@ -461,13 +471,14 @@ working PCM is discarded after Finalize.
 
 ### Speaker labels in chat
 
-Meeting diarization is offline — it runs when a recording stops, so live meeting
-lines carry no labels. Labeling **chat** turns is a separate, live path
-(**Settings → Speakers → Speaker labels in chat**), also **on by default**. A
-voice conversation prefixes each user bubble with `speaker-1…N` and colors the
-bubble border to match, and the footer shows the current speaker.
+Labeling **chat** turns is the same live embedding path (**Settings →
+Speakers → Speaker labels in chat**), also **on by default**. A voice
+conversation prefixes each user bubble with `speaker-1…N` and colors the
+bubble border to match, and the footer shows the current speaker. Chat does
+not run offline diarization.
 
-The same tab tunes the two levers that decide label quality:
+The Speakers tab tunes the two levers that decide live label quality (chat
+and meeting live share these):
 
 | Row | Key | Effect |
 |---|---|---|
@@ -475,8 +486,8 @@ The same tab tunes the two levers that decide label quality:
 | Analysis window | `speaker.live.window_ms` | Shorter labels a turn sooner; longer gives the embedder more voice to work with |
 
 Labels are enrollment-free: the first sight of a voice registers `speaker-N` and
-later turns re-match against it. Only the embedding model is needed, so chat
-labels do not require the pyannote segmentation model that meetings use.
+later turns re-match against it. Live analysis only needs the embedding model;
+offline meeting diarization additionally needs the pyannote segmentation pack.
 
 In an open conversation, `/speakers on|off|status` toggles labeling for that
 session and loads the model on first use — no restart. Settings persists the

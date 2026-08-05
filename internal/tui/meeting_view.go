@@ -185,7 +185,9 @@ func (m meetingModel) View() string {
 	pathLine := dimStyle.Render(ansi.Truncate("  Bundle: "+m.opts.Path, w, "…"))
 	speakerLine := dimStyle.Render(ansi.Truncate("  "+meetingSpeakerStatus(m.opts.SpeakerStatus, m.opts.SpeakerError), w, "…"))
 	if m.liveStatsKnown {
-		speakerLine += "\n" + dimStyle.Render(ansi.Truncate("  live "+liveSpeakerFooterLabel(m.liveStats), w, "…"))
+		// Live row is provisional; offline diarize remains source of truth on review.
+		liveLine := "  live (provisional) " + liveSpeakerFooterLabel(m.liveStats)
+		speakerLine += "\n" + dimStyle.Render(ansi.Truncate(liveLine, w, "…"))
 	}
 	rule := lipgloss.NewStyle().Foreground(m.meterBorderColor()).Render(strings.Repeat("─", w))
 
