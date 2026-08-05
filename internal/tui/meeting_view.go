@@ -41,7 +41,50 @@ func (m *meetingModel) reflow() {
 	m.refreshTranscript()
 }
 
-func (m *meetingModel) appendLine(line string) {
+// meetingLine is one viewport row. Utterances keep structured fields so a live
+// speaker engine can attach/revise labels without string surgery.
+type meetingLine struct {
+	utterance bool
+	id        int // stable id for utterance label updates (0 = non-utterance)
+	at        time.Time
+	label     string // speaker-N or empty → 🎤
+	text      string // raw utterance text (may still include [speaker-N] prefix)
+	rendered  string // preformatted system/note/error rows
+}
+
+// meetingSpeakerLabelMsg revises the glyph on an earlier utterance (async live ID).
+type meetingSpeakerLabelMsg struct {
+	lineID int
+	label  string
+}
+
+func (m *meetingModel) appendSystemLine(line string) {
+	m.appendMeetingLine(meetingLine{rendered: line})
+}
+
+func (m *meetingModel) appendUtterance(at time.Time, label, text string) int {
+	id := m.utterances // already incremented by caller, or use len
+	// Prefer a monotonic id independent of utterance count resets.
+	id = 0
+	for _, l := range m.lines {
+		if l.utterance && l.id >= id {
+			id = l.id + 1
+		}
+	}
+	if id == 0 {
+		id = 1
+	}
+	m.appendMeetingLine(meetingLine{
+		utterance: true,
+		id:        id,
+		at:        at,
+		label:     strings.TrimSpace(label),
+		text:      text,
+	})
+	return id
+}
+
+func (m *meetingModel) appendMeetingLine(line meetingLine) {
 	follow := !m.ready || m.viewport.AtBottom()
 	m.lines = append(m.lines, line)
 	if len(m.lines) > meetingMaxLines {
@@ -53,11 +96,64 @@ func (m *meetingModel) appendLine(line string) {
 	}
 }
 
+// setUtteranceLabel updates a live line's speaker glyph by id and re-renders.
+func (m *meetingModel) setUtteranceLabel(lineID int, label string) {
+	if lineID <= 0 {
+		return
+	}
+	label = strings.TrimSpace(label)
+	for i := range m.lines {
+		if m.lines[i].utterance && m.lines[i].id == lineID {
+			m.lines[i].label = label
+			m.refreshTranscript()
+			return
+		}
+	}
+}
+
+func (l meetingLine) view() string {
+	if !l.utterance {
+		return l.rendered
+	}
+	return formatMeetingUtteranceLine(l.at, l.label, l.text)
+}
+
+// formatMeetingUtteranceLine builds "HH:MM:SS  <glyph>  text".
+// Empty label → mic glyph. Non-empty → colored speaker-N (chat palette).
+// Bracket prefixes in text ([speaker-N]) are stripped from the body so the id
+// is not shown twice when the label glyph is set.
+func formatMeetingUtteranceLine(at time.Time, label, text string) string {
+	fromText, spoken := splitSpeakerLabel(text)
+	if label == "" {
+		label = fromText
+	}
+	if fromText == "" {
+		spoken = text
+	}
+	glyph := headerStyle.Render("🎤")
+	if label != "" {
+		glyph = speakerLabelStyle(label).Render(label)
+	}
+	when := at
+	if when.IsZero() {
+		when = time.Now()
+	}
+	return fmt.Sprintf("%s  %s %s",
+		dimStyle.Render(when.Format("15:04:05")),
+		glyph,
+		normalStyle.Render(spoken),
+	)
+}
+
 func (m *meetingModel) refreshTranscript() {
 	if !m.ready {
 		return
 	}
-	content := strings.Join(m.lines, "\n")
+	parts := make([]string, 0, len(m.lines))
+	for _, l := range m.lines {
+		parts = append(parts, l.view())
+	}
+	content := strings.Join(parts, "\n")
 	m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width).Render(content))
 }
 
