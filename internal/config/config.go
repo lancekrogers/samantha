@@ -400,6 +400,14 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+// LoadRaw reads configuration from disk and environment without the
+// afterLoad persona overlay, so it never writes migration files and cannot
+// fail on persona state. Read-only discovery (`samantha paths`) uses it to
+// resolve effective directories on installs Load would refuse or mutate.
+func LoadRaw() (*Config, error) {
+	return loadLocked()
+}
+
 // loadLocked reads and unmarshals config while holding mu.
 func loadLocked() (*Config, error) {
 	mu.Lock()
