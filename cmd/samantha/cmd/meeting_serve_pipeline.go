@@ -78,7 +78,12 @@ func runServeMeetingPipeline(ctx context.Context, cfg *config.Config, job remote
 // sink POST /v1/intent writes to (serve default: <config>/serve/intents).
 func resolveMeetingIdeas(ctx context.Context, job remote.Job) (ideas.Report, error) {
 	sinkDir := filepath.Join(config.ConfigDir(), "serve", "intents")
-	meetingID := filepath.Base(job.BundlePath)
+	// The session's wire id, falling back to the bundle name for pipelines
+	// fed outside serve (reprocessing tools).
+	meetingID := job.MeetingID
+	if meetingID == "" {
+		meetingID = filepath.Base(job.BundlePath)
+	}
 	return ideas.Resolve(ctx, job.BundlePath, job.Writer, func(ctx context.Context, idea ideas.Resolved) error {
 		_, _, err := netapi.WriteIntentFile(sinkDir, netapi.IntentRequest{
 			Type:       "note",

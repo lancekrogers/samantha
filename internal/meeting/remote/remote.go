@@ -165,6 +165,10 @@ type Pipeline interface {
 
 // Job is one unit of post-recording work.
 type Job struct {
+	// MeetingID is the session's wire id — the same one the client used in
+	// /v1/meeting/{id} calls, so anything the pipeline files (idea intents)
+	// links back with the identifier the phone already knows.
+	MeetingID string
 	// BundlePath is the .meeting directory.
 	BundlePath string
 	// AudioPath is the assembled 16 kHz mono WAV inside the bundle.

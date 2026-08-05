@@ -329,7 +329,8 @@ func (s *Session) process(parent context.Context, lastSeq int64) {
 		pipelineErr = ErrPipelineUnavailable
 	} else {
 		pipelineErr = s.pipeline.Process(ctx, Job{
-			BundlePath: s.bundlePath, AudioPath: audioPath, Writer: writer, Title: title,
+			MeetingID: s.id, BundlePath: s.bundlePath,
+			AudioPath: audioPath, Writer: writer, Title: title,
 		})
 	}
 	s.publish(pipelineErr)
