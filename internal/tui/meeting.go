@@ -80,7 +80,9 @@ type meetingModel struct {
 
 	viewport viewport.Model
 	note     textarea.Model
-	lines    []string
+	// lines are structured so live speaker labels can revise a row without
+	// re-parsing styled strings (design WI-1e881a P1).
+	lines []meetingLine
 
 	voiceMode     anim.Mode
 	voiceFrame    int
@@ -191,6 +193,7 @@ func (m *meetingModel) beginRecording(opts MeetingOpts) tea.Cmd {
 	m.partial = ""
 	m.stoppedAt = time.Time{}
 	m.sessionPhase = meetingSessionRecording
+	// lines cleared above; refresh if viewport already sized
 	if m.opts.SpeakerStatus == "" {
 		m.opts.SpeakerStatus = meeting.AnalysisDisabled
 	}
@@ -352,7 +355,7 @@ func (m meetingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case meetingNoteErrMsg:
 		m.statusErr = true
 		m.status = "Failed to save note/bookmark"
-		m.appendLine(errorStyle.Render(fmt.Sprintf("  write error: %v", msg.err)))
+		m.appendSystemLine(errorStyle.Render(fmt.Sprintf("  write error: %v", msg.err)))
 		return m, nil
 
 	case meetingSpeakerStatusMsg:
@@ -488,7 +491,7 @@ func (m meetingModel) submitNote() (meetingModel, tea.Cmd) {
 	m.notes++
 	m.note.SetValue("")
 	now := time.Now()
-	m.appendLine(fmt.Sprintf("%s  %s %s",
+	m.appendSystemLine(fmt.Sprintf("%s  %s %s",
 		dimStyle.Render(now.Format("15:04:05")),
 		hearingStyle.Render("📝"),
 		normalStyle.Render(text),
@@ -515,7 +518,7 @@ func (m meetingModel) markImportant() (meetingModel, tea.Cmd) {
 	if caption != "" {
 		line += "  " + normalStyle.Render(caption)
 	}
-	m.appendLine(line)
+	m.appendSystemLine(line)
 	m.setFlash("★ moment marked important")
 	return m, nil
 }
@@ -591,11 +594,13 @@ func (m meetingModel) handleListenMsg(msg tea.Msg) (meetingModel, tea.Cmd) {
 		m.partial = ""
 		m.voiceMode = anim.ModeListening
 		m.status = "Listening"
-		m.appendLine(fmt.Sprintf("%s  %s %s",
-			dimStyle.Render(u.At.Format("15:04:05")),
-			headerStyle.Render("🎤"),
-			renderLiveMeetingUtterance(u.Text),
-		))
+		// Demo providers may embed [speaker-N] in text; prefer that as the
+		// structured label so the glyph is not a bare mic. Live engine (P2)
+		// will set label via setUtteranceLabel without rewriting text.
+		label, _ := splitSpeakerLabel(u.Text)
+		m.appendUtterance(u.At, label, u.Text)
+	case meetingSpeakerLabelMsg:
+		m.setUtteranceLabel(msg.lineID, msg.label)
 	case meetingErrorMsg:
 		if m.sessionPhase != meetingSessionRecording {
 			return m, nil
@@ -603,7 +608,7 @@ func (m meetingModel) handleListenMsg(msg tea.Msg) (meetingModel, tea.Cmd) {
 		m.errors++
 		m.statusErr = true
 		m.status = "Transcription error (retrying)"
-		m.appendLine(errorStyle.Render(fmt.Sprintf("  error: %v", msg.err)))
+		m.appendSystemLine(errorStyle.Render(fmt.Sprintf("  error: %v", msg.err)))
 	case meetingSpeakerStatusMsg:
 		m.applySpeakerStatus(msg)
 	case meetingLoopDoneMsg:
