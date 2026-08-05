@@ -45,6 +45,10 @@ bridge:
 capture:
   tmux_history: true
 
-# No leak expectations yet: on pre-fix main this scenario DOCUMENTS the
-# leakage rate; after B4's gate+sanitizer land, add tool_leak_lines == 0.
+# The gate cannot stop a model from roleplaying tool syntax in chat —
+# `tool_leak_lines` (harness's own detector over chat text) documents that
+# rate. What it guarantees is that none of it is SPOKEN: compare the
+# `voice strips` column (samantha's voice_gate records) against leak lines
+# in the same run. Chat-side suppression is L3 (speak tool), ratified via a
+# live A/B, so no hard expectation is pinned here.
 expect: []

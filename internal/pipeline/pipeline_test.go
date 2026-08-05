@@ -608,11 +608,13 @@ type fakeTTS struct {
 	mu        sync.Mutex
 	delay     time.Duration
 	callTimes []time.Time
+	texts     []string
 }
 
 func (f *fakeTTS) Synthesize(ctx context.Context, text string) (*audio.PCMStream, error) {
 	f.mu.Lock()
 	f.callTimes = append(f.callTimes, time.Now())
+	f.texts = append(f.texts, text)
 	f.mu.Unlock()
 
 	stream := audio.NewPCMStream(ctx)
@@ -655,6 +657,15 @@ func (f *fakeTTS) CallTimes() []time.Time {
 
 	out := make([]time.Time, len(f.callTimes))
 	copy(out, f.callTimes)
+	return out
+}
+
+func (f *fakeTTS) Texts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make([]string, len(f.texts))
+	copy(out, f.texts)
 	return out
 }
 

@@ -191,6 +191,9 @@ type turnMetrics struct {
 	bargeIn     time.Time
 	interrupted bool
 	degraded    bool
+	// toolLeakLines counts lines the voice gate stripped from speech this
+	// turn (WI-dc9e33 B4). Written only from the turn's own goroutine.
+	toolLeakLines int
 }
 
 func newTurnMetrics() *turnMetrics {
@@ -209,6 +212,7 @@ func (m *turnMetrics) snapshot() events.TurnMetrics {
 		PlaybackStartElapsed:    m.elapsed(m.playbackStart),
 		PlaybackCompleteElapsed: m.elapsed(m.playbackComplete),
 		BargeInElapsed:          m.elapsed(m.bargeInAt()),
+		ToolLeakLines:           m.toolLeakLines,
 	}
 }
 
@@ -530,16 +534,23 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 		Elapsed:  time.Since(thinkingStarted),
 	})
 
+	// Voice gate (WI-dc9e33 B4): the full raw response stays in the chat
+	// transcript; only voice-safe text may be synthesized. Gate only when the
+	// turn would actually speak, so mute never counts phantom leaks.
+	speakable := ""
 	if !p.OutputMuted() && p.Player != nil && p.ttsReady() {
+		speakable = p.gateForSpeech(response, metrics)
+	}
+	if speakable != "" {
 		turn.to(TurnSpeaking)
 		if metrics.firstSegment.IsZero() {
 			metrics.firstSegment = time.Now()
 		}
-		p.emit(events.SpeechSegmentReady{Text: response})
-		p.emit(events.GeneratingVoice{Sentence: response})
+		p.emit(events.SpeechSegmentReady{Text: speakable})
+		p.emit(events.GeneratingVoice{Sentence: speakable})
 
 		synthStarted := time.Now()
-		stream, usedFallback, err := p.synthesizeWithFallback(ctx, response, nil)
+		stream, usedFallback, err := p.synthesizeWithFallback(ctx, speakable, nil)
 		if err != nil {
 			// Voice is best-effort in text mode: the text response still
 			// completed, so the turn is completed (degraded), not failed.
@@ -559,7 +570,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 		if err != nil {
 			if !usedFallback {
 				// usedFallback is not read again on this linear path; discard it.
-				playback, _, err = p.playFallback(ctx, response, err, nil)
+				playback, _, err = p.playFallback(ctx, speakable, err, nil)
 			}
 			if err == nil {
 				// The fallback playback is ready; continue through the normal
@@ -581,7 +592,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 			return nil
 		}
 
-		p.handlePlaybackLifecycle(response, synthStarted, playback, metrics)
+		p.handlePlaybackLifecycle(speakable, synthStarted, playback, metrics)
 	}
 
 	p.completeTextTurn(turn, metrics, response)
@@ -838,6 +849,14 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 				continue
 			}
 
+			// Voice gate (WI-dc9e33 B4): the chat transcript above got the raw
+			// sentence; only voice-safe text may reach TTS. A segment that is
+			// all tool syntax is not spoken at all.
+			speakable := p.gateForSpeech(sentence, metrics)
+			if speakable == "" {
+				continue
+			}
+
 			turn.to(TurnSpeaking)
 			if metrics.firstSegment.IsZero() {
 				metrics.firstSegment = time.Now()
@@ -848,7 +867,7 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 			}
 
 			pending++
-			synthQueue <- sentence
+			synthQueue <- speakable
 
 		case event := <-playbackEvents:
 			if interrupted && event.kind == playbackStarted && p.Player != nil {
