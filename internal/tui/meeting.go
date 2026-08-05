@@ -655,9 +655,6 @@ func (m meetingModel) handleListenMsg(msg tea.Msg) (meetingModel, tea.Cmd) {
 		m.lastUtteranceID = m.appendUtterance(u.At, label, u.Text)
 	case meetingSpeakerLabelMsg:
 		m.setUtteranceLabel(msg.lineID, msg.label)
-		if msg.lineID == m.lastUtteranceID || msg.lineID == 0 {
-			// keep last id
-		}
 	case meetingErrorMsg:
 		if m.sessionPhase != meetingSessionRecording {
 			return m, nil

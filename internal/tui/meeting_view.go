@@ -63,16 +63,12 @@ func (m *meetingModel) appendSystemLine(line string) {
 }
 
 func (m *meetingModel) appendUtterance(at time.Time, label, text string) int {
-	id := m.utterances // already incremented by caller, or use len
-	// Prefer a monotonic id independent of utterance count resets.
-	id = 0
+	// Monotonic id independent of utterance count resets.
+	id := 1
 	for _, l := range m.lines {
 		if l.utterance && l.id >= id {
 			id = l.id + 1
 		}
-	}
-	if id == 0 {
-		id = 1
 	}
 	m.appendMeetingLine(meetingLine{
 		utterance: true,
