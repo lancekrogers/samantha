@@ -369,6 +369,7 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			SpeakerStatus:    speakerStatus,
 			SpeakerError:     speakerError,
 			FinalizeSpeakers: finalizeSpeakers,
+			LiveSpeaker:      msg.rt.LiveSpeaker,
 			Embedded:         true,
 		})
 		return a, cmd

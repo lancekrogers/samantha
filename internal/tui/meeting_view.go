@@ -188,6 +188,9 @@ func (m meetingModel) View() string {
 	// bundle and should not compete for attention in the recording UI.
 	pathLine := dimStyle.Render(ansi.Truncate("  Bundle: "+m.opts.Path, w, "…"))
 	speakerLine := dimStyle.Render(ansi.Truncate("  "+meetingSpeakerStatus(m.opts.SpeakerStatus, m.opts.SpeakerError), w, "…"))
+	if m.liveStatsKnown {
+		speakerLine += "\n" + dimStyle.Render(ansi.Truncate("  live "+liveSpeakerFooterLabel(m.liveStats), w, "…"))
+	}
 	rule := lipgloss.NewStyle().Foreground(m.meterBorderColor()).Render(strings.Repeat("─", w))
 
 	stage := anim.Stage(m.voiceMode, m.voiceFrame, m.inputLevel, w, m.status, styles, m.reducedMotion)
