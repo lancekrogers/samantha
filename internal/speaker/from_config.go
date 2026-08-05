@@ -24,6 +24,7 @@ func FromAppConfig(cfg *config.Config) Config {
 			Enabled:     s.Meeting.Enabled,
 			RecordAudio: s.Meeting.RecordAudio,
 			NumSpeakers: s.Meeting.NumSpeakers,
+			Live:        s.Meeting.Live,
 		},
 		Models: ModelsConfig{
 			Embedding:    s.Models.Embedding,

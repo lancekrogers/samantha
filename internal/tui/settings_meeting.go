@@ -13,6 +13,7 @@ import (
 // Meeting settings row indices — keep in lockstep with meetingItems().
 const (
 	meetingRowDiarization = iota
+	meetingRowLiveLabels
 	meetingRowNumSpeakers
 	meetingRowRecordAudio
 	meetingRowMode
@@ -55,9 +56,11 @@ func (m settingsModel) meetingItems() []string {
 	}
 	// Effective meeting diarization needs master speaker.enabled + meeting flag.
 	diarizationOn := m.cfg.Speaker.Enabled && m.cfg.Speaker.Meeting.Enabled
+	liveLabelsOn := m.cfg.Speaker.Enabled && m.cfg.Speaker.Meeting.Live
 	recordAudioOn := m.cfg.Speaker.Meeting.RecordAudio
 	return []string{
 		fmt.Sprintf("Speaker diarization — %s", enabledLabel(diarizationOn)),
+		fmt.Sprintf("Live labels while recording — %s", enabledLabel(liveLabelsOn)),
 		fmt.Sprintf("Expected speakers: %s", meetingNumSpeakersLabel(m.cfg.Speaker.Meeting.NumSpeakers)),
 		fmt.Sprintf("Record audio for analysis — %s", enabledLabel(recordAudioOn)),
 		fmt.Sprintf("Route mode: %s", mode),
@@ -123,6 +126,30 @@ func (m *settingsModel) selectMeetingItem() {
 		}
 		m.cfg.Speaker.Meeting.Enabled = false
 		m.message = "Speaker diarization OFF (live /speakers unchanged)"
+	case meetingRowLiveLabels:
+		next := !(m.cfg.Speaker.Enabled && m.cfg.Speaker.Meeting.Live)
+		if next {
+			if !m.cfg.Speaker.Enabled {
+				if err := saveConfig("speaker.enabled", true); err != nil {
+					m.message = fmt.Sprintf("Failed to save speaker.enabled: %v", err)
+					return
+				}
+				m.cfg.Speaker.Enabled = true
+			}
+			if err := saveConfig("speaker.meeting.live", true); err != nil {
+				m.message = fmt.Sprintf("Failed to save speaker.meeting.live: %v", err)
+				return
+			}
+			m.cfg.Speaker.Meeting.Live = true
+			m.message = "Live labels ON — provisional speaker-N while recording (review may refine after stop)"
+			return
+		}
+		if err := saveConfig("speaker.meeting.live", false); err != nil {
+			m.message = fmt.Sprintf("Failed to save speaker.meeting.live: %v", err)
+			return
+		}
+		m.cfg.Speaker.Meeting.Live = false
+		m.message = "Live labels OFF — mic glyph only until offline diarize"
 	case meetingRowNumSpeakers:
 		next := nextMeetingNumSpeakers(m.cfg.Speaker.Meeting.NumSpeakers)
 		if err := saveConfig("speaker.meeting.num_speakers", next); err != nil {

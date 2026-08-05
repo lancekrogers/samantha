@@ -64,10 +64,12 @@ type MeetingRuntime struct {
 	FinalizeSpeakers func(context.Context) (meeting.AnalysisResult, error)
 	SpeakerStatus    meeting.AnalysisStatus
 	SpeakerError     string
-	Description      string
-	Path             string
-	StopPhrases      map[string]bool
-	Cleanup          func()
+	// LiveSpeaker drives provisional speaker-N glyphs on live transcript lines.
+	LiveSpeaker LiveSpeakerController
+	Description string
+	Path        string
+	StopPhrases map[string]bool
+	Cleanup     func()
 }
 
 // MeetingBuilder constructs meeting resources when the user starts recording

@@ -77,6 +77,10 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 			Status: string(meeting.AnalysisError), Error: speakerSetupErr.Error(),
 		})
 	}
+	liveSpeaker, stopLive := prepareMeetingLiveSpeaker(ctx, &cfgCopy, capture, progress)
+	if stopLive != nil {
+		defer stopLive()
+	}
 
 	out := cmd.OutOrStdout()
 	useTUI := useMeetingRecordTUI(opts)
@@ -95,6 +99,7 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 			SpeakerStatus:    speakerInitialStatus(speakerSession, speakerSetupErr),
 			SpeakerError:     speakerInitialDetail(speakerSession, speakerSetupErr),
 			FinalizeSpeakers: speakerFinalizer(speakerSession),
+			LiveSpeaker:      liveSpeaker,
 		})
 	} else {
 		var sinks []listen.Sink
@@ -217,8 +222,12 @@ func meetingRuntimeBuilder() appTUI.MeetingBuilder {
 				Status: string(meeting.AnalysisError), Error: speakerSetupErr.Error(),
 			})
 		}
+		liveSpeaker, stopLive := prepareMeetingLiveSpeaker(ctx, cfg, capture, progress)
 		runtimeCleanup := cleanup
 		cleanup = func() {
+			if stopLive != nil {
+				stopLive()
+			}
 			if speakerSession != nil {
 				_ = speakerSession.Close()
 			}
@@ -231,12 +240,37 @@ func meetingRuntimeBuilder() appTUI.MeetingBuilder {
 			FinalizeSpeakers: speakerFinalizer(speakerSession),
 			SpeakerStatus:    speakerInitialStatus(speakerSession, speakerSetupErr),
 			SpeakerError:     speakerInitialDetail(speakerSession, speakerSetupErr),
+			LiveSpeaker:      liveSpeaker,
 			Description:      description,
 			Path:             bundlePath,
 			StopPhrases:      stopPhraseSet(nil),
 			Cleanup:          cleanup,
 		}, nil
 	}
+}
+
+// prepareMeetingLiveSpeaker builds the same LazyLive stack as chat when
+// speaker.meeting.live is on. Capture is shared with STT (fan-out); live feed
+// never blocks the listen loop.
+func prepareMeetingLiveSpeaker(
+	ctx context.Context,
+	cfg *config.Config,
+	capture *audio.Capture,
+	progress func(string, float64),
+) (appTUI.LiveSpeakerController, func()) {
+	sp := speaker.FromAppConfig(cfg)
+	if !sp.MeetingLiveActive() || capture == nil {
+		return nil, nil
+	}
+	// Reuse chat's live builder so meeting labels share the embedding model
+	// and /speakers-class startup path (assets ensured on first enable).
+	controller, stop, _ := prepareLiveSpeaker(ctx, cfg, capture, progress)
+	if controller == nil {
+		return nil, stop
+	}
+	// Meeting session wants labels immediately when live is configured on.
+	controller.SetEnabled(true)
+	return controller, stop
 }
 
 func prepareMeetingSpeakers(ctx context.Context, cfg *config.Config, capture *audio.Capture, writer *meetinglog.Writer, bundlePath string, progress func(string, float64)) (*meeting.SpeakerSession, error) {

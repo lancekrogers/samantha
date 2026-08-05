@@ -217,6 +217,9 @@ type SpeakerMeetingConfig struct {
 	Enabled     bool `mapstructure:"enabled"`
 	RecordAudio bool `mapstructure:"record_audio"`
 	NumSpeakers int  `mapstructure:"num_speakers"`
+	// Live enables provisional speaker-N labels on the live transcript while
+	// recording (embedding path). Offline diarization after stop is separate.
+	Live bool `mapstructure:"live"`
 }
 
 // SpeakerModelsConfig holds optional model paths under models_dir.
@@ -366,6 +369,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("speaker.meeting.enabled", true)
 	v.SetDefault("speaker.meeting.record_audio", false)
 	v.SetDefault("speaker.meeting.num_speakers", 0)
+	// Live meeting labels default on with master speaker analysis; users can
+	// turn them off if CPU cost is unwanted. Offline diarize stays independent.
+	v.SetDefault("speaker.meeting.live", true)
 	v.SetDefault("speaker.models.embedding", "")
 	v.SetDefault("speaker.models.segmentation", "")
 }

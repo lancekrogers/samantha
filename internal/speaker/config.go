@@ -29,12 +29,15 @@ type LiveConfig struct {
 	WindowMS  int     `mapstructure:"window_ms" json:"window_ms"`
 }
 
-// MeetingConfig is offline meeting diarization.
+// MeetingConfig is offline meeting diarization plus optional live labels.
 type MeetingConfig struct {
 	Enabled     bool `mapstructure:"enabled" json:"enabled"`
 	RecordAudio bool `mapstructure:"record_audio" json:"record_audio"` // sidecar WAV
 	// NumSpeakers is 0 for automatic clustering; >0 hints the clusterer.
 	NumSpeakers int `mapstructure:"num_speakers" json:"num_speakers"`
+	// Live enables provisional speaker-N labels on the meeting transcript
+	// while recording (embedding path; same engine family as chat L1).
+	Live bool `mapstructure:"live" json:"live"`
 }
 
 // ModelsConfig holds paths under models_dir (or absolute).
@@ -97,6 +100,12 @@ func (c Config) LiveActive() bool {
 // MeetingActive is true when meeting diarization should run.
 func (c Config) MeetingActive() bool {
 	return c.Enabled && c.Meeting.Enabled
+}
+
+// MeetingLiveActive is true when provisional live labels should run during
+// meeting capture (master + meeting.live). Offline diarize can still be off.
+func (c Config) MeetingLiveActive() bool {
+	return c.Enabled && c.Meeting.Live
 }
 
 // LiveThreshold is the cutoff for live IdentifySegment after Normalize inherit.

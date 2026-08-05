@@ -14,6 +14,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/listen"
 	"github.com/lancekrogers/samantha/internal/meeting"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
+	"github.com/lancekrogers/samantha/internal/speaker"
 	"github.com/lancekrogers/samantha/internal/stt"
 	"github.com/lancekrogers/samantha/internal/tui/anim"
 )
@@ -37,6 +38,8 @@ type MeetingOpts struct {
 	SpeakerStatus    meeting.AnalysisStatus
 	SpeakerError     string
 	FinalizeSpeakers func(context.Context) (meeting.AnalysisResult, error)
+	// LiveSpeaker is optional; when set, provisional labels attach to live rows.
+	LiveSpeaker LiveSpeakerController
 	// Embedded is true when running inside the main Samantha App launcher
 	// flow. Stop returns meetingDoneMsg instead of quitting the process.
 	Embedded bool
@@ -101,14 +104,19 @@ type meetingModel struct {
 	// analysisCancel aborts FinalizeSpeakers when the user abandons mid-diarize.
 	// Set by the listen-loop goroutine; cleared when the loop finishes.
 	analysisCancel context.CancelFunc
-	utterances     int
-	notes          int
-	bookmarks      int
-	errors         int
-	quitting       bool
-	loopDone       bool
-	loopErr        error
-	analysis       meeting.AnalysisResult
+	liveSpeaker    LiveSpeakerController
+	liveStats      speaker.LiveStats
+	liveStatsKnown bool
+	// lastUtteranceID is the newest live speech row for async label attachment.
+	lastUtteranceID int
+	utterances      int
+	notes           int
+	bookmarks       int
+	errors          int
+	quitting        bool
+	loopDone        bool
+	loopErr         error
+	analysis        meeting.AnalysisResult
 }
 
 // RunMeeting launches a standalone Bubble Tea meeting recorder (CLI path).
@@ -193,11 +201,18 @@ func (m *meetingModel) beginRecording(opts MeetingOpts) tea.Cmd {
 	m.partial = ""
 	m.stoppedAt = time.Time{}
 	m.sessionPhase = meetingSessionRecording
-	// lines cleared above; refresh if viewport already sized
+	m.liveSpeaker = opts.LiveSpeaker
+	m.liveStatsKnown = false
+	m.lastUtteranceID = 0
 	if m.opts.SpeakerStatus == "" {
 		m.opts.SpeakerStatus = meeting.AnalysisDisabled
 	}
-	return tea.Batch(m.startLoop(), meetingTickCmd(), textarea.Blink)
+	cmds := []tea.Cmd{m.startLoop(), meetingTickCmd(), textarea.Blink}
+	if m.liveSpeaker != nil {
+		m.liveSpeaker.SetEnabled(true)
+		cmds = append(cmds, liveSpeakerStatsCmd(m.liveSpeaker))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m meetingModel) Init() tea.Cmd {
@@ -358,12 +373,28 @@ func (m meetingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendSystemLine(errorStyle.Render(fmt.Sprintf("  write error: %v", msg.err)))
 		return m, nil
 
+	case liveSpeakerStatsMsg:
+		m.liveStats = msg.stats
+		m.liveStatsKnown = true
+		// Attach/refresh the latest speech row when the live engine names a voice.
+		if m.lastUtteranceID > 0 && msg.stats.LastLabel != "" &&
+			(msg.stats.Status == speaker.LiveHealthy || msg.stats.Status == speaker.LiveRunning) {
+			m.setUtteranceLabel(m.lastUtteranceID, msg.stats.LastLabel)
+		}
+		if m.sessionPhase == meetingSessionRecording && m.liveSpeaker != nil {
+			return m, liveSpeakerStatsCmd(m.liveSpeaker)
+		}
+		return m, nil
+
 	case meetingSpeakerStatusMsg:
 		m.applySpeakerStatus(msg)
 		return m, nil
 
 	case meetingStopRequestedMsg:
 		m.markStopping()
+		if m.liveSpeaker != nil {
+			m.liveSpeaker.SetEnabled(false)
+		}
 		return m, nil
 
 	case meetingAnalysisCancelMsg:
@@ -458,6 +489,9 @@ func (m meetingModel) requestStop() (meetingModel, tea.Cmd) {
 		m.statusErr = false
 	}
 	m.markStopping()
+	if m.liveSpeaker != nil {
+		m.liveSpeaker.SetEnabled(false)
+	}
 	if m.opts.Cancel != nil {
 		m.opts.Cancel()
 	}
@@ -465,6 +499,23 @@ func (m meetingModel) requestStop() (meetingModel, tea.Cmd) {
 		return m, m.stopResultCmd()
 	}
 	return m, nil
+}
+
+// currentMeetingLiveLabel returns the live engine's last stable-ish label.
+func (m *meetingModel) currentMeetingLiveLabel() string {
+	if m.liveSpeaker == nil {
+		return ""
+	}
+	stats := m.liveSpeaker.Stats()
+	m.liveStats = stats
+	m.liveStatsKnown = true
+	if stats.LastLabel == "" {
+		return ""
+	}
+	if stats.Status != speaker.LiveHealthy && stats.Status != speaker.LiveRunning {
+		return ""
+	}
+	return stats.LastLabel
 }
 
 // stopResultCmd leaves the recorder: embedded → launcher; standalone → Quit.
@@ -598,7 +649,10 @@ func (m meetingModel) handleListenMsg(msg tea.Msg) (meetingModel, tea.Cmd) {
 		// structured label so the glyph is not a bare mic. Live engine (P2)
 		// will set label via setUtteranceLabel without rewriting text.
 		label, _ := splitSpeakerLabel(u.Text)
-		m.appendUtterance(u.At, label, u.Text)
+		if label == "" {
+			label = m.currentMeetingLiveLabel()
+		}
+		m.lastUtteranceID = m.appendUtterance(u.At, label, u.Text)
 	case meetingSpeakerLabelMsg:
 		m.setUtteranceLabel(msg.lineID, msg.label)
 	case meetingErrorMsg:
