@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,7 +57,12 @@ type Server struct {
 	hub          *hub
 	limiter      *rateLimiter
 	meetings     *remote.Manager
-	started      time.Time
+	// segmentLimiter gives meeting audio its own budget. Resuming a
+	// ten-minute outbox is a legitimate burst of ~120 small, idempotent,
+	// size-capped writes; the general abuse guard would throttle exactly the
+	// recovery path the meeting design exists for.
+	segmentLimiter *rateLimiter
+	started        time.Time
 
 	mu   sync.Mutex
 	addr net.Addr
@@ -71,13 +77,14 @@ func New(opts Options) *Server {
 		h.setIngress(opts.Ingress)
 	}
 	return &Server{
-		opts:         opts,
-		dispatcher:   opts.Dispatcher,
-		listSessions: opts.ListSessions,
-		providers:    opts.Providers,
-		hub:          h,
-		limiter:      newRateLimiter(30, 10*time.Second),
-		meetings:     opts.Meetings,
+		opts:           opts,
+		dispatcher:     opts.Dispatcher,
+		listSessions:   opts.ListSessions,
+		providers:      opts.Providers,
+		hub:            h,
+		limiter:        newRateLimiter(30, 10*time.Second),
+		meetings:       opts.Meetings,
+		segmentLimiter: newRateLimiter(segmentRateLimit, 10*time.Second),
 	}
 }
 
@@ -128,7 +135,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	mux.Handle("GET /app.js", web)
 
 	server := &http.Server{
-		Handler:           s.limiter.middleware(s.authMiddleware(mux)),
+		Handler:           s.rateLimit(s.authMiddleware(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{s.opts.Credentials.Certificate},
@@ -290,12 +297,30 @@ func (l *rateLimiter) allow(remoteAddr string, now time.Time) bool {
 	return l.counts[host] <= l.limit
 }
 
-func (l *rateLimiter) middleware(next http.Handler) http.Handler {
+// segmentRateLimit is the per-IP allowance for meeting segment uploads in the
+// same ten-second window the general limiter uses. It covers a full outbox
+// drain (~120 segments) plus live capture continuing underneath it.
+const segmentRateLimit = 240
+
+// rateLimit applies the general abuse guard, except to meeting segment
+// uploads, which get their own budget (see Server.segmentLimiter).
+func (s *Server) rateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !l.allow(r.RemoteAddr, time.Now()) {
+		limiter := s.limiter
+		if isMeetingSegmentPath(r.Method, r.URL.Path) {
+			limiter = s.segmentLimiter
+		}
+		if !limiter.allow(r.RemoteAddr, time.Now()) {
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isMeetingSegmentPath matches PUT /v1/meeting/{id}/segments/{seq}.
+func isMeetingSegmentPath(method, path string) bool {
+	return method == http.MethodPut &&
+		strings.HasPrefix(path, "/v1/meeting/") &&
+		strings.Contains(path, "/segments/")
 }

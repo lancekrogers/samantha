@@ -54,7 +54,13 @@ func (s *Server) handleMeetingSegment(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, remote.MaxSegmentBytes+1))
 	if err != nil {
-		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "segment body too large"})
+		// A dropped connection is not a size problem; say which one it was.
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "segment body too large"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "could not read segment body"})
 		return
 	}
 	if err := session.AppendSegment(r.Context(), seq, body, manager.Now()); err != nil {

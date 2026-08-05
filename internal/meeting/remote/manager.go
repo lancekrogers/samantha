@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -113,16 +115,12 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (*Session, error)
 	}
 
 	now := m.opts.Now()
-	title := req.Title
-	if title == "" {
-		title = "Meeting"
-	}
+	title := sanitizeTitle(req.Title)
 	id, err := newMeetingID()
 	if err != nil {
 		return nil, err
 	}
-	bundlePath := filepath.Join(m.opts.Root, meeting.BundleName(title, now))
-	writer, err := meetinglog.CreateBundle(bundlePath, title, m.opts.STTLabel)
+	bundlePath, writer, err := createBundle(m.opts.Root, title, m.opts.STTLabel, id, now)
 	if err != nil {
 		return nil, err
 	}
@@ -240,6 +238,46 @@ func (s *Session) sweepState() (State, time.Time, time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.state, s.lastActivity, s.finishedAt
+}
+
+// maxTitleRunes keeps a network-supplied title to something a bundle header
+// and a picker row can both live with.
+const maxTitleRunes = 120
+
+// sanitizeTitle makes a client-supplied title safe to write into the bundle's
+// human header. Line breaks are the real hazard: the header is line-oriented,
+// so an unfiltered title could forge "# Started:" lines in meeting.md.
+func sanitizeTitle(title string) string {
+	title = strings.Join(strings.Fields(title), " ")
+	if runes := []rune(title); len(runes) > maxTitleRunes {
+		title = strings.TrimSpace(string(runes[:maxTitleRunes]))
+	}
+	if title == "" {
+		return "Meeting"
+	}
+	return title
+}
+
+// createBundle creates the meeting directory, retrying once with the meeting
+// id appended. Bundle names are second-resolution, so a stop-then-start inside
+// one second would otherwise collide and fail the client's request.
+func createBundle(root, title, sttLabel, id string, now time.Time) (string, *meetinglog.Writer, error) {
+	name := meeting.BundleName(title, now)
+	path := filepath.Join(root, name)
+	writer, err := meetinglog.CreateBundle(path, title, sttLabel)
+	if err == nil {
+		return path, writer, nil
+	}
+	if !errors.Is(err, os.ErrExist) {
+		return "", nil, err
+	}
+	unique := strings.TrimSuffix(name, meeting.BundleSuffix) + "-" + id + meeting.BundleSuffix
+	path = filepath.Join(root, unique)
+	writer, err = meetinglog.CreateBundle(path, title, sttLabel)
+	if err != nil {
+		return "", nil, err
+	}
+	return path, writer, nil
 }
 
 // newMeetingID mints an opaque handle, matching the intent sink's id shape.

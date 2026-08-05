@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lancekrogers/samantha/internal/meeting"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 )
 
@@ -345,4 +346,73 @@ func decodeEvents(t *testing.T, bundle string) []meetinglog.Event {
 		events = append(events, event)
 	}
 	return events
+}
+
+func TestSanitizeTitle(t *testing.T) {
+	tests := []struct {
+		name  string
+		title string
+		want  string
+	}{
+		{"empty falls back", "", "Meeting"},
+		{"whitespace only falls back", "   \t ", "Meeting"},
+		{"kept as written", "Standup", "Standup"},
+		{"inner whitespace collapses", "Q3  planning\treview", "Q3 planning review"},
+		{"newlines cannot forge header lines", "Standup\n# Started: 1999", "Standup # Started: 1999"},
+		{"over-long titles are capped", strings.Repeat("a", maxTitleRunes+40), strings.Repeat("a", maxTitleRunes)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sanitizeTitle(tt.title); got != tt.want {
+				t.Errorf("sanitizeTitle(%q) = %q, want %q", tt.title, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStartSurvivesBundleNameCollision covers stop-then-start inside one
+// second: bundle names are second-resolution, so the second meeting must get
+// its own directory instead of a 500.
+func TestStartSurvivesBundleNameCollision(t *testing.T) {
+	m, clock := janitorManager(t, newRecordingPipeline(nil))
+	first := startSession(t, m)
+	if _, err := first.Stop(context.Background(), -1, clock.now); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, first)
+
+	// Same fake clock, so BundleName produces the same candidate path.
+	second, err := m.Start(context.Background(), StartRequest{Title: "Standup"})
+	if err != nil {
+		t.Fatalf("Start() after a same-second meeting error = %v", err)
+	}
+	if second.BundlePath() == first.BundlePath() {
+		t.Fatal("the second meeting reused the first bundle directory")
+	}
+	if !strings.HasSuffix(second.BundlePath(), meeting.BundleSuffix) {
+		t.Errorf("bundle %q lost its suffix", second.BundlePath())
+	}
+	if _, err := os.Stat(filepath.Join(second.BundlePath(), meetinglog.BundleDocumentName)); err != nil {
+		t.Errorf("second bundle is missing its document: %v", err)
+	}
+}
+
+func TestControlRejectedWhileProcessing(t *testing.T) {
+	release := make(chan struct{})
+	pipe := newRecordingPipeline(nil)
+	pipe.before = func(Job) { <-release }
+	m, clock := janitorManager(t, pipe)
+	session := startSession(t, m)
+	if err := session.AppendSegment(context.Background(), 0, pcm(1, 16), clock.now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Stop(context.Background(), 0, clock.now); err != nil {
+		t.Fatal(err)
+	}
+	err := session.Control(context.Background(), ControlRequest{Action: "bookmark"}, clock.now)
+	if !errors.Is(err, ErrProcessing) {
+		t.Fatalf("Control() while processing = %v, want ErrProcessing", err)
+	}
+	close(release)
+	waitDone(t, session)
 }

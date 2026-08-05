@@ -178,6 +178,9 @@ POST /v1/meeting/start
 
 Segment uploads are **idempotent per `(meeting_id, seq)`** and tolerate
 out-of-order arrival, so a client may retry freely. `seq` is monotonic from 0.
+Segment uploads also have their own rate budget, separate from the general
+30-requests-per-10-seconds guard, so a client draining a buffered outbox after
+a reconnect is not throttled.
 
 ```http
 PUT /v1/meeting/{id}/segments/{seq}
@@ -218,10 +221,13 @@ GET /v1/meeting/{id}
 
 **Failure semantics.** A phone that loses the network keeps recording into its
 own outbox and resumes from the first unacked seq. If serve sees no segment or
-control for **5 minutes**, a janitor auto-finalizes the meeting as
-`interrupted`, preserving the audio captured so far and running the pipeline;
-the client may still re-push missing tail segments on reconnect. A pipeline
-failure leaves state `failed` with the bundle intact, re-runnable from the Mac.
+control for **5 minutes**, a janitor marks the meeting `interrupted`: the audio
+captured so far is preserved and the bundle stays open, so a client that
+reconnects can still push its tail and call stop for a normal `ready` finish.
+If the client stays gone for **another 5 minutes**, serve processes the partial
+recording and closes the bundle, leaving the state at `interrupted` so nobody
+mistakes it for a complete meeting. A pipeline failure leaves state `failed`
+with the bundle intact, re-runnable from the Mac.
 
 **Mid-meeting idea capture** reuses `POST /v1/intent` unchanged (typed text,
 optionally carrying `context: {meeting_id, offset_ms}`); spoken ideas are

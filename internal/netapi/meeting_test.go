@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -303,4 +304,43 @@ func waitForState(t *testing.T, h *meetingHarness, id string, want remote.State)
 		t.Fatalf("state = %q, want %q (error %q)", status.State, want, status.Error)
 	}
 	return status
+}
+
+// TestSegmentUploadsGetTheirOwnRateBudget is the resume path: a phone that was
+// offline pushes its whole outbox at once. Under the shared 30-per-10s guard
+// that client would be throttled into a stall — exactly the failure the outbox
+// exists to prevent.
+func TestSegmentUploadsGetTheirOwnRateBudget(t *testing.T) {
+	h := newMeetingHarness(t, remote.Options{})
+	started := h.startMeeting(t)
+	base := "/v1/meeting/" + started.MeetingID
+
+	const burst = 60 // twice the general per-IP allowance
+	for seq := 0; seq < burst; seq++ {
+		resp := h.do(t, http.MethodPut, base+"/segments/"+strconv.Itoa(seq), segmentBody(16), "application/octet-stream")
+		status := resp.StatusCode
+		resp.Body.Close()
+		if status != http.StatusNoContent {
+			t.Fatalf("segment %d = %d, want 204 (outbox drain must not be throttled)", seq, status)
+		}
+	}
+}
+
+// TestNonMeetingRoutesKeepTheGeneralLimit proves the carve-out is narrow: the
+// rest of the surface still gets the abuse guard.
+func TestNonMeetingRoutesKeepTheGeneralLimit(t *testing.T) {
+	h := newMeetingHarness(t, remote.Options{})
+	throttled := false
+	for i := 0; i < 60; i++ {
+		resp := h.do(t, http.MethodGet, "/v1/status", nil, "")
+		status := resp.StatusCode
+		resp.Body.Close()
+		if status == http.StatusTooManyRequests {
+			throttled = true
+			break
+		}
+	}
+	if !throttled {
+		t.Error("/v1/status was never rate limited")
+	}
 }

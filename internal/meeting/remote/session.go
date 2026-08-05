@@ -101,9 +101,10 @@ func (s *Session) Control(ctx context.Context, req ControlRequest, now time.Time
 	}
 	s.mu.Lock()
 	writer := s.writer
+	accept := s.acceptsLocked()
 	s.mu.Unlock()
-	if writer == nil {
-		return ErrNotRecording
+	if accept != nil {
+		return accept
 	}
 	if err := writer.AppendControl(kind, req.OffsetMs, req.Label, req.Text); err != nil {
 		return err
@@ -112,10 +113,15 @@ func (s *Session) Control(ctx context.Context, req ControlRequest, now time.Time
 	return nil
 }
 
-// acceptsAudio guards the states in which more audio is still useful.
+// acceptsAudio guards the states in which more audio or control is still
+// useful: the bundle must be open and not mid-finalize.
 func (s *Session) acceptsAudio() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.acceptsLocked()
+}
+
+func (s *Session) acceptsLocked() error {
 	switch {
 	case s.writer == nil:
 		return ErrNotRecording
@@ -225,6 +231,8 @@ func (s *Session) process(ctx context.Context, lastSeq int64, final bool) {
 		return
 	}
 	s.recordGaps(gaps, lastSeq)
+	// Safe to drop the raw segments before the pipeline runs: audio.wav now
+	// holds the same PCM, and a failed pipeline is re-runnable from it.
 	if err := s.segments.purge(); err != nil {
 		s.note(err)
 	}

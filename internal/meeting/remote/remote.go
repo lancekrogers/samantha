@@ -145,7 +145,6 @@ var controlActions = map[string]string{
 	"pause":      meetinglog.TypePause,
 	"resume":     meetinglog.TypeResume,
 	"bookmark":   meetinglog.TypeBookmark,
-	"note":       meetinglog.TypeNote,
 	"idea_start": meetinglog.TypeIdeaStart,
 	"idea_end":   meetinglog.TypeIdeaEnd,
 }
