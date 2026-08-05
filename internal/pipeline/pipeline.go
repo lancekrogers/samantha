@@ -692,7 +692,10 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 		cancel()
 		<-observeDone
 	}()
-	sentences := brain.ChunkSentences(streamedChunks)
+	// Raw segments: the voice gate needs the markdown fences CleanForVoice
+	// strips, so gating happens first and each destination cleans after.
+	sentences := brain.ChunkSentencesRaw(streamedChunks)
+	gate := &voiceGate{}
 
 	var fullResponse strings.Builder
 	var interrupted bool
@@ -840,19 +843,26 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 				continue
 			}
 
-			if fullResponse.Len() > 0 {
-				fullResponse.WriteByte(' ')
+			// Feed the gate every segment, in order, before deciding whether
+			// this turn speaks at all: its regions span segments, so skipping
+			// one loses the boundary that closes a tool block or a fence.
+			voiceText, stripped := gate.filter(sentence)
+
+			// The transcript keeps the reply; only the voice channel is
+			// filtered (WI-dc9e33 B4).
+			if display := brain.CleanForVoice(sentence); display != "" {
+				if fullResponse.Len() > 0 {
+					fullResponse.WriteByte(' ')
+				}
+				fullResponse.WriteString(display)
 			}
-			fullResponse.WriteString(sentence)
 
 			if interrupted || p.OutputMuted() || p.Player == nil || !p.ttsReady() {
 				continue
 			}
 
-			// Voice gate (WI-dc9e33 B4): the chat transcript above got the raw
-			// sentence; only voice-safe text may reach TTS. A segment that is
-			// all tool syntax is not spoken at all.
-			speakable := p.gateForSpeech(sentence, metrics)
+			p.recordStrips(stripped, metrics)
+			speakable := brain.CleanForVoice(voiceText)
 			if speakable == "" {
 				continue
 			}

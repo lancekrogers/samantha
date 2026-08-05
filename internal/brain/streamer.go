@@ -9,9 +9,31 @@ import (
 // Keep this at 1 for low latency so Samantha can start speaking on the first complete sentence.
 const sentencesPerChunk = 1
 
-// ChunkSentences reads text chunks from input and emits batches of sentences for TTS.
-// Batches sentencesPerChunk sentences together for smoother playback.
+// CleanForVoice strips markdown and vocal fillers from text bound for TTS.
+// Exported for consumers that must inspect the model's original structure
+// before it is cleaned — the pipeline's voice gate needs the markdown fences
+// this removes, so it gates first and cleans after.
+func CleanForVoice(s string) string { return cleanForVoice(s) }
+
+// ChunkSentences reads text chunks from input and emits voice-cleaned batches
+// of sentences for TTS. Batches sentencesPerChunk sentences together for
+// smoother playback.
 func ChunkSentences(input <-chan string) <-chan string {
+	out := make(chan string, 4)
+	go func() {
+		defer close(out)
+		for batch := range ChunkSentencesRaw(input) {
+			out <- cleanForVoice(batch)
+		}
+	}()
+	return out
+}
+
+// ChunkSentencesRaw segments the stream exactly like ChunkSentences but emits
+// the model's original text, fences and all. Callers that route a batch to
+// both the transcript and TTS clean it themselves, after any structural
+// inspection.
+func ChunkSentencesRaw(input <-chan string) <-chan string {
 	out := make(chan string, 4)
 
 	go func() {
@@ -38,8 +60,7 @@ func ChunkSentences(input <-chan string) <-chan string {
 
 				// Emit batch when we have enough sentences.
 				if len(sentences) >= sentencesPerChunk {
-					batch := strings.Join(sentences, " ")
-					out <- cleanForVoice(batch)
+					out <- strings.Join(sentences, " ")
 					sentences = sentences[:0]
 				}
 			}
@@ -51,8 +72,7 @@ func ChunkSentences(input <-chan string) <-chan string {
 			sentences = append(sentences, remaining)
 		}
 		if len(sentences) > 0 {
-			batch := strings.Join(sentences, " ")
-			out <- cleanForVoice(batch)
+			out <- strings.Join(sentences, " ")
 		}
 	}()
 
