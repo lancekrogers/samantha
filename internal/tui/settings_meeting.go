@@ -172,7 +172,7 @@ func (m *settingsModel) selectMeetingItem() {
 		m.cfg.Meeting.Route.Body = next
 		m.message = fmt.Sprintf("Meeting body scope: %s", next)
 	case meetingRowConfigured:
-		m.message = "Configured destinations live in " + config.ConfigFile() + " (meeting.route.destinations)"
+		m.message = "Destinations in " + config.ConfigFile() + " (meeting.route.destinations); campaign default is notes/meetings via import-meeting"
 	case meetingRowPicker:
 		if m.routeDestsLoading {
 			m.message = "Still discovering destinations…"

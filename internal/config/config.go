@@ -187,7 +187,7 @@ type MeetingDestinationConfig struct {
 	ID       string   `mapstructure:"id"`
 	Type     string   `mapstructure:"type"` // campaign | file | apple-notes
 	Campaign string   `mapstructure:"campaign"`
-	Capture  string   `mapstructure:"capture"` // intent | note
+	Capture  string   `mapstructure:"capture"` // meeting | intent | note (default meeting → import-meeting)
 	Tags     []string `mapstructure:"tags"`
 	Path     string   `mapstructure:"path"`
 	Folder   string   `mapstructure:"folder"`

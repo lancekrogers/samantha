@@ -521,6 +521,29 @@ Bundles default to `~/.obey/agents/voice/festival-voice/meetings/<slug>-<timesta
 Meeting routing accepts a `.meeting` bundle or its canonical `meeting.md`.
 `--json` also emits one JSON line per utterance plus a final summary on stdout.
 
+### Campaign routing (camp CI0009)
+
+When a meeting is routed to a **campaign** destination, Samantha defaults to
+`capture: meeting` and runs:
+
+```bash
+camp idea notes import-meeting <bundle> --title "…" --summary-file … --json
+```
+
+inside that campaign’s root so the note lands under
+`.campaign/intents/notes/meetings/` with a `.transcripts/` sidecar — **not** as
+a lifecycle intent in Inbox/Ready/Active.
+
+Legacy modes (opt-in in `meeting.route.destinations[].capture`):
+
+| `capture` | Behavior |
+|-----------|----------|
+| `meeting` (default) | `import-meeting` → `notes/meetings/` |
+| `intent` | `camp idea add` lifecycle intent (old, misfiling risk) |
+| `note` | `camp idea add --note` |
+
+Requires a camp build with CI0009 (`import-meeting`, #537/#539) on `PATH`.
+
 ## Configuration
 
 Config lives at `~/.obey/agents/voice/festival-voice/config.yaml`. Values can also be overridden with environment variables where listed.

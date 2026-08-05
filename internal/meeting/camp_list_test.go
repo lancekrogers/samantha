@@ -118,8 +118,8 @@ func TestMergeDestinationsPrefersConfigured(t *testing.T) {
 		{ID: "docs", Type: TypeFile, Path: "/tmp/docs"},
 	}
 	discovered := []Destination{
-		{ID: "camp:My_Tools", Type: TypeCampaign, Campaign: "My_Tools", Capture: "intent"},
-		{ID: "camp:Other", Type: TypeCampaign, Campaign: "Other", Capture: "intent"},
+		{ID: "camp:My_Tools", Type: TypeCampaign, Campaign: "My_Tools", Capture: "meeting"},
+		{ID: "camp:Other", Type: TypeCampaign, Campaign: "Other", Capture: "meeting"},
 	}
 	got := MergeDestinations(configured, discovered)
 	if len(got) != 3 {
@@ -135,11 +135,11 @@ func TestMergeDestinationsPrefersConfigured(t *testing.T) {
 
 func TestDestinationFromCampaign(t *testing.T) {
 	d := DestinationFromCampaign(Campaign{Name: "My_Tools", Org: "devtools"})
-	if d.ID != "camp:My_Tools" || d.Type != TypeCampaign || d.Campaign != "My_Tools" || d.Capture != "intent" {
+	if d.ID != "camp:My_Tools" || d.Type != TypeCampaign || d.Campaign != "My_Tools" || d.Capture != "meeting" {
 		t.Fatalf("dest = %+v", d)
 	}
-	if !strings.Contains(DestinationLabel(d), "My_Tools") {
-		t.Fatalf("label = %q", DestinationLabel(d))
+	if label := DestinationLabel(d); !strings.Contains(label, "My_Tools") || !strings.Contains(label, "meetings") {
+		t.Fatalf("label = %q", label)
 	}
 }
 
