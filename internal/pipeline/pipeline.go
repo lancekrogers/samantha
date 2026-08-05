@@ -72,7 +72,8 @@ type Pipeline struct {
 	BrainTurnTimeout time.Duration
 
 	// keepCapture preserves the capture buffer into the next turn after a
-	// barge-in, where the buffered audio is the user already mid-utterance.
+	// barge-in — or a near-miss, speech heard during a playback pause that
+	// never tripped — where the buffered audio is the user mid-utterance.
 	keepCapture bool
 
 	// outputMuted is toggled by interactive clients while a turn may be active.
@@ -438,8 +439,11 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 	}
 
 	// On a barge-in the user is already speaking their next turn into the mic;
-	// keep that audio instead of draining it when the next listen begins.
-	p.keepCapture = interrupted
+	// keep that audio instead of draining it when the next listen begins. A
+	// near-miss (F3.3) may already have set keepCapture inside streamResponse.
+	if interrupted {
+		p.keepCapture = true
+	}
 
 	p.emit(events.ResponseReady{
 		Response:    fullResponse,
@@ -684,11 +688,15 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 	var pending int
 	var bargeIn <-chan interruptRequest
 	var bargeDone <-chan struct{}
+	// armAt zero = unarmed: barge-in stays off until the turn's first playback
+	// arms it, once, in applyPlaybackEvent. Speech during the thinking phase is
+	// a separate product decision (F3.4) and stays disarmed here.
 	var armAt atomic.Int64
-	armAt.Store(time.Now().Add(24 * time.Hour).UnixNano())
+	var ctrl *interruptController
 
 	if allowBargeIn {
-		watch := p.newInterruptController().watchWithDone(streamCtx, &armAt)
+		ctrl = p.newInterruptController()
+		watch := ctrl.watchWithDone(streamCtx, &armAt)
 		bargeIn = watch.requests
 		bargeDone = watch.done
 		// Join the watcher on every exit path — including early returns via
@@ -863,6 +871,13 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 		cancel()
 		if bargeDone != nil {
 			<-bargeDone
+		}
+		// Near-miss retention (F3.3): the watcher heard pause speech that never
+		// reached the trip threshold. The utterance is in the capture ring
+		// buffer — keep it so the next listen transcribes it instead of
+		// Reset()ing it away.
+		if ctrl != nil && ctrl.sawPauseSpeechWithin(bargeInNearMissWindow) {
+			p.keepCapture = true
 		}
 		p.resetEchoState()
 	}
@@ -1048,7 +1063,10 @@ func (p *Pipeline) applyPlaybackEvent(event playbackEvent, metrics *turnMetrics,
 		return true
 
 	case playbackStarted:
-		armAt.Store(time.Now().Add(bargeInArmDelay).UnixNano())
+		// Arm once per turn, on the first playback: re-arming per sentence left
+		// short sentences uninterruptible and re-imposed the delay across every
+		// queue-drain gap (WI-dc9e33 B3 / F3.2).
+		armAt.CompareAndSwap(0, time.Now().Add(bargeInArmDelay).UnixNano())
 		if metrics.firstAudioReady.IsZero() {
 			metrics.firstAudioReady = time.Now()
 		}

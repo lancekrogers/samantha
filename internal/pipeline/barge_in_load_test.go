@@ -97,3 +97,95 @@ func TestBargeInResponsiveUnderSynthAndQueueLoad(t *testing.T) {
 		t.Fatal("barge-in should preserve the capture buffer for the next listen")
 	}
 }
+
+// TestRunTurnBargeInDuringPlaybackPause is the B3 end-to-end regression: user
+// speech that happens entirely inside the queue-drain gap between two spoken
+// sentences must interrupt the turn. Before F3.1/F3.2 the watcher disarmed the
+// moment IsPlaying() went false and re-imposed the arm delay on every sentence,
+// so pause speech was structurally ignored (WI-dc9e33 B3).
+func TestRunTurnBargeInDuringPlaybackPause(t *testing.T) {
+	bus := events.NewBus()
+	var response events.ResponseReady
+	responseSeen := make(chan struct{}, 1)
+	events.Subscribe(bus, func(e events.ResponseReady) {
+		response = e
+		select {
+		case responseSeen <- struct{}{}:
+		default:
+		}
+	})
+
+	// Synthesis slower than playback opens a real IsPlaying()==false gap
+	// between sentence one ending and sentence two starting. The first
+	// playback outlasts the arm delay, so the turn is armed when the gap
+	// opens; the gap comfortably outlasts the pause tail guard.
+	player := newFakePlayer(800 * time.Millisecond)
+	defer player.Close()
+	capture := newFakeCapture()
+
+	p := &Pipeline{
+		STT:        &fakeSTT{text: "hello"},
+		Brain:      &fakeBrain{chunks: []string{"One. Two."}},
+		TTS:        &fakeTTS{delay: 1500 * time.Millisecond},
+		Player:     player,
+		Capture:    capture,
+		VAD:        &fakeVAD{},
+		BargeInVAD: &fakeVAD{},
+		Events:     bus,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.RunTurn(context.Background())
+		done <- err
+	}()
+
+	select {
+	case <-player.StartedSignal():
+	case <-time.After(2 * time.Second):
+		t.Fatal("first playback never started")
+	}
+
+	// The user talks into the pauses: speech chunks flow only while nothing is
+	// playing, never overlapping Samantha's own audio.
+	stopSpeaking := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopSpeaking:
+				return
+			case <-ticker.C:
+				if !player.IsPlaying() {
+					capture.Publish([]float32{0.9, 0.9, 0.9})
+				}
+			}
+		}
+	}()
+	defer close(stopSpeaking)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunTurn() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("turn did not interrupt on speech during the playback pause")
+	}
+
+	select {
+	case <-responseSeen:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for ResponseReady")
+	}
+	if !response.Interrupted {
+		t.Fatal("pause speech did not interrupt the turn")
+	}
+	if player.StopCount() == 0 {
+		t.Fatal("playback stop was not requested on pause barge-in")
+	}
+	if !p.keepCapture {
+		t.Fatal("pause barge-in should preserve the capture buffer for the next listen")
+	}
+}
