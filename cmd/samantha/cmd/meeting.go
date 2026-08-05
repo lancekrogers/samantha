@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -156,35 +155,13 @@ func promptMeetingDescription() (string, error) {
 }
 
 // meetingSlug kebab-cases a description for the filename, capped at 60 chars.
-func meetingSlug(description string) string {
-	var b strings.Builder
-	dash := false
-	for _, r := range strings.ToLower(description) {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			b.WriteRune(r)
-			dash = false
-		default:
-			if !dash && b.Len() > 0 {
-				b.WriteByte('-')
-				dash = true
-			}
-		}
-	}
-	s := strings.Trim(b.String(), "-")
-	if len(s) > 60 {
-		s = strings.Trim(s[:60], "-")
-	}
-	if s == "" {
-		return "meeting"
-	}
-	return s
-}
+func meetingSlug(description string) string { return meeting.Slug(description) }
 
 // meetingBundleName joins the slug with the codebase's sortable timestamp
-// layout and a recognizable directory suffix.
+// layout and a recognizable directory suffix. Shared with serve-driven remote
+// recordings so both produce identically named bundles.
 func meetingBundleName(description string, now time.Time) string {
-	return fmt.Sprintf("%s-%s.meeting", meetingSlug(description), now.Format("20060102-150405"))
+	return meeting.BundleName(description, now)
 }
 
 // stopPhraseSet is the shared meeting stop-phrase set (CLI + TUI).

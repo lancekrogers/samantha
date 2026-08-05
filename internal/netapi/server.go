@@ -12,6 +12,7 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/meeting/remote"
 )
 
 // Options configures a Server. All fields except AllowPublic are required.
@@ -40,6 +41,10 @@ type Options struct {
 	// IntentSink configures POST /v1/intent (PROTOCOL_DELTAS D3). Optional;
 	// defaults to file mode under credentials Dir/intents.
 	IntentSink IntentSinkConfig
+	// Meetings enables the /v1/meeting capture surface (PROTOCOL_DELTAS D6).
+	// Optional: when nil those routes are not registered and GET /v1/status
+	// reports the meetings capability as false.
+	Meetings *remote.Manager
 }
 
 // Server is the LAN-facing HTTPS + WebSocket surface around one pipeline.
@@ -50,6 +55,7 @@ type Server struct {
 	providers    Providers
 	hub          *hub
 	limiter      *rateLimiter
+	meetings     *remote.Manager
 	started      time.Time
 
 	mu   sync.Mutex
@@ -71,6 +77,7 @@ func New(opts Options) *Server {
 		providers:    opts.Providers,
 		hub:          h,
 		limiter:      newRateLimiter(30, 10*time.Second),
+		meetings:     opts.Meetings,
 	}
 }
 
@@ -105,6 +112,15 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	// PROTOCOL_DELTAS D3: intent capture + targets.
 	mux.HandleFunc("POST /v1/intent", s.handleIntent)
 	mux.HandleFunc("GET /v1/intent/targets", s.handleIntentTargets)
+	// PROTOCOL_DELTAS D6: phone-driven meeting capture. Registered only when
+	// configured, so a serve without it answers 404 rather than pretending.
+	if s.meetings != nil {
+		mux.HandleFunc("POST /v1/meeting/start", s.handleMeetingStart)
+		mux.HandleFunc("PUT /v1/meeting/{id}/segments/{seq}", s.handleMeetingSegment)
+		mux.HandleFunc("POST /v1/meeting/{id}/control", s.handleMeetingControl)
+		mux.HandleFunc("POST /v1/meeting/{id}/stop", s.handleMeetingStop)
+		mux.HandleFunc("GET /v1/meeting/{id}", s.handleMeetingStatus)
+	}
 	// Embedded phone voice client (public HTML/JS; WS still authenticated).
 	web := webFileServer()
 	mux.Handle("GET /{$}", web)
