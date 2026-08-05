@@ -210,6 +210,8 @@ func Panel(mode Mode, frame int, heightScale float64, width int, label string, s
 }
 
 // CompactMeter is a single-line header chip: glyph + short EQ + label.
+// Level drives the EQ bars only — never shown as a percentage (that reads as
+// progress-through-utterance, which this value is not).
 func CompactMeter(mode Mode, frame int, level float64, label string, s Styles, reduced bool) string {
 	if mode == ModeIdle {
 		return ""
@@ -224,9 +226,7 @@ func CompactMeter(mode Mode, frame int, level float64, label string, s Styles, r
 	if label == "" {
 		label = modeLabel(mode)
 	}
-	pct := int(level * 100)
-	return modeGlyph(mode, frame, reduced) + " " + wave + " " +
-		palette.Label.Render(fmt.Sprintf("%s %d%%", label, pct))
+	return modeGlyph(mode, frame, reduced) + " " + wave + " " + palette.Label.Render(label)
 }
 
 func stripCard(body string, width int, s Styles) string {
@@ -253,10 +253,12 @@ func stripCard(body string, width int, s Styles) string {
 	return lipgloss.PlaceHorizontal(width, lipgloss.Center, card)
 }
 
-func statusLine(mode Mode, label string, level float64, s Styles, reduced bool) string {
-	pct := int(clamp01(level) * 100)
+func statusLine(mode Mode, label string, _ float64, s Styles, reduced bool) string {
+	// Level is intentionally unused here: the spectrum/waveform already shows
+	// energy. A trailing "N%" looks like completion progress (how much of the
+	// reply has been spoken), which this meter never measures.
 	g := modeGlyph(mode, 0, reduced)
-	return s.Label.Render(fmt.Sprintf("%s  %s  ·  %d%%", g, label, pct))
+	return s.Label.Render(fmt.Sprintf("%s  %s", g, label))
 }
 
 func colorByHeat(rel float64, s Styles) lipgloss.Style {

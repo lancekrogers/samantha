@@ -78,6 +78,22 @@ func TestCompactMeter_Modes(t *testing.T) {
 	}
 }
 
+func TestVoiceMeters_NoEnergyAsPercent(t *testing.T) {
+	// Regression: level is amplitude, not completion. Showing "67%" during
+	// Speaking implies progress-through-reply and confuses the TUI demo GIF.
+	s := testStyles()
+	for _, mode := range []Mode{ModeHearing, ModeSpeaking, ModeSynthesizing, ModeListening} {
+		stage := Stage(mode, 3, 0.67, 60, modeLabel(mode), s, false)
+		if strings.Contains(stage, "%") {
+			t.Fatalf("Stage(%v) must not show energy as %%:\n%s", mode, stage)
+		}
+		compact := CompactMeter(mode, 2, 0.67, modeLabel(mode), s, false)
+		if strings.Contains(compact, "%") {
+			t.Fatalf("CompactMeter(%v) must not show energy as %%:\n%s", mode, compact)
+		}
+	}
+}
+
 func TestEffectiveLevel(t *testing.T) {
 	if effectiveLevel(ModeListening, 0, 0) <= 0 {
 		t.Fatal("listening needs ambient level")
