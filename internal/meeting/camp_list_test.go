@@ -138,8 +138,8 @@ func TestDestinationFromCampaign(t *testing.T) {
 	if d.ID != "camp:My_Tools" || d.Type != TypeCampaign || d.Campaign != "My_Tools" || d.Capture != "meeting" {
 		t.Fatalf("dest = %+v", d)
 	}
-	if !strings.Contains(DestinationLabel(d), "My_Tools") {
-		t.Fatalf("label = %q", DestinationLabel(d))
+	if label := DestinationLabel(d); !strings.Contains(label, "My_Tools") || !strings.Contains(label, "meetings") {
+		t.Fatalf("label = %q", label)
 	}
 }
 

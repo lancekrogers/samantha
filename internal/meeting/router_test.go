@@ -5,12 +5,18 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 )
+
+// shellQuote wraps s for use inside a double-quoted sh -c fragment.
+func shellQuote(s string) string {
+	return strconv.Quote(s)
+}
 
 func TestFileSinkRoutesAndKeepsOriginal(t *testing.T) {
 	dir := t.TempDir()
@@ -124,6 +130,128 @@ func TestCampaignSinkImportMeeting(t *testing.T) {
 	}
 	if strings.Contains(joined, "idea add") || strings.Contains(joined, "--body-file") {
 		t.Fatalf("should not use legacy idea add: %v", gotArgs)
+	}
+}
+
+func TestCampaignSinkImportMeetingRequiresBundle(t *testing.T) {
+	sink := CampaignSink{
+		Dest: Destination{ID: "mytools", Type: TypeCampaign, Campaign: "My_Tools"},
+		LookPath: func(string) (string, error) { return "/bin/camp", nil },
+		Run: func(context.Context, string, ...string) ([]byte, error) {
+			t.Fatal("should not shell out without a bundle")
+			return nil, nil
+		},
+	}
+	_, err := sink.Route(context.Background(), RenderedNote{
+		Title:   "Meeting: X",
+		Body:    "# hi\n",
+		Summary: meetinglog.Summary{Description: "X"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "Summary.Bundle") {
+		t.Fatalf("err = %v, want Summary.Bundle required", err)
+	}
+}
+
+func TestCampaignSinkImportMeetingRunsInCampaignDir(t *testing.T) {
+	// Production path: ResolveCampaignDir set + real exec with cmd.Dir.
+	// Fake camp binary records PWD and argv.
+	marker := filepath.Join(t.TempDir(), "camp-run.txt")
+	campBin := filepath.Join(t.TempDir(), "camp")
+	script := "#!/bin/sh\n" +
+		"printf 'PWD=%s\\n' \"$(pwd)\" > " + shellQuote(marker) + "\n" +
+		"printf 'ARGS=%s\\n' \"$*\" >> " + shellQuote(marker) + "\n" +
+		"printf '%s\\n' '{\"schema_version\":\"intent-meeting-import/v1alpha1\"}'\n"
+	if err := os.WriteFile(campBin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	campaignDir := t.TempDir()
+	// Real campaigns have a path; import-meeting only needs cwd for camp config
+	// resolution — empty dir is enough to prove cmd.Dir.
+	bundle := filepath.Join(t.TempDir(), "x.meeting")
+	if err := os.MkdirAll(bundle, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundle, "meeting.md"), []byte("# Meeting\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sink := CampaignSink{
+		Dest: Destination{ID: "mytools", Type: TypeCampaign, Campaign: "My_Tools", Capture: CaptureMeeting},
+		LookPath: func(name string) (string, error) {
+			if name == "camp" {
+				return campBin, nil
+			}
+			return "", os.ErrNotExist
+		},
+		// Run is unused when dir is non-empty (runCommand path).
+		Run: DefaultRunner,
+		ResolveCampaignDir: func(context.Context, string) (string, error) {
+			return campaignDir, nil
+		},
+	}
+	note := RenderedNote{
+		Title: "Meeting: Dir test",
+		Body:  "## Summary\n\nok\n",
+		Summary: meetinglog.Summary{
+			Description: "Dir test",
+			Bundle:      bundle,
+			StartedAt:   time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC),
+		},
+	}
+	receipt, err := sink.Route(context.Background(), note)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Outcome != OutcomeRouted {
+		t.Fatalf("outcome = %s detail=%s", receipt.Outcome, receipt.Detail)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "PWD="+campaignDir) {
+		t.Fatalf("camp not run in campaign dir:\n%s\nwant PWD=%s", text, campaignDir)
+	}
+	if !strings.Contains(text, "import-meeting") || !strings.Contains(text, bundle) {
+		t.Fatalf("missing import-meeting argv:\n%s", text)
+	}
+}
+
+func TestResolveCampaignDirFromList(t *testing.T) {
+	wantPath := "/abs/path/to/My_Tools"
+	run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+		// ListCampaigns uses LookPath result as the executable name.
+		if !strings.HasSuffix(name, "camp") || len(args) < 2 || args[0] != "list" {
+			t.Fatalf("unexpected call %s %v", name, args)
+		}
+		return []byte(`[{"id":"abc","name":"My_Tools","path":"` + wantPath + `","status":"active"}]`), nil
+	}
+	got, err := resolveCampaignDir(context.Background(), run, func(string) (string, error) {
+		return "/bin/camp", nil
+	}, "My_Tools")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != wantPath {
+		t.Fatalf("got %q want %q", got, wantPath)
+	}
+}
+
+func TestNormalizeCampaignCapture(t *testing.T) {
+	cases := map[string]string{
+		"":               CaptureMeeting,
+		"meeting":        CaptureMeeting,
+		"import-meeting": CaptureMeeting,
+		"intent":         CaptureIntent,
+		"note":           CaptureNote,
+		"weird":          CaptureMeeting,
+	}
+	for in, want := range cases {
+		if got := normalizeCampaignCapture(in); got != want {
+			t.Errorf("normalize(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

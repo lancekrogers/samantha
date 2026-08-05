@@ -233,7 +233,17 @@ func DestinationLabel(d Destination) string {
 		if name == "" {
 			name = d.ID
 		}
-		return fmt.Sprintf("%s [campaign]", name)
+		// Surface capture mode so operators know meetings go to notes/meetings
+		// (default) vs legacy lifecycle intents.
+		cap := normalizeCampaignCapture(d.Capture)
+		switch cap {
+		case CaptureIntent:
+			return fmt.Sprintf("%s [campaign/intent]", name)
+		case CaptureNote:
+			return fmt.Sprintf("%s [campaign/note]", name)
+		default:
+			return fmt.Sprintf("%s [campaign/meetings]", name)
+		}
 	case TypeFile:
 		path := strings.TrimSpace(d.Path)
 		if path == "" {

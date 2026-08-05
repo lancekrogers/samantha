@@ -1,11 +1,9 @@
 package meeting
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -37,9 +35,11 @@ type CampaignSink struct {
 	Dest     Destination
 	Run      Runner
 	LookPath LookPath
-	// ResolveCampaignDir returns the absolute path for Dest.Campaign.
-	// When nil, ListCampaigns is used (production). Unit tests leave it nil
-	// and inject Run so argv can be asserted without a real camp binary.
+	// ResolveCampaignDir returns the absolute path for Dest.Campaign so
+	// import-meeting can run with cmd.Dir set (camp loads config from cwd).
+	// Production (Router.sinkFor) always injects resolveCampaignDir via
+	// camp list. Tests inject a stub: empty string forces the injected Run
+	// path (argv capture); a real path forces runCommand with that Dir.
 	ResolveCampaignDir func(ctx context.Context, campaignName string) (string, error)
 }
 
@@ -87,8 +87,9 @@ func normalizeCampaignCapture(raw string) string {
 func (s CampaignSink) routeImportMeeting(ctx context.Context, campBin, campaign string, note RenderedNote) (Receipt, error) {
 	bundle := strings.TrimSpace(note.Summary.Bundle)
 	if bundle == "" {
-		// Route-later without a bundle path cannot import; fall back to note.
-		return s.routeIdeaAdd(ctx, campBin, campaign, CaptureNote, note)
+		// Fail closed: import-meeting needs the .meeting bundle. Route-later
+		// callers must re-resolve Summary.Bundle from the meeting directory.
+		return Receipt{}, fmt.Errorf("meeting: import-meeting requires Summary.Bundle (path to the .meeting directory); re-select the recording or use capture: note explicitly")
 	}
 	if _, err := os.Stat(bundle); err != nil {
 		return Receipt{}, fmt.Errorf("meeting: meeting bundle %q: %w", bundle, err)
@@ -229,35 +230,11 @@ func resolveCampaignDir(ctx context.Context, run Runner, look LookPath, campaign
 	return "", fmt.Errorf("meeting: campaign %q not found in camp list (need a registered path for import-meeting)", campaignName)
 }
 
-// runCamp runs camp. When dir is non-empty, sets cmd.Dir so import-meeting
-// loads the correct campaign config. When dir is empty, uses the injected
-// Runner (unit tests that only assert argv).
+// runCamp runs camp. Non-empty dir sets cmd.Dir so import-meeting loads the
+// correct campaign. Empty dir uses the injected Runner (unit tests asserting argv).
 func (s CampaignSink) runCamp(ctx context.Context, dir, campBin string, args ...string) ([]byte, error) {
 	if strings.TrimSpace(dir) == "" {
 		return s.Run(ctx, campBin, args...)
 	}
-	return execCampInDir(ctx, dir, campBin, args...)
-}
-
-func execCampInDir(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = dir
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	if err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = strings.TrimSpace(stdout.String())
-		}
-		if msg != "" {
-			return stdout.Bytes(), fmt.Errorf("%w: %s", err, msg)
-		}
-		return stdout.Bytes(), err
-	}
-	return stdout.Bytes(), nil
+	return runCommand(ctx, dir, campBin, args...)
 }
