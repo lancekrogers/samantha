@@ -141,6 +141,97 @@ streams. Other devices and the primary token remain active.
 | `POST` | `/v1/intent` | yes | Capture intent (D3; file sink) |
 | `GET` | `/v1/intent/targets` | yes | Intent routing targets (D3) |
 
+## Meetings (draft — pending implementation)
+
+> **Status: not implemented yet.** This section documents the agreed wire for
+> the `/v1/meeting` surface (Obey Voice delta D6, festival OV0003, workitem
+> `WI-f3c18a`) so clients and serve agree before code lands. Until the
+> handlers ship, `/v1/meeting/*` returns 404 and `GET /v1/status` does not
+> advertise the `meetings` capability.
+
+Phone-first meeting capture. The phone records with its own mic and ships
+audio to the Mac in **sequenced 5-second segments** of `pcm_s16le` 16 kHz mono
+(~160 KB each); STT, diarization, and summary all run post-stop on the Mac.
+Nothing here is real-time, so reliability beats latency.
+
+This surface is deliberately separate from `/v1/stream`: meeting capture never
+claims the exclusive remote mic, never enqueues Dispatcher turns, and never
+touches the audio queues.
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| `POST` | `/v1/meeting/start` | yes | Create the `.meeting` bundle; `409` if one is already recording |
+| `PUT` | `/v1/meeting/{id}/segments/{seq}` | yes | Raw PCM body; `204` = persisted (the ack) |
+| `POST` | `/v1/meeting/{id}/control` | yes | Append a control event to the bundle |
+| `POST` | `/v1/meeting/{id}/stop` | yes | Verify contiguity, finalize audio, start the pipeline |
+| `GET` | `/v1/meeting/{id}` | yes | Poll state / results |
+| `POST` | `/v1/meeting/{id}/route` | yes | Route the finished note via `camp idea notes import-meeting` |
+
+```http
+POST /v1/meeting/start
+{"title":"Standup","campaign":"mytools"}
+```
+
+```json
+{"meeting_id":"…","segment_seconds":5,"outbox_cap_segments":120}
+```
+
+Segment uploads are **idempotent per `(meeting_id, seq)`** and tolerate
+out-of-order arrival, so a client may retry freely. `seq` is monotonic from 0.
+
+```http
+PUT /v1/meeting/{id}/segments/{seq}
+Content-Type: application/octet-stream
+<raw pcm_s16le, 16 kHz, mono>
+→ 204 No Content
+```
+
+```http
+POST /v1/meeting/{id}/control
+{"action":"bookmark","offset_ms":91500,"text":"decision"}
+```
+
+`action` is one of `pause`, `resume`, `bookmark`, `idea_start`, `idea_end`.
+Each becomes an event in the bundle's `.samantha/events.jsonl` using the same
+schema a desktop recording writes.
+
+```http
+POST /v1/meeting/{id}/stop
+{"last_seq":417}
+```
+
+```json
+{"state":"processing","missing_seqs":[]}
+```
+
+A non-empty `missing_seqs` means the server is still short of audio: the
+client re-pushes those segments and calls stop again.
+
+```http
+GET /v1/meeting/{id}
+```
+
+```json
+{"state":"recording|processing|ready|failed|interrupted",
+ "missing_seqs":[],"result":{…}}
+```
+
+**Failure semantics.** A phone that loses the network keeps recording into its
+own outbox and resumes from the first unacked seq. If serve sees no segment or
+control for **5 minutes**, a janitor auto-finalizes the meeting as
+`interrupted`, preserving the audio captured so far and running the pipeline;
+the client may still re-push missing tail segments on reconnect. A pipeline
+failure leaves state `failed` with the bundle intact, re-runnable from the Mac.
+
+**Mid-meeting idea capture** reuses `POST /v1/intent` unchanged (typed text,
+optionally carrying `context: {meeting_id, offset_ms}`); spoken ideas are
+marked with `idea_start` / `idea_end` controls and resolved from the
+transcript after stop. Meetings land in campaign `notes/meetings/`; ideas land
+in the Inbox — the sinks stay separate.
+
+**Out of scope for v1:** meeting audio over `/v1/stream`, multiple concurrent
+meetings per serve, and on-phone STT.
+
 ## WebSocket `/v1/stream`
 
 Connect: `wss://host:port/v1/stream?token=...` (or Bearer on non-browser clients).
