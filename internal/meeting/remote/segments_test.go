@@ -6,12 +6,15 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 )
+
+// testGapSamples is the stand-in segment length for the tiny fixtures in this
+// file, matching the 4-sample segments the tests write.
+const testGapSamples = 4
 
 // countingWriter records how audio was handed over, which is what proves
 // assembly streams instead of buffering a whole meeting.
@@ -39,10 +42,13 @@ func newTestStore(t *testing.T) *segmentStore {
 	if err := os.MkdirAll(filepath.Join(bundle, meetinglog.BundleInternalDirName), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := newSegmentStore(bundle)
+	store, err := newSegmentStore(bundle, DefaultSegmentSeconds)
 	if err != nil {
 		t.Fatalf("newSegmentStore() error = %v", err)
 	}
+	// Tiny fixtures: keep substituted silence the same size as a test segment
+	// so gap padding stays proportional to what the test wrote.
+	store.gapSamples = testGapSamples
 	return store
 }
 
@@ -112,8 +118,8 @@ func TestSegmentOutOfOrderArrival(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Assemble() error = %v", err)
 	}
-	if gaps != 0 {
-		t.Errorf("gaps = %d, want 0", gaps)
+	if len(gaps) != 0 {
+		t.Errorf("gaps = %+v, want none", gaps)
 	}
 	// Sequence order, not arrival order.
 	for i, want := range []int16{1, 2, 3, 4, 5} {
@@ -151,11 +157,20 @@ func TestSegmentMissingReportsGaps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Assemble() error = %v", err)
 	}
-	if gaps != 3 {
-		t.Errorf("gaps = %d, want 3", gaps)
+	// Two runs: sequences 2-3, then 5.
+	if len(gaps) != 2 {
+		t.Fatalf("gaps = %+v, want two runs (2-3 and 5)", gaps)
 	}
-	if sink.total != 12 {
-		t.Errorf("assembled %d samples, want 12 from the three delivered segments", sink.total)
+	if gaps[0].FirstSeq != 2 || gaps[0].Segments != 2 {
+		t.Errorf("first gap = %+v, want sequences 2-3 coalesced", gaps[0])
+	}
+	if gaps[1].FirstSeq != 5 || gaps[1].Segments != 1 {
+		t.Errorf("second gap = %+v, want sequence 5", gaps[1])
+	}
+	// Silence stands in for what never arrived, so later audio keeps its
+	// position: 3 delivered segments + 3 gap segments, all testGapSamples long.
+	if want := 6 * testGapSamples; sink.total != want {
+		t.Errorf("assembled %d samples, want %d — gaps must not shift the timeline", sink.total, want)
 	}
 }
 
@@ -167,7 +182,7 @@ func TestSegmentIndexSurvivesRestart(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(bundle, meetinglog.BundleInternalDirName), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	before, err := newSegmentStore(bundle)
+	before, err := newSegmentStore(bundle, DefaultSegmentSeconds)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +193,7 @@ func TestSegmentIndexSurvivesRestart(t *testing.T) {
 	}
 
 	// Serve dies here; a new process opens the same bundle.
-	after, err := newSegmentStore(bundle)
+	after, err := newSegmentStore(bundle, DefaultSegmentSeconds)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,24 +271,18 @@ func TestAssembleIsMemoryBounded(t *testing.T) {
 	}
 
 	sink := &countingWriter{}
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
 	if _, err := store.Assemble(context.Background(), sink, segments-1); err != nil {
 		t.Fatalf("Assemble() error = %v", err)
 	}
-	runtime.GC()
-	runtime.ReadMemStats(&after)
-
 	if sink.total != segments*samplesPerSegment {
 		t.Fatalf("assembled %d samples, want %d", sink.total, segments*samplesPerSegment)
 	}
+	// The batch cap is the real proof of streaming: no call ever sees more
+	// than one fixed chunk, however long the meeting is. (A heap-delta
+	// assertion would be noise — a concurrent GC can free a fully buffered
+	// meeting before the measurement and pass anyway.)
 	if sink.maxBatch > assembleChunkSamples {
 		t.Errorf("largest batch = %d samples, want no more than %d", sink.maxBatch, assembleChunkSamples)
-	}
-	// Retained heap must not scale with the recording (which is ~3.8 MB here).
-	if grew := int64(after.HeapAlloc) - int64(before.HeapAlloc); grew > int64(segments*samplesPerSegment) {
-		t.Errorf("heap grew by %d bytes assembling a %d-sample meeting", grew, segments*samplesPerSegment)
 	}
 }
 

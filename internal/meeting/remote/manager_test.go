@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -323,8 +324,17 @@ func TestGapsAreRecordedInTheBundle(t *testing.T) {
 	if gap == nil {
 		t.Fatal("no segment_gap event for the two segments that never arrived")
 	}
-	if !strings.Contains(gap.Text, "2 of 4") {
+	if !strings.Contains(gap.Text, "2 audio segment(s)") {
 		t.Errorf("gap text = %q, want it to count the missing segments", gap.Text)
+	}
+	// The gap is located in the assembled recording, not just counted: it
+	// starts after the one segment that did arrive (16 samples = 1 ms) and
+	// runs for the two nominal segments of silence standing in for 1 and 2.
+	if gap.OffsetMs != 1 {
+		t.Errorf("gap offset_ms = %d, want 1 — a reader must be able to find it", gap.OffsetMs)
+	}
+	if want := 2 * int64(DefaultSegmentSeconds) * 1000; !strings.Contains(gap.Text, fmt.Sprintf("%dms", want)) {
+		t.Errorf("gap text = %q, want it to state %dms of substituted silence", gap.Text, want)
 	}
 }
 
@@ -415,4 +425,53 @@ func TestControlRejectedWhileProcessing(t *testing.T) {
 	}
 	close(release)
 	waitDone(t, session)
+}
+
+// TestInterruptedMeetingRecoversOnActivity: a phone that reconnects is
+// recording again. Leaving the state at interrupted would show a broken
+// meeting in the UI while audio was flowing in fine.
+func TestInterruptedMeetingRecoversOnActivity(t *testing.T) {
+	m, clock := janitorManager(t, newRecordingPipeline(nil))
+	session := startSession(t, m)
+
+	clock.advance(6 * time.Minute)
+	m.Sweep(context.Background(), clock.now)
+	if got := session.Status().State; got != StateInterrupted {
+		t.Fatalf("state = %q, want interrupted", got)
+	}
+
+	if err := session.AppendSegment(context.Background(), 0, pcm(1, 16), clock.now); err != nil {
+		t.Fatal(err)
+	}
+	if got := session.Status().State; got != StateRecording {
+		t.Fatalf("state after the client came back = %q, want recording", got)
+	}
+
+	// And the abandon deadline is off the table again.
+	clock.advance(4 * time.Minute)
+	m.Sweep(context.Background(), clock.now)
+	if got := session.Status().State; got != StateRecording {
+		t.Fatalf("state = %q, want recording — the stall timer did not reset", got)
+	}
+}
+
+func TestSessionRegistryIsBounded(t *testing.T) {
+	clock := &fakeClock{now: time.Date(2026, 8, 5, 9, 0, 0, 0, time.UTC)}
+	m := testManager(t, Options{
+		Pipeline: newRecordingPipeline(nil), MaxSessions: 3, Now: clock.Now,
+	})
+	for i := 0; i < 6; i++ {
+		session, err := m.Start(context.Background(), StartRequest{Title: "Meeting"})
+		if err != nil {
+			t.Fatalf("Start() %d error = %v", i, err)
+		}
+		if _, err := session.Stop(context.Background(), -1, clock.now); err != nil {
+			t.Fatal(err)
+		}
+		waitDone(t, session)
+		clock.advance(time.Minute)
+	}
+	if len(m.snapshot()) > 3 {
+		t.Errorf("registry holds %d sessions, want at most 3", len(m.snapshot()))
+	}
 }

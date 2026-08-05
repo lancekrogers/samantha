@@ -344,3 +344,52 @@ func TestNonMeetingRoutesKeepTheGeneralLimit(t *testing.T) {
 		t.Error("/v1/status was never rate limited")
 	}
 }
+
+func TestSegmentContentTypeIsChecked(t *testing.T) {
+	h := newMeetingHarness(t, remote.Options{})
+	started := h.startMeeting(t)
+	path := "/v1/meeting/" + started.MeetingID + "/segments/0"
+
+	tests := []struct {
+		name        string
+		contentType string
+		want        int
+	}{
+		{"raw octet-stream", "application/octet-stream", http.StatusNoContent},
+		{"octet-stream with parameters", "application/octet-stream; charset=binary", http.StatusNoContent},
+		{"linear PCM", "audio/l16", http.StatusNoContent},
+		{"unset is allowed", "", http.StatusNoContent},
+		{"JSON posted by mistake", "application/json", http.StatusUnsupportedMediaType},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := h.do(t, http.MethodPut, path, segmentBody(16), tt.contentType)
+			defer resp.Body.Close()
+			if resp.StatusCode != tt.want {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tt.want)
+			}
+		})
+	}
+}
+
+func TestSegmentSequenceIsBounded(t *testing.T) {
+	h := newMeetingHarness(t, remote.Options{})
+	started := h.startMeeting(t)
+	resp := h.do(t, http.MethodPut,
+		"/v1/meeting/"+started.MeetingID+"/segments/1099511627776", segmentBody(16), "application/octet-stream")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for an out-of-range sequence", resp.StatusCode)
+	}
+}
+
+func TestStopLastSeqIsBounded(t *testing.T) {
+	h := newMeetingHarness(t, remote.Options{})
+	started := h.startMeeting(t)
+	resp := h.do(t, http.MethodPost, "/v1/meeting/"+started.MeetingID+"/stop",
+		strings.NewReader(`{"last_seq":1099511627776}`), "application/json")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for an out-of-range last_seq", resp.StatusCode)
+	}
+}

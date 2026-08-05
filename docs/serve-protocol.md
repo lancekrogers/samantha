@@ -189,6 +189,11 @@ Content-Type: application/octet-stream
 → 204 No Content
 ```
 
+Audio that never arrives is replaced at finalize time with silence of the
+nominal segment length, so a dropout never slides later audio earlier — client
+bookmark and idea-span offsets stay aligned with the recording. Each run of
+lost segments is recorded as a `segment_gap` event at its real offset.
+
 ```http
 POST /v1/meeting/{id}/control
 {"action":"bookmark","offset_ms":91500,"text":"decision"}
@@ -204,11 +209,16 @@ POST /v1/meeting/{id}/stop
 ```
 
 ```json
-{"state":"processing","missing_seqs":[]}
+{"state":"processing","missing_seqs":[],"missing_count":0}
 ```
 
 A non-empty `missing_seqs` means the server is still short of audio: the
-client re-pushes those segments and calls stop again.
+client re-pushes those segments and calls stop again. The list is truncated
+for very gappy meetings; `missing_count` is always the true total.
+
+`last_seq` is a floor, not a truth: serve raises it to the highest sequence it
+actually received, so an under-reported value can never cause delivered audio
+to be dropped. Sequence numbers above `100000` are rejected with `400`.
 
 ```http
 GET /v1/meeting/{id}

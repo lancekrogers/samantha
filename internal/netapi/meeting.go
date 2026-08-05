@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
+	"mime"
 	"net/http"
 	"strconv"
 
@@ -50,6 +52,11 @@ func (s *Server) handleMeetingSegment(w http.ResponseWriter, r *http.Request) {
 	seq, err := strconv.ParseInt(r.PathValue("seq"), 10, 64)
 	if err != nil || seq < 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sequence must be a non-negative integer"})
+		return
+	}
+	if ct := r.Header.Get("Content-Type"); ct != "" && !isBinaryContentType(ct) {
+		writeJSON(w, http.StatusUnsupportedMediaType,
+			map[string]string{"error": "segment body must be raw pcm_s16le, not " + ct})
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, remote.MaxSegmentBytes+1))
@@ -132,21 +139,44 @@ func (s *Server) meetingSession(w http.ResponseWriter, r *http.Request) (*remote
 	return session, manager, true
 }
 
+// isBinaryContentType accepts the octet-stream family a raw PCM upload should
+// declare. A client posting JSON by mistake would otherwise have it stored as
+// audio and played back as noise.
+func isBinaryContentType(contentType string) bool {
+	if media, _, err := mime.ParseMediaType(contentType); err == nil {
+		contentType = media
+	}
+	switch contentType {
+	case "application/octet-stream", "audio/l16", "audio/pcm", "audio/x-pcm":
+		return true
+	}
+	return false
+}
+
 // writeMeetingError maps the meeting package's sentinel errors onto the status
 // codes the protocol promises.
+//
+// Only mapped (4xx) errors carry their text to the client: an unmapped failure
+// is an internal one, and its message tends to contain absolute bundle paths
+// and meeting titles that have no business crossing the wire.
 func writeMeetingError(w http.ResponseWriter, err error) {
-	status := http.StatusInternalServerError
 	switch {
 	case errors.Is(err, remote.ErrNotFound):
-		status = http.StatusNotFound
-	case errors.Is(err, remote.ErrMeetingActive), errors.Is(err, remote.ErrProcessing):
-		status = http.StatusConflict
-	case errors.Is(err, remote.ErrNotRecording):
-		status = http.StatusConflict
+		writeMeetingProblem(w, http.StatusNotFound, err)
+	case errors.Is(err, remote.ErrMeetingActive), errors.Is(err, remote.ErrProcessing),
+		errors.Is(err, remote.ErrNotRecording):
+		writeMeetingProblem(w, http.StatusConflict, err)
 	case errors.Is(err, remote.ErrBadSegment), errors.Is(err, remote.ErrBadControl):
-		status = http.StatusBadRequest
+		writeMeetingProblem(w, http.StatusBadRequest, err)
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		status = http.StatusServiceUnavailable
+		writeMeetingProblem(w, http.StatusServiceUnavailable, err)
+	default:
+		log.Printf("netapi: meeting request failed: %v", err)
+		writeJSON(w, http.StatusInternalServerError,
+			map[string]string{"error": "meeting request failed"})
 	}
+}
+
+func writeMeetingProblem(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }

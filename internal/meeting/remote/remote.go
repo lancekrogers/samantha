@@ -46,10 +46,23 @@ const (
 	DefaultStallTimeout      = 5 * time.Minute
 	DefaultSweepInterval     = 15 * time.Second
 	DefaultRetention         = 24 * time.Hour
+	DefaultProcessTimeout    = 2 * time.Hour
+	DefaultMaxSessions       = 256
 
 	// MaxSegmentBytes caps one upload well above a 5 s 16 kHz mono segment
 	// (160 KB) while refusing a body that could exhaust memory.
 	MaxSegmentBytes = 4 << 20
+
+	// MaxSegmentSeq bounds the sequence space. Both the sequence number and
+	// the stop request's last_seq are client-controlled and drive loops over
+	// [0, seq], so an unbounded value is a denial of service — and no honest
+	// client gets near this (roughly six days at 5 s per segment).
+	MaxSegmentSeq = 100_000
+
+	// maxReportedMissing caps the missing_seqs list in a status response: a
+	// client needs to know it has gaps and where to start, not receive
+	// thousands of integers on every poll.
+	maxReportedMissing = 256
 )
 
 // Errors callers translate to HTTP status codes.
@@ -101,17 +114,19 @@ type StopRequest struct {
 	LastSeq int64 `json:"last_seq"`
 }
 
-// Status is the GET /v1/meeting/{id} payload.
+// Status is the GET /v1/meeting/{id} payload. MissingSeqs is truncated to
+// maxReportedMissing entries; MissingCount is always the true total.
 type Status struct {
-	MeetingID   string              `json:"meeting_id"`
-	State       State               `json:"state"`
-	Bundle      string              `json:"bundle,omitempty"`
-	Title       string              `json:"title,omitempty"`
-	Campaign    string              `json:"campaign,omitempty"`
-	StartedAt   time.Time           `json:"started_at"`
-	MissingSeqs []int64             `json:"missing_seqs,omitempty"`
-	Result      *meetinglog.Summary `json:"result,omitempty"`
-	Error       string              `json:"error,omitempty"`
+	MeetingID    string              `json:"meeting_id"`
+	State        State               `json:"state"`
+	Bundle       string              `json:"bundle,omitempty"`
+	Title        string              `json:"title,omitempty"`
+	Campaign     string              `json:"campaign,omitempty"`
+	StartedAt    time.Time           `json:"started_at"`
+	MissingSeqs  []int64             `json:"missing_seqs,omitempty"`
+	MissingCount int                 `json:"missing_count,omitempty"`
+	Result       *meetinglog.Summary `json:"result,omitempty"`
+	Error        string              `json:"error,omitempty"`
 }
 
 // Pipeline turns a finalized bundle into a transcript and speaker analysis.

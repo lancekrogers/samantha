@@ -37,6 +37,11 @@ type Options struct {
 	SweepInterval time.Duration
 	// Retention is how long a finished meeting stays pollable.
 	Retention time.Duration
+	// ProcessTimeout bounds one transcription pass, so a wedged model cannot
+	// hold the single meeting slot for the life of the process.
+	ProcessTimeout time.Duration
+	// MaxSessions bounds how many meetings one serve process remembers.
+	MaxSessions int
 	// Pipeline runs transcription and diarization after a meeting stops.
 	// A nil Pipeline still records audio; results are reported as failed.
 	Pipeline Pipeline
@@ -65,6 +70,12 @@ func (o Options) normalize() Options {
 	}
 	if o.Retention <= 0 {
 		o.Retention = DefaultRetention
+	}
+	if o.ProcessTimeout <= 0 {
+		o.ProcessTimeout = DefaultProcessTimeout
+	}
+	if o.MaxSessions <= 0 {
+		o.MaxSessions = DefaultMaxSessions
 	}
 	if o.STTLabel == "" {
 		o.STTLabel = "remote"
@@ -113,6 +124,9 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (*Session, error)
 	if live := m.liveLocked(); live != nil {
 		return nil, fmt.Errorf("%w (id %s)", ErrMeetingActive, live.id)
 	}
+	// Finished meetings age out on Retention, but nothing else bounds the map
+	// or the bundles on disk; drop the oldest rather than grow forever.
+	m.evictOldestLocked()
 
 	now := m.opts.Now()
 	title := sanitizeTitle(req.Title)
@@ -124,7 +138,7 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (*Session, error)
 	if err != nil {
 		return nil, err
 	}
-	segments, err := newSegmentStore(bundlePath)
+	segments, err := newSegmentStore(bundlePath, m.opts.SegmentSeconds)
 	if err != nil {
 		_, _ = writer.Close()
 		return nil, err
@@ -132,7 +146,7 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (*Session, error)
 	session := &Session{
 		id: id, bundlePath: bundlePath, title: title, campaign: req.Campaign,
 		startedAt: writer.StartedAt(), segments: segments, pipeline: m.opts.Pipeline,
-		now:    m.opts.Now,
+		now: m.opts.Now, processTimeout: m.opts.ProcessTimeout,
 		writer: writer, state: StateRecording, lastActivity: now, lastSeq: -1,
 	}
 	m.sessions[id] = session
@@ -225,6 +239,27 @@ func (m *Manager) snapshot() []*Session {
 		sessions = append(sessions, session)
 	}
 	return sessions
+}
+
+// evictOldestLocked drops finished sessions until the registry is back under
+// its cap. Only closed meetings are candidates; a live one is never evicted.
+func (m *Manager) evictOldestLocked() {
+	for len(m.sessions) >= m.opts.MaxSessions {
+		oldestID, oldest := "", time.Time{}
+		for id, session := range m.sessions {
+			_, _, finished := session.sweepState()
+			if finished.IsZero() {
+				continue
+			}
+			if oldestID == "" || finished.Before(oldest) {
+				oldestID, oldest = id, finished
+			}
+		}
+		if oldestID == "" {
+			return
+		}
+		delete(m.sessions, oldestID)
+	}
 }
 
 func (m *Manager) forget(id string) {

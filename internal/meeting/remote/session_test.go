@@ -33,14 +33,19 @@ type recordingPipeline struct {
 }
 
 func newRecordingPipeline(err error) *recordingPipeline {
-	return &recordingPipeline{err: err, jobs: make(chan Job, 4)}
+	return &recordingPipeline{err: err, jobs: make(chan Job, 8)}
 }
 
 func (p *recordingPipeline) Process(ctx context.Context, job Job) error {
 	if p.before != nil {
 		p.before(job)
 	}
-	p.jobs <- job
+	// Never block the session on a test that is not reading: a stuck pipeline
+	// would look like a product bug rather than a full channel.
+	select {
+	case p.jobs <- job:
+	default:
+	}
 	return p.err
 }
 
@@ -346,4 +351,159 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestStopNeverDiscardsDeliveredAudio is the property the whole design exists
+// for. A client that reports a last_seq below what it actually delivered — an
+// off-by-one, a restarted counter — must not cause the extra audio to be
+// assembled away and then purged.
+func TestStopNeverDiscardsDeliveredAudio(t *testing.T) {
+	m := testManager(t, Options{Pipeline: newRecordingPipeline(nil)})
+	session := startSession(t, m)
+	now := time.Now()
+	const segments, samplesEach = 5, 64
+	for seq := int64(0); seq < segments; seq++ {
+		if err := session.AppendSegment(context.Background(), seq, pcm(int16(seq+1), samplesEach), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The client under-reports by four segments.
+	if _, err := session.Stop(context.Background(), 0, now); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	waitDone(t, session)
+
+	if got := session.Status().State; got != StateReady {
+		t.Fatalf("state = %q, want ready", got)
+	}
+	samples, _, err := audio.ReadWAVFloat32(filepath.Join(session.BundlePath(), meetinglog.BundleAudioName))
+	if err != nil {
+		t.Fatalf("ReadWAVFloat32() error = %v", err)
+	}
+	if want := segments * samplesEach; len(samples) != want {
+		t.Fatalf("assembled %d samples, want %d — audio the client delivered was thrown away", len(samples), want)
+	}
+}
+
+// TestStopWithNoAudioIsNotReported as ready-with-nothing: an empty meeting
+// still closes cleanly, but it must not claim results it does not have.
+func TestStopWithNoSegments(t *testing.T) {
+	m := testManager(t, Options{Pipeline: newRecordingPipeline(nil)})
+	session := startSession(t, m)
+	if _, err := session.Stop(context.Background(), -1, time.Now()); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	waitDone(t, session)
+	if got := session.Status().State; got != StateReady {
+		t.Fatalf("state = %q, want ready", got)
+	}
+	if _, err := os.Stat(filepath.Join(session.BundlePath(), meetinglog.BundleAudioName)); err == nil {
+		t.Error("a meeting with no audio produced an audio.wav")
+	}
+}
+
+func TestStopRejectsAbsurdLastSeq(t *testing.T) {
+	m := testManager(t, Options{Pipeline: newRecordingPipeline(nil)})
+	session := startSession(t, m)
+	done := make(chan error, 1)
+	go func() {
+		_, err := session.Stop(context.Background(), 1<<40, time.Now())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrBadSegment) {
+			t.Fatalf("Stop() error = %v, want ErrBadSegment", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop() with an absurd last_seq did not return — the session lock is wedged")
+	}
+	// The session is untouched and still usable.
+	if got := session.Status().State; got != StateRecording {
+		t.Errorf("state = %q, want recording", got)
+	}
+}
+
+func TestAppendSegmentRejectsAbsurdSequence(t *testing.T) {
+	m := testManager(t, Options{Pipeline: newRecordingPipeline(nil)})
+	session := startSession(t, m)
+	err := session.AppendSegment(context.Background(), 1<<40, pcm(1, 8), time.Now())
+	if !errors.Is(err, ErrBadSegment) {
+		t.Fatalf("AppendSegment() error = %v, want ErrBadSegment", err)
+	}
+	// The meeting slot is not wedged: a normal stop still finishes.
+	if _, err := session.Stop(context.Background(), -1, time.Now()); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	waitDone(t, session)
+	if session.live() {
+		t.Error("session still holds the meeting slot")
+	}
+}
+
+// TestManagerCloseDuringProcessingDoesNotPanic covers Ctrl-C on serve while a
+// meeting is transcribing: the bundle is closed underneath the pipeline, which
+// must be told rather than handed a nil writer.
+func TestManagerCloseDuringProcessingDoesNotPanic(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	pipe := newRecordingPipeline(nil)
+	pipe.before = func(job Job) {
+		close(entered)
+		<-release
+		if job.Writer == nil {
+			t.Error("pipeline was handed a nil writer")
+		}
+	}
+	m := testManager(t, Options{Pipeline: pipe})
+	session := startSession(t, m)
+	now := time.Now()
+	if err := session.AppendSegment(context.Background(), 0, pcm(1, 32), now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Stop(context.Background(), 0, now); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pipeline never started")
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	close(release)
+	waitDone(t, session)
+
+	// Whatever the outcome, serve survived and the bundle is closed.
+	if session.live() {
+		t.Error("Close() left the bundle open")
+	}
+}
+
+// TestProcessWithClosedBundleFailsCleanly is the same hazard without the
+// timing race: a pass that finds its writer gone reports it instead of
+// dereferencing nil.
+func TestProcessWithClosedBundleFailsCleanly(t *testing.T) {
+	pipe := newRecordingPipeline(nil)
+	m := testManager(t, Options{Pipeline: pipe})
+	session := startSession(t, m)
+	if err := session.AppendSegment(context.Background(), 0, pcm(1, 32), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.closeBundle(); err != nil {
+		t.Fatal(err)
+	}
+
+	session.done = make(chan struct{})
+	session.process(context.Background(), 0)
+
+	if got := session.Status().State; got != StateFailed {
+		t.Fatalf("state = %q, want failed", got)
+	}
+	if len(pipe.jobs) != 0 {
+		t.Error("the pipeline ran against a closed bundle")
+	}
 }

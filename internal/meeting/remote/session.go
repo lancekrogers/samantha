@@ -17,14 +17,15 @@ import (
 // Everything mutable is behind mu. The pipeline runs on its own goroutine and
 // only touches the session again to publish its outcome.
 type Session struct {
-	id         string
-	bundlePath string
-	title      string
-	campaign   string
-	startedAt  time.Time
-	segments   *segmentStore
-	pipeline   Pipeline
-	now        func() time.Time
+	id             string
+	bundlePath     string
+	title          string
+	campaign       string
+	startedAt      time.Time
+	segments       *segmentStore
+	pipeline       Pipeline
+	now            func() time.Time
+	processTimeout time.Duration
 
 	mu           sync.Mutex
 	writer       *meetinglog.Writer
@@ -38,6 +39,7 @@ type Session struct {
 	interrupted  bool
 	finishedAt   time.Time
 	done         chan struct{}
+	cancelPass   context.CancelFunc
 }
 
 // ID is the opaque handle the client uses in every later request.
@@ -54,10 +56,15 @@ func (s *Session) Status() Status {
 }
 
 func (s *Session) statusLocked() Status {
+	reported := s.missing
+	if len(reported) > maxReportedMissing {
+		reported = reported[:maxReportedMissing]
+	}
 	status := Status{
 		MeetingID: s.id, State: s.state, Bundle: s.bundlePath,
 		Title: s.title, Campaign: s.campaign, StartedAt: s.startedAt,
-		MissingSeqs: append([]int64(nil), s.missing...), Error: s.failure,
+		MissingSeqs: append([]int64(nil), reported...), MissingCount: len(s.missing),
+		Error: s.failure,
 	}
 	if s.haveSummary {
 		summary := s.summary
@@ -131,10 +138,16 @@ func (s *Session) acceptsLocked() error {
 	return nil
 }
 
+// touch records activity. A client that comes back after the janitor gave up
+// on it is recording again, not still interrupted — leaving the state stuck
+// would show a broken meeting in the UI while audio flows in fine.
 func (s *Session) touch(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastActivity = now
+	if s.state == StateInterrupted && s.writer != nil {
+		s.state, s.interrupted = StateRecording, false
+	}
 }
 
 // Stop finalizes the meeting. When segments are still missing it changes
@@ -144,17 +157,23 @@ func (s *Session) Stop(ctx context.Context, lastSeq int64, now time.Time) (Statu
 	if err := ctx.Err(); err != nil {
 		return Status{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	switch {
-	case s.writer == nil:
-		return s.statusLocked(), ErrNotRecording
-	case s.state == StateProcessing:
-		return s.statusLocked(), ErrProcessing
+	if lastSeq > MaxSegmentSeq {
+		return Status{}, fmt.Errorf("%w: last_seq %d exceeds the %d cap", ErrBadSegment, lastSeq, MaxSegmentSeq)
+	}
+	if err := s.acceptsAudio(); err != nil {
+		return s.Status(), err
 	}
 
-	missing, err := s.segments.Missing(lastSeq)
+	// Read the index off the session lock — it is disk I/O, and holding the
+	// lock across it would block every status poll. State is re-checked below.
+	lastSeq, missing, err := s.reconcile(lastSeq)
 	if err != nil {
+		return s.Status(), err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.acceptsLocked(); err != nil {
 		return s.statusLocked(), err
 	}
 	s.missing, s.lastActivity, s.lastSeq = missing, now, lastSeq
@@ -166,8 +185,27 @@ func (s *Session) Stop(ctx context.Context, lastSeq int64, now time.Time) (Statu
 
 	// Detached from the request context: the client's HTTP call is done, but
 	// transcription is not, and cancelling it would throw the meeting away.
-	go s.process(context.WithoutCancel(ctx), lastSeq, true)
+	go s.process(context.WithoutCancel(ctx), lastSeq)
 	return s.statusLocked(), nil
+}
+
+// reconcile raises a client's last_seq to whatever actually arrived and lists
+// the gaps below it. Trusting a low last_seq would be destructive: assembly
+// stops there and the raw segments above it are purged, so an off-by-one or a
+// restarted counter would silently delete audio the client already delivered.
+func (s *Session) reconcile(lastSeq int64) (int64, []int64, error) {
+	highest, err := s.segments.Highest()
+	if err != nil {
+		return 0, nil, err
+	}
+	if highest > lastSeq {
+		lastSeq = highest
+	}
+	missing, err := s.segments.Missing(lastSeq)
+	if err != nil {
+		return 0, nil, err
+	}
+	return lastSeq, missing, nil
 }
 
 // Done reports the channel closed when the current processing pass ends, or
@@ -213,16 +251,23 @@ func (s *Session) abandon(ctx context.Context, now time.Time) {
 	s.lastActivity = now
 	s.done = make(chan struct{})
 	s.mu.Unlock()
-	// Off the sweep goroutine: transcription can take minutes and the janitor
-	// still has other meetings to watch.
-	go s.process(ctx, highest, true)
+	// Off the sweep goroutine, and detached from it: transcription takes
+	// minutes, the janitor has other meetings to watch, and a sweep returning
+	// must not cancel the pass it just started.
+	go s.process(context.WithoutCancel(ctx), highest)
 }
 
 // process assembles audio, runs the pipeline, and publishes the outcome. It
 // never returns an error: every failure is recorded on the session, because a
 // recording that cannot be transcribed is still a recording worth keeping.
-func (s *Session) process(ctx context.Context, lastSeq int64, final bool) {
+func (s *Session) process(parent context.Context, lastSeq int64) {
 	defer s.finishPass()
+
+	// A pass is bounded: without a deadline a wedged model would hold the
+	// single meeting slot for the life of the serve process.
+	ctx, cancel := context.WithTimeout(parent, s.processTimeout)
+	defer cancel()
+	s.setCancel(cancel)
 
 	audioPath := filepath.Join(s.bundlePath, meetinglog.BundleAudioName)
 	gaps, err := s.assemble(ctx, audioPath, lastSeq)
@@ -230,9 +275,10 @@ func (s *Session) process(ctx context.Context, lastSeq int64, final bool) {
 		s.fail(fmt.Errorf("assemble meeting audio: %w", err))
 		return
 	}
-	s.recordGaps(gaps, lastSeq)
-	// Safe to drop the raw segments before the pipeline runs: audio.wav now
-	// holds the same PCM, and a failed pipeline is re-runnable from it.
+	s.recordGaps(gaps)
+	// Safe to drop the raw segments now: assembly covered every sequence on
+	// disk (Stop and abandon both raise lastSeq to the highest received), so
+	// audio.wav holds the same PCM and a failed pipeline is re-runnable.
 	if err := s.segments.purge(); err != nil {
 		s.note(err)
 	}
@@ -240,6 +286,12 @@ func (s *Session) process(ctx context.Context, lastSeq int64, final bool) {
 	s.mu.Lock()
 	writer, title := s.writer, s.title
 	s.mu.Unlock()
+	if writer == nil {
+		// The bundle was closed underneath us — serve is shutting down. Say so
+		// instead of handing the pipeline a nil writer and panicking.
+		s.fail(ErrNotRecording)
+		return
+	}
 
 	var pipelineErr error
 	if s.pipeline == nil {
@@ -249,17 +301,24 @@ func (s *Session) process(ctx context.Context, lastSeq int64, final bool) {
 			BundlePath: s.bundlePath, AudioPath: audioPath, Writer: writer, Title: title,
 		})
 	}
-	s.publish(pipelineErr, final)
+	s.publish(pipelineErr)
+}
+
+// setCancel publishes the running pass's cancel func so shutdown can stop it.
+func (s *Session) setCancel(cancel context.CancelFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cancelPass = cancel
 }
 
 // assemble streams the received segments into the bundle's audio.wav.
-func (s *Session) assemble(ctx context.Context, audioPath string, lastSeq int64) (int64, error) {
+func (s *Session) assemble(ctx context.Context, audioPath string, lastSeq int64) ([]Gap, error) {
 	if lastSeq < 0 {
-		return 0, nil
+		return nil, nil
 	}
 	wav, err := audio.NewWAVWriter(audioPath, audio.SampleRate)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	gaps, assembleErr := s.segments.Assemble(ctx, wav, lastSeq)
 	closeErr := wav.Close()
@@ -271,8 +330,8 @@ func (s *Session) assemble(ctx context.Context, audioPath string, lastSeq int64)
 
 // recordGaps leaves a marker in the bundle for audio that never arrived, so a
 // later reader never mistakes dropped segments for silence.
-func (s *Session) recordGaps(gaps, lastSeq int64) {
-	if gaps <= 0 {
+func (s *Session) recordGaps(gaps []Gap) {
+	if len(gaps) == 0 {
 		return
 	}
 	s.mu.Lock()
@@ -281,32 +340,34 @@ func (s *Session) recordGaps(gaps, lastSeq int64) {
 	if writer == nil {
 		return
 	}
-	text := fmt.Sprintf("%d of %d audio segments never arrived", gaps, lastSeq+1)
-	if err := writer.AppendControl(meetinglog.TypeSegmentGap, 0, "", text); err != nil {
-		s.note(err)
+	for _, gap := range gaps {
+		text := fmt.Sprintf("%d audio segment(s) never arrived; %dms of silence stands in",
+			gap.Segments, gap.DurationMs)
+		if err := writer.AppendControl(meetinglog.TypeSegmentGap, gap.OffsetMs, "", text); err != nil {
+			s.note(err)
+			return
+		}
 	}
 }
 
 // publish closes the bundle (when this was a real stop) and records the
 // terminal state the client will poll.
-func (s *Session) publish(pipelineErr error, final bool) {
+func (s *Session) publish(pipelineErr error) {
 	s.mu.Lock()
 	writer, interrupted := s.writer, s.interrupted
 	s.mu.Unlock()
 
 	var summary meetinglog.Summary
 	var closeErr error
-	if final && writer != nil {
+	if writer != nil {
 		summary, closeErr = writer.Close()
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if final {
-		s.writer = nil
-		s.summary, s.haveSummary = summary, closeErr == nil
-		s.finishedAt = s.now()
-	}
+	s.writer = nil
+	s.summary, s.haveSummary = summary, closeErr == nil
+	s.finishedAt = s.now()
 	switch {
 	case pipelineErr != nil:
 		s.state, s.failure = StateFailed, pipelineErr.Error()
@@ -357,9 +418,12 @@ func (s *Session) finishPass() {
 // down and a half-finished bundle beats a headless one.
 func (s *Session) closeBundle() error {
 	s.mu.Lock()
-	writer := s.writer
-	s.writer = nil
+	writer, cancel := s.writer, s.cancelPass
+	s.writer, s.cancelPass = nil, nil
 	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if writer == nil {
 		return nil
 	}
