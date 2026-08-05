@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -9,7 +10,13 @@ import (
 	"github.com/lancekrogers/samantha/internal/speaker"
 )
 
-const liveSpeakerPollInterval = 250 * time.Millisecond
+const (
+	liveSpeakerPollInterval = 250 * time.Millisecond
+	// liveSpeakerStickyHold keeps the last good speaker-N when the engine
+	// briefly reports empty (gap / low confidence). New non-empty labels
+	// always win immediately so real turn-taking is not delayed.
+	liveSpeakerStickyHold = 3 * time.Second
+)
 
 // LiveSpeakerController is intentionally small so the conversation screen
 // can control an optional adapter without knowing how speaker analysis is
@@ -17,6 +24,34 @@ const liveSpeakerPollInterval = 250 * time.Millisecond
 type LiveSpeakerController interface {
 	Stats() speaker.LiveStats
 	SetEnabled(bool)
+}
+
+// stickyLiveLabel remembers the last non-empty speaker-N so short empty gaps
+// do not thrash the mic glyph or flip-flop the footer.
+type stickyLiveLabel struct {
+	label string
+	until time.Time
+}
+
+// Observe returns the label to display. Non-empty input refreshes the hold;
+// empty input returns the sticky value until the hold expires.
+func (s *stickyLiveLabel) Observe(label string, now time.Time) string {
+	label = strings.TrimSpace(label)
+	if label != "" {
+		s.label = label
+		s.until = now.Add(liveSpeakerStickyHold)
+		return label
+	}
+	if s.label != "" && now.Before(s.until) {
+		return s.label
+	}
+	return ""
+}
+
+// Clear drops the hold (session stop / disable).
+func (s *stickyLiveLabel) Clear() {
+	s.label = ""
+	s.until = time.Time{}
 }
 
 type liveSpeakerStatsMsg struct {
@@ -88,7 +123,7 @@ func (m *conversationModel) currentLiveSpeakerLabel() string {
 	m.liveSpeakerStats = stats
 	m.liveSpeakerStatsKnown = true
 	if stats.Status != speaker.LiveHealthy && stats.Status != speaker.LiveRunning {
-		return ""
+		return m.stickyLive.Observe("", time.Now())
 	}
-	return stats.LastLabel
+	return m.stickyLive.Observe(stats.LastLabel, time.Now())
 }

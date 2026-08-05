@@ -107,6 +107,8 @@ type meetingModel struct {
 	liveSpeaker    LiveSpeakerController
 	liveStats      speaker.LiveStats
 	liveStatsKnown bool
+	// stickyLabel holds the last good speaker-N across brief empty stats.
+	stickyLabel stickyLiveLabel
 	// lastUtteranceID is the newest live speech row for async label attachment.
 	lastUtteranceID int
 	utterances      int
@@ -135,6 +137,10 @@ func RunMeeting(opts MeetingOpts) error {
 	m := newEmbeddedMeeting()
 	m.opts = opts
 	m.started = time.Now()
+	m.sessionPhase = meetingSessionRecording
+	// CLI path never calls beginRecording; wire live labels the same way so
+	// samantha meeting record gets provisional speaker-N (not only launcher).
+	m.liveSpeaker = opts.LiveSpeaker
 	// The recording context is canceled to stop capture. Keep Bubble Tea alive
 	// until the loop has finalized post-capture speaker analysis and delivered
 	// its terminal status; meetingLoopDoneMsg then exits the program normally.
@@ -203,24 +209,39 @@ func (m *meetingModel) beginRecording(opts MeetingOpts) tea.Cmd {
 	m.sessionPhase = meetingSessionRecording
 	m.liveSpeaker = opts.LiveSpeaker
 	m.liveStatsKnown = false
+	m.stickyLabel.Clear()
 	m.lastUtteranceID = 0
 	if m.opts.SpeakerStatus == "" {
 		m.opts.SpeakerStatus = meeting.AnalysisDisabled
 	}
 	cmds := []tea.Cmd{m.startLoop(), meetingTickCmd(), textarea.Blink}
-	if m.liveSpeaker != nil {
-		m.liveSpeaker.SetEnabled(true)
-		cmds = append(cmds, liveSpeakerStatsCmd(m.liveSpeaker))
+	if live := m.meetingLiveStartCmd(); live != nil {
+		cmds = append(cmds, live)
 	}
 	return tea.Batch(cmds...)
 }
 
 func (m meetingModel) Init() tea.Cmd {
 	// Standalone CLI: start the listen loop when deps are already on opts.
+	// Live poll must start here too — beginRecording only runs on launcher path.
 	if m.opts.Capture != nil && m.opts.Provider != nil {
-		return tea.Batch(m.startLoop(), meetingTickCmd(), textarea.Blink)
+		cmds := []tea.Cmd{m.startLoop(), meetingTickCmd(), textarea.Blink}
+		if live := m.meetingLiveStartCmd(); live != nil {
+			cmds = append(cmds, live)
+		}
+		return tea.Batch(cmds...)
 	}
 	return nil
+}
+
+// meetingLiveStartCmd enables provisional labels and returns the first stats
+// poll. Shared by CLI Init and embedded beginRecording.
+func (m *meetingModel) meetingLiveStartCmd() tea.Cmd {
+	if m.liveSpeaker == nil {
+		return nil
+	}
+	m.liveSpeaker.SetEnabled(true)
+	return liveSpeakerStatsCmd(m.liveSpeaker)
 }
 
 func meetingTickCmd() tea.Cmd {
@@ -376,10 +397,14 @@ func (m meetingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case liveSpeakerStatsMsg:
 		m.liveStats = msg.stats
 		m.liveStatsKnown = true
-		// Attach/refresh the latest speech row when the live engine names a voice.
-		if m.lastUtteranceID > 0 && msg.stats.LastLabel != "" &&
-			(msg.stats.Status == speaker.LiveHealthy || msg.stats.Status == speaker.LiveRunning) {
-			m.setUtteranceLabel(m.lastUtteranceID, msg.stats.LastLabel)
+		// Always refresh sticky so a label heard between utterances still applies
+		// to the next line (and holds across brief empty gaps).
+		var label string
+		if msg.stats.Status == speaker.LiveHealthy || msg.stats.Status == speaker.LiveRunning {
+			label = m.stickyLabel.Observe(msg.stats.LastLabel, time.Now())
+		}
+		if m.lastUtteranceID > 0 && label != "" {
+			m.setUtteranceLabel(m.lastUtteranceID, label)
 		}
 		if m.sessionPhase == meetingSessionRecording && m.liveSpeaker != nil {
 			return m, liveSpeakerStatsCmd(m.liveSpeaker)
@@ -395,6 +420,7 @@ func (m meetingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.liveSpeaker != nil {
 			m.liveSpeaker.SetEnabled(false)
 		}
+		m.stickyLabel.Clear()
 		return m, nil
 
 	case meetingAnalysisCancelMsg:
@@ -492,6 +518,7 @@ func (m meetingModel) requestStop() (meetingModel, tea.Cmd) {
 	if m.liveSpeaker != nil {
 		m.liveSpeaker.SetEnabled(false)
 	}
+	m.stickyLabel.Clear()
 	if m.opts.Cancel != nil {
 		m.opts.Cancel()
 	}
@@ -501,7 +528,9 @@ func (m meetingModel) requestStop() (meetingModel, tea.Cmd) {
 	return m, nil
 }
 
-// currentMeetingLiveLabel returns the live engine's last stable-ish label.
+// currentMeetingLiveLabel returns the live engine's last stable-ish label,
+// sticky-held across brief empty gaps so consecutive turns from the same
+// voice do not flash 🎤 mid-gap.
 func (m *meetingModel) currentMeetingLiveLabel() string {
 	if m.liveSpeaker == nil {
 		return ""
@@ -509,13 +538,10 @@ func (m *meetingModel) currentMeetingLiveLabel() string {
 	stats := m.liveSpeaker.Stats()
 	m.liveStats = stats
 	m.liveStatsKnown = true
-	if stats.LastLabel == "" {
-		return ""
-	}
 	if stats.Status != speaker.LiveHealthy && stats.Status != speaker.LiveRunning {
-		return ""
+		return m.stickyLabel.Observe("", time.Now())
 	}
-	return stats.LastLabel
+	return m.stickyLabel.Observe(stats.LastLabel, time.Now())
 }
 
 // stopResultCmd leaves the recorder: embedded → launcher; standalone → Quit.

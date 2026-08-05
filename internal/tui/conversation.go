@@ -98,6 +98,8 @@ type conversationModel struct {
 	liveSpeaker           LiveSpeakerController
 	liveSpeakerStats      speaker.LiveStats
 	liveSpeakerStatsKnown bool
+	// stickyLive holds last good speaker-N across brief empty stats (chat parity).
+	stickyLive stickyLiveLabel
 
 	commandQuery     string
 	commandSelection int
