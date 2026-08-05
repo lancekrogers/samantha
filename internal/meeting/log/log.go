@@ -43,6 +43,10 @@ const (
 	TypeResume    = "resume"
 	TypeIdeaStart = "idea_start"
 	TypeIdeaEnd   = "idea_end"
+	// TypeIdeaFiled records that a span's idea was filed as an Inbox intent
+	// (Label = span id). Its presence is the dedupe: a reprocessed bundle
+	// files only spans without one.
+	TypeIdeaFiled = "idea_filed"
 	// TypeSegmentGap marks audio the client could not deliver (outbox
 	// overflow or an abandoned tail) so later readers never mistake the gap
 	// for silence.
@@ -386,6 +390,7 @@ var controlSymbols = map[string]string{
 	TypeResume:     "▶ resumed",
 	TypeIdeaStart:  "💡 idea start",
 	TypeIdeaEnd:    "💡 idea end",
+	TypeIdeaFiled:  "💡 idea filed",
 	TypeSegmentGap: "⚠ audio gap",
 }
 

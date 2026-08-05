@@ -131,6 +131,13 @@ func (s *Server) writeIntentFile(req IntentRequest) (id, path string, err error)
 	if dir == "" && s.opts.Credentials != nil && s.opts.Credentials.Dir != "" {
 		dir = filepath.Join(s.opts.Credentials.Dir, "intents")
 	}
+	return WriteIntentFile(dir, req)
+}
+
+// WriteIntentFile persists one intent into the file sink `POST /v1/intent`
+// uses. Exported for serve's idea-span resolution, which files spoken ideas
+// through the same sink so a spoken idea and a typed one land identically.
+func WriteIntentFile(dir string, req IntentRequest) (id, path string, err error) {
 	if dir == "" {
 		return "", "", fmt.Errorf("intent sink directory not configured")
 	}

@@ -5,6 +5,8 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/listen"
 	"github.com/lancekrogers/samantha/internal/meeting"
+	"github.com/lancekrogers/samantha/internal/meeting/ideas"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 	"github.com/lancekrogers/samantha/internal/meeting/remote"
 	"github.com/lancekrogers/samantha/internal/netapi"
@@ -55,10 +58,37 @@ func runServeMeetingPipeline(ctx context.Context, cfg *config.Config, job remote
 	if err := transcribeMeetingAudio(ctx, cfg, job); err != nil {
 		return err
 	}
+	// Idea spans resolve as soon as the transcript exists — before diarization,
+	// so a speaker-stack failure cannot cost anyone their filed ideas. A
+	// resolution error is itself non-fatal: the meeting's notes are worth more
+	// than one intent, and unfiled spans retry on reprocess.
+	if report, err := resolveMeetingIdeas(ctx, job); err != nil {
+		fmt.Fprintf(os.Stderr, "meeting %s: idea resolution: %v\n", job.Title, err)
+	} else if report.Filed > 0 || report.Unresolved > 0 || report.Failed > 0 {
+		fmt.Fprintf(os.Stderr, "meeting %s: ideas filed=%d unresolved=%d failed=%d\n",
+			job.Title, report.Filed, report.Unresolved, report.Failed)
+	}
 	if _, err := diarizeMeetingAudio(ctx, cfg, job); err != nil {
 		return fmt.Errorf("speaker analysis: %w", err)
 	}
 	return nil
+}
+
+// resolveMeetingIdeas files spoken idea spans through the same intent file
+// sink POST /v1/intent writes to (serve default: <config>/serve/intents).
+func resolveMeetingIdeas(ctx context.Context, job remote.Job) (ideas.Report, error) {
+	sinkDir := filepath.Join(config.ConfigDir(), "serve", "intents")
+	meetingID := filepath.Base(job.BundlePath)
+	return ideas.Resolve(ctx, job.BundlePath, job.Writer, func(ctx context.Context, idea ideas.Resolved) error {
+		_, _, err := netapi.WriteIntentFile(sinkDir, netapi.IntentRequest{
+			Type:       "note",
+			Body:       idea.Body,
+			Source:     "meeting",
+			CapturedAt: time.Now().UTC().Format(time.RFC3339),
+			Context:    &netapi.IntentContext{MeetingID: meetingID, OffsetMs: idea.StartMS},
+		})
+		return err
+	})
 }
 
 // transcribeMeetingAudio replays the bundle's WAV through the configured STT
