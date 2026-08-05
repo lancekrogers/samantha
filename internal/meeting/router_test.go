@@ -70,14 +70,67 @@ func TestFileSinkRoutesAndKeepsOriginal(t *testing.T) {
 	}
 }
 
-func TestCampaignSinkShellsOut(t *testing.T) {
+func TestCampaignSinkImportMeeting(t *testing.T) {
+	bundle := filepath.Join(t.TempDir(), "x.meeting")
+	if err := os.MkdirAll(bundle, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// import-meeting requires meeting.md in the bundle.
+	if err := os.WriteFile(filepath.Join(bundle, "meeting.md"), []byte("# Meeting\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	var gotArgs []string
-	r := &Router{
-		Cfg: Config{
-			Destinations: []Destination{
-				{ID: "mytools", Type: TypeCampaign, Campaign: "My_Tools", Capture: "intent"},
-			},
+	sink := CampaignSink{
+		Dest: Destination{ID: "mytools", Type: TypeCampaign, Campaign: "My_Tools", Capture: CaptureMeeting},
+		LookPath: func(name string) (string, error) {
+			if name == "camp" {
+				return "/bin/camp", nil
+			}
+			return "", os.ErrNotExist
 		},
+		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			gotArgs = append([]string{name}, args...)
+			return []byte(`{"schema_version":"intent-meeting-import/v1alpha1"}`), nil
+		},
+		// Empty dir → Runner path (argv capture without real camp).
+		ResolveCampaignDir: func(context.Context, string) (string, error) { return "", nil },
+	}
+	note := RenderedNote{
+		Title: "Meeting: X (2026-07-20)",
+		Body:  "# hi\n\n## Summary\n\nnotes\n",
+		Summary: meetinglog.Summary{
+			Description: "X",
+			Bundle:      bundle,
+			StartedAt:   time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC),
+		},
+	}
+	receipt, err := sink.Route(context.Background(), note)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Outcome != OutcomeRouted {
+		t.Fatalf("outcome = %s detail=%s", receipt.Outcome, receipt.Detail)
+	}
+	if len(gotArgs) < 4 || gotArgs[0] != "/bin/camp" || gotArgs[1] != "idea" || gotArgs[2] != "notes" || gotArgs[3] != "import-meeting" {
+		t.Fatalf("unexpected args: %v", gotArgs)
+	}
+	joined := strings.Join(gotArgs, " ")
+	if !strings.Contains(joined, bundle) {
+		t.Fatalf("missing bundle path: %v", gotArgs)
+	}
+	if !strings.Contains(joined, "--summary-file") || !strings.Contains(joined, "--title") || !strings.Contains(joined, "--json") {
+		t.Fatalf("missing import-meeting flags: %v", gotArgs)
+	}
+	if strings.Contains(joined, "idea add") || strings.Contains(joined, "--body-file") {
+		t.Fatalf("should not use legacy idea add: %v", gotArgs)
+	}
+}
+
+func TestCampaignSinkLegacyIntentAdd(t *testing.T) {
+	var gotArgs []string
+	sink := CampaignSink{
+		Dest: Destination{ID: "mytools", Type: TypeCampaign, Campaign: "My_Tools", Capture: CaptureIntent},
 		LookPath: func(name string) (string, error) {
 			if name == "camp" {
 				return "/bin/camp", nil
@@ -97,17 +150,17 @@ func TestCampaignSinkShellsOut(t *testing.T) {
 			StartedAt:   time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC),
 		},
 	}
-	receipt, err := r.RouteByID(context.Background(), note, "mytools")
+	receipt, err := sink.Route(context.Background(), note)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if receipt.Outcome != OutcomeRouted {
 		t.Fatalf("outcome = %s detail=%s", receipt.Outcome, receipt.Detail)
 	}
-	if len(gotArgs) < 6 || gotArgs[0] != "/bin/camp" || gotArgs[1] != "idea" {
-		t.Fatalf("unexpected args: %v", gotArgs)
-	}
 	joined := strings.Join(gotArgs, " ")
+	if !strings.Contains(joined, "idea") || !strings.Contains(joined, "add") {
+		t.Fatalf("expected idea add: %v", gotArgs)
+	}
 	if !strings.Contains(joined, "-c") || !strings.Contains(joined, "My_Tools") {
 		t.Fatalf("missing campaign flag: %v", gotArgs)
 	}

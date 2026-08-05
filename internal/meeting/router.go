@@ -137,7 +137,14 @@ func (r *Router) sinkFor(dest Destination) (Sink, error) {
 		if !r.campAvailable() {
 			return nil, fmt.Errorf("meeting: camp not found on PATH")
 		}
-		return CampaignSink{Dest: dest, Run: r.Run, LookPath: r.LookPath}, nil
+		return CampaignSink{
+			Dest:     dest,
+			Run:      r.Run,
+			LookPath: r.LookPath,
+			ResolveCampaignDir: func(ctx context.Context, campaignName string) (string, error) {
+				return resolveCampaignDir(ctx, r.Run, r.LookPath, campaignName)
+			},
+		}, nil
 	case TypeAppleNotes:
 		if r.goos() != "darwin" {
 			return nil, fmt.Errorf("meeting: apple-notes only supported on macOS (delegated on iOS)")

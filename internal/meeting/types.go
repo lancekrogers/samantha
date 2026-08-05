@@ -48,7 +48,7 @@ type Destination struct {
 	ID       string   // stable key for config + picker
 	Type     string   // campaign | file | apple-notes
 	Campaign string   // registry name or path (campaign)
-	Capture  string   // intent | note (campaign); default intent
+	Capture  string   // meeting | intent | note (campaign); default meeting
 	Tags     []string // optional camp idea tags
 	Path     string   // directory for file sink
 	Folder   string   // Apple Notes folder
@@ -96,7 +96,8 @@ func (c Config) Normalize() Config {
 	}
 	for i := range c.Destinations {
 		if c.Destinations[i].Type == TypeCampaign && c.Destinations[i].Capture == "" {
-			c.Destinations[i].Capture = "intent"
+			// Default to import-meeting (CI0009); not lifecycle intents.
+			c.Destinations[i].Capture = CaptureMeeting
 		}
 	}
 	return c

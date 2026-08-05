@@ -164,13 +164,13 @@ func CampaignDestinationID(name string) string {
 }
 
 // DestinationFromCampaign maps a registry campaign to a route target.
-// Capture defaults to intent (camp idea add).
+// Capture defaults to meeting (camp idea notes import-meeting → notes/meetings/).
 func DestinationFromCampaign(c Campaign) Destination {
 	return Destination{
 		ID:       CampaignDestinationID(c.Name),
 		Type:     TypeCampaign,
 		Campaign: c.Name,
-		Capture:  "intent",
+		Capture:  CaptureMeeting,
 	}
 }
 
