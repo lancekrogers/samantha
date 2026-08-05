@@ -5,14 +5,18 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/meeting"
+	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 	"github.com/lancekrogers/samantha/internal/meeting/remote"
 )
 
@@ -26,6 +30,10 @@ type meetingHarness struct {
 }
 
 func newMeetingHarness(t *testing.T, opts remote.Options) *meetingHarness {
+	return newRoutedMeetingHarness(t, opts, nil)
+}
+
+func newRoutedMeetingHarness(t *testing.T, opts remote.Options, route RouteMeetingFunc) *meetingHarness {
 	t.Helper()
 	dir := t.TempDir()
 	creds, err := LoadOrCreateCredentials(dir)
@@ -46,11 +54,12 @@ func newMeetingHarness(t *testing.T, opts remote.Options) *meetingHarness {
 	disp := NewDispatcher(&scriptedRunner{}, bus, nil, nil)
 	go disp.Run(context.Background())
 	srv := New(Options{
-		Bind:        "127.0.0.1:0",
-		Credentials: creds,
-		Bus:         bus,
-		Dispatcher:  disp,
-		Meetings:    manager,
+		Bind:         "127.0.0.1:0",
+		Credentials:  creds,
+		Bus:          bus,
+		Dispatcher:   disp,
+		Meetings:     manager,
+		RouteMeeting: route,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -391,5 +400,136 @@ func TestStopLastSeqIsBounded(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 for an out-of-range last_seq", resp.StatusCode)
+	}
+}
+
+// recordAndFinish drives a meeting to ready over the wire: one segment, stop,
+// then poll status until the no-op pipeline publishes.
+func (h *meetingHarness) recordAndFinish(t *testing.T) string {
+	t.Helper()
+	started := h.startMeeting(t)
+	resp := h.do(t, http.MethodPut, "/v1/meeting/"+started.MeetingID+"/segments/0",
+		segmentBody(1600), "application/octet-stream")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("segment status = %d", resp.StatusCode)
+	}
+	resp = h.do(t, http.MethodPost, "/v1/meeting/"+started.MeetingID+"/stop",
+		strings.NewReader(`{"last_seq":0}`), "application/json")
+	resp.Body.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		status := h.do(t, http.MethodGet, "/v1/meeting/"+started.MeetingID, nil, "")
+		var out remote.Status
+		err := json.NewDecoder(status.Body).Decode(&out)
+		status.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.State == remote.StateReady {
+			return started.MeetingID
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("meeting never reached ready")
+	return ""
+}
+
+// The route endpoint files once and answers retries from the receipt cache —
+// the importer does not dedupe, so idempotency is serve's job.
+func TestMeetingRouteFilesOnceAndCachesTheReceipt(t *testing.T) {
+	var calls int32
+	route := func(ctx context.Context, summary meetinglog.Summary, campaign, capture string) (remote.RouteReceipt, error) {
+		atomic.AddInt32(&calls, 1)
+		if summary.Bundle == "" {
+			t.Error("route func received a summary without a bundle path")
+		}
+		if campaign != "mytools" {
+			t.Errorf("campaign = %q, want mytools", campaign)
+		}
+		return remote.RouteReceipt{Outcome: "routed", Destination: "mytools notes/meetings"}, nil
+	}
+	h := newRoutedMeetingHarness(t, remote.Options{}, route)
+	id := h.recordAndFinish(t)
+
+	for i := 0; i < 2; i++ {
+		resp := h.do(t, http.MethodPost, "/v1/meeting/"+id+"/route",
+			strings.NewReader(`{"campaign":"mytools"}`), "application/json")
+		var receipt remote.RouteReceipt
+		if err := json.NewDecoder(resp.Body).Decode(&receipt); err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("route #%d status = %d", i+1, resp.StatusCode)
+		}
+		if receipt.Destination != "mytools notes/meetings" {
+			t.Fatalf("route #%d destination = %q", i+1, receipt.Destination)
+		}
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("route func ran %d times for the same campaign, want exactly 1", got)
+	}
+}
+
+func TestMeetingRouteBeforeReadyIsConflict(t *testing.T) {
+	route := func(ctx context.Context, summary meetinglog.Summary, campaign, capture string) (remote.RouteReceipt, error) {
+		t.Error("route func must not run for an unfinished meeting")
+		return remote.RouteReceipt{}, nil
+	}
+	h := newRoutedMeetingHarness(t, remote.Options{}, route)
+	started := h.startMeeting(t)
+
+	resp := h.do(t, http.MethodPost, "/v1/meeting/"+started.MeetingID+"/route",
+		strings.NewReader(`{"campaign":"mytools"}`), "application/json")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("route while recording status = %d, want 409", resp.StatusCode)
+	}
+}
+
+// 412 carries the CI0009 remediation to the phone verbatim.
+func TestMeetingRouteOldCampIsPreconditionFailed(t *testing.T) {
+	route := func(ctx context.Context, summary meetinglog.Summary, campaign, capture string) (remote.RouteReceipt, error) {
+		return remote.RouteReceipt{}, fmt.Errorf("gate: %w", meeting.ErrImportMeetingUnsupported)
+	}
+	h := newRoutedMeetingHarness(t, remote.Options{}, route)
+	id := h.recordAndFinish(t)
+
+	resp := h.do(t, http.MethodPost, "/v1/meeting/"+id+"/route",
+		strings.NewReader(`{"campaign":"mytools"}`), "application/json")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("route status = %d, want 412", resp.StatusCode)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(raw), "update camp") {
+		t.Fatalf("412 body %q does not carry the remediation", raw)
+	}
+}
+
+func TestMeetingRouteValidation(t *testing.T) {
+	route := func(ctx context.Context, summary meetinglog.Summary, campaign, capture string) (remote.RouteReceipt, error) {
+		return remote.RouteReceipt{Outcome: "routed"}, nil
+	}
+	h := newRoutedMeetingHarness(t, remote.Options{}, route)
+	id := h.recordAndFinish(t)
+
+	resp := h.do(t, http.MethodPost, "/v1/meeting/"+id+"/route",
+		strings.NewReader(`{"campaign":"  "}`), "application/json")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty campaign status = %d, want 400", resp.StatusCode)
+	}
+
+	// A serve wired without routing answers 503, not 404 — the surface
+	// exists, the capability doesn't.
+	bare := newMeetingHarness(t, remote.Options{})
+	bareID := bare.recordAndFinish(t)
+	resp = bare.do(t, http.MethodPost, "/v1/meeting/"+bareID+"/route",
+		strings.NewReader(`{"campaign":"mytools"}`), "application/json")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("unconfigured route status = %d, want 503", resp.StatusCode)
 	}
 }

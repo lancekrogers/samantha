@@ -13,6 +13,7 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/events"
+	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 	"github.com/lancekrogers/samantha/internal/meeting/remote"
 )
 
@@ -46,7 +47,17 @@ type Options struct {
 	// Optional: when nil those routes are not registered and GET /v1/status
 	// reports the meetings capability as false.
 	Meetings *remote.Manager
+	// RouteMeeting files a finished meeting into a campaign
+	// (POST /v1/meeting/{id}/route → `camp idea notes import-meeting`).
+	// Injected by serve so netapi stays out of camp discovery and config;
+	// nil answers that route with 503.
+	RouteMeeting RouteMeetingFunc
 }
+
+// RouteMeetingFunc routes a finished meeting's summary to a campaign.
+// Implementations gate on camp CI0009 support (meeting.SupportsImportMeeting)
+// before filing when capture resolves to the meetings importer.
+type RouteMeetingFunc func(ctx context.Context, summary meetinglog.Summary, campaign, capture string) (remote.RouteReceipt, error)
 
 // Server is the LAN-facing HTTPS + WebSocket surface around one pipeline.
 type Server struct {
@@ -57,6 +68,7 @@ type Server struct {
 	hub          *hub
 	limiter      *rateLimiter
 	meetings     *remote.Manager
+	routeMeeting RouteMeetingFunc
 	// segmentLimiter gives meeting audio its own budget. Resuming a
 	// ten-minute outbox is a legitimate burst of ~120 small, idempotent,
 	// size-capped writes; the general abuse guard would throttle exactly the
@@ -84,6 +96,7 @@ func New(opts Options) *Server {
 		hub:            h,
 		limiter:        newRateLimiter(30, 10*time.Second),
 		meetings:       opts.Meetings,
+		routeMeeting:   opts.RouteMeeting,
 		segmentLimiter: newRateLimiter(segmentRateLimit, 10*time.Second),
 	}
 }
@@ -127,6 +140,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		mux.HandleFunc("POST /v1/meeting/{id}/control", s.handleMeetingControl)
 		mux.HandleFunc("POST /v1/meeting/{id}/stop", s.handleMeetingStop)
 		mux.HandleFunc("GET /v1/meeting/{id}", s.handleMeetingStatus)
+		mux.HandleFunc("POST /v1/meeting/{id}/route", s.handleMeetingRoute)
 	}
 	// Embedded phone voice client (public HTML/JS; WS still authenticated).
 	web := webFileServer()

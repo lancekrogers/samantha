@@ -49,6 +49,10 @@ type Session struct {
 	// putGate, when set by a test, runs between acceptance and the segment
 	// write — the seam that makes the upload/stop interleaving deterministic.
 	putGate func()
+	// routes single-flights and caches route executions by capture+campaign
+	// key: `camp idea notes import-meeting` does not dedupe, so a concurrent
+	// double tap must share one execution, not file twice.
+	routes map[string]*routeCall
 }
 
 // ID is the opaque handle the client uses in every later request.
@@ -456,4 +460,38 @@ func (s *Session) closeBundle() error {
 	}
 	_, err := writer.Close()
 	return err
+}
+
+// Summary returns the finished meeting's summary for routing. Ready meetings
+// route normally; janitor-processed interrupted meetings do too — their notes
+// are just as real, only the ending wasn't clean. Everything else is not
+// routable yet (or ever, for failed ones — reprocess on the Mac first).
+func (s *Session) Summary() (meetinglog.Summary, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	routable := s.haveSummary && (s.state == StateReady || s.state == StateInterrupted)
+	if !routable {
+		return meetinglog.Summary{}, ErrNotRoutable
+	}
+	return s.summary, nil
+}
+
+// RoutedFor returns the cached receipt for a campaign this meeting was
+// already routed to. The importer does not dedupe, so a retried route call
+// (timeout, double tap) must answer from here instead of filing twice.
+func (s *Session) RoutedFor(campaign string) (RouteReceipt, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	receipt, ok := s.routed[campaign]
+	return receipt, ok
+}
+
+// MarkRouted records a successful route for RoutedFor.
+func (s *Session) MarkRouted(campaign string, receipt RouteReceipt) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.routed == nil {
+		s.routed = make(map[string]RouteReceipt)
+	}
+	s.routed[campaign] = receipt
 }

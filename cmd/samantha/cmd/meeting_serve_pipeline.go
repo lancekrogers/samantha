@@ -14,6 +14,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/meeting"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 	"github.com/lancekrogers/samantha/internal/meeting/remote"
+	"github.com/lancekrogers/samantha/internal/netapi"
 	"github.com/lancekrogers/samantha/internal/speaker"
 	"github.com/lancekrogers/samantha/internal/stt"
 )
@@ -242,5 +243,52 @@ func drainReplaySession(ctx context.Context, session stt.Session) (string, error
 				return "", fmt.Errorf("transcribe meeting audio: %w", failure.Err)
 			}
 		}
+	}
+}
+
+// newServeMeetingRouter files a finished remote meeting into a campaign
+// (POST /v1/meeting/{id}/route). It reuses the desktop routing stack —
+// Render + CampaignSink via Router.RouteMeeting — so a phone-routed note is
+// byte-identical to one routed from the TUI.
+//
+// The CI0009 gate runs per call, not cached: serve stays up for days while
+// camp gets upgraded underneath it, and the probe is one fast --help spawn.
+func newServeMeetingRouter(cfg *config.Config) netapi.RouteMeetingFunc {
+	routeCfg := meeting.FromConfig(cfg)
+	return func(ctx context.Context, summary meetinglog.Summary, campaign, capture string) (remote.RouteReceipt, error) {
+		if err := ctx.Err(); err != nil {
+			return remote.RouteReceipt{}, err
+		}
+		if meeting.NormalizeCampaignCapture(capture) == meeting.CaptureMeeting {
+			if err := meeting.SupportsImportMeeting(ctx, meeting.DefaultRunner, meeting.DefaultLookPath); err != nil {
+				return remote.RouteReceipt{}, err
+			}
+		}
+		note, err := meeting.Render(summary, routeCfg.Body)
+		if err != nil {
+			return remote.RouteReceipt{}, fmt.Errorf("render meeting note: %w", err)
+		}
+		// The phone names the campaign directly; no camp-list discovery
+		// round-trip is needed to construct the destination.
+		dest := meeting.Destination{
+			ID:       "camp:" + campaign,
+			Type:     meeting.TypeCampaign,
+			Campaign: campaign,
+			Capture:  capture,
+		}
+		router := meeting.NewDefaultRouter(routeCfg)
+		receipt, err := router.RouteMeeting(ctx, note, dest)
+		if err != nil {
+			return remote.RouteReceipt{}, err
+		}
+		destination := campaign + " notes/meetings"
+		if meeting.NormalizeCampaignCapture(capture) != meeting.CaptureMeeting {
+			destination = campaign + " (idea add)"
+		}
+		return remote.RouteReceipt{
+			Outcome:     receipt.Outcome,
+			Detail:      receipt.Detail,
+			Destination: destination,
+		}, nil
 	}
 }

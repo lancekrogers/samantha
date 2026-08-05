@@ -9,7 +9,9 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 
+	"github.com/lancekrogers/samantha/internal/meeting"
 	"github.com/lancekrogers/samantha/internal/meeting/remote"
 )
 
@@ -123,6 +125,47 @@ func (s *Server) handleMeetingStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, session.Status())
 }
 
+// handleMeetingRoute files a finished meeting into a campaign's
+// notes/meetings via the CI0009 importer. Retrying the same campaign answers
+// from the session's receipt cache: the importer does not dedupe, and a
+// timed-out response must not turn into a second filed note.
+func (s *Server) handleMeetingRoute(w http.ResponseWriter, r *http.Request) {
+	session, _, ok := s.meetingSession(w, r)
+	if !ok {
+		return
+	}
+	if s.routeMeeting == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "meeting routing is not configured"})
+		return
+	}
+	var req remote.RouteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "malformed JSON body"})
+		return
+	}
+	campaign := strings.TrimSpace(req.Campaign)
+	if campaign == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "campaign is required"})
+		return
+	}
+	if receipt, done := session.RoutedFor(campaign); done {
+		writeJSON(w, http.StatusOK, receipt)
+		return
+	}
+	summary, err := session.Summary()
+	if err != nil {
+		writeMeetingError(w, err)
+		return
+	}
+	receipt, err := s.routeMeeting(r.Context(), summary, campaign, req.Capture)
+	if err != nil {
+		writeMeetingError(w, err)
+		return
+	}
+	session.MarkRouted(campaign, receipt)
+	writeJSON(w, http.StatusOK, receipt)
+}
+
 // meetingSession resolves the path's meeting id, writing the error response
 // itself when it cannot.
 func (s *Server) meetingSession(w http.ResponseWriter, r *http.Request) (*remote.Session, *remote.Manager, bool) {
@@ -164,10 +207,14 @@ func writeMeetingError(w http.ResponseWriter, err error) {
 	case errors.Is(err, remote.ErrNotFound):
 		writeMeetingProblem(w, http.StatusNotFound, err)
 	case errors.Is(err, remote.ErrMeetingActive), errors.Is(err, remote.ErrProcessing),
-		errors.Is(err, remote.ErrNotRecording):
+		errors.Is(err, remote.ErrNotRecording), errors.Is(err, remote.ErrNotRoutable):
 		writeMeetingProblem(w, http.StatusConflict, err)
 	case errors.Is(err, remote.ErrBadSegment), errors.Is(err, remote.ErrBadControl):
 		writeMeetingProblem(w, http.StatusBadRequest, err)
+	case errors.Is(err, meeting.ErrImportMeetingUnsupported):
+		// 412: the phone's request was fine; the Mac's camp predates CI0009.
+		// The text carries the remediation the UI shows verbatim.
+		writeMeetingProblem(w, http.StatusPreconditionFailed, err)
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		writeMeetingProblem(w, http.StatusServiceUnavailable, err)
 	default:

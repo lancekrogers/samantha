@@ -61,7 +61,7 @@ func (s CampaignSink) Route(ctx context.Context, note RenderedNote) (Receipt, er
 		}
 	}
 
-	capture := normalizeCampaignCapture(s.Dest.Capture)
+	capture := NormalizeCampaignCapture(s.Dest.Capture)
 	switch capture {
 	case CaptureIntent, CaptureNote:
 		return s.routeIdeaAdd(ctx, campBin, campaign, capture, note)
@@ -70,7 +70,10 @@ func (s CampaignSink) Route(ctx context.Context, note RenderedNote) (Receipt, er
 	}
 }
 
-func normalizeCampaignCapture(raw string) string {
+// NormalizeCampaignCapture maps user-facing capture spellings onto the three
+// modes. Exported so callers that must gate on the CI0009 importer (serve's
+// route endpoint) decide from the same normalization the sink will apply.
+func NormalizeCampaignCapture(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "", CaptureMeeting, "import-meeting", "import_meeting", "notes/meetings":
 		return CaptureMeeting
