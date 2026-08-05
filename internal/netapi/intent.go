@@ -36,6 +36,18 @@ type IntentRequest struct {
 	Campaign   string `json:"campaign,omitempty"`
 	Source     string `json:"source"`
 	CapturedAt string `json:"captured_at"`
+	// Context links a mid-meeting quick capture to its moment (plan §2.3).
+	// Optional and strictly additive: absent for plain captures, and the file
+	// sink emits it only when set, so existing consumers see identical JSON.
+	Context *IntentContext `json:"context,omitempty"`
+}
+
+// IntentContext is the meeting moment an idea was captured at. The offset is
+// meeting-relative audio time — the same clock as bundle bookmarks — so the
+// intent can point back into the transcript.
+type IntentContext struct {
+	MeetingID string `json:"meeting_id"`
+	OffsetMs  int64  `json:"offset_ms"`
 }
 
 func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +68,14 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 	req.Type = strings.TrimSpace(req.Type)
 	if req.Type == "" {
 		req.Type = "note"
+	}
+	if req.Context != nil {
+		req.Context.MeetingID = strings.TrimSpace(req.Context.MeetingID)
+		if req.Context.MeetingID == "" || req.Context.OffsetMs < 0 {
+			writeJSON(w, http.StatusBadRequest,
+				map[string]string{"error": "context requires meeting_id and a non-negative offset_ms"})
+			return
+		}
 	}
 	if req.Title == "" {
 		req.Title = deriveIntentTitle(req.Body)
