@@ -790,8 +790,6 @@ func (p *fakePlayer) loop() {
 		case <-timer.C:
 		}
 
-		req.done <- result
-		close(req.done)
 		p.playing.Store(false)
 
 		p.mu.Lock()
@@ -800,6 +798,12 @@ func (p *fakePlayer) loop() {
 		}
 		p.finishedAt = append(p.finishedAt, time.Now())
 		p.mu.Unlock()
+
+		// Publish completion only after the fake's observable state is settled.
+		// RunTurn returns after consuming Done, so notifying first lets callers
+		// race FinishedTimes and intermittently observe one fewer segment.
+		req.done <- result
+		close(req.done)
 	}
 }
 
