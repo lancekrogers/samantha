@@ -226,8 +226,15 @@ GET /v1/meeting/{id}
 
 ```json
 {"state":"recording|processing|ready|failed|interrupted",
+ "step":"transcribing|filing ideas|diarizing",
  "missing_seqs":[],"result":{…}}
 ```
+
+`step` names the pipeline stage and is present only while `state` is
+`processing`, so a client can show what the Mac is doing instead of an
+anonymous spinner. The `diarizing` step appears only when speaker analysis
+is enabled. The set of step names is informational, not contractual —
+render the string, don't switch on it.
 
 **Failure semantics.** A phone that loses the network keeps recording into its
 own outbox and resumes from the first unacked seq. If serve sees no segment or

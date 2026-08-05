@@ -55,9 +55,15 @@ func serveMeetingSTTLabel(cfg *config.Config) string {
 // Diarization is best-effort: a transcript without speaker labels is still a
 // useful meeting, so its failure is reported without discarding the recording.
 func runServeMeetingPipeline(ctx context.Context, cfg *config.Config, job remote.Job) error {
+	step := job.Step
+	if step == nil {
+		step = func(string) {}
+	}
+	step("transcribing")
 	if err := transcribeMeetingAudio(ctx, cfg, job); err != nil {
 		return err
 	}
+	step("filing ideas")
 	// Idea spans resolve as soon as the transcript exists — before diarization,
 	// so a speaker-stack failure cannot cost anyone their filed ideas. A
 	// resolution error is itself non-fatal: the meeting's notes are worth more
@@ -67,6 +73,11 @@ func runServeMeetingPipeline(ctx context.Context, cfg *config.Config, job remote
 	} else if report.Filed > 0 || report.Unresolved > 0 || report.Failed > 0 {
 		fmt.Fprintf(os.Stderr, "meeting %s: ideas filed=%d unresolved=%d failed=%d\n",
 			job.Title, report.Filed, report.Unresolved, report.Failed)
+	}
+	// The diarize step only appears when speaker analysis is enabled — an
+	// anonymous stage the phone shows for a feature that is off would lie.
+	if speaker.FromAppConfig(cfg).MeetingActive() {
+		step("diarizing")
 	}
 	if _, err := diarizeMeetingAudio(ctx, cfg, job); err != nil {
 		return fmt.Errorf("speaker analysis: %w", err)
