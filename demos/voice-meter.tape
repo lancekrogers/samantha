@@ -4,6 +4,10 @@
 #   Agent shells often export NO_COLOR=1. Unset it in-shell and force ANSI so
 #   lipgloss maps to the theme's bright 16 colors (cyan/yellow/magenta).
 #
+# Config path is ~/.obey/agents/voice/festival-voice (AppSlug). New conversation
+# opens the persona picker — confirm the seeded Samantha profile with a second
+# Enter. SAMANTHA_DEMO_VOICE_ANIM scripts the meter via bus events (no mic/TTS).
+#
 # From repo root after `just build`:
 #   just demo-voice-meter
 
@@ -28,21 +32,47 @@ Type "export TERM=xterm-256color COLORFGBG=15\;0" Enter
 Type "export SAMANTHA_COLOR_PROFILE=ansi SAMANTHA_DEMO_VOICE_ANIM=1" Enter
 Type "export PATH=$PWD/bin:$PATH" Enter
 Type "export HOME=/tmp/samantha-voice-meter-demo-$$" Enter
-Type "rm -rf $HOME && mkdir -p $HOME/.obey/agents/voice/samantha/sessions" Enter
-Type "cat > $HOME/.obey/agents/voice/samantha/config.yaml <<'EOF'" Enter
+Type "rm -rf $HOME && mkdir -p $HOME/.obey/agents/voice/festival-voice/sessions $HOME/.obey/agents/voice/festival-voice/personas/samantha" Enter
+Type "cat > $HOME/.obey/agents/voice/festival-voice/config.yaml <<'EOF'" Enter
 Type "brain_provider: ollama" Enter
 Type "ollama_host: http://localhost:11434" Enter
 Type "ollama_model: gemma4:26b" Enter
+Type "tts_provider: kokoro" Enter
+Type "tts_voice: af_heart" Enter
 Type "agent_name: Samantha" Enter
+Type "active_persona: samantha" Enter
+Type "persona: samantha" Enter
+Type "EOF" Enter
+Type "cat > $HOME/.obey/agents/voice/festival-voice/personas/samantha/persona.yaml <<'EOF'" Enter
+Type "schema: festival-voice.persona.v1" Enter
+Type "id: samantha" Enter
+Type "display_name: Samantha" Enter
+Type "builtin: true" Enter
+Type "tts:" Enter
+Type "  provider: kokoro" Enter
+Type "  voice: af_heart" Enter
+Type "prompts:" Enter
+Type "  persona: samantha" Enter
+Type "  turn: samantha" Enter
 Type "EOF" Enter
 Type "clear" Enter
-Show
 
-Type "samantha -t -n" Sleep 250ms Enter
+# Real Bubble Tea UI in a VHS PTY. Wait for the launcher to paint before
+# sending Enter — a short post-launch sleep loses keys to the shell and the
+# GIF freezes on the main menu.
+Type "./bin/samantha -t -n"
+Sleep 400ms
+Enter
+Sleep 6s
+Show
 Sleep 2s
+
+# New conversation → persona picker (Samantha pre-selected) → start
 Enter
 Sleep 1200ms
-Sleep 12s
+Enter
+# Runtime prepare can take a few seconds; scripted cycle is ~14s after ready.
+Sleep 22s
 Type "q"
 Sleep 400ms
 Type "q"
