@@ -255,6 +255,75 @@ func TestNormalizeCampaignCapture(t *testing.T) {
 	}
 }
 
+func TestResolveCampaignDirExactIDOnly(t *testing.T) {
+	// Partial ID must not match a longer campaign id.
+	run := func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+		return []byte(`[
+			{"id":"abcdef12-3456","name":"Other","path":"/other"},
+			{"id":"abc","name":"Exact","path":"/exact"}
+		]`), nil
+	}
+	look := func(string) (string, error) { return "camp", nil }
+	got, err := resolveCampaignDir(context.Background(), run, look, "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/exact" {
+		t.Fatalf("got %q, want /exact (exact id, not prefix of abcdef12)", got)
+	}
+	// Name match still works.
+	got, err = resolveCampaignDir(context.Background(), run, look, "Other")
+	if err != nil || got != "/other" {
+		t.Fatalf("name match: got %q err %v", got, err)
+	}
+}
+
+func TestCampaignSinkImportMeetingEmbedsTagsInSummary(t *testing.T) {
+	bundle := filepath.Join(t.TempDir(), "x.meeting")
+	if err := os.MkdirAll(bundle, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundle, "meeting.md"), []byte("# M\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var summaryBody string
+	sink := CampaignSink{
+		Dest: Destination{
+			ID: "mytools", Type: TypeCampaign, Campaign: "My_Tools",
+			Capture: CaptureMeeting, Tags: []string{"voice", "meeting"},
+		},
+		LookPath: func(string) (string, error) { return "/bin/camp", nil },
+		Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			for i, a := range args {
+				if a == "--summary-file" && i+1 < len(args) {
+					// Read while the temp file still exists (Route defers Remove).
+					data, err := os.ReadFile(args[i+1])
+					if err != nil {
+						return nil, err
+					}
+					summaryBody = string(data)
+				}
+			}
+			return []byte(`{"schema_version":"intent-meeting-import/v1alpha1"}`), nil
+		},
+		ResolveCampaignDir: func(context.Context, string) (string, error) { return "", nil },
+	}
+	_, err := sink.Route(context.Background(), RenderedNote{
+		Title: "T",
+		Body:  "## Summary\n\nhello\n",
+		Summary: meetinglog.Summary{
+			Bundle: bundle, Description: "T",
+			StartedAt: time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(summaryBody, "**Route tags:** voice, meeting") {
+		t.Fatalf("summary missing tags:\n%s", summaryBody)
+	}
+}
+
 func TestCampaignSinkLegacyIntentAdd(t *testing.T) {
 	var gotArgs []string
 	sink := CampaignSink{

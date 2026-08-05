@@ -100,13 +100,20 @@ func (s CampaignSink) routeImportMeeting(ctx context.Context, campBin, campaign 
 		title = IntentTitle(note.Summary)
 	}
 
+	// import-meeting has no --tag flag (unlike idea add). Preserve configured
+	// destination tags in the summary body so they are not silently dropped.
+	summaryBody := note.Body
+	if tags := nonEmptyTags(s.Dest.Tags); len(tags) > 0 {
+		summaryBody = summaryBody + "\n\n**Route tags:** " + strings.Join(tags, ", ") + "\n"
+	}
+
 	tmp, err := os.CreateTemp("", "samantha-meeting-summary-*.md")
 	if err != nil {
 		return Receipt{}, fmt.Errorf("meeting: temp summary: %w", err)
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
-	if _, err := tmp.WriteString(note.Body); err != nil {
+	if _, err := tmp.WriteString(summaryBody); err != nil {
 		_ = tmp.Close()
 		return Receipt{}, fmt.Errorf("meeting: write temp summary: %w", err)
 	}
@@ -221,13 +228,26 @@ func resolveCampaignDir(ctx context.Context, run Runner, look LookPath, campaign
 	}
 	want := strings.ToLower(campaignName)
 	for _, c := range camps {
-		if strings.ToLower(c.Name) == want || strings.HasPrefix(c.ID, campaignName) {
+		nameMatch := strings.ToLower(c.Name) == want
+		// Exact ID only (no prefix match — avoids ambiguous partial IDs).
+		idMatch := strings.EqualFold(strings.TrimSpace(c.ID), campaignName)
+		if nameMatch || idMatch {
 			if p := strings.TrimSpace(c.Path); p != "" {
 				return p, nil
 			}
 		}
 	}
 	return "", fmt.Errorf("meeting: campaign %q not found in camp list (need a registered path for import-meeting)", campaignName)
+}
+
+func nonEmptyTags(tags []string) []string {
+	out := make([]string, 0, len(tags))
+	for _, t := range tags {
+		if s := strings.TrimSpace(t); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // runCamp runs camp. Non-empty dir sets cmd.Dir so import-meeting loads the
