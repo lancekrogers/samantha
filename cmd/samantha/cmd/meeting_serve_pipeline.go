@@ -150,8 +150,11 @@ func (r *replaySource) ReadFrame(ctx context.Context) (audio.Frame, error) {
 	return frame, err
 }
 
-// Close implements audio.FrameSource.
-func (r *replaySource) Close() error { return r.fixture.Close() }
+// Close implements audio.FrameSource as a no-op. The replay outlives the
+// individual STT sessions that read it — a provider closing its session must
+// not end the recording halfway through. There is nothing to release: the WAV
+// was read into memory at construction.
+func (r *replaySource) Close() error { return nil }
 
 // Exhausted reports whether the whole recording has been handed over.
 func (r *replaySource) Exhausted() bool { return r.fixture.Exhausted() }
@@ -207,9 +210,9 @@ func replayTranscribe(ctx context.Context, source progressSource, provider stt.P
 				return err
 			}
 		}
-		// A session that consumed nothing and produced nothing would spin
-		// forever against a source that cannot advance.
-		if text == "" && source.Elapsed() == before {
+		// A session that consumed no audio cannot be making progress, whatever
+		// it returned; without this the loop would spin on a stuck source.
+		if source.Elapsed() == before {
 			return nil
 		}
 	}
