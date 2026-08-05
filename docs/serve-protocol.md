@@ -236,6 +236,16 @@ anonymous spinner. The `diarizing` step appears only when speaker analysis
 is enabled. The set of step names is informational, not contractual —
 render the string, don't switch on it.
 
+```http
+GET /v1/meeting/{id}/document
+```
+
+Returns the finished meeting's canonical `meeting.md` as `text/markdown` —
+including speaker-labeled sections when diarization ran. `409` until the
+meeting has notes (ready, or interrupted after janitor processing). The
+document is the single source for rendered results; clients render it
+rather than reconstructing notes from events.
+
 **Failure semantics.** A phone that loses the network keeps recording into its
 own outbox and resumes from the first unacked seq. If serve sees no segment or
 control for **5 minutes**, a janitor marks the meeting `interrupted`: the audio

@@ -596,3 +596,38 @@ func TestMeetingRouteCaptureModesRouteSeparately(t *testing.T) {
 		t.Fatalf("importer captures = %q, want [\"\" \"intent\"] (third call is a normalized cache hit)", captures)
 	}
 }
+
+// The document endpoint serves the canonical meeting.md — the phone's
+// speaker-labeled result view renders exactly what the Mac wrote.
+func TestMeetingDocumentServedAfterReady(t *testing.T) {
+	h := newMeetingHarness(t, remote.Options{})
+	started := h.startMeeting(t)
+
+	base := "/v1/meeting/" + started.MeetingID
+
+	// Not ready yet: the meeting is still recording.
+	resp := h.do(t, http.MethodGet, base+"/document", nil, "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("document while recording = %d, want 409", resp.StatusCode)
+	}
+
+	resp = h.do(t, http.MethodPut, base+"/segments/0", segmentBody(1600), "application/octet-stream")
+	resp.Body.Close()
+	resp = h.do(t, http.MethodPost, base+"/stop", strings.NewReader(`{"last_seq":0}`), "application/json")
+	resp.Body.Close()
+	waitForState(t, h, started.MeetingID, remote.StateReady)
+
+	resp = h.do(t, http.MethodGet, base+"/document", nil, "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("document status = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/markdown") {
+		t.Fatalf("content type = %q", ct)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(raw), "Standup") {
+		t.Fatalf("document does not carry the meeting content:\n%s", raw)
+	}
+}
