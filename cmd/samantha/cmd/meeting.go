@@ -154,9 +154,6 @@ func promptMeetingDescription() (string, error) {
 	return description, nil
 }
 
-// meetingSlug kebab-cases a description for the filename, capped at 60 chars.
-func meetingSlug(description string) string { return meeting.Slug(description) }
-
 // meetingBundleName joins the slug with the codebase's sortable timestamp
 // layout and a recognizable directory suffix. Shared with serve-driven remote
 // recordings so both produce identically named bundles.

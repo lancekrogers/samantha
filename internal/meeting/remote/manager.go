@@ -134,6 +134,7 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (*Session, error)
 	session := &Session{
 		id: id, bundlePath: bundlePath, title: title, campaign: req.Campaign,
 		startedAt: writer.StartedAt(), segments: segments, pipeline: m.opts.Pipeline,
+		now:    m.opts.Now,
 		writer: writer, state: StateRecording, lastActivity: now, lastSeq: -1,
 	}
 	m.sessions[id] = session

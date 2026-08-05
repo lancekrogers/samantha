@@ -24,6 +24,7 @@ type Session struct {
 	startedAt  time.Time
 	segments   *segmentStore
 	pipeline   Pipeline
+	now        func() time.Time
 
 	mu           sync.Mutex
 	writer       *meetinglog.Writer
@@ -199,6 +200,10 @@ func (s *Session) abandon(ctx context.Context, now time.Time) {
 	if s.lastSeq > highest {
 		highest = s.lastSeq
 	}
+	// Claim the meeting before releasing the lock: a client that reconnects
+	// mid-abandon must get a 409, not a second concurrent finalize. The
+	// interrupted flag survives, so publish still lands on interrupted.
+	s.state = StateProcessing
 	s.lastActivity = now
 	s.done = make(chan struct{})
 	s.mu.Unlock()
@@ -210,7 +215,7 @@ func (s *Session) abandon(ctx context.Context, now time.Time) {
 // process assembles audio, runs the pipeline, and publishes the outcome. It
 // never returns an error: every failure is recorded on the session, because a
 // recording that cannot be transcribed is still a recording worth keeping.
-func (s *Session) process(ctx context.Context, lastSeq int64, closeBundle bool) {
+func (s *Session) process(ctx context.Context, lastSeq int64, final bool) {
 	defer s.finishPass()
 
 	audioPath := filepath.Join(s.bundlePath, meetinglog.BundleAudioName)
@@ -236,7 +241,7 @@ func (s *Session) process(ctx context.Context, lastSeq int64, closeBundle bool) 
 			BundlePath: s.bundlePath, AudioPath: audioPath, Writer: writer, Title: title,
 		})
 	}
-	s.publish(pipelineErr, closeBundle)
+	s.publish(pipelineErr, final)
 }
 
 // assemble streams the received segments into the bundle's audio.wav.
@@ -276,23 +281,23 @@ func (s *Session) recordGaps(gaps, lastSeq int64) {
 
 // publish closes the bundle (when this was a real stop) and records the
 // terminal state the client will poll.
-func (s *Session) publish(pipelineErr error, closeBundle bool) {
+func (s *Session) publish(pipelineErr error, final bool) {
 	s.mu.Lock()
 	writer, interrupted := s.writer, s.interrupted
 	s.mu.Unlock()
 
 	var summary meetinglog.Summary
 	var closeErr error
-	if closeBundle && writer != nil {
+	if final && writer != nil {
 		summary, closeErr = writer.Close()
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if closeBundle {
+	if final {
 		s.writer = nil
 		s.summary, s.haveSummary = summary, closeErr == nil
-		s.finishedAt = summary.EndedAt
+		s.finishedAt = s.now()
 	}
 	switch {
 	case pipelineErr != nil:
@@ -336,7 +341,7 @@ func (s *Session) finishPass() {
 		s.done = nil
 	}
 	if s.finishedAt.IsZero() && s.writer == nil {
-		s.finishedAt = time.Now()
+		s.finishedAt = s.now()
 	}
 }
 
