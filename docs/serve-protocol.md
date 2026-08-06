@@ -239,6 +239,13 @@ recording and closes the bundle, leaving the state at `interrupted` so nobody
 mistakes it for a complete meeting. A pipeline failure leaves state `failed`
 with the bundle intact, re-runnable from the Mac.
 
+**Serve restart.** Meeting sessions are in-memory: after a serve restart,
+every existing meeting id answers `404`. This surface's resilience covers
+network interruptions, not process restarts. Bundles are closed at shutdown,
+so audio already delivered is preserved on the Mac and the meeting finishes
+through the desktop tooling (`samantha meeting route` / reprocess); the
+phone's outbox keeps its undelivered tail on disk.
+
 **Mid-meeting idea capture** reuses `POST /v1/intent` unchanged (typed text,
 optionally carrying `context: {meeting_id, offset_ms}`); spoken ideas are
 marked with `idea_start` / `idea_end` controls and resolved from the

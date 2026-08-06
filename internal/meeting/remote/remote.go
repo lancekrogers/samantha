@@ -10,6 +10,13 @@
 // The bundle written here is byte-for-byte the desktop layout
 // (meeting.md, .samantha/events.jsonl, audio.wav): downstream routing,
 // rendering, and reprocessing cannot tell the two apart.
+//
+// Restart contract: sessions live in memory for the life of the serve
+// process. Resilience covers *network* interruptions (client outbox +
+// idempotent re-push + the janitor's interrupted path), not serve restarts —
+// after a restart every meeting id answers 404. Bundles are closed on
+// shutdown, so audio already delivered is preserved on disk and finishes
+// through the desktop tooling (`samantha meeting route` / reprocess).
 package remote
 
 import (

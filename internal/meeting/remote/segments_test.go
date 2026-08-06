@@ -174,9 +174,15 @@ func TestSegmentMissingReportsGaps(t *testing.T) {
 	}
 }
 
-// TestSegmentIndexSurvivesRestart is the kill-and-resume case. The directory
-// listing is the index, so a fresh store over the same bundle picks up exactly
-// where the dead one left off and assembles byte-identical audio.
+// TestSegmentIndexSurvivesRestart pins the store-level property: the directory
+// listing is the index, so a fresh segmentStore over the same bundle sees
+// exactly what was persisted, with no side bookkeeping to fall out of sync.
+//
+// Scope: this is durability of the *store*, not serve-restart session
+// recovery. Manager starts empty after a process restart — existing meeting
+// ids answer 404 and the phone cannot resume that recording (see the package
+// doc). What this property buys in production is crash-safety of individual
+// writes and the abandon path's ability to assemble whatever landed.
 func TestSegmentIndexSurvivesRestart(t *testing.T) {
 	bundle := filepath.Join(t.TempDir(), "restart.meeting")
 	if err := os.MkdirAll(filepath.Join(bundle, meetinglog.BundleInternalDirName), 0o700); err != nil {
@@ -192,7 +198,7 @@ func TestSegmentIndexSurvivesRestart(t *testing.T) {
 		}
 	}
 
-	// Serve dies here; a new process opens the same bundle.
+	// The first store is dropped; a fresh one opens the same bundle.
 	after, err := newSegmentStore(bundle, DefaultSegmentSeconds)
 	if err != nil {
 		t.Fatal(err)

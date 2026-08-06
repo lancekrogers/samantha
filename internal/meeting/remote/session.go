@@ -30,6 +30,11 @@ type Session struct {
 	mu           sync.Mutex
 	writer       *meetinglog.Writer
 	state        State
+	// finalizing serializes segment acceptance against Stop/abandon: while a
+	// finalize pass drains and reconciles, new uploads are refused, and putWG
+	// tracks uploads already accepted so reconciliation never runs while one
+	// is mid-write (an acked segment must never miss assembly).
+	finalizing bool
 	lastActivity time.Time
 	lastSeq      int64
 	missing      []int64
@@ -40,6 +45,10 @@ type Session struct {
 	finishedAt   time.Time
 	done         chan struct{}
 	cancelPass   context.CancelFunc
+	putWG        sync.WaitGroup
+	// putGate, when set by a test, runs between acceptance and the segment
+	// write — the seam that makes the upload/stop interleaving deterministic.
+	putGate func()
 }
 
 // ID is the opaque handle the client uses in every later request.
@@ -87,8 +96,19 @@ func (s *Session) AppendSegment(ctx context.Context, seq int64, data []byte, now
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := s.acceptsAudio(); err != nil {
+	// Acceptance and put registration are one atomic step: once this method
+	// holds a putWG slot, any finalize pass waits for the write to land.
+	s.mu.Lock()
+	if err := s.acceptsLocked(); err != nil {
+		s.mu.Unlock()
 		return err
+	}
+	s.putWG.Add(1)
+	gate := s.putGate
+	s.mu.Unlock()
+	defer s.putWG.Done()
+	if gate != nil {
+		gate()
 	}
 	if err := s.segments.Put(seq, data); err != nil {
 		return err
@@ -120,19 +140,11 @@ func (s *Session) Control(ctx context.Context, req ControlRequest, now time.Time
 	return nil
 }
 
-// acceptsAudio guards the states in which more audio or control is still
-// useful: the bundle must be open and not mid-finalize.
-func (s *Session) acceptsAudio() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.acceptsLocked()
-}
-
 func (s *Session) acceptsLocked() error {
 	switch {
 	case s.writer == nil:
 		return ErrNotRecording
-	case s.state == StateProcessing:
+	case s.finalizing, s.state == StateProcessing:
 		return ErrProcessing
 	}
 	return nil
@@ -160,21 +172,31 @@ func (s *Session) Stop(ctx context.Context, lastSeq int64, now time.Time) (Statu
 	if lastSeq > MaxSegmentSeq {
 		return Status{}, fmt.Errorf("%w: last_seq %d exceeds the %d cap", ErrBadSegment, lastSeq, MaxSegmentSeq)
 	}
-	if err := s.acceptsAudio(); err != nil {
-		return s.Status(), err
+	// Take the finalize barrier: refuse new uploads, then wait out the ones
+	// already accepted. Without this, an acked segment mid-write could be
+	// missed by reconcile and purged by assembly — acknowledged audio lost.
+	s.mu.Lock()
+	if err := s.acceptsLocked(); err != nil {
+		status := s.statusLocked()
+		s.mu.Unlock()
+		return status, err
 	}
+	s.finalizing = true
+	s.mu.Unlock()
+	s.putWG.Wait()
 
 	// Read the index off the session lock — it is disk I/O, and holding the
-	// lock across it would block every status poll. State is re-checked below.
+	// lock across it would block every status poll.
 	lastSeq, missing, err := s.reconcile(lastSeq)
-	if err != nil {
-		return s.Status(), err
-	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.acceptsLocked(); err != nil {
+	s.finalizing = false
+	if err != nil {
 		return s.statusLocked(), err
+	}
+	if s.writer == nil {
+		return s.statusLocked(), ErrNotRecording
 	}
 	s.missing, s.lastActivity, s.lastSeq = missing, now, lastSeq
 	if len(missing) > 0 {
@@ -232,17 +254,10 @@ func (s *Session) markInterrupted(now time.Time) {
 // audio exists and close the bundle. The state stays interrupted — the results
 // are real, but the client should know they may be short a tail.
 func (s *Session) abandon(ctx context.Context, now time.Time) {
-	highest, err := s.segments.Highest()
-	if err != nil {
-		highest = -1
-	}
 	s.mu.Lock()
 	if s.writer == nil || s.state != StateInterrupted {
 		s.mu.Unlock()
 		return
-	}
-	if s.lastSeq > highest {
-		highest = s.lastSeq
 	}
 	// Claim the meeting before releasing the lock: a client that reconnects
 	// mid-abandon must get a 409, not a second concurrent finalize. The
@@ -250,7 +265,19 @@ func (s *Session) abandon(ctx context.Context, now time.Time) {
 	s.state = StateProcessing
 	s.lastActivity = now
 	s.done = make(chan struct{})
+	lastSeq := s.lastSeq
 	s.mu.Unlock()
+
+	// Same barrier as Stop: an upload accepted just before the claim must
+	// land before the tail is measured, or its audio is silently dropped.
+	s.putWG.Wait()
+	highest, err := s.segments.Highest()
+	if err != nil {
+		highest = -1
+	}
+	if lastSeq > highest {
+		highest = lastSeq
+	}
 	// Off the sweep goroutine, and detached from it: transcription takes
 	// minutes, the janitor has other meetings to watch, and a sweep returning
 	// must not cancel the pass it just started.
