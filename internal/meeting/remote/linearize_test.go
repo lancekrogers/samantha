@@ -79,12 +79,16 @@ func TestSegmentDuringFinalizeIsRefused(t *testing.T) {
 		close(entered)
 		<-release
 	}
+	segDone := make(chan struct{})
 	go func() {
+		defer close(segDone)
 		_ = session.AppendSegment(context.Background(), 1, pcm(8, 1600), time.Now())
 	}()
 	<-entered
 	session.putGate = nil
+	stopDone := make(chan struct{})
 	go func() {
+		defer close(stopDone)
 		_, _ = session.Stop(context.Background(), -1, time.Now())
 	}()
 
@@ -104,5 +108,15 @@ func TestSegmentDuringFinalizeIsRefused(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	close(release)
+	// Join both writers before the test returns: TempDir cleanup races the
+	// parked upload and Stop's finalize otherwise ("segments: directory not
+	// empty" under load).
+	for name, ch := range map[string]chan struct{}{"upload": segDone, "stop": stopDone} {
+		select {
+		case <-ch:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s goroutine did not finish", name)
+		}
+	}
 	waitDone(t, session)
 }
