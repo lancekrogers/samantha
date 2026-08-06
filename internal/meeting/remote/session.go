@@ -476,22 +476,44 @@ func (s *Session) Summary() (meetinglog.Summary, error) {
 	return s.summary, nil
 }
 
-// RoutedFor returns the cached receipt for a campaign this meeting was
-// already routed to. The importer does not dedupe, so a retried route call
-// (timeout, double tap) must answer from here instead of filing twice.
-func (s *Session) RoutedFor(campaign string) (RouteReceipt, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	receipt, ok := s.routed[campaign]
-	return receipt, ok
+// routeCall is one route execution for a key: concurrent callers wait on
+// done and share the outcome.
+type routeCall struct {
+	done    chan struct{}
+	receipt RouteReceipt
+	err     error
 }
 
-// MarkRouted records a successful route for RoutedFor.
-func (s *Session) MarkRouted(campaign string, receipt RouteReceipt) {
+// RouteOnce runs fn at most once per key, concurrently-safe: while one call
+// is in flight every duplicate waits and shares its outcome, and a success is
+// cached for the session's lifetime. The importer does not dedupe, so this is
+// the whole idempotency story — check-then-execute as separate steps would
+// let a double tap file the meeting twice. A failed call is forgotten so the
+// next attempt retries for real.
+//
+// Keys are the caller's business; the handler keys by normalized capture mode
+// plus campaign so `capture: intent` after a meeting-import is a new route,
+// not a cache hit.
+func (s *Session) RouteOnce(key string, fn func() (RouteReceipt, error)) (RouteReceipt, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.routed == nil {
-		s.routed = make(map[string]RouteReceipt)
+	if call, ok := s.routes[key]; ok {
+		s.mu.Unlock()
+		<-call.done
+		return call.receipt, call.err
 	}
-	s.routed[campaign] = receipt
+	call := &routeCall{done: make(chan struct{})}
+	if s.routes == nil {
+		s.routes = make(map[string]*routeCall)
+	}
+	s.routes[key] = call
+	s.mu.Unlock()
+
+	call.receipt, call.err = fn()
+	close(call.done)
+	if call.err != nil {
+		s.mu.Lock()
+		delete(s.routes, key)
+		s.mu.Unlock()
+	}
+	return call.receipt, call.err
 }

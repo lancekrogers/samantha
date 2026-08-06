@@ -3,6 +3,7 @@ package remote
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -78,21 +79,72 @@ func TestSummaryRoutableAfterJanitorAbandon(t *testing.T) {
 	}
 }
 
-func TestRoutedReceiptCacheIsPerCampaign(t *testing.T) {
+// The idempotency core: N concurrent calls for one key share exactly one
+// execution, later calls answer from the cache, a different key executes its
+// own route, and a failure is forgotten so the retry is real.
+func TestRouteOnceSingleFlightsAndCaches(t *testing.T) {
 	m := testManager(t, Options{Pipeline: newRecordingPipeline(nil)})
 	session := startSession(t, m)
 
-	if _, ok := session.RoutedFor("mytools"); ok {
-		t.Fatal("RoutedFor() before any route reports a receipt")
+	var calls int32
+	gate := make(chan struct{})
+	fn := func() (RouteReceipt, error) {
+		atomic.AddInt32(&calls, 1)
+		<-gate // hold every concurrent caller in the same in-flight window
+		return RouteReceipt{Outcome: "routed", Destination: "mytools notes/meetings"}, nil
 	}
-	receipt := RouteReceipt{Outcome: "routed", Destination: "mytools notes/meetings"}
-	session.MarkRouted("mytools", receipt)
 
-	got, ok := session.RoutedFor("mytools")
-	if !ok || got != receipt {
-		t.Fatalf("RoutedFor(mytools) = %+v, %v; want cached receipt", got, ok)
+	const racers = 8
+	receipts := make(chan RouteReceipt, racers)
+	for range racers {
+		go func() {
+			receipt, err := session.RouteOnce("meeting\x00mytools", fn)
+			if err != nil {
+				t.Errorf("RouteOnce() error = %v", err)
+			}
+			receipts <- receipt
+		}()
 	}
-	if _, ok := session.RoutedFor("othercampaign"); ok {
-		t.Fatal("a different campaign must not answer from the cache")
+	close(gate)
+	for range racers {
+		if got := <-receipts; got.Destination != "mytools notes/meetings" {
+			t.Fatalf("receipt = %+v", got)
+		}
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("route executed %d times for %d concurrent calls, want 1", got, racers)
+	}
+
+	// Same key later: cache. Different key: new execution.
+	if _, err := session.RouteOnce("meeting\x00mytools", fn); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("cached key re-executed (calls = %d)", got)
+	}
+	_, _ = session.RouteOnce("intent\x00mytools", func() (RouteReceipt, error) {
+		atomic.AddInt32(&calls, 1)
+		return RouteReceipt{Outcome: "routed"}, nil
+	})
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("distinct capture key did not execute (calls = %d)", got)
+	}
+}
+
+func TestRouteOnceForgetsFailures(t *testing.T) {
+	m := testManager(t, Options{Pipeline: newRecordingPipeline(nil)})
+	session := startSession(t, m)
+
+	failed := errors.New("camp offline")
+	if _, err := session.RouteOnce("meeting\x00mytools", func() (RouteReceipt, error) {
+		return RouteReceipt{}, failed
+	}); !errors.Is(err, failed) {
+		t.Fatalf("RouteOnce() error = %v, want the sink failure", err)
+	}
+	receipt, err := session.RouteOnce("meeting\x00mytools", func() (RouteReceipt, error) {
+		return RouteReceipt{Outcome: "routed"}, nil
+	})
+	if err != nil || receipt.Outcome != "routed" {
+		t.Fatalf("retry after failure = %+v, %v; want a real re-execution", receipt, err)
 	}
 }

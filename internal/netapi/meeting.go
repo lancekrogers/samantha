@@ -148,21 +148,22 @@ func (s *Server) handleMeetingRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "campaign is required"})
 		return
 	}
-	if receipt, done := session.RoutedFor(campaign); done {
-		writeJSON(w, http.StatusOK, receipt)
-		return
-	}
 	summary, err := session.Summary()
 	if err != nil {
 		writeMeetingError(w, err)
 		return
 	}
-	receipt, err := s.routeMeeting(r.Context(), summary, campaign, req.Capture)
+	// Key by normalized capture + campaign: retries of the same route share
+	// one execution and one receipt, while a different capture mode for the
+	// same campaign is a genuinely new route.
+	key := meeting.NormalizeCampaignCapture(req.Capture) + "\x00" + campaign
+	receipt, err := session.RouteOnce(key, func() (remote.RouteReceipt, error) {
+		return s.routeMeeting(r.Context(), summary, campaign, req.Capture)
+	})
 	if err != nil {
 		writeMeetingError(w, err)
 		return
 	}
-	session.MarkRouted(campaign, receipt)
 	writeJSON(w, http.StatusOK, receipt)
 }
 

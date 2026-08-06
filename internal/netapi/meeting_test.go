@@ -533,3 +533,66 @@ func TestMeetingRouteValidation(t *testing.T) {
 		t.Fatalf("unconfigured route status = %d, want 503", resp.StatusCode)
 	}
 }
+
+// The reviewer's race: two simultaneous route calls (double tap, retry after
+// a timed-out response) must share one importer execution, not file twice.
+func TestMeetingRouteConcurrentRetriesFileOnce(t *testing.T) {
+	var calls int32
+	gate := make(chan struct{})
+	route := func(ctx context.Context, summary meetinglog.Summary, campaign, capture string) (remote.RouteReceipt, error) {
+		atomic.AddInt32(&calls, 1)
+		<-gate // hold so both requests are provably concurrent
+		return remote.RouteReceipt{Outcome: "routed", Destination: campaign + " notes/meetings"}, nil
+	}
+	h := newRoutedMeetingHarness(t, remote.Options{}, route)
+	id := h.recordAndFinish(t)
+
+	const racers = 4
+	status := make(chan int, racers)
+	for range racers {
+		go func() {
+			resp := h.do(t, http.MethodPost, "/v1/meeting/"+id+"/route",
+				strings.NewReader(`{"campaign":"mytools"}`), "application/json")
+			resp.Body.Close()
+			status <- resp.StatusCode
+		}()
+	}
+	// Give every request time to reach the handler before releasing the sink.
+	time.Sleep(150 * time.Millisecond)
+	close(gate)
+	for range racers {
+		if code := <-status; code != http.StatusOK {
+			t.Fatalf("concurrent route status = %d, want 200", code)
+		}
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("importer executed %d times for %d concurrent requests, want exactly 1", got, racers)
+	}
+}
+
+// Capture modes are distinct routes: a meeting-import receipt must not answer
+// a later intent/note capture for the same campaign.
+func TestMeetingRouteCaptureModesRouteSeparately(t *testing.T) {
+	var captures []string
+	route := func(ctx context.Context, summary meetinglog.Summary, campaign, capture string) (remote.RouteReceipt, error) {
+		captures = append(captures, capture)
+		return remote.RouteReceipt{Outcome: "routed"}, nil
+	}
+	h := newRoutedMeetingHarness(t, remote.Options{}, route)
+	id := h.recordAndFinish(t)
+
+	for _, body := range []string{
+		`{"campaign":"mytools"}`,
+		`{"campaign":"mytools","capture":"intent"}`,
+		`{"campaign":"mytools","capture":"import-meeting"}`, // normalizes to meeting → cache hit
+	} {
+		resp := h.do(t, http.MethodPost, "/v1/meeting/"+id+"/route", strings.NewReader(body), "application/json")
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("route %s status = %d", body, resp.StatusCode)
+		}
+	}
+	if len(captures) != 2 || captures[0] != "" || captures[1] != "intent" {
+		t.Fatalf("importer captures = %q, want [\"\" \"intent\"] (third call is a normalized cache hit)", captures)
+	}
+}
