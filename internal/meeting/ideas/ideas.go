@@ -43,6 +43,11 @@ type Report struct {
 	Unresolved int
 	// Failed spans hit a filing error and stay unmarked for the next pass.
 	Failed int
+	// MarkerFailed counts filed spans whose idea_filed marker could not be
+	// persisted. The filing itself is safe — the sink's deterministic
+	// create-if-absent key is the durable receipt — but the miss is reported
+	// rather than swallowed so operators see the bundle is missing markers.
+	MarkerFailed int
 }
 
 // FileFunc files one resolved idea. An error leaves the span unmarked so a
@@ -77,9 +82,12 @@ func Resolve(ctx context.Context, bundlePath string, writer *meetinglog.Writer, 
 		span.Body = sliceTranscript(events, span)
 		if strings.TrimSpace(span.Body) == "" {
 			report.Unresolved++
-			_ = writer.AppendControl(meetinglog.TypeNote, span.EndMS, "idea_unresolved",
+			// Best-effort note; the count above is the authoritative signal.
+			if err := writer.AppendControl(meetinglog.TypeNote, span.EndMS, "idea_unresolved",
 				fmt.Sprintf("idea span %s (%s–%s) had no speech; nothing was filed",
-					span.SpanID, clock(span.StartMS), clock(span.EndMS)))
+					span.SpanID, clock(span.StartMS), clock(span.EndMS))); err != nil {
+				report.MarkerFailed++
+			}
 			continue
 		}
 		if err := file(ctx, span); err != nil {
@@ -89,7 +97,13 @@ func Resolve(ctx context.Context, bundlePath string, writer *meetinglog.Writer, 
 			continue
 		}
 		report.Filed++
-		_ = writer.AppendControl(meetinglog.TypeIdeaFiled, span.EndMS, span.SpanID, preview(span.Body))
+		// The marker is the fast-path skip for re-runs; the durable dedupe
+		// lives in the sink's deterministic key. A marker failure therefore
+		// degrades performance, not correctness — but it is counted, not
+		// ignored: a bundle whose markers keep failing has a real problem.
+		if err := writer.AppendControl(meetinglog.TypeIdeaFiled, span.EndMS, span.SpanID, preview(span.Body)); err != nil {
+			report.MarkerFailed++
+		}
 	}
 	return report, nil
 }

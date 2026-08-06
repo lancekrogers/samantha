@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -96,7 +97,11 @@ func resolveMeetingIdeas(ctx context.Context, job remote.Job) (ideas.Report, err
 		meetingID = filepath.Base(job.BundlePath)
 	}
 	return ideas.Resolve(ctx, job.BundlePath, job.Writer, func(ctx context.Context, idea ideas.Resolved) error {
-		_, _, err := netapi.WriteIntentFile(sinkDir, netapi.IntentRequest{
+		// Deterministic id = durable receipt: if a previous pass filed this
+		// span and crashed before its bundle marker landed, the retry finds
+		// the intent file itself (create-if-absent) instead of duplicating.
+		id := "meeting-" + sanitizeIntentKey(meetingID) + "-span-" + sanitizeIntentKey(idea.SpanID)
+		_, _, err := netapi.WriteIntentFileWithID(sinkDir, id, netapi.IntentRequest{
 			Type:       "note",
 			Body:       idea.Body,
 			Source:     "meeting",
@@ -337,4 +342,25 @@ func newServeMeetingRouter(cfg *config.Config) netapi.RouteMeetingFunc {
 			Destination: destination,
 		}, nil
 	}
+}
+
+// sanitizeIntentKey keeps ids filesystem-safe: the span id is client-supplied
+// wire input and becomes part of a filename.
+func sanitizeIntentKey(raw string) string {
+	var b strings.Builder
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+		if b.Len() >= 64 {
+			break
+		}
+	}
+	if b.Len() == 0 {
+		return "unknown"
+	}
+	return b.String()
 }

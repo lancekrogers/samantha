@@ -190,3 +190,33 @@ func TestIntentContextValidation(t *testing.T) {
 		})
 	}
 }
+
+// Create-if-absent is the durable idempotency receipt for deterministic keys.
+func TestWriteIntentFileWithIDIsCreateIfAbsent(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "intents")
+	first := IntentRequest{Type: "note", Body: "original", Source: "meeting", CapturedAt: "2026-08-06T00:00:00Z"}
+	path, created, err := WriteIntentFileWithID(dir, "meeting-m1-span-a", first)
+	if err != nil || !created {
+		t.Fatalf("first write = created %v, err %v", created, err)
+	}
+	second := first
+	second.Body = "attempted overwrite"
+	path2, created, err := WriteIntentFileWithID(dir, "meeting-m1-span-a", second)
+	if err != nil || created {
+		t.Fatalf("second write = created %v, err %v; want existing-file success", created, err)
+	}
+	if path2 != path {
+		t.Fatalf("paths differ: %s vs %s", path, path2)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "original") || strings.Contains(string(raw), "overwrite") {
+		t.Fatalf("first write must win:\n%s", raw)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Fatalf("files = %d, want 1", len(entries))
+	}
+}

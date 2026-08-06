@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -135,30 +136,54 @@ func (s *Server) writeIntentFile(req IntentRequest) (id, path string, err error)
 }
 
 // WriteIntentFile persists one intent into the file sink `POST /v1/intent`
-// uses. Exported for serve's idea-span resolution, which files spoken ideas
-// through the same sink so a spoken idea and a typed one land identically.
+// uses, under a fresh random id — each call files a new intent.
 func WriteIntentFile(dir string, req IntentRequest) (id, path string, err error) {
-	if dir == "" {
-		return "", "", fmt.Errorf("intent sink directory not configured")
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", "", fmt.Errorf("create intent dir: %w", err)
-	}
 	raw := make([]byte, 8)
 	if _, err := rand.Read(raw); err != nil {
 		id = fmt.Sprintf("%d", time.Now().UnixNano())
 	} else {
 		id = hex.EncodeToString(raw)
 	}
+	path, _, err = WriteIntentFileWithID(dir, id, req)
+	return id, path, err
+}
+
+// WriteIntentFileWithID persists one intent under a caller-chosen id with
+// create-if-absent semantics: an existing file skips the write and reports
+// created=false — success, not an error. This makes a deterministic key
+// (meeting + span id) a durable idempotency receipt: a crash after the file
+// landed but before any marker was recorded cannot duplicate the intent,
+// because the retry finds the file itself.
+func WriteIntentFileWithID(dir, id string, req IntentRequest) (path string, created bool, err error) {
+	if dir == "" {
+		return "", false, fmt.Errorf("intent sink directory not configured")
+	}
+	if id == "" {
+		return "", false, fmt.Errorf("intent id is required")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", false, fmt.Errorf("create intent dir: %w", err)
+	}
 	path = filepath.Join(dir, id+".json")
 	payload, err := json.MarshalIndent(req, "", "  ")
 	if err != nil {
-		return "", "", err
+		return "", false, err
 	}
-	if err := os.WriteFile(path, append(payload, '\n'), 0o600); err != nil {
-		return "", "", fmt.Errorf("write intent: %w", err)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return path, false, nil
 	}
-	return id, path, nil
+	if err != nil {
+		return "", false, fmt.Errorf("write intent: %w", err)
+	}
+	if _, err := f.Write(append(payload, '\n')); err != nil {
+		_ = f.Close()
+		return "", false, fmt.Errorf("write intent: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return "", false, fmt.Errorf("write intent: %w", err)
+	}
+	return path, true, nil
 }
 
 func deriveIntentTitle(body string) string {

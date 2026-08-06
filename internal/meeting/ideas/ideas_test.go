@@ -11,6 +11,7 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/listen"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
+	"github.com/lancekrogers/samantha/internal/netapi"
 )
 
 // fixture is a real .meeting bundle with an open writer — everything goes
@@ -174,5 +175,60 @@ func TestResolveUsesIdeaEndTextAsBody(t *testing.T) {
 	})
 	if report.Filed != 1 || len(filed) != 1 || filed[0].Body != "check the AEC latency" {
 		t.Fatalf("report = %+v filed = %+v", report, filed)
+	}
+}
+
+// The crash-consistency contract: filing succeeded but the idea_filed marker
+// never landed (crash, closed writer, disk error). The durable receipt is the
+// sink's deterministic create-if-absent key, so the re-run re-resolves the
+// span, re-files through the sink — and the sink refuses to duplicate.
+func TestResolveRerunAfterMarkerFailureDoesNotDuplicate(t *testing.T) {
+	f := newFixture(t)
+	f.utterance(5000, "the idea words")
+	f.control(meetinglog.TypeIdeaStart, 1000, "span-x", "")
+	f.control(meetinglog.TypeIdeaEnd, 8000, "span-x", "")
+
+	// Marker persistence fails from here on: the writer is closed, exactly
+	// as if the process died right after the sink write.
+	if _, err := f.writer.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	sinkDir := filepath.Join(t.TempDir(), "intents")
+	sink := func(_ context.Context, idea Resolved) error {
+		id := "meeting-m1-span-" + idea.SpanID
+		_, _, err := netapi.WriteIntentFileWithID(sinkDir, id, netapi.IntentRequest{
+			Type: "note", Body: idea.Body, Source: "meeting",
+			CapturedAt: "2026-08-06T00:00:00Z",
+		})
+		return err
+	}
+
+	first, err := Resolve(context.Background(), f.bundlePath, f.writer, sink)
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if first.Filed != 1 || first.MarkerFailed != 1 {
+		t.Fatalf("first pass report = %+v, want filed=1 marker_failed=1", first)
+	}
+
+	second, err := Resolve(context.Background(), f.bundlePath, f.writer, sink)
+	if err != nil {
+		t.Fatalf("Resolve() re-run error = %v", err)
+	}
+	if second.Filed != 1 {
+		t.Fatalf("re-run report = %+v (the span re-resolves; the sink dedupes)", second)
+	}
+
+	entries, err := os.ReadDir(sinkDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		names := []string{}
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("intent files after two passes = %v, want exactly one", names)
 	}
 }
