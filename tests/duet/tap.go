@@ -36,6 +36,7 @@ type TapRecord struct {
 	SpokeS      float64 `json:"spoke_s"`
 	BargeInS    float64 `json:"barge_in_s"`
 	Dropped     int64   `json:"dropped"`
+	LeakLines   int     `json:"leak_lines"`
 }
 
 // tapEvent is one record attributed to its instance.

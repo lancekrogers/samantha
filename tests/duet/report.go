@@ -23,15 +23,20 @@ var toolLeakRE = []*regexp.Regexp{
 
 // InstanceMetrics is the per-instance rollup written to metrics.json.
 type InstanceMetrics struct {
-	Turns         int     `json:"turns"`
-	DegradedTurns int     `json:"degraded_turns"`
-	Errors        int     `json:"errors"`
-	ToolCalls     int     `json:"tool_calls"`
-	ToolLeakLines int     `json:"tool_leak_lines"`
-	MeanModelS    float64 `json:"mean_model_s"`
-	P95ModelS     float64 `json:"p95_model_s"`
-	BargeInS      float64 `json:"barge_in_s"` // max observed; 0 = none
-	Dropped       int64   `json:"dropped"`
+	Turns         int `json:"turns"`
+	DegradedTurns int `json:"degraded_turns"`
+	Errors        int `json:"errors"`
+	ToolCalls     int `json:"tool_calls"`
+	ToolLeakLines int `json:"tool_leak_lines"`
+	// VoiceGateStrips is samantha's own count of lines its voice gate kept out
+	// of TTS (voice_gate records). ToolLeakLines stays this harness's
+	// independent detector over chat text — the two must be measured
+	// separately so a broken gate cannot hide its own leaks.
+	VoiceGateStrips int     `json:"voice_gate_strips"`
+	MeanModelS      float64 `json:"mean_model_s"`
+	P95ModelS       float64 `json:"p95_model_s"`
+	BargeInS        float64 `json:"barge_in_s"` // max observed; 0 = none
+	Dropped         int64   `json:"dropped"`
 }
 
 // RunMetrics is the whole run's rollup; report.md is its rendering.
@@ -70,6 +75,8 @@ func computeMetrics(e *engine, stopReason string) *RunMetrics {
 				im.Errors++
 			case "tool_call":
 				im.ToolCalls++
+			case "voice_gate":
+				im.VoiceGateStrips += r.LeakLines
 			case "metrics":
 				if r.ModelS > 0 {
 					modelTimes = append(modelTimes, r.ModelS)
@@ -133,12 +140,12 @@ func writeArtifacts(runDir string, e *engine, rm *RunMetrics, started time.Time)
 	}
 	sort.Strings(ids)
 
-	b.WriteString("| instance | turns | degraded | errors | tool calls | leak lines | model mean/p95 (s) | dropped |\n")
-	b.WriteString("|---|---|---|---|---|---|---|---|\n")
+	b.WriteString("| instance | turns | degraded | errors | tool calls | leak lines | voice strips | model mean/p95 (s) | dropped |\n")
+	b.WriteString("|---|---|---|---|---|---|---|---|---|\n")
 	for _, id := range ids {
 		im := rm.Instances[id]
-		fmt.Fprintf(&b, "| %s | %d | %d | %d | %d | %d | %.1f / %.1f | %d |\n",
-			id, im.Turns, im.DegradedTurns, im.Errors, im.ToolCalls, im.ToolLeakLines, im.MeanModelS, im.P95ModelS, im.Dropped)
+		fmt.Fprintf(&b, "| %s | %d | %d | %d | %d | %d | %d | %.1f / %.1f | %d |\n",
+			id, im.Turns, im.DegradedTurns, im.Errors, im.ToolCalls, im.ToolLeakLines, im.VoiceGateStrips, im.MeanModelS, im.P95ModelS, im.Dropped)
 	}
 
 	for _, id := range ids {
@@ -225,6 +232,8 @@ func metricValue(rm *RunMetrics, ex Expectation) (float64, bool) {
 		return float64(im.ToolCalls), true
 	case "tool_leak_lines":
 		return float64(im.ToolLeakLines), true
+	case "voice_gate_strips":
+		return float64(im.VoiceGateStrips), true
 	case "mean_model_s":
 		return im.MeanModelS, true
 	case "p95_model_s":

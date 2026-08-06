@@ -830,6 +830,11 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		m.appendActivity("info", e.Message, 0)
 		m.appendTranscript(dimStyle.Render("  " + e.Message))
 
+	case events.VoiceGateStripped:
+		// Voice-only filter: the raw text is already in the transcript above;
+		// this entry records that it was not spoken.
+		m.appendActivity("voice", fmt.Sprintf("gate stripped %d tool-syntax line(s) from speech", e.Lines), 0)
+
 	case events.ToolCallStarted:
 		msg := "tool " + e.Name
 		if e.Summary != "" {

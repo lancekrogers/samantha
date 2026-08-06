@@ -67,6 +67,10 @@ type record struct {
 	TurnsBefore int   `json:"turns_before,omitempty"`
 	Dropped     int64 `json:"dropped,omitempty"`
 	WriteErrors int64 `json:"write_errors,omitempty"`
+
+	// LeakLines is the voice gate's stripped-line count: per event on
+	// voice_gate records, per turn on metrics records (WI-dc9e33 B4).
+	LeakLines int `json:"leak_lines,omitempty"`
 }
 
 // Writer subscribes to a bus and appends one record per event.
@@ -161,7 +165,11 @@ func (w *Writer) Attach(bus *events.Bus) {
 			PlaybackStartS: e.PlaybackStartElapsed.Seconds(),
 			SpokeS:         e.PlaybackCompleteElapsed.Seconds(),
 			BargeInS:       e.BargeInElapsed.Seconds(),
+			LeakLines:      e.ToolLeakLines,
 		})
+	})
+	events.Subscribe(bus, func(e events.VoiceGateStripped) {
+		w.enqueue(record{Type: "voice_gate", LeakLines: e.Lines})
 	})
 	events.Subscribe(bus, func(e events.TokenUsage) {
 		w.enqueue(record{Type: "tokens", Prefill: e.Prefill, Gen: e.Gen})

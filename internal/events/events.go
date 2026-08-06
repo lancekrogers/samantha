@@ -73,6 +73,10 @@ type TurnMetrics struct {
 	PlaybackStartElapsed    time.Duration
 	PlaybackCompleteElapsed time.Duration
 	BargeInElapsed          time.Duration
+	// ToolLeakLines counts lines the voice gate stripped from speech this
+	// turn — tool-shaped text the model narrated into its reply (WI-dc9e33
+	// B4). The chat transcript keeps the raw text; only TTS is filtered.
+	ToolLeakLines int
 }
 
 func (e TurnMetrics) eventType() string { return "turn_metrics" }
@@ -225,3 +229,12 @@ type ToolCallFinished struct {
 }
 
 func (e ToolCallFinished) eventType() string { return "tool_call_finished" }
+
+// VoiceGateStripped reports that the pipeline's voice gate removed tool-shaped
+// lines from a speech segment before TTS (WI-dc9e33 B4). The stripped text
+// still reaches the chat transcript — only the spoken channel is filtered.
+type VoiceGateStripped struct {
+	Lines int
+}
+
+func (e VoiceGateStripped) eventType() string { return "voice_gate_stripped" }

@@ -34,6 +34,7 @@ func New(bus *events.Bus, agentName string) *UI {
 	events.Subscribe(bus, u.onInfo)
 	events.Subscribe(bus, u.onToolCallStarted)
 	events.Subscribe(bus, u.onToolCallFinished)
+	events.Subscribe(bus, u.onVoiceGateStripped)
 
 	return u
 }
@@ -158,6 +159,10 @@ func (u *UI) onToolCallStarted(e events.ToolCallStarted) {
 		msg += " (" + e.Summary + ")"
 	}
 	fmt.Printf("  %s\n", dimStyle.Render(msg))
+}
+
+func (u *UI) onVoiceGateStripped(e events.VoiceGateStripped) {
+	fmt.Printf("  %s\n", dimStyle.Render(fmt.Sprintf("voice gate stripped %d tool-syntax line(s) from speech", e.Lines)))
 }
 
 func (u *UI) onToolCallFinished(e events.ToolCallFinished) {
