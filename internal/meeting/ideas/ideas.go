@@ -36,7 +36,13 @@ type Resolved struct {
 
 // Report says what a resolution pass did, for logs and the bundle note.
 type Report struct {
-	Filed        int
+	// Filed counts newly created intent files.
+	Filed int
+	// Rediscovered counts spans whose durable sink receipt already existed
+	// even though the bundle marker was missing. These are successful re-runs,
+	// but they are not newly filed ideas.
+	Rediscovered int
+	// AlreadyFiled counts spans skipped by an existing bundle marker.
 	AlreadyFiled int
 	// Unresolved spans had no speech in their window; they are surfaced as a
 	// bundle note rather than silently dropped.
@@ -50,9 +56,10 @@ type Report struct {
 	MarkerFailed int
 }
 
-// FileFunc files one resolved idea. An error leaves the span unmarked so a
-// later pass retries it.
-type FileFunc func(ctx context.Context, idea Resolved) error
+// FileFunc files one resolved idea and reports whether it created a new
+// durable receipt. An error leaves the span unmarked so a later pass retries
+// it; created=false with no error means a previous pass already filed it.
+type FileFunc func(ctx context.Context, idea Resolved) (created bool, err error)
 
 // Resolve reads the bundle's events, pairs idea spans, slices the transcript,
 // and files unfiled spans. The writer must still be open: filed markers and
@@ -90,13 +97,18 @@ func Resolve(ctx context.Context, bundlePath string, writer *meetinglog.Writer, 
 			}
 			continue
 		}
-		if err := file(ctx, span); err != nil {
+		created, err := file(ctx, span)
+		if err != nil {
 			// Leave the span unmarked: the next pass retries. The meeting
 			// itself must not fail over one intent.
 			report.Failed++
 			continue
 		}
-		report.Filed++
+		if created {
+			report.Filed++
+		} else {
+			report.Rediscovered++
+		}
 		// The marker is the fast-path skip for re-runs; the durable dedupe
 		// lives in the sink's deterministic key. A marker failure therefore
 		// degrades performance, not correctness — but it is counted, not

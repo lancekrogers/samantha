@@ -73,9 +73,9 @@ func TestResolveFilesSpansFromTranscript(t *testing.T) {
 	f.utterance(60000, "tail talk")
 
 	var filed []Resolved
-	report := f.resolve(func(_ context.Context, idea Resolved) error {
+	report := f.resolve(func(_ context.Context, idea Resolved) (bool, error) {
 		filed = append(filed, idea)
-		return nil
+		return true, nil
 	})
 	if report.Filed != 1 || report.Unresolved != 0 {
 		t.Fatalf("report = %+v, want 1 filed", report)
@@ -101,17 +101,17 @@ func TestResolveIsRerunSafe(t *testing.T) {
 	f.control(meetinglog.TypeIdeaEnd, 30000, "two", "")
 
 	calls := map[string]int{}
-	f.resolve(func(_ context.Context, idea Resolved) error {
+	f.resolve(func(_ context.Context, idea Resolved) (bool, error) {
 		calls[idea.SpanID]++
 		if idea.SpanID == "two" {
-			return errors.New("sink offline")
+			return false, errors.New("sink offline")
 		}
-		return nil
+		return true, nil
 	})
 
-	report := f.resolve(func(_ context.Context, idea Resolved) error {
+	report := f.resolve(func(_ context.Context, idea Resolved) (bool, error) {
 		calls[idea.SpanID]++
-		return nil
+		return true, nil
 	})
 	if calls["one"] != 1 || calls["two"] != 2 {
 		t.Fatalf("filing calls = %v, want one=1 two=2", calls)
@@ -127,9 +127,9 @@ func TestResolveSurfacesSilentSpansAsNotes(t *testing.T) {
 	f.control(meetinglog.TypeIdeaStart, 100000, "quiet", "")
 	f.control(meetinglog.TypeIdeaEnd, 110000, "quiet", "")
 
-	report := f.resolve(func(_ context.Context, _ Resolved) error {
+	report := f.resolve(func(_ context.Context, _ Resolved) (bool, error) {
 		t.Fatal("a silent span must not be filed")
-		return nil
+		return false, nil
 	})
 	if report.Unresolved != 1 {
 		t.Fatalf("report = %+v, want 1 unresolved", report)
@@ -150,9 +150,9 @@ func TestResolveUnclosedSpanRunsToMeetingEnd(t *testing.T) {
 	f.utterance(20000, "the forgotten thought")
 
 	var filed []Resolved
-	report := f.resolve(func(_ context.Context, idea Resolved) error {
+	report := f.resolve(func(_ context.Context, idea Resolved) (bool, error) {
 		filed = append(filed, idea)
-		return nil
+		return true, nil
 	})
 	if report.Filed != 1 || len(filed) != 1 {
 		t.Fatalf("report = %+v filed = %+v", report, filed)
@@ -169,9 +169,9 @@ func TestResolveUsesIdeaEndTextAsBody(t *testing.T) {
 	f.control(meetinglog.TypeIdeaEnd, 2000, "typed", "check the AEC latency")
 
 	var filed []Resolved
-	report := f.resolve(func(_ context.Context, idea Resolved) error {
+	report := f.resolve(func(_ context.Context, idea Resolved) (bool, error) {
 		filed = append(filed, idea)
-		return nil
+		return true, nil
 	})
 	if report.Filed != 1 || len(filed) != 1 || filed[0].Body != "check the AEC latency" {
 		t.Fatalf("report = %+v filed = %+v", report, filed)
@@ -195,13 +195,13 @@ func TestResolveRerunAfterMarkerFailureDoesNotDuplicate(t *testing.T) {
 	}
 
 	sinkDir := filepath.Join(t.TempDir(), "intents")
-	sink := func(_ context.Context, idea Resolved) error {
+	sink := func(_ context.Context, idea Resolved) (bool, error) {
 		id := "meeting-m1-span-" + idea.SpanID
-		_, _, err := netapi.WriteIntentFileWithID(sinkDir, id, netapi.IntentRequest{
+		_, created, err := netapi.WriteIntentFileWithID(sinkDir, id, netapi.IntentRequest{
 			Type: "note", Body: idea.Body, Source: "meeting",
 			CapturedAt: "2026-08-06T00:00:00Z",
 		})
-		return err
+		return created, err
 	}
 
 	first, err := Resolve(context.Background(), f.bundlePath, f.writer, sink)
@@ -216,8 +216,8 @@ func TestResolveRerunAfterMarkerFailureDoesNotDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve() re-run error = %v", err)
 	}
-	if second.Filed != 1 {
-		t.Fatalf("re-run report = %+v (the span re-resolves; the sink dedupes)", second)
+	if second.Filed != 0 || second.Rediscovered != 1 {
+		t.Fatalf("re-run report = %+v, want one durable-receipt rediscovery", second)
 	}
 
 	entries, err := os.ReadDir(sinkDir)

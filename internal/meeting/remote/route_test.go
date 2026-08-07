@@ -3,6 +3,7 @@ package remote
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -153,9 +154,14 @@ func TestRouteOnceForgetsFailures(t *testing.T) {
 func TestStatusReportsPipelineStep(t *testing.T) {
 	pipe := newRecordingPipeline(nil)
 	stepSeen := make(chan string, 4)
+	releasePipeline := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releasePipeline) }) }
+	defer release()
 	pipe.before = func(job Job) {
 		job.Step("transcribing")
 		stepSeen <- "reported"
+		<-releasePipeline
 	}
 	m := testManager(t, Options{Pipeline: pipe})
 	session := startSession(t, m)
@@ -169,6 +175,7 @@ func TestStatusReportsPipelineStep(t *testing.T) {
 	if got := session.Status().Step; got != "transcribing" {
 		t.Fatalf("Step during processing = %q, want transcribing", got)
 	}
+	release()
 	waitDone(t, session)
 	if got := session.Status().Step; got != "" {
 		t.Fatalf("Step after ready = %q, want empty", got)

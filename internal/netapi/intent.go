@@ -149,11 +149,11 @@ func WriteIntentFile(dir string, req IntentRequest) (id, path string, err error)
 }
 
 // WriteIntentFileWithID persists one intent under a caller-chosen id with
-// create-if-absent semantics: an existing file skips the write and reports
-// created=false — success, not an error. This makes a deterministic key
-// (meeting + span id) a durable idempotency receipt: a crash after the file
-// landed but before any marker was recorded cannot duplicate the intent,
-// because the retry finds the file itself.
+// atomic create-if-absent semantics. The complete payload is written and
+// synced in the destination directory before a hard link publishes it under
+// the final name, so a crash cannot leave a partial receipt at path. An
+// existing valid receipt reports created=false; an invalid legacy/partial
+// receipt is removed and recovered from the staged payload.
 func WriteIntentFileWithID(dir, id string, req IntentRequest) (path string, created bool, err error) {
 	if dir == "" {
 		return "", false, fmt.Errorf("intent sink directory not configured")
@@ -169,21 +169,63 @@ func WriteIntentFileWithID(dir, id string, req IntentRequest) (path string, crea
 	if err != nil {
 		return "", false, err
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		return path, false, nil
+	payload = append(payload, '\n')
+
+	staged, err := os.CreateTemp(dir, "."+id+"-*.tmp")
+	if err != nil {
+		return "", false, fmt.Errorf("stage intent: %w", err)
+	}
+	stagedPath := staged.Name()
+	defer func() { _ = os.Remove(stagedPath) }()
+
+	if _, err := staged.Write(payload); err != nil {
+		_ = staged.Close()
+		return "", false, fmt.Errorf("write staged intent: %w", err)
+	}
+	if err := staged.Sync(); err != nil {
+		_ = staged.Close()
+		return "", false, fmt.Errorf("sync staged intent: %w", err)
+	}
+	if err := staged.Close(); err != nil {
+		return "", false, fmt.Errorf("close staged intent: %w", err)
+	}
+
+	// Link is an atomic no-replace publish because stagedPath and path live in
+	// the same directory. At most one concurrent writer can create path.
+	for recoveryAttempt := 0; recoveryAttempt < 2; recoveryAttempt++ {
+		if err := os.Link(stagedPath, path); err == nil {
+			return path, true, nil
+		} else if !errors.Is(err, os.ErrExist) {
+			return "", false, fmt.Errorf("publish intent: %w", err)
+		}
+
+		valid, err := validIntentReceipt(path)
+		if err != nil {
+			return "", false, err
+		}
+		if valid {
+			return path, false, nil
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", false, fmt.Errorf("remove invalid intent receipt: %w", err)
+		}
+	}
+	return "", false, fmt.Errorf("publish intent: could not replace invalid receipt %s", path)
+}
+
+func validIntentReceipt(path string) (bool, error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("write intent: %w", err)
+		return false, fmt.Errorf("read existing intent receipt: %w", err)
 	}
-	if _, err := f.Write(append(payload, '\n')); err != nil {
-		_ = f.Close()
-		return "", false, fmt.Errorf("write intent: %w", err)
+	var existing IntentRequest
+	if err := json.Unmarshal(raw, &existing); err != nil {
+		return false, nil
 	}
-	if err := f.Close(); err != nil {
-		return "", false, fmt.Errorf("write intent: %w", err)
-	}
-	return path, true, nil
+	return strings.TrimSpace(existing.Body) != "", nil
 }
 
 func deriveIntentTitle(body string) string {

@@ -220,3 +220,44 @@ func TestWriteIntentFileWithIDIsCreateIfAbsent(t *testing.T) {
 		t.Fatalf("files = %d, want 1", len(entries))
 	}
 }
+
+func TestWriteIntentFileWithIDRecoversPartialExistingReceipt(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "intents")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "meeting-m1-span-a.json")
+	if err := os.WriteFile(path, []byte(`{"type":"note","body":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	want := IntentRequest{
+		Type: "note", Body: "recovered idea", Source: "meeting",
+		CapturedAt: "2026-08-06T00:00:00Z",
+	}
+	gotPath, created, err := WriteIntentFileWithID(dir, "meeting-m1-span-a", want)
+	if err != nil || !created {
+		t.Fatalf("recovery write = created %v, err %v", created, err)
+	}
+	if gotPath != path {
+		t.Fatalf("path = %s, want %s", gotPath, path)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got IntentRequest
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("recovered receipt is invalid JSON: %v\n%s", err, raw)
+	}
+	if got.Body != want.Body {
+		t.Fatalf("recovered body = %q, want %q", got.Body, want.Body)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(path) {
+		t.Fatalf("recovery left staged files behind: %v", entries)
+	}
+}
