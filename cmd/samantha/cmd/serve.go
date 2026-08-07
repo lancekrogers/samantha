@@ -310,6 +310,7 @@ func runServe(cfg *config.Config) error {
 		Audio:        fanout,
 		Ingress:      ingress,
 		Meetings:     meetings,
+		RouteMeeting: newServeMeetingRouter(cfg),
 		ListSessions: listSessionSummaries,
 		Providers: netapi.Providers{
 			Brain: cfg.BrainProvider,

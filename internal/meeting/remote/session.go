@@ -49,6 +49,10 @@ type Session struct {
 	// putGate, when set by a test, runs between acceptance and the segment
 	// write — the seam that makes the upload/stop interleaving deterministic.
 	putGate func()
+	// routes single-flights and caches route executions by capture+campaign
+	// key: `camp idea notes import-meeting` does not dedupe, so a concurrent
+	// double tap must share one execution, not file twice.
+	routes map[string]*routeCall
 }
 
 // ID is the opaque handle the client uses in every later request.
@@ -456,4 +460,60 @@ func (s *Session) closeBundle() error {
 	}
 	_, err := writer.Close()
 	return err
+}
+
+// Summary returns the finished meeting's summary for routing. Ready meetings
+// route normally; janitor-processed interrupted meetings do too — their notes
+// are just as real, only the ending wasn't clean. Everything else is not
+// routable yet (or ever, for failed ones — reprocess on the Mac first).
+func (s *Session) Summary() (meetinglog.Summary, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	routable := s.haveSummary && (s.state == StateReady || s.state == StateInterrupted)
+	if !routable {
+		return meetinglog.Summary{}, ErrNotRoutable
+	}
+	return s.summary, nil
+}
+
+// routeCall is one route execution for a key: concurrent callers wait on
+// done and share the outcome.
+type routeCall struct {
+	done    chan struct{}
+	receipt RouteReceipt
+	err     error
+}
+
+// RouteOnce runs fn at most once per key, concurrently-safe: while one call
+// is in flight every duplicate waits and shares its outcome, and a success is
+// cached for the session's lifetime. The importer does not dedupe, so this is
+// the whole idempotency story — check-then-execute as separate steps would
+// let a double tap file the meeting twice. A failed call is forgotten so the
+// next attempt retries for real.
+//
+// Keys are the caller's business; the handler keys by normalized capture mode
+// plus campaign so `capture: intent` after a meeting-import is a new route,
+// not a cache hit.
+func (s *Session) RouteOnce(key string, fn func() (RouteReceipt, error)) (RouteReceipt, error) {
+	s.mu.Lock()
+	if call, ok := s.routes[key]; ok {
+		s.mu.Unlock()
+		<-call.done
+		return call.receipt, call.err
+	}
+	call := &routeCall{done: make(chan struct{})}
+	if s.routes == nil {
+		s.routes = make(map[string]*routeCall)
+	}
+	s.routes[key] = call
+	s.mu.Unlock()
+
+	call.receipt, call.err = fn()
+	close(call.done)
+	if call.err != nil {
+		s.mu.Lock()
+		delete(s.routes, key)
+		s.mu.Unlock()
+	}
+	return call.receipt, call.err
 }

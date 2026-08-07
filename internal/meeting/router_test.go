@@ -249,7 +249,7 @@ func TestNormalizeCampaignCapture(t *testing.T) {
 		"weird":          CaptureMeeting,
 	}
 	for in, want := range cases {
-		if got := normalizeCampaignCapture(in); got != want {
+		if got := NormalizeCampaignCapture(in); got != want {
 			t.Errorf("normalize(%q) = %q, want %q", in, got, want)
 		}
 	}

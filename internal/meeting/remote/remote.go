@@ -90,6 +90,9 @@ var (
 	// ErrPipelineUnavailable means serve has no transcription pipeline
 	// configured; the recording is kept, only the results are missing.
 	ErrPipelineUnavailable = errors.New("meeting: no processing pipeline configured")
+	// ErrNotRoutable is a route against a meeting that has no finished
+	// summary yet — still recording, still processing, or failed.
+	ErrNotRoutable = errors.New("meeting: meeting has no finished notes to route yet")
 )
 
 // StartRequest is the client's POST /v1/meeting/start body.
@@ -119,6 +122,23 @@ type ControlRequest struct {
 // which is what makes a missing-segment check possible at all.
 type StopRequest struct {
 	LastSeq int64 `json:"last_seq"`
+}
+
+// RouteRequest is the client's POST /v1/meeting/{id}/route body. Capture is
+// optional; empty means the CI0009 meetings importer (the default the whole
+// design routes through).
+type RouteRequest struct {
+	Campaign string `json:"campaign"`
+	Capture  string `json:"capture,omitempty"`
+}
+
+// RouteReceipt is the route response. Destination echoes where the note
+// landed so the phone can say "Filed to <campaign> notes/meetings" from the
+// wire rather than assuming.
+type RouteReceipt struct {
+	Outcome     string `json:"outcome"`
+	Detail      string `json:"detail,omitempty"`
+	Destination string `json:"destination,omitempty"`
 }
 
 // Status is the GET /v1/meeting/{id} payload. MissingSeqs is truncated to

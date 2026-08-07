@@ -1,6 +1,7 @@
 package netapi
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/lancekrogers/samantha/internal/meeting"
 )
 
 // IntentSinkConfig routes POST /v1/intent (PROTOCOL_DELTAS D3).
@@ -75,6 +78,20 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleIntentTargets(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "GET required"})
+		return
+	}
+	// Live registry via `camp list --json`, so every phone picker — intent
+	// capture and the meeting destination — offers the same campaigns the Mac
+	// actually routes to. Short timeout: this populates a UI, and the static
+	// fallback below keeps an answer coming when camp is slow or absent.
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	if camps, err := meeting.ListCampaigns(ctx, meeting.DefaultRunner, meeting.DefaultLookPath); err == nil && len(camps) > 0 {
+		targets := make([]map[string]string, 0, len(camps))
+		for _, c := range camps {
+			targets = append(targets, map[string]string{"campaign": c.Name})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"targets": targets})
 		return
 	}
 	// Static default until camp-mode target discovery is configured.
