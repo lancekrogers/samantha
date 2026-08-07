@@ -130,11 +130,17 @@ func writeMinimalNativeInstall(t *testing.T, modelsDir string) {
 	ttsModel := "tts"
 	tokenizer := "tokenizer"
 	presets := `{"voices":[{"name":"Vivian"}]}`
+	libExt := ".dylib"
+	if runtime.GOOS != "darwin" {
+		libExt = ".so"
+	}
 	for path, body := range map[string]string{
 		p.Worker: worker,
 		filepath.Join(p.ModelDir, "qwen3-tts-0.6b-f16.gguf"):      ttsModel,
 		filepath.Join(p.ModelDir, "qwen3-tts-tokenizer-f16.gguf"): tokenizer,
 		p.PresetsJSON: presets,
+		filepath.Join(p.BinDir, "libqwen3tts"+libExt): "lib",
+		filepath.Join(p.BinDir, "libggml"+libExt):     "ggml",
 	} {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)

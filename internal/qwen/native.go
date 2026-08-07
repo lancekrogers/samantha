@@ -76,6 +76,11 @@ type NativeStatus struct {
 	WorkerReady  bool     `json:"worker_ready"`
 	ModelReady   bool     `json:"model_ready"`
 	PresetsReady bool     `json:"presets_ready"`
+	// RuntimeReady is true when bin/ ships the shared libs the worker needs
+	// (libqwen3tts + libggml*). Older Darwin packages only shipped libqwen3tts
+	// and relied on absolute lab RPATHs — those report RuntimeReady=false so
+	// ensure/doctor force a portable reinstall instead of mid-session dyld falls.
+	RuntimeReady bool     `json:"runtime_ready"`
 	DefaultTier  string   `json:"default_tier"`
 	TiersReady   []string `json:"tiers_ready"`
 	TiersMissing []string `json:"tiers_missing,omitempty"`
@@ -162,6 +167,7 @@ func InspectNative(modelsDir, preferredTier string) NativeStatus {
 
 	st.WorkerReady = isExecutable(p.Worker)
 	st.PresetsReady = true // loadAndVerifyNativeInstall confirmed the presets path exists.
+	st.RuntimeReady = runtimeLibsReady(p.BinDir)
 	if install.TierDefault != "" {
 		st.DefaultTier = normalizeTier(install.TierDefault)
 		if preferredTier != "" {
@@ -194,16 +200,55 @@ func InspectNative(modelsDir, preferredTier string) NativeStatus {
 	// Preferred tier must be ready for ModelReady.
 	want := st.DefaultTier
 	st.ModelReady = tierReady(p, install, want)
-	st.Installed = st.WorkerReady && st.ModelReady && st.PresetsReady
+	st.Installed = st.WorkerReady && st.ModelReady && st.PresetsReady && st.RuntimeReady
 	switch {
 	case st.Installed:
 		st.Detail = fmt.Sprintf("native Qwen3-TTS installed (tier %s)", want)
+	case st.WorkerReady && st.ModelReady && st.PresetsReady && !st.RuntimeReady:
+		st.Detail = "native Qwen3-TTS package is missing runtime libraries (libqwen3tts/libggml); re-run models ensure --tts for a portable package"
 	case !st.WorkerReady && !st.ModelReady:
 		st.Detail = "native Qwen3-TTS package is not installed"
 	default:
 		st.Detail = "native Qwen3-TTS installation is incomplete"
 	}
 	return st
+}
+
+// runtimeLibsReady reports whether bin/ contains the shared libraries a product
+// worker needs at load time. Presence-only (no dyld spawn) so TUI inspect stays
+// cheap; package_release must ship these next to the worker.
+func runtimeLibsReady(binDir string) bool {
+	if strings.TrimSpace(binDir) == "" {
+		return false
+	}
+	entries, err := os.ReadDir(binDir)
+	if err != nil {
+		return false
+	}
+	hasQwenLib := false
+	hasGgml := false
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		// Skip AppleDouble noise from some extractors.
+		if strings.HasPrefix(name, "._") {
+			continue
+		}
+		lower := strings.ToLower(name)
+		if strings.HasPrefix(lower, "libqwen3tts") && isSharedLibName(lower) {
+			hasQwenLib = true
+		}
+		if strings.HasPrefix(lower, "libggml") && isSharedLibName(lower) {
+			hasGgml = true
+		}
+	}
+	return hasQwenLib && hasGgml
+}
+
+func isSharedLibName(lower string) bool {
+	return strings.Contains(lower, ".dylib") || strings.Contains(lower, ".so")
 }
 
 // VerifyNativeInstall re-checks the on-disk package against install.json
@@ -497,8 +542,10 @@ func EnsureNative(ctx context.Context, modelsDir string, opt NativeEnsureOptions
 	}
 
 	status := InspectNative(modelsDir, tier)
-	// Package present with required tier → done (multi-tier optional files may still be missing).
-	if status.WorkerReady && status.PresetsReady && status.ModelReady && !opt.Force {
+	// Package present with required tier + runtime libs → done (multi-tier optional files may still be missing).
+	// RuntimeReady=false forces re-ensure so Darwin packages that only shipped
+	// libqwen3tts (lab absolute RPATH) are replaced with portable releases.
+	if status.WorkerReady && status.PresetsReady && status.ModelReady && status.RuntimeReady && !opt.Force {
 		if progress != nil {
 			progress("native Qwen3-TTS", 100)
 		}

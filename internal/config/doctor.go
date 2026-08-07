@@ -113,6 +113,10 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 			if native.Installed {
 				diags = append(diags, Diagnostic{Name: "qwen3-tts-binary", Severity: SeverityOK, Detail: native.Worker})
 				diags = append(diags, Diagnostic{Name: "qwen3-tts-model", Severity: SeverityOK, Detail: native.ModelDir + " (tier " + native.DefaultTier + ")"})
+				diags = append(diags, Diagnostic{
+					Name: "qwen3-tts-runtime-libs", Severity: SeverityOK,
+					Detail: "libqwen3tts + libggml present next to worker",
+				})
 				if len(native.TiersReady) > 0 {
 					diags = append(diags, Diagnostic{
 						Name: "qwen3-tts-tiers", Severity: SeverityOK,
@@ -129,6 +133,18 @@ func Diagnose(cfg *Config, modelsDir string, lookPath func(string) (string, erro
 				if d := qwenTierRAMAdvice(native.DefaultTier, systemMemoryBytes()); d != nil {
 					diags = append(diags, *d)
 				}
+			} else if native.WorkerReady && native.ModelReady && !native.RuntimeReady {
+				// Incomplete portable package: worker+GGUF exist but shared libs
+				// (especially libggml*) are missing — this was the Darwin mid-reply
+				// dyld / Kokoro-fallback failure mode.
+				diags = append(diags, Diagnostic{
+					Name:        "qwen3-tts-runtime-libs",
+					Severity:    SeverityError,
+					Detail:      native.Detail,
+					Remediation: "run 'samantha models ensure --tts' with a portable qwen3-tts-native release that ships libggml* next to the worker (or set qwen_tts_native_url to that tarball)",
+				})
+				diags = append(diags, Diagnostic{Name: "qwen3-tts-binary", Severity: SeverityWarn, Detail: native.Worker + " (worker present; runtime libs incomplete)"})
+				diags = append(diags, Diagnostic{Name: "qwen3-tts-model", Severity: SeverityOK, Detail: native.ModelDir + " (tier " + native.DefaultTier + ")"})
 			} else {
 				diags = append(diags, Diagnostic{
 					Name:        "qwen3-tts-binary",
