@@ -125,8 +125,9 @@ func TestVoiceGateUnclosedFenceDoesNotMuteTheTurn(t *testing.T) {
 
 func TestVoiceGateSpeaksOrdinaryConversation(t *testing.T) {
 	// Default-deny is only acceptable if normal speech passes untouched —
-	// including short interjections and the numeric shapes (times, ratios,
-	// phone numbers) that resemble machine output.
+	// including short interjections, numeric shapes that resemble machine
+	// output, and coding-agent dialogue (money, comparisons, inline code,
+	// single-segment paths, H:M:S times).
 	for _, line := range []string{
 		"I think efficiency is overrated, honestly.",
 		"Sure!",
@@ -138,6 +139,14 @@ func TestVoiceGateSpeaksOrdinaryConversation(t *testing.T) {
 		"Call me back at 555-1234.",
 		"The answer is 42.",
 		"No — I disagree completely.",
+		// Review-requested false positives on #207 — must keep speaking.
+		"That costs $5.",
+		"Use the `grep` command carefully.",
+		"If the temperature is > 100, stop.",
+		"When n < 3 we bail out.",
+		"The race finished at 1:23:45.",
+		"Meet me at 12:30:00 sharp.",
+		"I put the file in /tmp for now.",
 	} {
 		g := &voiceGate{}
 		kept, dropped := g.filter(line)

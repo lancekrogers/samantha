@@ -31,13 +31,18 @@ var toolRegionRE = []*regexp.Regexp{
 // default-deny rule from L1 inverted into practice: rather than listing tool
 // syntax to remove, list what disqualifies a line from ever being spoken —
 // code punctuation, file:line citations, colon-delimited records, KEY=value
-// pairs, URLs, absolute paths, exit statuses, and output banners.
-var notSpeechRE = regexp.MustCompile(`(?i)([{}` + "`" + `|<>$\\]` +
+// pairs, URLs, multi-segment absolute paths, exit statuses, and output banners.
+//
+// The char class deliberately omits $, <>, and backticks: money, comparisons,
+// and inline code are normal voice-agent dialogue. Colon-digit runs require a
+// letter-led field (root:x:0:0), not bare H:M:S times. Absolute paths need at
+// least two segments so "in /tmp for now" still speaks.
+var notSpeechRE = regexp.MustCompile(`(?i)([{}|\\]` +
 	`|\S+\.\w+:\d+` + // brain.go:269
-	`|(:\d+){2,}` + // root:x:0:0
+	`|[[:alpha:]][^\s]*(:\d+){2,}` + // root:x:0:0 — not 1:23:45
 	`|\b\w+=\S` + // AWS_SECRET_KEY=abc
 	`|://` +
-	`|(^|\s)/\w` + // /etc/passwd
+	`|(^|\s)/\w+(?:/\w+)+` + // /etc/passwd — not lone /tmp
 	`|exited with code` +
 	`|^(final\s+)?output\s*:` +
 	`|^tool\s+result\s*:` +
