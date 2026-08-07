@@ -374,8 +374,8 @@ func TestPersonasFormStackRoundTrip(t *testing.T) {
 	if got := stackBrainProviders()[m.brainProviderIdx]; got != "ollama" {
 		t.Fatalf("prefilled brain provider = %q, want ollama", got)
 	}
-	if m.brainModelInput.Value() != "llama3" || m.voiceInput.Value() != "af_heart" {
-		t.Fatalf("prefill = model %q voice %q", m.brainModelInput.Value(), m.voiceInput.Value())
+	if m.brainModelInput.Value() != "llama3" || m.selectedVoice != "af_heart" {
+		t.Fatalf("prefill = model %q voice %q", m.brainModelInput.Value(), m.selectedVoice)
 	}
 
 	var gotBrain persona.Brain
@@ -393,17 +393,93 @@ func TestPersonasFormStackRoundTrip(t *testing.T) {
 	m.usePersona = func(*config.Config, string) error { return nil }
 
 	m.brainModelInput.SetValue("qwen2.5:14b")
-	m.voiceInput.SetValue("Ryan")
+	// Voice is a catalog picker, not free text: switch TTS to qwen3-tts and
+	// select Ryan with ←/→ rather than typing a string.
+	m.ttsProviderIdx = providerIndex(stackTTSProviders(), "qwen3-tts")
+	m.selectedVoice = "Ryan"
 	m, _ = m.submitForm()
 
 	if gotBrain.Provider != "ollama" || gotBrain.Model != "qwen2.5:14b" {
 		t.Fatalf("saved brain = %+v", gotBrain)
 	}
-	if gotTTS.Provider != "kokoro" || gotTTS.Voice != "Ryan" {
+	if gotTTS.Provider != "qwen3-tts" || gotTTS.Voice != "Ryan" {
 		t.Fatalf("saved tts = %+v", gotTTS)
 	}
 	if m.formMode != "" {
 		t.Fatal("form should close after save")
+	}
+}
+
+func TestPersonasStackVoiceIsSelectable(t *testing.T) {
+	// Voice must be cycled with ←/→ like providers — not a free-text field.
+	cfg := &config.Config{TTSProvider: "kokoro", TTSVoice: "af_heart"}
+	m := newPersonas(cfg)
+	m.listPersonas = func() ([]*persona.Profile, error) {
+		return []*persona.Profile{{
+			ID: "research", DisplayName: "Research",
+			TTS: persona.TTS{Provider: "kokoro", Voice: "af_heart"},
+		}}, nil
+	}
+	m.loadPromptForProfile = func(*persona.Profile) (string, error) { return "hi", nil }
+	m.reload()
+	m.width, m.height = 80, 30
+	m.cursor = 0
+	m.beginEdit()
+	m, _ = m.focusStackStep()
+
+	// Land on the Voice row and cycle away from af_heart.
+	m.setStackRow(stackRowVoice)
+	before := m.selectedVoice
+	if before != "af_heart" {
+		t.Fatalf("selectedVoice = %q, want af_heart from profile", before)
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "‹ af_heart ›") {
+		t.Fatalf("voice row should render as selectable, got:\n%s", view)
+	}
+	m, _ = m.updateStackStep(tea.KeyMsg{Type: tea.KeyRight})
+	if m.selectedVoice == before {
+		t.Fatal("←/→ on Voice row did not change the selection")
+	}
+	// Typing must not mutate the voice selection (no free-text field).
+	typed := m.selectedVoice
+	m, _ = m.updateStackStep(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if m.selectedVoice != typed {
+		t.Fatalf("typing changed voice to %q; voice is select-only", m.selectedVoice)
+	}
+
+	// Changing TTS provider drops a voice that is not in the new catalog.
+	m.selectedVoice = "af_bella"
+	m.setStackRow(stackRowTTSProvider)
+	// Cycle until qwen3-tts is selected.
+	for i := 0; i < len(stackTTSProviders()); i++ {
+		if providerAt(stackTTSProviders(), m.ttsProviderIdx) == "qwen3-tts" {
+			break
+		}
+		m, _ = m.updateStackStep(tea.KeyMsg{Type: tea.KeyRight})
+	}
+	if providerAt(stackTTSProviders(), m.ttsProviderIdx) != "qwen3-tts" {
+		t.Fatal("failed to select qwen3-tts provider")
+	}
+	if m.selectedVoice != "" {
+		t.Fatalf("kokoro voice should clear under qwen3-tts, got %q", m.selectedVoice)
+	}
+	// Qwen catalog is selectable.
+	m.setStackRow(stackRowVoice)
+	m, _ = m.updateStackStep(tea.KeyMsg{Type: tea.KeyRight})
+	if m.selectedVoice == "" {
+		t.Fatal("expected a qwen preset after cycling voice")
+	}
+	list := m.stackVoiceList()
+	found := false
+	for _, name := range list {
+		if name == m.selectedVoice {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("selected voice %q not in list %v", m.selectedVoice, list)
 	}
 }
 

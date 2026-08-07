@@ -180,11 +180,16 @@ func (m personasModel) stackLines() []string {
 		brainRow += dimStyle.Render("  (model saved, not routed for claude yet)")
 	}
 	ttsProvider := stackTTSProviders()[m.ttsProviderIdx]
+	voices := m.stackVoiceList()
+	voiceLabel := stackDefaultLabel
+	if idx := m.stackVoiceIndex(); idx >= 0 && idx < len(voices) {
+		voiceLabel = voices[idx]
+	}
 	return []string{
 		brainRow,
 		row(stackRowBrainModel, "Model", m.brainModelInput.View()),
 		row(stackRowTTSProvider, "TTS  ", "‹ "+ttsProvider+" ›"),
-		row(stackRowVoice, "Voice", m.voiceInput.View()),
+		row(stackRowVoice, "Voice", "‹ "+voiceLabel+" ›"),
 	}
 }
 
