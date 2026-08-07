@@ -97,6 +97,65 @@ func TestInspectNativeRejectsNonExecutableWorker(t *testing.T) {
 	}
 }
 
+func TestInspectNativeRejectsMissingRuntimeLibs(t *testing.T) {
+	modelsDir := t.TempDir()
+	archive, sum := writeFakeNativeTar(t, t.TempDir())
+	if _, err := EnsureNative(context.Background(), modelsDir, NativeEnsureOptions{URL: archive, SHA256: sum}, nil); err != nil {
+		t.Fatal(err)
+	}
+	p := NativeInstallPaths(modelsDir)
+	// Simulate pre-fix Darwin package: worker + GGUF present, no libggml*.
+	entries, err := os.ReadDir(p.BinDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(strings.ToLower(e.Name()), "libggml") {
+			if err := os.Remove(filepath.Join(p.BinDir, e.Name())); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	st := InspectNative(modelsDir, DefaultModelTier)
+	if st.Installed || st.RuntimeReady {
+		t.Fatalf("status=%+v, want RuntimeReady=false and not Installed", st)
+	}
+	if !st.WorkerReady || !st.ModelReady {
+		t.Fatalf("status=%+v, want worker+model still present", st)
+	}
+	if !strings.Contains(st.Detail, "runtime libraries") {
+		t.Fatalf("detail=%q, want runtime libraries remediation", st.Detail)
+	}
+}
+
+func TestEnsureNativeReinstallsWhenRuntimeLibsMissing(t *testing.T) {
+	modelsDir := t.TempDir()
+	archive, sum := writeFakeNativeTar(t, t.TempDir())
+	if _, err := EnsureNative(context.Background(), modelsDir, NativeEnsureOptions{URL: archive, SHA256: sum}, nil); err != nil {
+		t.Fatal(err)
+	}
+	p := NativeInstallPaths(modelsDir)
+	entries, err := os.ReadDir(p.BinDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(strings.ToLower(e.Name()), "libggml") {
+			_ = os.Remove(filepath.Join(p.BinDir, e.Name()))
+		}
+	}
+	// Second ensure with URL must reinstall because RuntimeReady is false.
+	st, err := EnsureNative(context.Background(), modelsDir, NativeEnsureOptions{
+		URL: archive, SHA256: sum, Tier: "0.6b",
+	}, nil)
+	if err != nil {
+		t.Fatalf("re-ensure: %v", err)
+	}
+	if !st.Installed || !st.RuntimeReady {
+		t.Fatalf("status=%+v, want reinstalled with runtime libs", st)
+	}
+}
+
 func TestInspectNativeRejectsInvalidManifest(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -277,9 +336,16 @@ func TestNormalizeTier(t *testing.T) {
 func writeFakeNativeTar(t *testing.T, dir string) (path, shaHex string) {
 	t.Helper()
 	presets := `{"schema":"qwen3-tts-native.presets.v1","voices":[{"name":"Vivian","path":"presets/Vivian.q3te"}]}`
+	// Portable package ships worker + libqwen3tts + libggml* (product load path).
+	libSuffix := ".dylib"
+	if runtime.GOOS != "darwin" {
+		libSuffix = ".so"
+	}
 	files := map[string]string{
 		"bin/qwen3-tts-worker":                "#!/bin/sh\necho ready\n",
 		"bin/qwen3-tts-cli":                   "#!/bin/sh\n",
+		"bin/libqwen3tts" + libSuffix:         "fake-qwen-lib",
+		"bin/libggml" + libSuffix:             "fake-ggml-lib",
 		"models/qwen3-tts-0.6b-f16.gguf":      "gguf-tts",
 		"models/qwen3-tts-tokenizer-f16.gguf": "gguf-tok",
 		"models/presets/presets.json":         presets,

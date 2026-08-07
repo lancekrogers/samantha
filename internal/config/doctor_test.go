@@ -261,6 +261,9 @@ func TestDiagnoseQwenNativePackageInstall(t *testing.T) {
 	if diags["qwen3-tts-model"].Severity != SeverityOK {
 		t.Fatalf("model = %+v", diags["qwen3-tts-model"])
 	}
+	if diags["qwen3-tts-runtime-libs"].Severity != SeverityOK {
+		t.Fatalf("runtime-libs = %+v", diags["qwen3-tts-runtime-libs"])
+	}
 }
 
 func TestDiagnoseQwenManagedMissingPrefersNativeRemediation(t *testing.T) {

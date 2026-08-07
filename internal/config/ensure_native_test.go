@@ -43,8 +43,14 @@ func TestEnsureRuntimeAssetsNativeQwenTar(t *testing.T) {
 
 func writeTestNativeTar(t *testing.T, dir string) (path, shaHex string) {
 	t.Helper()
+	libSuffix := ".dylib"
+	if runtime.GOOS != "darwin" {
+		libSuffix = ".so"
+	}
 	files := map[string]string{
 		"bin/qwen3-tts-worker":                "#!/bin/sh\n",
+		"bin/libqwen3tts" + libSuffix:         "lib",
+		"bin/libggml" + libSuffix:             "ggml",
 		"models/qwen3-tts-0.6b-f16.gguf":      "tts",
 		"models/qwen3-tts-tokenizer-f16.gguf": "tok",
 		"models/presets/presets.json":         `{"voices":[{"name":"Vivian"}]}`,

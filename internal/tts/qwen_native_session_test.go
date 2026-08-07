@@ -69,9 +69,15 @@ func writeNativeSessionTestManifest(t *testing.T, modelsDir string) {
 	}
 	tokenizer := []byte("tokenizer")
 	presets := []byte(`{"voices":[{"name":"Vivian"}]}`)
+	libExt := ".dylib"
+	if runtime.GOOS != "darwin" {
+		libExt = ".so"
+	}
 	for path, body := range map[string][]byte{
 		filepath.Join(p.ModelDir, "qwen3-tts-tokenizer-f16.gguf"): tokenizer,
 		p.PresetsJSON: presets,
+		filepath.Join(p.BinDir, "libqwen3tts"+libExt): []byte("lib"),
+		filepath.Join(p.BinDir, "libggml"+libExt):     []byte("ggml"),
 	} {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
