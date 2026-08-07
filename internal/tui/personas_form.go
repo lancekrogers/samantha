@@ -9,6 +9,7 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/persona"
+	managedqwen "github.com/lancekrogers/samantha/internal/qwen"
 	"github.com/lancekrogers/samantha/internal/tts"
 )
 
@@ -70,6 +71,91 @@ func providerAt(list []string, idx int) string {
 	return list[idx]
 }
 
+// stackVoiceCatalog returns known voice ids for a TTS provider. Empty provider
+// falls through to kokoro (the product default when Settings is also unset).
+func stackVoiceCatalog(provider string) []string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "qwen3-tts":
+		voices := managedqwen.CustomVoices()
+		out := make([]string, 0, len(voices))
+		for _, v := range voices {
+			out = append(out, v.Name)
+		}
+		return out
+	case "", "kokoro":
+		voices, err := tts.StaticVoices("kokoro", "", "")
+		if err != nil {
+			return nil
+		}
+		out := make([]string, 0, len(voices))
+		for _, v := range voices {
+			out = append(out, v.Name)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// stackVoiceList builds the selectable voice row: (default) + provider catalog,
+// plus any non-catalog voice already on the persona so edit never drops it.
+func (m personasModel) stackVoiceList() []string {
+	provider := providerAt(stackTTSProviders(), m.ttsProviderIdx)
+	if provider == "" && m.cfg != nil {
+		// When TTS is "(default)", list the voices for the app Settings provider
+		// so the user still has a real catalog to pick from.
+		provider = strings.TrimSpace(m.cfg.TTSProvider)
+	}
+	out := []string{stackDefaultLabel}
+	out = append(out, stackVoiceCatalog(provider)...)
+	if v := strings.TrimSpace(m.selectedVoice); v != "" {
+		found := false
+		for _, item := range out[1:] {
+			if strings.EqualFold(item, v) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// stackVoiceIndex maps selectedVoice onto stackVoiceList (0 = inherit default).
+func (m personasModel) stackVoiceIndex() int {
+	list := m.stackVoiceList()
+	v := strings.TrimSpace(m.selectedVoice)
+	if v == "" {
+		return 0
+	}
+	for i, item := range list {
+		if i == 0 {
+			continue
+		}
+		if strings.EqualFold(item, v) {
+			return i
+		}
+	}
+	return 0
+}
+
+// cycleStackVoice moves ←/→ through the voice catalog for the current TTS provider.
+func (m *personasModel) cycleStackVoice(delta int) {
+	list := m.stackVoiceList()
+	if len(list) == 0 {
+		m.selectedVoice = ""
+		return
+	}
+	idx := (m.stackVoiceIndex() + delta + len(list)) % len(list)
+	if idx == 0 {
+		m.selectedVoice = ""
+		return
+	}
+	m.selectedVoice = list[idx]
+}
+
 func newPersonaStackInput(placeholder string) textinput.Model {
 	ti := textinput.New()
 	ti.Prompt = ""
@@ -85,7 +171,6 @@ func (m *personasModel) resizeForm() {
 	// The editor draws a 4-column line-number gutter inside the box.
 	m.promptTA.SetWidth(max(inner-5, 20))
 	m.brainModelInput.Width = max(inner-12, 10)
-	m.voiceInput.Width = max(inner-12, 10)
 	// Leave room for chrome (pills, field boxes, help) so the prompt editor
 	// is never clipped out of the form body.
 	h := min(max(m.height-18, 3), 12)
@@ -184,8 +269,7 @@ func (m personasModel) updateForm(msg tea.KeyMsg) (personasModel, tea.Cmd) {
 }
 
 // updateStackStep routes keys inside the model/voice step: ↑/↓ move rows,
-// ←/→ cycle providers on the provider rows, everything else types into the
-// focused text row.
+// ←/→ cycle providers/voices on those rows, typing goes into the model field.
 func (m personasModel) updateStackStep(msg tea.KeyMsg) (personasModel, tea.Cmd) {
 	key := msg.String()
 	switch key {
@@ -204,35 +288,57 @@ func (m personasModel) updateStackStep(msg tea.KeyMsg) (personasModel, tea.Cmd) 
 		case stackRowBrainProvider:
 			list := stackBrainProviders()
 			m.brainProviderIdx = (m.brainProviderIdx + delta + len(list)) % len(list)
+			return m, nil
 		case stackRowTTSProvider:
 			list := stackTTSProviders()
 			m.ttsProviderIdx = (m.ttsProviderIdx + delta + len(list)) % len(list)
-		}
-		if m.stackRow == stackRowBrainProvider || m.stackRow == stackRowTTSProvider {
+			// Voice catalog is provider-specific: drop a selection that is no
+			// longer in the new list so we don't keep a Kokoro id under Qwen.
+			m.clampSelectedVoice()
+			return m, nil
+		case stackRowVoice:
+			m.cycleStackVoice(delta)
 			return m, nil
 		}
 	}
 
 	var cmd tea.Cmd
-	switch m.stackRow {
-	case stackRowBrainModel:
+	if m.stackRow == stackRowBrainModel {
 		m.brainModelInput, cmd = m.brainModelInput.Update(msg)
-	case stackRowVoice:
-		m.voiceInput, cmd = m.voiceInput.Update(msg)
 	}
 	return m, cmd
 }
 
-// setStackRow moves focus between stack rows, blurring/focusing text inputs.
+// clampSelectedVoice clears selectedVoice when it is not in the current
+// provider's catalog (and is not a sticky non-catalog value we want to keep
+// only when the provider still matches). After a TTS provider change, unknown
+// or other-provider voices fall back to "(default)".
+func (m *personasModel) clampSelectedVoice() {
+	v := strings.TrimSpace(m.selectedVoice)
+	if v == "" {
+		return
+	}
+	provider := providerAt(stackTTSProviders(), m.ttsProviderIdx)
+	if provider == "" && m.cfg != nil {
+		provider = strings.TrimSpace(m.cfg.TTSProvider)
+	}
+	for _, name := range stackVoiceCatalog(provider) {
+		if strings.EqualFold(name, v) {
+			// Canonicalize to the catalog spelling (e.g. Uncle_Fu vs uncle_fu).
+			m.selectedVoice = name
+			return
+		}
+	}
+	m.selectedVoice = ""
+}
+
+// setStackRow moves focus between stack rows, focusing the model text input
+// only on that row (voice is cycled with ←/→, not typed).
 func (m *personasModel) setStackRow(row int) {
 	m.stackRow = row
 	m.brainModelInput.Blur()
-	m.voiceInput.Blur()
-	switch row {
-	case stackRowBrainModel:
+	if row == stackRowBrainModel {
 		m.brainModelInput.Focus()
-	case stackRowVoice:
-		m.voiceInput.Focus()
 	}
 }
 
@@ -241,7 +347,7 @@ func (m personasModel) focusStackStep() (personasModel, tea.Cmd) {
 	m.nameInput.Blur()
 	m.promptTA.Blur()
 	m.setStackRow(stackRowBrainProvider)
-	m.message = "Model & voice · ←/→ pick provider · ↑/↓ rows · (default) inherits Settings"
+	m.message = "Model & voice · ←/→ pick provider or voice · ↑/↓ rows · (default) inherits Settings"
 	return m, nil
 }
 
@@ -257,7 +363,7 @@ func (m *personasModel) formBrain() persona.Brain {
 func (m *personasModel) formTTS() persona.TTS {
 	return persona.TTS{
 		Provider: providerAt(stackTTSProviders(), m.ttsProviderIdx),
-		Voice:    strings.TrimSpace(m.voiceInput.Value()),
+		Voice:    strings.TrimSpace(m.selectedVoice),
 	}
 }
 
@@ -267,13 +373,27 @@ func (m *personasModel) prefillStack(p *persona.Profile) {
 		m.brainProviderIdx = 0
 		m.ttsProviderIdx = 0
 		m.brainModelInput.SetValue("")
-		m.voiceInput.SetValue("")
+		m.selectedVoice = ""
 		return
 	}
 	m.brainProviderIdx = providerIndex(stackBrainProviders(), p.Brain.Provider)
 	m.ttsProviderIdx = providerIndex(stackTTSProviders(), p.TTS.Provider)
 	m.brainModelInput.SetValue(strings.TrimSpace(p.Brain.Model))
-	m.voiceInput.SetValue(strings.TrimSpace(p.TTS.Voice))
+	m.selectedVoice = strings.TrimSpace(p.TTS.Voice)
+	// Canonicalize known voices to catalog spelling; keep unknown as sticky
+	// options so a hand-edited yaml value is not silently wiped.
+	if m.selectedVoice != "" {
+		provider := providerAt(stackTTSProviders(), m.ttsProviderIdx)
+		if provider == "" && m.cfg != nil {
+			provider = strings.TrimSpace(m.cfg.TTSProvider)
+		}
+		for _, name := range stackVoiceCatalog(provider) {
+			if strings.EqualFold(name, m.selectedVoice) {
+				m.selectedVoice = name
+				break
+			}
+		}
+	}
 }
 
 func (m *personasModel) cancelForm() {
@@ -286,7 +406,6 @@ func (m *personasModel) cancelForm() {
 	m.promptTA.SetValue("")
 	m.prefillStack(nil)
 	m.brainModelInput.Blur()
-	m.voiceInput.Blur()
 	m.stackRow = stackRowBrainProvider
 }
 

@@ -35,11 +35,13 @@ type personasModel struct {
 
 	// Stack step: per-persona brain provider/model + TTS provider/voice.
 	// Index 0 of the provider lists is "(default)" = inherit the app config.
+	// Voice is a selectable catalog (←/→), not free text — empty selectedVoice
+	// means inherit the Settings default for the effective TTS provider.
 	stackRow         int
 	brainProviderIdx int
 	ttsProviderIdx   int
 	brainModelInput  textinput.Model
-	voiceInput       textinput.Model
+	selectedVoice    string
 
 	listPersonas         func() ([]*persona.Profile, error)
 	usePersona           func(*config.Config, string) error
@@ -68,10 +70,9 @@ func newPersonas(cfg *config.Config) personasModel {
 		loadPromptForProfile: persona.LoadSystemPromptForProfile,
 		defaultPrompt:        persona.DefaultSystemPrompt,
 		starterPrompt:        persona.StarterSystemPrompt,
-		nameInput:            newPersonaCreateInput(),
-		promptTA:             newPromptEditor(),
-		brainModelInput:      newPersonaStackInput("empty = provider default"),
-		voiceInput:           newPersonaStackInput("empty = provider default"),
+		nameInput:       newPersonaCreateInput(),
+		promptTA:        newPromptEditor(),
+		brainModelInput: newPersonaStackInput("empty = provider default"),
 	}
 	m.reload()
 	return m
