@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -36,6 +37,18 @@ type IntentRequest struct {
 	Campaign   string `json:"campaign,omitempty"`
 	Source     string `json:"source"`
 	CapturedAt string `json:"captured_at"`
+	// Context links a mid-meeting quick capture to its moment (plan §2.3).
+	// Optional and strictly additive: absent for plain captures, and the file
+	// sink emits it only when set, so existing consumers see identical JSON.
+	Context *IntentContext `json:"context,omitempty"`
+}
+
+// IntentContext is the meeting moment an idea was captured at. The offset is
+// meeting-relative audio time — the same clock as bundle bookmarks — so the
+// intent can point back into the transcript.
+type IntentContext struct {
+	MeetingID string `json:"meeting_id"`
+	OffsetMs  int64  `json:"offset_ms"`
 }
 
 func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +69,14 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 	req.Type = strings.TrimSpace(req.Type)
 	if req.Type == "" {
 		req.Type = "note"
+	}
+	if req.Context != nil {
+		req.Context.MeetingID = strings.TrimSpace(req.Context.MeetingID)
+		if req.Context.MeetingID == "" || req.Context.OffsetMs < 0 {
+			writeJSON(w, http.StatusBadRequest,
+				map[string]string{"error": "context requires meeting_id and a non-negative offset_ms"})
+			return
+		}
 	}
 	if req.Title == "" {
 		req.Title = deriveIntentTitle(req.Body)
@@ -111,27 +132,100 @@ func (s *Server) writeIntentFile(req IntentRequest) (id, path string, err error)
 	if dir == "" && s.opts.Credentials != nil && s.opts.Credentials.Dir != "" {
 		dir = filepath.Join(s.opts.Credentials.Dir, "intents")
 	}
-	if dir == "" {
-		return "", "", fmt.Errorf("intent sink directory not configured")
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", "", fmt.Errorf("create intent dir: %w", err)
-	}
+	return WriteIntentFile(dir, req)
+}
+
+// WriteIntentFile persists one intent into the file sink `POST /v1/intent`
+// uses, under a fresh random id — each call files a new intent.
+func WriteIntentFile(dir string, req IntentRequest) (id, path string, err error) {
 	raw := make([]byte, 8)
 	if _, err := rand.Read(raw); err != nil {
 		id = fmt.Sprintf("%d", time.Now().UnixNano())
 	} else {
 		id = hex.EncodeToString(raw)
 	}
+	path, _, err = WriteIntentFileWithID(dir, id, req)
+	return id, path, err
+}
+
+// WriteIntentFileWithID persists one intent under a caller-chosen id with
+// atomic create-if-absent semantics. The complete payload is written and
+// synced in the destination directory before a hard link publishes it under
+// the final name, so a crash cannot leave a partial receipt at path. An
+// existing valid receipt reports created=false; an invalid legacy/partial
+// receipt is removed and recovered from the staged payload.
+func WriteIntentFileWithID(dir, id string, req IntentRequest) (path string, created bool, err error) {
+	if dir == "" {
+		return "", false, fmt.Errorf("intent sink directory not configured")
+	}
+	if id == "" {
+		return "", false, fmt.Errorf("intent id is required")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", false, fmt.Errorf("create intent dir: %w", err)
+	}
 	path = filepath.Join(dir, id+".json")
 	payload, err := json.MarshalIndent(req, "", "  ")
 	if err != nil {
-		return "", "", err
+		return "", false, err
 	}
-	if err := os.WriteFile(path, append(payload, '\n'), 0o600); err != nil {
-		return "", "", fmt.Errorf("write intent: %w", err)
+	payload = append(payload, '\n')
+
+	staged, err := os.CreateTemp(dir, "."+id+"-*.tmp")
+	if err != nil {
+		return "", false, fmt.Errorf("stage intent: %w", err)
 	}
-	return id, path, nil
+	stagedPath := staged.Name()
+	defer func() { _ = os.Remove(stagedPath) }()
+
+	if _, err := staged.Write(payload); err != nil {
+		_ = staged.Close()
+		return "", false, fmt.Errorf("write staged intent: %w", err)
+	}
+	if err := staged.Sync(); err != nil {
+		_ = staged.Close()
+		return "", false, fmt.Errorf("sync staged intent: %w", err)
+	}
+	if err := staged.Close(); err != nil {
+		return "", false, fmt.Errorf("close staged intent: %w", err)
+	}
+
+	// Link is an atomic no-replace publish because stagedPath and path live in
+	// the same directory. At most one concurrent writer can create path.
+	for recoveryAttempt := 0; recoveryAttempt < 2; recoveryAttempt++ {
+		if err := os.Link(stagedPath, path); err == nil {
+			return path, true, nil
+		} else if !errors.Is(err, os.ErrExist) {
+			return "", false, fmt.Errorf("publish intent: %w", err)
+		}
+
+		valid, err := validIntentReceipt(path)
+		if err != nil {
+			return "", false, err
+		}
+		if valid {
+			return path, false, nil
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", false, fmt.Errorf("remove invalid intent receipt: %w", err)
+		}
+	}
+	return "", false, fmt.Errorf("publish intent: could not replace invalid receipt %s", path)
+}
+
+func validIntentReceipt(path string) (bool, error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read existing intent receipt: %w", err)
+	}
+	var existing IntentRequest
+	if err := json.Unmarshal(raw, &existing); err != nil {
+		return false, nil
+	}
+	return strings.TrimSpace(existing.Body) != "", nil
 }
 
 func deriveIntentTitle(body string) string {

@@ -4,7 +4,11 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,6 +16,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/listen"
 	"github.com/lancekrogers/samantha/internal/meeting"
+	"github.com/lancekrogers/samantha/internal/meeting/ideas"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 	"github.com/lancekrogers/samantha/internal/meeting/remote"
 	"github.com/lancekrogers/samantha/internal/netapi"
@@ -52,13 +57,71 @@ func serveMeetingSTTLabel(cfg *config.Config) string {
 // Diarization is best-effort: a transcript without speaker labels is still a
 // useful meeting, so its failure is reported without discarding the recording.
 func runServeMeetingPipeline(ctx context.Context, cfg *config.Config, job remote.Job) error {
+	step := job.Step
+	if step == nil {
+		step = func(string) {}
+	}
+	step("transcribing")
 	if err := transcribeMeetingAudio(ctx, cfg, job); err != nil {
 		return err
+	}
+	step("filing ideas")
+	// Idea spans resolve as soon as the transcript exists — before diarization,
+	// so a speaker-stack failure cannot cost anyone their filed ideas. A
+	// resolution error is itself non-fatal: the meeting's notes are worth more
+	// than one intent, and unfiled spans retry on reprocess.
+	if report, err := resolveMeetingIdeas(ctx, job); err != nil {
+		fmt.Fprintf(os.Stderr, "meeting %s: idea resolution: %v\n", job.Title, err)
+	} else if line := formatIdeaReport(job.Title, report); line != "" {
+		fmt.Fprintln(os.Stderr, line)
+	}
+	// The diarize step only appears when speaker analysis is enabled — an
+	// anonymous stage the phone shows for a feature that is off would lie.
+	if speaker.FromAppConfig(cfg).MeetingActive() {
+		step("diarizing")
 	}
 	if _, err := diarizeMeetingAudio(ctx, cfg, job); err != nil {
 		return fmt.Errorf("speaker analysis: %w", err)
 	}
 	return nil
+}
+
+// resolveMeetingIdeas files spoken idea spans through the same intent file
+// sink POST /v1/intent writes to (serve default: <config>/serve/intents).
+func resolveMeetingIdeas(ctx context.Context, job remote.Job) (ideas.Report, error) {
+	sinkDir := filepath.Join(config.ConfigDir(), "serve", "intents")
+	// The session's wire id, falling back to the bundle name for pipelines
+	// fed outside serve (reprocessing tools).
+	meetingID := job.MeetingID
+	if meetingID == "" {
+		meetingID = filepath.Base(job.BundlePath)
+	}
+	return ideas.Resolve(ctx, job.BundlePath, job.Writer, func(ctx context.Context, idea ideas.Resolved) (bool, error) {
+		// Deterministic id = durable receipt: if a previous pass filed this
+		// span and crashed before its bundle marker landed, the retry finds
+		// the intent file itself (create-if-absent) instead of duplicating.
+		id := spanIntentKey(meetingID, idea.SpanID)
+		_, created, err := netapi.WriteIntentFileWithID(sinkDir, id, netapi.IntentRequest{
+			Type:       "note",
+			Body:       idea.Body,
+			Source:     "meeting",
+			CapturedAt: time.Now().UTC().Format(time.RFC3339),
+			Context:    &netapi.IntentContext{MeetingID: meetingID, OffsetMs: idea.StartMS},
+		})
+		return created, err
+	})
+}
+
+func formatIdeaReport(title string, report ideas.Report) string {
+	if report.Filed == 0 && report.Rediscovered == 0 && report.AlreadyFiled == 0 &&
+		report.Unresolved == 0 && report.Failed == 0 && report.MarkerFailed == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"meeting %s: ideas filed=%d rediscovered=%d already_marked=%d unresolved=%d failed=%d marker_failed=%d",
+		title, report.Filed, report.Rediscovered, report.AlreadyFiled,
+		report.Unresolved, report.Failed, report.MarkerFailed,
+	)
 }
 
 // transcribeMeetingAudio replays the bundle's WAV through the configured STT
@@ -291,4 +354,33 @@ func newServeMeetingRouter(cfg *config.Config) netapi.RouteMeetingFunc {
 			Destination: destination,
 		}, nil
 	}
+}
+
+// spanIntentKey keeps a readable prefix but hashes the original pair so ids
+// that sanitize or truncate to the same text can never suppress each other.
+func spanIntentKey(meetingID, spanID string) string {
+	digest := sha256.Sum256([]byte(meetingID + "\x00" + spanID))
+	return fmt.Sprintf("meeting-%s-span-%s-%x",
+		sanitizeIntentKey(meetingID), sanitizeIntentKey(spanID), digest)
+}
+
+// sanitizeIntentKey keeps the readable portion of ids filesystem-safe. It is
+// not itself the uniqueness boundary; spanIntentKey's digest supplies that.
+func sanitizeIntentKey(raw string) string {
+	var b strings.Builder
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+		if b.Len() >= 64 {
+			break
+		}
+	}
+	if b.Len() == 0 {
+		return "unknown"
+	}
+	return b.String()
 }

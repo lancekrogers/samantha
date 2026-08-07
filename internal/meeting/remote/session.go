@@ -41,6 +41,7 @@ type Session struct {
 	summary      meetinglog.Summary
 	haveSummary  bool
 	failure      string
+	step         string
 	interrupted  bool
 	finishedAt   time.Time
 	done         chan struct{}
@@ -74,7 +75,7 @@ func (s *Session) statusLocked() Status {
 		reported = reported[:maxReportedMissing]
 	}
 	status := Status{
-		MeetingID: s.id, State: s.state, Bundle: s.bundlePath,
+		MeetingID: s.id, State: s.state, Step: s.step, Bundle: s.bundlePath,
 		Title: s.title, Campaign: s.campaign, StartedAt: s.startedAt,
 		MissingSeqs: append([]int64(nil), reported...), MissingCount: len(s.missing),
 		Error: s.failure,
@@ -329,7 +330,9 @@ func (s *Session) process(parent context.Context, lastSeq int64) {
 		pipelineErr = ErrPipelineUnavailable
 	} else {
 		pipelineErr = s.pipeline.Process(ctx, Job{
-			BundlePath: s.bundlePath, AudioPath: audioPath, Writer: writer, Title: title,
+			MeetingID: s.id, BundlePath: s.bundlePath,
+			AudioPath: audioPath, Writer: writer, Title: title,
+			Step: s.setStep,
 		})
 	}
 	s.publish(pipelineErr)
@@ -397,6 +400,7 @@ func (s *Session) publish(pipelineErr error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.writer = nil
+	s.step = ""
 	s.summary, s.haveSummary = summary, closeErr == nil
 	s.finishedAt = s.now()
 	switch {
@@ -516,4 +520,13 @@ func (s *Session) RouteOnce(key string, fn func() (RouteReceipt, error)) (RouteR
 		s.mu.Unlock()
 	}
 	return call.receipt, call.err
+}
+
+// setStep records the pipeline's current stage for status polls.
+func (s *Session) setStep(step string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state == StateProcessing {
+		s.step = step
+	}
 }

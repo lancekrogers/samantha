@@ -8,10 +8,13 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/lancekrogers/samantha/internal/meeting"
+	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 	"github.com/lancekrogers/samantha/internal/meeting/remote"
 )
 
@@ -227,4 +230,28 @@ func writeMeetingError(w http.ResponseWriter, err error) {
 
 func writeMeetingProblem(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+// handleMeetingDocument returns the finished meeting's canonical meeting.md.
+// The phone renders this for speaker-labeled results instead of a parallel
+// wire projection: the document the Mac wrote — sections, speaker labels,
+// notes — is the format, and inventing a second one would drift from it.
+func (s *Server) handleMeetingDocument(w http.ResponseWriter, r *http.Request) {
+	session, _, ok := s.meetingSession(w, r)
+	if !ok {
+		return
+	}
+	if _, err := session.Summary(); err != nil {
+		writeMeetingError(w, err)
+		return
+	}
+	document, err := os.ReadFile(filepath.Join(session.BundlePath(), meetinglog.BundleDocumentName))
+	if err != nil {
+		log.Printf("netapi: meeting document read failed: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "meeting document unavailable"})
+		return
+	}
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(document)
 }

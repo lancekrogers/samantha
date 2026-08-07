@@ -3,6 +3,7 @@ package remote
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -146,5 +147,37 @@ func TestRouteOnceForgetsFailures(t *testing.T) {
 	})
 	if err != nil || receipt.Outcome != "routed" {
 		t.Fatalf("retry after failure = %+v, %v; want a real re-execution", receipt, err)
+	}
+}
+
+// The step is visible only while processing — never stale on a terminal state.
+func TestStatusReportsPipelineStep(t *testing.T) {
+	pipe := newRecordingPipeline(nil)
+	stepSeen := make(chan string, 4)
+	releasePipeline := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releasePipeline) }) }
+	defer release()
+	pipe.before = func(job Job) {
+		job.Step("transcribing")
+		stepSeen <- "reported"
+		<-releasePipeline
+	}
+	m := testManager(t, Options{Pipeline: pipe})
+	session := startSession(t, m)
+	if err := session.AppendSegment(context.Background(), 0, pcm(7, 1600), time.Now()); err != nil {
+		t.Fatalf("AppendSegment() error = %v", err)
+	}
+	if _, err := session.Stop(context.Background(), 0, time.Now()); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	<-stepSeen
+	if got := session.Status().Step; got != "transcribing" {
+		t.Fatalf("Step during processing = %q, want transcribing", got)
+	}
+	release()
+	waitDone(t, session)
+	if got := session.Status().Step; got != "" {
+		t.Fatalf("Step after ready = %q, want empty", got)
 	}
 }

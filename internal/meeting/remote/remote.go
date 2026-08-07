@@ -146,6 +146,10 @@ type RouteReceipt struct {
 type Status struct {
 	MeetingID    string              `json:"meeting_id"`
 	State        State               `json:"state"`
+	// Step names the pipeline stage while State is processing — transcribing,
+	// filing ideas, diarizing — so the phone can show what is actually
+	// happening instead of an anonymous spinner. Empty outside processing.
+	Step         string              `json:"step,omitempty"`
 	Bundle       string              `json:"bundle,omitempty"`
 	Title        string              `json:"title,omitempty"`
 	Campaign     string              `json:"campaign,omitempty"`
@@ -165,6 +169,10 @@ type Pipeline interface {
 
 // Job is one unit of post-recording work.
 type Job struct {
+	// MeetingID is the session's wire id — the same one the client used in
+	// /v1/meeting/{id} calls, so anything the pipeline files (idea intents)
+	// links back with the identifier the phone already knows.
+	MeetingID string
 	// BundlePath is the .meeting directory.
 	BundlePath string
 	// AudioPath is the assembled 16 kHz mono WAV inside the bundle.
@@ -174,6 +182,9 @@ type Job struct {
 	Writer *meetinglog.Writer
 	// Title is the meeting description, for summary prompts.
 	Title string
+	// Step reports the current pipeline stage for status polls. Optional;
+	// implementations call it as they move between stages.
+	Step func(string)
 }
 
 // PipelineFunc adapts a plain function to Pipeline.

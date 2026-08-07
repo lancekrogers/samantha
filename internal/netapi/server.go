@@ -141,6 +141,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		mux.HandleFunc("POST /v1/meeting/{id}/stop", s.handleMeetingStop)
 		mux.HandleFunc("GET /v1/meeting/{id}", s.handleMeetingStatus)
 		mux.HandleFunc("POST /v1/meeting/{id}/route", s.handleMeetingRoute)
+		mux.HandleFunc("GET /v1/meeting/{id}/document", s.handleMeetingDocument)
 	}
 	// Embedded phone voice client (public HTML/JS; WS still authenticated).
 	web := webFileServer()

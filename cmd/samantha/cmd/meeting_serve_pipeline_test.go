@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lancekrogers/samantha/internal/meeting/ideas"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 	"github.com/lancekrogers/samantha/internal/stt"
 )
@@ -193,6 +194,39 @@ func TestReplayTranscribeHonorsContextCancellation(t *testing.T) {
 	cancel()
 	if err := replayTranscribe(ctx, source, provider, testBundleWriter(t)); !errors.Is(err, context.Canceled) {
 		t.Fatalf("replayTranscribe() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestSpanIntentKeyDoesNotCollideAfterSanitizingOrTruncating(t *testing.T) {
+	tests := []struct {
+		name string
+		a    string
+		b    string
+	}{
+		{name: "hostile characters", a: "a/b", b: "a?b"},
+		{name: "long common prefix", a: strings.Repeat("x", 80) + "a", b: strings.Repeat("x", 80) + "b"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			first := spanIntentKey("meeting-1", tt.a)
+			second := spanIntentKey("meeting-1", tt.b)
+			if first == second {
+				t.Fatalf("span keys collided:\n%s\n%s", first, second)
+			}
+			if strings.ContainsAny(first+second, "/?") {
+				t.Fatalf("span keys are not filesystem-safe: %q, %q", first, second)
+			}
+		})
+	}
+}
+
+func TestFormatIdeaReportIncludesMarkerFailuresAndRediscoveries(t *testing.T) {
+	line := formatIdeaReport("Standup", ideas.Report{Rediscovered: 2, MarkerFailed: 1})
+	if !strings.Contains(line, "rediscovered=2") || !strings.Contains(line, "marker_failed=1") {
+		t.Fatalf("report line omits operational failures: %q", line)
+	}
+	if got := formatIdeaReport("Standup", ideas.Report{}); got != "" {
+		t.Fatalf("empty report = %q, want no log line", got)
 	}
 }
 
