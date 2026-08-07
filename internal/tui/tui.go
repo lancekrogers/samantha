@@ -566,6 +566,7 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			inputDevice:    msg.rt.InputDevice,
 			outputDevice:   msg.rt.OutputDevice,
 			liveSpeaker:    msg.rt.LiveSpeaker,
+			speakerNames:   msg.rt.SpeakerNames,
 			ctx:            a.runCtx,
 			wg:             a.wg,
 		})

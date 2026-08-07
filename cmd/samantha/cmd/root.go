@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/charmbracelet/fang"
 	"github.com/mattn/go-isatty"
@@ -225,6 +226,22 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 		}
 		liveTTS := &liveTTSManager{}
 
+		// Session-local rename table: UI bubbles + model prompt attribution.
+		speakerNames := speaker.NewNameMap()
+		brain.AttachSpeakerNames(p.Brain, speakerNames)
+		p.CurrentSpeaker = func() string {
+			if liveSpeaker == nil {
+				return ""
+			}
+			st := liveSpeaker.Stats()
+			switch st.Status {
+			case speaker.LiveHealthy, speaker.LiveRunning, speaker.LiveDegraded:
+				return strings.TrimSpace(st.LastLabel)
+			default:
+				return ""
+			}
+		}
+
 		p.OnTurn = func() {
 			if err := sess.Save(p.Brain.History()); err != nil {
 				bus.Emit(events.Error{Stage: "session", Message: fmt.Sprintf("save session: %v", err)})
@@ -252,6 +269,7 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 			InputDevice:  cfg.InputDevice,
 			OutputDevice: cfg.OutputDevice,
 			LiveSpeaker:  liveSpeaker,
+			SpeakerNames: speakerNames,
 			ReloadVoice: func(reloadCtx context.Context) error {
 				if noVoice {
 					return nil

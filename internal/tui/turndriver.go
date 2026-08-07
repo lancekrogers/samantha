@@ -14,6 +14,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/app"
 	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/speaker"
 	"github.com/lancekrogers/samantha/internal/tui/anim"
 )
 
@@ -80,6 +81,7 @@ type conversationDeps struct {
 	inputDevice    string
 	outputDevice   string
 	liveSpeaker    LiveSpeakerController
+	speakerNames   *speaker.NameMap
 	ctx            context.Context // pipeline lifetime; parent of every turn ctx
 	wg             *sync.WaitGroup // tracks in-flight turns so shutdown can drain them
 }
@@ -96,6 +98,7 @@ func (m *conversationModel) startConversation(deps conversationDeps) tea.Cmd {
 	m.inputDevice = deps.inputDevice
 	m.outputDevice = deps.outputDevice
 	m.liveSpeaker = deps.liveSpeaker
+	m.speakerNames = deps.speakerNames
 	m.bridge = newEventBridge(0)
 	m.bridge.attach(deps.bus)
 

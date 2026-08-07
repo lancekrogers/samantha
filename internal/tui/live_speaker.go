@@ -87,9 +87,17 @@ func liveSpeakerStatusLabel(status speaker.LiveStatus) string {
 }
 
 func liveSpeakerFooterLabel(stats speaker.LiveStats) string {
+	return liveSpeakerFooterLabelNamed(stats, stats.LastLabel)
+}
+
+func liveSpeakerFooterLabelNamed(stats speaker.LiveStats, display string) string {
 	label := liveSpeakerStatusLabel(stats.Status)
-	if stats.LastLabel != "" && (stats.Status == speaker.LiveHealthy || stats.Status == speaker.LiveRunning) {
-		return label + " · " + stats.LastLabel
+	name := strings.TrimSpace(display)
+	if name == "" {
+		name = stats.LastLabel
+	}
+	if name != "" && (stats.Status == speaker.LiveHealthy || stats.Status == speaker.LiveRunning) {
+		return label + " · " + name
 	}
 	return label
 }
@@ -108,9 +116,22 @@ func liveSpeakerStatusStyle(status speaker.LiveStatus) lipgloss.Style {
 }
 
 func renderLiveSpeakerFooter(stats speaker.LiveStats) string {
+	return renderLiveSpeakerFooterNamed(stats, "")
+}
+
+func renderLiveSpeakerFooterNamed(stats speaker.LiveStats, display string) string {
 	rendered := liveSpeakerStatusStyle(stats.Status).Render(liveSpeakerStatusLabel(stats.Status))
-	if stats.LastLabel != "" && (stats.Status == speaker.LiveHealthy || stats.Status == speaker.LiveRunning) {
-		rendered += dimStyle.Render(" · ") + speakerLabelStyle(stats.LastLabel).Render(stats.LastLabel)
+	label := strings.TrimSpace(display)
+	if label == "" {
+		label = stats.LastLabel
+	}
+	if label != "" && (stats.Status == speaker.LiveHealthy || stats.Status == speaker.LiveRunning) {
+		// Color by stable id when available so renames keep a consistent hue.
+		colorKey := stats.LastLabel
+		if colorKey == "" {
+			colorKey = label
+		}
+		rendered += dimStyle.Render(" · ") + speakerLabelStyle(colorKey).Render(label)
 	}
 	return rendered
 }
@@ -126,4 +147,18 @@ func (m *conversationModel) currentLiveSpeakerLabel() string {
 		return m.stickyLive.Observe("", time.Now())
 	}
 	return m.stickyLive.Observe(stats.LastLabel, time.Now())
+}
+
+// displaySpeakerLabel applies session renames for bubbles and the footer.
+func (m *conversationModel) displaySpeakerLabel(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	if m.speakerNames != nil {
+		if d := strings.TrimSpace(m.speakerNames.Display(id)); d != "" {
+			return d
+		}
+	}
+	return id
 }

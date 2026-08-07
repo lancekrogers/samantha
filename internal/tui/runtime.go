@@ -15,6 +15,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/meeting"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 	"github.com/lancekrogers/samantha/internal/pipeline"
+	"github.com/lancekrogers/samantha/internal/speaker"
 	"github.com/lancekrogers/samantha/internal/stt"
 )
 
@@ -43,6 +44,9 @@ type ConversationRuntime struct {
 	InputDevice  string
 	OutputDevice string
 	LiveSpeaker  LiveSpeakerController
+	// SpeakerNames maps speaker-N → display name for bubbles and model prompts.
+	// Session-local; shared with the brain via brain.AttachSpeakerNames.
+	SpeakerNames *speaker.NameMap
 	Seed         []brain.Turn                // resumed history to pre-populate the viewport
 	ReloadVoice  func(context.Context) error // applies Settings to subsequent utterances
 	Cleanup      func()                      // tears down pipeline resources and saves the session

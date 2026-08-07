@@ -494,6 +494,19 @@ session and loads the model on first use — no restart. Settings persists the
 choice for future conversations. Live analysis needs microphone capture, so it
 is unavailable in `--text` mode.
 
+When labels are active, the **model** also sees speaker attribution on user
+turns (`speaker-1: …` in the prompt, or a human name after rename). Rename with:
+
+```text
+/speakers name 1 Lance
+/speakers name speaker-2 Alex
+/speakers names
+```
+
+Renames are session-local: they update bubbles, the footer, and subsequent
+prompt attribution. They do not change the embedding manager’s stable
+`speaker-N` ids. The model cannot rename speakers; only this command does.
+
 The meetings directory contains one visible item per recording:
 
 ```text

@@ -28,12 +28,17 @@ type GrokBrain struct {
 	systemPrompt    string
 	turnInstruction string
 	history         []Turn
+	// speakerNames resolves stable speaker ids for flatten prompts (optional).
+	speakerNames SpeakerNames
 	// sessionID is the grok CLI session captured on the first turn and reused
 	// via --resume thereafter, so subsequent turns send only the new input.
 	// Empty until the first turn captures it; scoped to this GrokBrain, which
 	// is constructed per conversation.
 	sessionID string
 }
+
+// SetSpeakerNames attaches a rename table for user-turn prompt attribution.
+func (g *GrokBrain) SetSpeakerNames(names SpeakerNames) { g.speakerNames = names }
 
 // NewGrok creates a Grok brain provider backed by the grok CLI.
 func NewGrok(cfg *config.Config) (*GrokBrain, error) {
@@ -69,7 +74,7 @@ func (g *GrokBrain) Available() bool {
 // Only spoken "text" events are forwarded; "thought" (reasoning) events are
 // dropped so Samantha never voices her chain of thought.
 func (g *GrokBrain) ThinkStream(ctx context.Context, input string, streamOpts StreamOptions) (*Stream, error) {
-	g.history = append(g.history, Turn{Role: "user", Content: input})
+	g.history = append(g.history, Turn{Role: "user", Content: input, Speaker: streamOpts.Speaker})
 
 	out := make(chan string, 8)
 	done := make(chan StreamResult, 1)
@@ -161,7 +166,7 @@ func (g *GrokBrain) ThinkFull(ctx context.Context, input string, streamOpts Stre
 	// Same append-then-roll-back contract as Claude: the prompt comes from
 	// history, and a turn that never answered must not leave its input behind.
 	restore := len(g.history)
-	g.history = append(g.history, Turn{Role: "user", Content: input})
+	g.history = append(g.history, Turn{Role: "user", Content: input, Speaker: streamOpts.Speaker})
 
 	resuming := g.sessionID != ""
 	response, err := g.thinkFullAttempt(ctx, streamOpts)
@@ -252,6 +257,10 @@ func (g *GrokBrain) runOptions(format grok.OutputFormat, toolsEnabled bool) *gro
 // the model reads.
 func (g *GrokBrain) buildPrompt(omitTurnInstruction bool) string {
 	var parts []string
+	agentName := ""
+	if g.cfg != nil {
+		agentName = g.cfg.AgentName
+	}
 
 	// Only prepend flattened history when no CLI session carries it. With a
 	// resume id the CLI owns history server-side — send only the new turn
@@ -265,17 +274,14 @@ func (g *GrokBrain) buildPrompt(omitTurnInstruction bool) string {
 		if len(recent) > 1 {
 			parts = append(parts, "Recent conversation:")
 			for _, t := range recent[:len(recent)-1] {
-				speaker := "User"
-				if t.Role == "samantha" {
-					speaker = g.cfg.AgentName
-				}
-				parts = append(parts, fmt.Sprintf("%s: %s", speaker, t.Content))
+				parts = append(parts, promptUserLine(t, agentName, g.speakerNames))
 			}
 			parts = append(parts, "")
 		}
 	}
 
-	parts = append(parts, fmt.Sprintf("User: %s", g.history[len(g.history)-1].Content))
+	last := g.history[len(g.history)-1]
+	parts = append(parts, promptUserLine(last, agentName, g.speakerNames))
 	if !omitTurnInstruction {
 		parts = append(parts, "")
 		parts = append(parts, g.turnInstruction)
