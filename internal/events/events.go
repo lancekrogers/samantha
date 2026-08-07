@@ -22,6 +22,9 @@ func (e STTPhase) eventType() string { return "stt_phase" }
 // UserInput carries the transcribed user text.
 type UserInput struct {
 	Text string
+	// Speaker is the stable live label for this turn (speaker-1) when live
+	// analysis attributed the utterance. Empty for text-only or unlabeled.
+	Speaker string
 }
 
 func (e UserInput) eventType() string { return "user_input" }

@@ -15,6 +15,11 @@ import (
 	"github.com/lancekrogers/samantha/internal/skills"
 )
 
+// ollamaSpeakerSep marks a stable speaker id prefix on stored user messages so
+// History/LoadHistory can round-trip Turn.Speaker without changing the Ollama
+// wire format's role field. ASCII record separator is invalid in speech text.
+const ollamaSpeakerSep = "\x1e"
+
 // OllamaBrain implements Provider using the Ollama API with tool calling.
 type OllamaBrain struct {
 	client       *api.Client
@@ -33,6 +38,34 @@ type OllamaBrain struct {
 	skillRouter       *semanticSkillRouter
 	skillRouterWarned bool
 	budgetWarned      bool
+	// speakerNames resolves stable speaker ids when building chat messages.
+	speakerNames SpeakerNames
+}
+
+// SetSpeakerNames attaches a rename table for user-turn prompt attribution.
+func (o *OllamaBrain) SetSpeakerNames(names SpeakerNames) { o.speakerNames = names }
+
+func encodeOllamaUser(speakerID, content string) string {
+	speakerID = strings.TrimSpace(speakerID)
+	if speakerID == "" {
+		return content
+	}
+	return speakerID + ollamaSpeakerSep + content
+}
+
+func decodeOllamaUser(stored string) (speakerID, content string) {
+	if i := strings.IndexByte(stored, ollamaSpeakerSep[0]); i >= 0 {
+		return stored[:i], stored[i+1:]
+	}
+	return "", stored
+}
+
+func (o *OllamaBrain) formatStoredUser(stored string) string {
+	speakerID, content := decodeOllamaUser(stored)
+	if speakerID == "" {
+		return content
+	}
+	return FormatUserLine(speakerID, content, o.speakerNames)
 }
 
 // NewOllama creates an Ollama brain provider.
@@ -138,7 +171,7 @@ func loadSkillsCatalog(ctx context.Context, cfg *config.Config, workDir string) 
 // and re-requests until the model produces a text response.
 func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts StreamOptions) (*Stream, error) {
 	skillCtx := o.routeSkillContext(ctx, input, opts.OnToolStart, opts.OnToolEnd)
-	o.history = append(o.history, api.Message{Role: "user", Content: input})
+	o.history = append(o.history, api.Message{Role: "user", Content: encodeOllamaUser(opts.Speaker, input)})
 	o.ensureContextBudget(skillCtx)
 
 	out := make(chan string, 8)
@@ -280,7 +313,7 @@ func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOp
 	// ThinkStream — which records a recovery reply and keeps the turn — a failed
 	// ThinkFull answers nothing, so its input must not stay behind.
 	restore := append([]api.Message(nil), o.history...)
-	o.history = append(o.history, api.Message{Role: "user", Content: input})
+	o.history = append(o.history, api.Message{Role: "user", Content: encodeOllamaUser(opts.Speaker, input)})
 	o.ensureContextBudget(skillCtx)
 
 	sess := &toolSession{
@@ -413,7 +446,11 @@ func (o *OllamaBrain) SessionInfo() SessionState {
 func (o *OllamaBrain) History() []Turn {
 	turns := make([]Turn, len(o.history))
 	for i, m := range o.history {
-		turns[i] = Turn{Role: m.Role, Content: m.Content}
+		content, speaker := m.Content, ""
+		if m.Role == "user" {
+			speaker, content = decodeOllamaUser(m.Content)
+		}
+		turns[i] = Turn{Role: m.Role, Content: content, Speaker: speaker}
 	}
 	return turns
 }
@@ -428,7 +465,11 @@ func (o *OllamaBrain) LoadHistory(turns []Turn) {
 		if role == "samantha" {
 			role = "assistant"
 		}
-		o.history[i] = api.Message{Role: role, Content: t.Content}
+		content := t.Content
+		if role == "user" && strings.TrimSpace(t.Speaker) != "" {
+			content = encodeOllamaUser(t.Speaker, t.Content)
+		}
+		o.history[i] = api.Message{Role: role, Content: content}
 	}
 }
 
@@ -452,7 +493,12 @@ func assembleSystemPrompt(personaPrompt, workDir string, catalog []skills.Skill)
 func (o *OllamaBrain) buildMessages(skillCtx string) []api.Message {
 	msgs := make([]api.Message, 0, len(o.history)+1)
 	msgs = append(msgs, api.Message{Role: "system", Content: o.fullSystemPrompt})
-	msgs = append(msgs, o.history...)
+	for _, m := range o.history {
+		if m.Role == "user" {
+			m.Content = o.formatStoredUser(m.Content)
+		}
+		msgs = append(msgs, m)
+	}
 	if skillCtx != "" {
 		for i := len(msgs) - 1; i > 0; i-- {
 			if msgs[i].Role == "user" {

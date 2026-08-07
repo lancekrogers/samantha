@@ -53,7 +53,7 @@ var slashCommands = []slashCommand{
 	{id: commandActivity, name: "/activity", usage: "/activity", description: "Switch between chat and activity", aliases: []string{"/timeline"}},
 	{id: commandSettings, name: "/settings", usage: "/settings", description: "Open TUI settings"},
 	{id: commandVoice, name: "/voice", usage: "/voice", description: "Return to voice mode after fallback", aliases: []string{"/v"}},
-	{id: commandSpeakers, name: "/speakers", usage: "/speakers [on|off|status]", description: "Show or toggle live speaker analysis"},
+	{id: commandSpeakers, name: "/speakers", usage: "/speakers [on|off|status|name|names]", description: "Live speaker labels, renames, and status"},
 	{id: commandVim, name: "/vim", usage: "/vim [on|off|insert]", description: "Toggle modal Vim editing"},
 	{id: commandQuit, name: "/quit", usage: "/quit", description: "Exit Samantha", aliases: []string{"/q", "/exit"}},
 }
@@ -241,19 +241,30 @@ func (m *conversationModel) sessionSummary() string {
 }
 
 func (m *conversationModel) configureLiveSpeakers(args []string) {
+	if len(args) > 0 {
+		switch strings.ToLower(args[0]) {
+		case "name":
+			m.renameLiveSpeaker(args[1:])
+			return
+		case "names":
+			m.listSpeakerNames()
+			return
+		}
+	}
+
 	if m.liveSpeaker == nil {
 		m.commandNotice("Live speaker analysis is unavailable in this runtime.")
 		return
 	}
 	if len(args) > 1 {
-		m.commandError("usage: /speakers [on|off|status]")
+		m.commandError("usage: /speakers [on|off|status|name <id> <name>|names]")
 		return
 	}
 	stats := m.liveSpeaker.Stats()
 	if len(args) == 0 || strings.EqualFold(args[0], "status") {
 		m.liveSpeakerStats = stats
 		m.liveSpeakerStatsKnown = true
-		m.commandNotice(liveSpeakerStatusDetail(stats))
+		m.commandNotice(m.liveSpeakerStatusDetail(stats))
 		return
 	}
 	var enabled bool
@@ -263,7 +274,7 @@ func (m *conversationModel) configureLiveSpeakers(args []string) {
 	case "off", "disable", "disabled":
 		enabled = false
 	default:
-		m.commandError("usage: /speakers [on|off|status]")
+		m.commandError("usage: /speakers [on|off|status|name <id> <name>|names]")
 		return
 	}
 	m.liveSpeaker.SetEnabled(enabled)
@@ -273,7 +284,67 @@ func (m *conversationModel) configureLiveSpeakers(args []string) {
 	stats = m.liveSpeaker.Stats()
 	m.liveSpeakerStats = stats
 	m.liveSpeakerStatsKnown = true
-	m.commandNotice(liveSpeakerStatusDetail(stats))
+	m.commandNotice(m.liveSpeakerStatusDetail(stats))
+}
+
+func (m *conversationModel) renameLiveSpeaker(args []string) {
+	if m.speakerNames == nil {
+		m.commandError("speaker renames are unavailable in this runtime")
+		return
+	}
+	if len(args) < 2 {
+		m.commandError("usage: /speakers name <id|N> <display name>")
+		return
+	}
+	id := args[0]
+	name := strings.TrimSpace(strings.Join(args[1:], " "))
+	if err := m.speakerNames.Set(id, name); err != nil {
+		m.commandError(err.Error())
+		return
+	}
+	norm := speaker.NormalizeID(id)
+	if name == "" {
+		m.commandNotice(fmt.Sprintf("cleared name for %s", norm))
+		return
+	}
+	m.commandNotice(fmt.Sprintf("%s → %s (model prompts use this name)", norm, name))
+}
+
+func (m *conversationModel) listSpeakerNames() {
+	if m.speakerNames == nil {
+		m.commandNotice("no speaker renames in this session")
+		return
+	}
+	snap := m.speakerNames.Snapshot()
+	if len(snap) == 0 {
+		m.commandNotice("no speaker renames yet — try /speakers name 1 YourName")
+		return
+	}
+	parts := make([]string, 0, len(snap))
+	for _, b := range snap {
+		parts = append(parts, fmt.Sprintf("%s=%s", b.ID, b.Name))
+	}
+	m.commandNotice("names: " + strings.Join(parts, " · "))
+}
+
+func (m *conversationModel) liveSpeakerStatusDetail(stats speaker.LiveStats) string {
+	display := m.displaySpeakerLabel(stats.LastLabel)
+	message := liveSpeakerFooterLabelNamed(stats, display)
+	if stats.Processed > 0 {
+		message += fmt.Sprintf(" · processed %d", stats.Processed)
+	}
+	if stats.QueueDepth > 0 || stats.Dropped > 0 {
+		message += fmt.Sprintf(" · queue %d/%d · dropped %d", stats.QueueDepth, stats.Capacity, stats.Dropped)
+	}
+	if stats.LastError != "" {
+		message += " · " + stats.LastError
+	}
+	if m.speakerNames != nil {
+		if n := len(m.speakerNames.Snapshot()); n > 0 {
+			message += fmt.Sprintf(" · %d named", n)
+		}
+	}
+	return message
 }
 
 func liveSpeakerStatusDetail(stats speaker.LiveStats) string {

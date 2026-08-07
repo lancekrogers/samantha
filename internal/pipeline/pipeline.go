@@ -71,6 +71,11 @@ type Pipeline struct {
 	// defaultBrainTurnTimeout; negative disables the bound.
 	BrainTurnTimeout time.Duration
 
+	// CurrentSpeaker returns the stable live speaker id (speaker-1) for the
+	// in-flight user turn when live labels are active. Optional; nil/empty
+	// means ordinary single-user attribution.
+	CurrentSpeaker func() string
+
 	// keepCapture preserves the capture buffer into the next turn after a
 	// barge-in — or a near-miss, speech heard during a playback pause that
 	// never tripped — where the buffered audio is the user mid-utterance.
@@ -116,6 +121,14 @@ func (p *Pipeline) withBrainTimeout(ctx context.Context) (context.Context, conte
 		return context.WithTimeout(ctx, d)
 	}
 	return context.WithCancel(ctx)
+}
+
+// currentSpeakerID returns the live speaker label for this turn, if any.
+func (p *Pipeline) currentSpeakerID() string {
+	if p == nil || p.CurrentSpeaker == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.CurrentSpeaker())
 }
 
 // SetOutputMuted enables or disables spoken responses without rebuilding the
@@ -401,7 +414,8 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 	}
 
 	turn.to(TurnThinking)
-	p.emit(events.UserInput{Text: text})
+	speakerID := p.currentSpeakerID()
+	p.emit(events.UserInput{Text: text, Speaker: speakerID})
 	p.emit(events.ThinkingStarted{})
 
 	// turnCtx scopes the whole turn so the playback watchdog can abort the brain
@@ -412,6 +426,7 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 
 	brainStream, err := p.Brain.ThinkStream(turnCtx, text, brain.StreamOptions{
 		VoiceMode:     true,
+		Speaker:       speakerID,
 		ToolsEnabled:  p.VoiceToolsEnabled,
 		OnToolStart:   p.toolStartHook(),
 		OnToolEnd:     p.toolEndHook(),
@@ -486,7 +501,8 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	turn := p.newTurnConductor(metrics)
 
 	turn.to(TurnThinking)
-	p.emit(events.UserInput{Text: input})
+	speakerID := p.currentSpeakerID()
+	p.emit(events.UserInput{Text: input, Speaker: speakerID})
 	p.emit(events.ThinkingStarted{})
 	thinkingStarted := time.Now()
 
@@ -496,6 +512,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	defer brainCancel()
 
 	stream, err := p.Brain.ThinkStream(brainCtx, input, brain.StreamOptions{
+		Speaker:       speakerID,
 		ToolsEnabled:  p.VoiceToolsEnabled,
 		OnToolStart:   p.toolStartHook(),
 		OnToolEnd:     p.toolEndHook(),

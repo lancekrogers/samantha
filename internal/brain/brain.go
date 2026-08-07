@@ -31,6 +31,8 @@ type Brain struct {
 	systemPrompt    string
 	turnInstruction string
 	history         []Turn
+	// speakerNames resolves stable speaker ids for flatten prompts (optional).
+	speakerNames SpeakerNames
 	// sessionID is the claude CLI session captured on the first turn and reused
 	// via --resume thereafter, so subsequent turns send only the new input and
 	// get Anthropic-side prompt caching. Empty until the first turn captures it;
@@ -47,6 +49,9 @@ type Brain struct {
 	// dropSession.
 	sessionWarned bool
 }
+
+// SetSpeakerNames attaches a rename table for user-turn prompt attribution.
+func (b *Brain) SetSpeakerNames(names SpeakerNames) { b.speakerNames = names }
 
 // claudeUsage is the token accounting the CLI reports on each assistant
 // message. Prompt tokens are split across three fields depending on what the
@@ -66,6 +71,10 @@ func (u claudeUsage) prompt() int {
 type Turn struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+	// Speaker is the stable live label for user turns (speaker-1). Empty for
+	// assistant turns and unlabeled single-user chat. Optional on disk so
+	// older sessions load unchanged.
+	Speaker string `json:"speaker,omitempty"`
 }
 
 // New creates a Brain instance.
@@ -131,7 +140,7 @@ func (b *Brain) runOptions(format claude.OutputFormat, toolsEnabled bool) *claud
 // ThinkStream sends input to Claude and returns a channel of streaming message chunks.
 // Each message on the channel may contain partial text.
 func (b *Brain) ThinkStream(ctx context.Context, input string, streamOpts StreamOptions) (*Stream, error) {
-	b.history = append(b.history, Turn{Role: "user", Content: input})
+	b.history = append(b.history, Turn{Role: "user", Content: input, Speaker: streamOpts.Speaker})
 
 	out := make(chan string, 8)
 	done := make(chan StreamResult, 1)
@@ -342,7 +351,7 @@ func (b *Brain) ThinkFull(ctx context.Context, input string, streamOpts StreamOp
 	// the call — and rolled back if the turn never produced an answer, or the
 	// unanswered prompt stays in the transcript as a user turn.
 	restore := len(b.history)
-	b.history = append(b.history, Turn{Role: "user", Content: input})
+	b.history = append(b.history, Turn{Role: "user", Content: input, Speaker: streamOpts.Speaker})
 
 	resuming := b.sessionID != ""
 	response, err := b.thinkFullAttempt(ctx, streamOpts)
@@ -418,6 +427,10 @@ func (b *Brain) thinkFullAttempt(ctx context.Context, streamOpts StreamOptions) 
 // the model reads.
 func (b *Brain) buildPrompt(omitTurnInstruction bool) string {
 	var parts []string
+	agentName := ""
+	if b.cfg != nil {
+		agentName = b.cfg.AgentName
+	}
 
 	// Only prepend flattened history when no CLI session carries it. With a
 	// resume id the CLI owns history server-side, so re-sending it would bust
@@ -431,17 +444,14 @@ func (b *Brain) buildPrompt(omitTurnInstruction bool) string {
 		if len(recent) > 1 {
 			parts = append(parts, "Recent conversation:")
 			for _, t := range recent[:len(recent)-1] {
-				speaker := "User"
-				if t.Role == "samantha" {
-					speaker = b.cfg.AgentName
-				}
-				parts = append(parts, fmt.Sprintf("%s: %s", speaker, t.Content))
+				parts = append(parts, promptUserLine(t, agentName, b.speakerNames))
 			}
 			parts = append(parts, "")
 		}
 	}
 
-	parts = append(parts, fmt.Sprintf("User: %s", b.history[len(b.history)-1].Content))
+	last := b.history[len(b.history)-1]
+	parts = append(parts, promptUserLine(last, agentName, b.speakerNames))
 	if !omitTurnInstruction {
 		parts = append(parts, "")
 		parts = append(parts, b.turnInstruction)

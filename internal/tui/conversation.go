@@ -100,6 +100,8 @@ type conversationModel struct {
 	liveSpeakerStatsKnown bool
 	// stickyLive holds last good speaker-N across brief empty stats (chat parity).
 	stickyLive stickyLiveLabel
+	// speakerNames maps speaker-N → display name (session-local renames).
+	speakerNames *speaker.NameMap
 
 	commandQuery     string
 	commandSelection int
@@ -580,7 +582,7 @@ func (m *conversationModel) seedTranscript(turns []brain.Turn) {
 	for _, t := range turns {
 		switch t.Role {
 		case "user":
-			m.appendTranscript(renderUserTurn(t.Content))
+			m.appendTranscript(renderSpeakerUserTurn(m.displaySpeakerLabel(t.Speaker), t.Content))
 		case "assistant":
 			m.appendTranscript(renderAgentTurn(m.agentName, t.Content), "")
 		}
@@ -675,7 +677,11 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		m.pendingUserEcho = ""
 		m.activityFocused = false
 		m.followChat = true
-		m.appendTranscript(renderSpeakerUserTurn(m.currentLiveSpeakerLabel(), e.Text))
+		label := e.Speaker
+		if label == "" {
+			label = m.currentLiveSpeakerLabel()
+		}
+		m.appendTranscript(renderSpeakerUserTurn(m.displaySpeakerLabel(label), e.Text))
 
 	case events.ThinkingStarted:
 		// Start a fresh streaming buffer; a prior turn's leftover (e.g. after an
@@ -992,7 +998,7 @@ func (m conversationModel) View() string {
 	}
 	footerLeft := "  " + micChip + " " + outChip
 	if m.liveSpeakerStatsKnown {
-		footerLeft += " " + renderLiveSpeakerFooter(m.liveSpeakerStats)
+		footerLeft += " " + renderLiveSpeakerFooterNamed(m.liveSpeakerStats, m.displaySpeakerLabel(m.liveSpeakerStats.LastLabel))
 	}
 	activeViewport := m.activeViewport()
 	if activeViewport.TotalLineCount() > activeViewport.VisibleLineCount() {

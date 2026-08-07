@@ -6,6 +6,10 @@ import "context"
 type StreamOptions struct {
 	VoiceMode    bool
 	ToolsEnabled bool
+	// Speaker is the stable live speaker id for this user turn (speaker-1),
+	// when live labels are active. Empty means ordinary single-user "User".
+	// Stored on history turns and used for prompt attribution.
+	Speaker string
 	// OnToolStart is invoked just before a tool runs (optional; for UI).
 	OnToolStart func(name, summary string)
 	// OnToolEnd is invoked after a tool returns (optional; for UI).
