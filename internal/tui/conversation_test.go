@@ -549,6 +549,48 @@ func TestConversationActivityFeedAndFocus(t *testing.T) {
 	}
 }
 
+func TestFormatActivityAt(t *testing.T) {
+	// Long sessions used to print "1250.5s" which is hard to scan; clock form
+	// keeps the left column readable next to per-stage durations on the right.
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, " 0:00.0"},
+		{1500 * time.Millisecond, " 0:01.5"},
+		{12505 * 100 * time.Millisecond, "20:50.5"}, // 1250.5s
+		{time.Hour + 2*time.Minute + 3*time.Second + 400*time.Millisecond, "1:02:03.4"},
+	}
+	for _, tc := range cases {
+		if got := formatActivityAt(tc.d); got != tc.want {
+			t.Errorf("formatActivityAt(%v) = %q, want %q", tc.d, got, tc.want)
+		}
+	}
+}
+
+func TestConversationActivityTimestampIsClockNotRawSeconds(t *testing.T) {
+	m := sizedConversation(t, 120, 24)
+	// Simulate ~21 minutes into a session (the screenshot case: 1250.5s).
+	m.activity = []activityEntry{{
+		at:      1250*time.Second + 500*time.Millisecond,
+		stage:   "output",
+		detail:  "complete",
+		elapsed: 2600 * time.Millisecond,
+	}}
+	m.refreshActivity()
+	m.activityFocused = true
+	view := stripANSI(m.View())
+	if strings.Contains(view, "1250.5s") {
+		t.Fatalf("activity still shows raw session seconds:\n%s", view)
+	}
+	if !strings.Contains(view, "20:50.5") {
+		t.Fatalf("activity missing clock-style offset 20:50.5:\n%s", view)
+	}
+	if !strings.Contains(view, "2.6s") {
+		t.Fatalf("activity missing stage duration:\n%s", view)
+	}
+}
+
 func TestConversationUsesFullWidthAtLargeTerminalSizes(t *testing.T) {
 	m := sizedConversation(t, 160, 30)
 	m.appendTranscript(renderAgentTurn("Samantha", "full-width conversation"))
