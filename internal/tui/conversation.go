@@ -556,7 +556,9 @@ func (m *conversationModel) refreshActivity() {
 	}
 	var lines []string
 	for _, entry := range m.activity {
-		when := fmt.Sprintf("%6.1fs", entry.at.Seconds())
+		// Session offset as a clock (20:50.5), not raw seconds (1250.5s) —
+		// long conversations make absolute seconds unreadable at a glance.
+		when := formatActivityAt(entry.at)
 		line := when + "  " + entry.stage
 		if entry.detail != "" {
 			line += "  " + entry.detail
@@ -885,6 +887,29 @@ func formatTurnMetrics(e events.TurnMetrics) string {
 
 func formatSeconds(d time.Duration) string {
 	return strconv.FormatFloat(d.Seconds(), 'f', 1, 64) + "s"
+}
+
+// formatActivityAt renders a session-relative timestamp for the Activity feed
+// (ctrl+t). Prefer m:ss.s / h:mm:ss.s over raw "1250.5s" so long sessions stay
+// scannable. Fixed-ish width keeps the stage column aligned.
+func formatActivityAt(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	// Round to 0.1s so float formatting does not jitter at .999 boundaries.
+	totalMs := d.Round(100 * time.Millisecond).Milliseconds()
+	if totalMs < 0 {
+		totalMs = 0
+	}
+	tenths := (totalMs / 100) % 10
+	totalSec := totalMs / 1000
+	h := totalSec / 3600
+	m := (totalSec % 3600) / 60
+	s := totalSec % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d.%d", h, m, s, tenths)
+	}
+	return fmt.Sprintf("%2d:%02d.%d", m, s, tenths)
 }
 
 // renderUserTurn and renderAgentTurn are the single rendering path for both
