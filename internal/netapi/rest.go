@@ -30,6 +30,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"providers":        s.providers,
 		"uptime_seconds":   int64(time.Since(s.started).Seconds()),
 		"fingerprint":      s.opts.Credentials.Fingerprint,
+		// Capability flags let a client gate a whole UI surface on what this
+		// serve actually offers, rather than inferring it from the version.
+		"meetings": s.meetings != nil,
 	})
 }
 

@@ -3,7 +3,11 @@ package netapi
 // ProtocolVersion is the integer serve reports in GET /v1/status and the
 // machine-readable ready banner so clients can gate features against a stable
 // contract version.
-const ProtocolVersion = 1
+//
+// 2 adds the /v1/meeting capture surface (PROTOCOL_DELTAS D6). Clients should
+// still prefer the per-feature capability flags in GET /v1/status over the
+// version number, since serve can be built or configured without a feature.
+const ProtocolVersion = 2
 
 // ReadyBanner is the single JSON line `serve --banner-json` writes to stdout
 // once the listener is bound. A supervising process reads this line to learn

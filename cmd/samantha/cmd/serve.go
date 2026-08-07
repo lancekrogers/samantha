@@ -290,6 +290,17 @@ func runServe(cfg *config.Config) error {
 	if ingress != nil {
 		sttName = cfg.STTProvider
 	}
+
+	// PROTOCOL_DELTAS D6: phone-driven meeting capture. It owns no audio
+	// device and shares no state with the pipeline above — the phone records,
+	// serve stores and transcribes afterwards.
+	meetings, err := newServeMeetingManager(cfg)
+	if err != nil {
+		return fmt.Errorf("init meeting capture: %w", err)
+	}
+	defer func() { _ = meetings.Close() }()
+	go meetings.RunJanitor(ctx)
+
 	server := netapi.New(netapi.Options{
 		Bind:         addr,
 		AllowPublic:  serveAllowPublic,
@@ -298,6 +309,7 @@ func runServe(cfg *config.Config) error {
 		Dispatcher:   dispatcher,
 		Audio:        fanout,
 		Ingress:      ingress,
+		Meetings:     meetings,
 		ListSessions: listSessionSummaries,
 		Providers: netapi.Providers{
 			Brain: cfg.BrainProvider,

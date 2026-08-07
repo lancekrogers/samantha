@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/internal/meeting/remote"
 )
 
 // Options configures a Server. All fields except AllowPublic are required.
@@ -40,6 +42,10 @@ type Options struct {
 	// IntentSink configures POST /v1/intent (PROTOCOL_DELTAS D3). Optional;
 	// defaults to file mode under credentials Dir/intents.
 	IntentSink IntentSinkConfig
+	// Meetings enables the /v1/meeting capture surface (PROTOCOL_DELTAS D6).
+	// Optional: when nil those routes are not registered and GET /v1/status
+	// reports the meetings capability as false.
+	Meetings *remote.Manager
 }
 
 // Server is the LAN-facing HTTPS + WebSocket surface around one pipeline.
@@ -50,7 +56,13 @@ type Server struct {
 	providers    Providers
 	hub          *hub
 	limiter      *rateLimiter
-	started      time.Time
+	meetings     *remote.Manager
+	// segmentLimiter gives meeting audio its own budget. Resuming a
+	// ten-minute outbox is a legitimate burst of ~120 small, idempotent,
+	// size-capped writes; the general abuse guard would throttle exactly the
+	// recovery path the meeting design exists for.
+	segmentLimiter *rateLimiter
+	started        time.Time
 
 	mu   sync.Mutex
 	addr net.Addr
@@ -65,12 +77,14 @@ func New(opts Options) *Server {
 		h.setIngress(opts.Ingress)
 	}
 	return &Server{
-		opts:         opts,
-		dispatcher:   opts.Dispatcher,
-		listSessions: opts.ListSessions,
-		providers:    opts.Providers,
-		hub:          h,
-		limiter:      newRateLimiter(30, 10*time.Second),
+		opts:           opts,
+		dispatcher:     opts.Dispatcher,
+		listSessions:   opts.ListSessions,
+		providers:      opts.Providers,
+		hub:            h,
+		limiter:        newRateLimiter(30, 10*time.Second),
+		meetings:       opts.Meetings,
+		segmentLimiter: newRateLimiter(segmentRateLimit, 10*time.Second),
 	}
 }
 
@@ -105,6 +119,15 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	// PROTOCOL_DELTAS D3: intent capture + targets.
 	mux.HandleFunc("POST /v1/intent", s.handleIntent)
 	mux.HandleFunc("GET /v1/intent/targets", s.handleIntentTargets)
+	// PROTOCOL_DELTAS D6: phone-driven meeting capture. Registered only when
+	// configured, so a serve without it answers 404 rather than pretending.
+	if s.meetings != nil {
+		mux.HandleFunc("POST /v1/meeting/start", s.handleMeetingStart)
+		mux.HandleFunc("PUT /v1/meeting/{id}/segments/{seq}", s.handleMeetingSegment)
+		mux.HandleFunc("POST /v1/meeting/{id}/control", s.handleMeetingControl)
+		mux.HandleFunc("POST /v1/meeting/{id}/stop", s.handleMeetingStop)
+		mux.HandleFunc("GET /v1/meeting/{id}", s.handleMeetingStatus)
+	}
 	// Embedded phone voice client (public HTML/JS; WS still authenticated).
 	web := webFileServer()
 	mux.Handle("GET /{$}", web)
@@ -112,7 +135,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	mux.Handle("GET /app.js", web)
 
 	server := &http.Server{
-		Handler:           s.limiter.middleware(s.authMiddleware(mux)),
+		Handler:           s.rateLimit(s.authMiddleware(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{s.opts.Credentials.Certificate},
@@ -274,12 +297,30 @@ func (l *rateLimiter) allow(remoteAddr string, now time.Time) bool {
 	return l.counts[host] <= l.limit
 }
 
-func (l *rateLimiter) middleware(next http.Handler) http.Handler {
+// segmentRateLimit is the per-IP allowance for meeting segment uploads in the
+// same ten-second window the general limiter uses. It covers a full outbox
+// drain (~120 segments) plus live capture continuing underneath it.
+const segmentRateLimit = 240
+
+// rateLimit applies the general abuse guard, except to meeting segment
+// uploads, which get their own budget (see Server.segmentLimiter).
+func (s *Server) rateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !l.allow(r.RemoteAddr, time.Now()) {
+		limiter := s.limiter
+		if isMeetingSegmentPath(r.Method, r.URL.Path) {
+			limiter = s.segmentLimiter
+		}
+		if !limiter.allow(r.RemoteAddr, time.Now()) {
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isMeetingSegmentPath matches PUT /v1/meeting/{id}/segments/{seq}.
+func isMeetingSegmentPath(method, path string) bool {
+	return method == http.MethodPut &&
+		strings.HasPrefix(path, "/v1/meeting/") &&
+		strings.Contains(path, "/segments/")
 }

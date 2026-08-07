@@ -36,6 +36,18 @@ const (
 	TypeSpeakerUtterance = "speaker_utterance"
 	TypeSessionEnd       = "session_end"
 
+	// Control events are additive: only remote (phone/Watch) recordings emit
+	// them, and readers that predate them simply skip unknown types. Idea
+	// spans bracket a moment the user wants filed as a separate intent.
+	TypePause     = "pause"
+	TypeResume    = "resume"
+	TypeIdeaStart = "idea_start"
+	TypeIdeaEnd   = "idea_end"
+	// TypeSegmentGap marks audio the client could not deliver (outbox
+	// overflow or an abandoned tail) so later readers never mistake the gap
+	// for silence.
+	TypeSegmentGap = "segment_gap"
+
 	// Bundle filenames keep one visible item per meeting while preserving the
 	// machine event stream needed for recovery, routing, and reprocessing.
 	BundleDocumentName        = "meeting.md"
@@ -365,6 +377,71 @@ func (w *Writer) AddBookmark(label, text string) error {
 	return nil
 }
 
+// controlSymbols is the set of client-driven event kinds AppendControl
+// accepts, mapped to the marker used in the human document.
+var controlSymbols = map[string]string{
+	TypeBookmark:   "★",
+	TypeNote:       "📝 note",
+	TypePause:      "⏸ paused",
+	TypeResume:     "▶ resumed",
+	TypeIdeaStart:  "💡 idea start",
+	TypeIdeaEnd:    "💡 idea end",
+	TypeSegmentGap: "⚠ audio gap",
+}
+
+// AppendControl records a client-driven event at an explicit meeting-relative
+// offset. A remote recorder (phone, Watch) knows when a moment happened better
+// than the server, which only learns of it after a network hop, so the offset
+// is taken on trust and merely clamped to non-negative.
+//
+// Kinds are the additive control types plus bookmark/note, keeping the JSONL
+// schema identical to a desktop recording's.
+func (w *Writer) AppendControl(kind string, offsetMs int64, label, text string) error {
+	symbol, ok := controlSymbols[kind]
+	if !ok {
+		return fmt.Errorf("meetinglog: unsupported control event %q", kind)
+	}
+	if offsetMs < 0 {
+		offsetMs = 0
+	}
+	label, text = strings.TrimSpace(label), strings.TrimSpace(text)
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return fmt.Errorf("meetinglog: writer closed before control event %q", kind)
+	}
+	at := w.started.Add(time.Duration(offsetMs) * time.Millisecond)
+	if err := w.writeLog(controlLine(symbol, label, text, at)); err != nil {
+		return err
+	}
+	if err := w.writeEventAt(Event{
+		Type: kind, Label: label, Text: text, TS: at.Format(time.RFC3339Nano),
+	}, offsetMs); err != nil {
+		return err
+	}
+	switch kind {
+	case TypeBookmark:
+		w.bookmarks++
+	case TypeNote:
+		w.notes++
+	}
+	return nil
+}
+
+// controlLine renders one control marker in the same
+// "[HH:MM:SS] <marker>[: text]" shape the live recorder writes.
+func controlLine(symbol, label, text string, at time.Time) string {
+	line := fmt.Sprintf("[%s] %s", at.Format("15:04:05"), symbol)
+	if label != "" && label != "important" {
+		line += " " + strings.ToUpper(label)
+	}
+	if text != "" {
+		line += ": " + text
+	}
+	return line + "\n"
+}
+
 // WriteSpeakerAnalysis appends post-capture status, timeline, and attributed
 // utterances. Historical transcript lines remain untouched; the additive
 // section and event types make fallback/reprocessing explicit.
@@ -536,10 +613,19 @@ func (w *Writer) writeEvent(e Event) error {
 	if t, err := time.Parse(time.RFC3339, e.TS); err == nil {
 		at = t
 	}
-	e.OffsetMs = at.Sub(w.started).Milliseconds()
-	if e.OffsetMs < 0 {
-		e.OffsetMs = 0
+	return w.writeEventAt(e, at.Sub(w.started).Milliseconds())
+}
+
+// writeEventAt appends one JSONL line at an explicit meeting-relative offset.
+// Caller must hold w.mu.
+func (w *Writer) writeEventAt(e Event, offsetMs int64) error {
+	if e.TS == "" {
+		e.TS = time.Now().Format(time.RFC3339Nano)
 	}
+	if offsetMs < 0 {
+		offsetMs = 0
+	}
+	e.OffsetMs = offsetMs
 	data, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("meetinglog: marshal event: %w", err)

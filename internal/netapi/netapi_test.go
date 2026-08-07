@@ -613,7 +613,7 @@ func TestBannerEventsMarshalToSingleLine(t *testing.T) {
 			},
 			want: map[string]any{
 				"event":            "ready",
-				"protocol_version": float64(1),
+				"protocol_version": float64(ProtocolVersion),
 				"url":              "https://192.168.1.20:7262",
 				"port":             float64(7262),
 				"fingerprint":      "abc123",
