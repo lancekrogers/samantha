@@ -60,6 +60,26 @@ func TestVoiceGateRegions(t *testing.T) {
 			wantKept:   []string{"Look at this.", "", "", "", "Pretty bad, right?"},
 			wantLeaked: 3,
 		},
+		// A payload line that happens to read like a sentence closes the
+		// region early. Default-deny has to catch what follows on its own
+		// merits, or the leak simply moves one line down.
+		"payload after an early prose exit stays unspoken": {
+			segments: []string{
+				"Result of calling the Read tool:\n" +
+					"The user has admin access to the system.\n" +
+					"root:x:0:0:root:/root\n" +
+					"AWS_SECRET_KEY=abc123",
+			},
+			wantKept:   []string{"The user has admin access to the system."},
+			wantLeaked: 3,
+		},
+		// Enumerating narration phrasings is a losing game; these are caught
+		// as non-speech rather than as known markers.
+		"unanticipated narration phrasing": {
+			segments:   []string{"Let me run that.\nTool result: root:x:0:0:root\nRunning: cat /etc/shadow\nDone."},
+			wantKept:   []string{"Let me run that.\nDone."},
+			wantLeaked: 2,
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -83,11 +103,56 @@ func TestVoiceGateToolRegionCapEndsSuppression(t *testing.T) {
 	// A model that never returns to prose must not mute the rest of the turn.
 	g := &voiceGate{}
 	g.filter("Called the Bash tool with input x")
-	for range toolRegionLineCap + 1 {
+	for range regionLineCap + 1 {
 		g.filter("noise")
 	}
 	if g.inTool {
 		t.Fatal("tool region never closed; the rest of the turn would be silent")
+	}
+}
+
+func TestVoiceGateUnclosedFenceDoesNotMuteTheTurn(t *testing.T) {
+	// Models emit unbalanced fences (truncation, a cancelled stream). Staying
+	// in the fence region would silence every later segment of the turn — a
+	// worse failure than the leak the gate exists to stop.
+	g := &voiceGate{}
+	g.filter("Here is the code.\n```\nsecret")
+	kept, _ := g.filter("Anyway, what were you saying about lunch?")
+	if kept != "Anyway, what were you saying about lunch?" {
+		t.Fatalf("speech after an unclosed fence = %q, want it spoken", kept)
+	}
+}
+
+func TestVoiceGateSpeaksOrdinaryConversation(t *testing.T) {
+	// Default-deny is only acceptable if normal speech passes untouched —
+	// including short interjections, numeric shapes that resemble machine
+	// output, and coding-agent dialogue (money, comparisons, inline code,
+	// single-segment paths, H:M:S times).
+	for _, line := range []string{
+		"I think efficiency is overrated, honestly.",
+		"Sure!",
+		"Okay.",
+		"The meeting is at 3:30 tomorrow, right?",
+		"You said you wanted the ratio to be 3:1.",
+		"I read chapter 4 last night — it was good.",
+		"She/they pronouns, by the way.",
+		"Call me back at 555-1234.",
+		"The answer is 42.",
+		"No — I disagree completely.",
+		// Review-requested false positives on #207 — must keep speaking.
+		"That costs $5.",
+		"Use the `grep` command carefully.",
+		"If the temperature is > 100, stop.",
+		"When n < 3 we bail out.",
+		"The race finished at 1:23:45.",
+		"Meet me at 12:30:00 sharp.",
+		"I put the file in /tmp for now.",
+	} {
+		g := &voiceGate{}
+		kept, dropped := g.filter(line)
+		if kept != line || dropped != 0 {
+			t.Errorf("ordinary speech was filtered: %q -> kept %q, dropped %d", line, kept, dropped)
+		}
 	}
 }
 
