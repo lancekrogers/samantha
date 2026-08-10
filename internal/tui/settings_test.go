@@ -265,6 +265,7 @@ func TestSettingsToolsBargeInAndFrontendToggles(t *testing.T) {
 		BrainProvider:        "ollama",
 		BargeInEnabled:       false,
 		VoiceFrontendEnabled: false,
+		TUIMouseEnabled:      true,
 	}
 	m := newSettings(cfg, nil)
 	m.section = sectionTools
@@ -336,6 +337,38 @@ func TestSettingsToolsBargeInAndFrontendToggles(t *testing.T) {
 	}
 	if !strings.Contains(m.message, "barge-in") {
 		t.Fatalf("disabling AEC with barge-in on should warn: %q", m.message)
+	}
+}
+
+func TestSettingsToolsMouseScrollToggle(t *testing.T) {
+	cfg := &config.Config{BrainProvider: "ollama", TUIMouseEnabled: true}
+	m := newSettings(cfg, nil)
+	m.section = sectionTools
+	if len(m.toolItems) != toolRowCount {
+		t.Fatalf("tool rows = %d, want %d: %v", len(m.toolItems), toolRowCount, m.toolItems)
+	}
+	if !strings.Contains(m.toolItems[toolRowMouse], "Mouse scroll") || !strings.Contains(m.toolItems[toolRowMouse], "ON") {
+		t.Fatalf("mouse row = %q", m.toolItems[toolRowMouse])
+	}
+	var savedKey string
+	var savedValue any
+	m.saveConfig = func(key string, value any) error {
+		savedKey, savedValue = key, value
+		return nil
+	}
+	m.cursor = toolRowMouse
+	m.selectCurrent()
+	if savedKey != "tui_mouse_enabled" || savedValue != false {
+		t.Fatalf("saved = %q/%v, want tui_mouse_enabled/false", savedKey, savedValue)
+	}
+	if cfg.TUIMouseEnabled {
+		t.Fatal("live TUIMouseEnabled still true")
+	}
+	if !strings.Contains(m.toolItems[toolRowMouse], "OFF") {
+		t.Fatalf("mouse row after toggle = %q", m.toolItems[toolRowMouse])
+	}
+	if !strings.Contains(m.message, "drag-select") && !strings.Contains(m.message, "selection") {
+		t.Fatalf("message should explain selection tradeoff: %q", m.message)
 	}
 }
 

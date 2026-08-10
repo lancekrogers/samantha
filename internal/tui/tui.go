@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -188,9 +189,21 @@ func (a App) mouseClaimCmd(from screen) tea.Cmd {
 func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" && a.screen == screenConversation && a.conversation.editor.selectionActive() {
-			a.conversation.copySelection()
-			return a, nil
+		if msg.String() == "ctrl+c" && a.screen == screenConversation {
+			// Selection in the composer still copies the draft first.
+			if a.conversation.editor.selectionActive() {
+				a.conversation.copySelection()
+				return a, nil
+			}
+			// Idle chat (empty draft): yank the last assistant reply so users
+			// are not stuck when the mouse claim blocks terminal selection.
+			// /quit still exits; with a non-empty draft Ctrl+C keeps quitting.
+			if a.conversation.composerIdle() &&
+				(strings.TrimSpace(a.conversation.lastAssistantText) != "" ||
+					strings.TrimSpace(a.conversation.streamingAgent) != "") {
+				a.conversation.copyLastAssistant()
+				return a, nil
+			}
 		}
 		// Meeting owns Ctrl+C as "stop recording" (returns to launcher).
 		if msg.String() == "ctrl+c" && (a.screen == screenMeeting || a.screen == screenMeetingSetup) {

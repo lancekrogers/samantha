@@ -61,6 +61,12 @@ type conversationModel struct {
 	// a duplicate bubble (typed submit shows immediately; voice still waits
 	// for the bus event).
 	pendingUserEcho string
+	// lastAssistantText is the plain body of the latest agent reply (no bubble
+	// chrome) for /copy, y, and idle ctrl+c / ctrl+y yank.
+	lastAssistantText string
+	// plainTurns mirrors user/assistant bodies for /copy all (scrollback chrome
+	// is ANSI-styled and not clipboard-friendly).
+	plainTurns []plainChatTurn
 
 	bridge      *eventBridge
 	lastMetrics events.TurnMetrics
@@ -153,6 +159,12 @@ type activityEntry struct {
 	elapsed time.Duration
 }
 
+// plainChatTurn is a clipboard-friendly transcript line without bubble styling.
+type plainChatTurn struct {
+	role string // "user" or "assistant"
+	text string
+}
+
 func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -229,6 +241,10 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+v", "ctrl+shift+v", "shift+insert":
 			return m, readClipboard(m.clipboard())
+		case "ctrl+y":
+			// Always available: yank last assistant reply without fighting quit.
+			m.copyLastAssistant()
+			return m, nil
 		case "ctrl+a":
 			m.selectAll()
 			return m, nil
@@ -294,6 +310,13 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 		}
 		if msg.String() == "enter" {
 			return m, m.handleSubmit()
+		}
+		// Bare "y" with an empty composer yanks the last reply (mouse claim
+		// makes terminal selection awkward; this is the zero-friction path).
+		if msg.String() == "y" && strings.TrimSpace(m.input.Value()) == "" &&
+			(!m.vim.enabled || m.vim.mode == vimNormal) {
+			m.copyLastAssistant()
+			return m, nil
 		}
 		if m.vim.enabled {
 			switch m.vim.mode {
@@ -424,10 +447,87 @@ func (m *conversationModel) appendTranscript(lines ...string) {
 func (m *conversationModel) clearTranscript() {
 	m.transcript = nil
 	m.pendingUserEcho = ""
+	m.lastAssistantText = ""
+	m.plainTurns = nil
 	m.refreshContent()
 	if m.followChat {
 		m.viewport.GotoBottom()
 	}
+}
+
+// rememberAssistant keeps the latest plain agent reply for clipboard yank.
+func (m *conversationModel) rememberAssistant(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	m.lastAssistantText = text
+	m.plainTurns = append(m.plainTurns, plainChatTurn{role: "assistant", text: text})
+}
+
+// rememberUser keeps a plain user turn for /copy all.
+func (m *conversationModel) rememberUser(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	m.plainTurns = append(m.plainTurns, plainChatTurn{role: "user", text: text})
+}
+
+// copyLastAssistant writes the latest agent reply to the system clipboard.
+func (m *conversationModel) copyLastAssistant() {
+	text := strings.TrimSpace(m.lastAssistantText)
+	if text == "" {
+		text = strings.TrimSpace(m.streamingAgent)
+	}
+	if text == "" {
+		m.commandError("nothing to copy yet")
+		return
+	}
+	if err := m.clipboard().WriteAll(text); err != nil {
+		m.commandError("copy failed: " + err.Error())
+		return
+	}
+	m.commandNotice(fmt.Sprintf("Copied last reply (%d characters)", runeLen(text)))
+}
+
+// copyPlainChat writes the full plain-text conversation to the clipboard.
+func (m *conversationModel) copyPlainChat() {
+	if len(m.plainTurns) == 0 {
+		// Fall back to last reply alone when history was not tracked (edge).
+		m.copyLastAssistant()
+		return
+	}
+	var b strings.Builder
+	for i, turn := range m.plainTurns {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		switch turn.role {
+		case "assistant":
+			name := m.agentName
+			if name == "" {
+				name = "Assistant"
+			}
+			b.WriteString(name)
+			b.WriteString(": ")
+		default:
+			b.WriteString("You: ")
+		}
+		b.WriteString(turn.text)
+	}
+	text := b.String()
+	if err := m.clipboard().WriteAll(text); err != nil {
+		m.commandError("copy failed: " + err.Error())
+		return
+	}
+	m.commandNotice(fmt.Sprintf("Copied conversation (%d characters)", runeLen(text)))
+}
+
+// composerIdle reports an empty draft with no active selection — used by
+// idle yank bindings so they never steal text the user is still editing.
+func (m conversationModel) composerIdle() bool {
+	return strings.TrimSpace(m.input.Value()) == "" && !m.editor.selectionActive()
 }
 
 // echoUserTurn renders the user's message into Chat immediately. Typed
@@ -442,6 +542,7 @@ func (m *conversationModel) echoUserTurn(text string) {
 	m.activityFocused = false
 	m.followChat = true
 	m.pendingUserEcho = text
+	m.rememberUser(text)
 	m.appendTranscript(renderUserTurn(text))
 }
 
@@ -582,8 +683,10 @@ func (m *conversationModel) seedTranscript(turns []brain.Turn) {
 	for _, t := range turns {
 		switch t.Role {
 		case "user":
+			m.rememberUser(t.Content)
 			m.appendTranscript(renderSpeakerUserTurn(m.displaySpeakerLabel(t.Speaker), t.Content))
 		case "assistant":
+			m.rememberAssistant(t.Content)
 			m.appendTranscript(renderAgentTurn(m.agentName, t.Content), "")
 		}
 	}
@@ -681,6 +784,7 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		if label == "" {
 			label = m.currentLiveSpeakerLabel()
 		}
+		m.rememberUser(e.Text)
 		m.appendTranscript(renderSpeakerUserTurn(m.displaySpeakerLabel(label), e.Text))
 
 	case events.ThinkingStarted:
@@ -771,6 +875,7 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		// rendered twice, then append the canonical response to the transcript.
 		m.streamingAgent = ""
 		if e.Response != "" {
+			m.rememberAssistant(e.Response)
 			m.appendTranscript(renderAgentTurn(m.agentName, e.Response), "")
 		} else if e.Interrupted {
 			m.refreshContent()
@@ -804,6 +909,7 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		// refresh on a bare interrupted metrics event.
 		if partial := m.streamingAgent; partial != "" {
 			m.streamingAgent = ""
+			m.rememberAssistant(partial)
 			m.appendTranscript(renderAgentTurn(m.agentName, partial), "")
 		}
 		// Idle no-speech timeouts restart listening every ~listen_timeout
