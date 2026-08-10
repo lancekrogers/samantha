@@ -284,6 +284,21 @@ func TestSettingsToolsBargeInAndFrontendToggles(t *testing.T) {
 		return nil
 	}
 
+	// Enabling frontend alone (no barge-in) must caution about over-suppression.
+	m.cursor = toolRowVoiceFrontend
+	m.selectCurrent()
+	if saved["voice_frontend_enabled"] != true || !cfg.VoiceFrontendEnabled {
+		t.Fatalf("frontend enable failed: saved=%v live=%v", saved["voice_frontend_enabled"], cfg.VoiceFrontendEnabled)
+	}
+	if !strings.Contains(m.message, "over-suppress") {
+		t.Fatalf("enabling frontend without barge-in should warn: %q", m.message)
+	}
+	// Turn frontend back off so barge-in-without-AEC path is clean below.
+	m.selectCurrent()
+	if cfg.VoiceFrontendEnabled {
+		t.Fatal("frontend should toggle off")
+	}
+
 	m.cursor = toolRowBargeIn
 	m.selectCurrent()
 	if saved["barge_in_enabled"] != true {
@@ -298,8 +313,8 @@ func TestSettingsToolsBargeInAndFrontendToggles(t *testing.T) {
 	if !strings.Contains(m.message, "Voice frontend") {
 		t.Fatalf("enabling barge-in without AEC should warn: %q", m.message)
 	}
-	if !strings.Contains(m.message, "restart") {
-		t.Fatalf("message should mention restart: %q", m.message)
+	if !strings.Contains(m.message, "new conversation") {
+		t.Fatalf("message should say start a new conversation: %q", m.message)
 	}
 
 	m.cursor = toolRowVoiceFrontend

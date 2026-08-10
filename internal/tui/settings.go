@@ -240,11 +240,19 @@ func (m *settingsModel) selectToolItem() tea.Cmd {
 	}
 	*field = value
 	m.buildToolItems()
-	m.message = fmt.Sprintf("%s %s; restart or re-enter conversation to apply", label, enabledLabel(value))
+	// Pipeline knobs (and tools/skills) are not hot-reloaded when /settings
+	// returns to a live conversation — only a new conversation or process
+	// restart rebuilds capture/VAD/frontend/BargeInVAD.
+	m.message = fmt.Sprintf("%s %s; restart app or start a new conversation to apply", label, enabledLabel(value))
 	// Doctor warns when barge-in is on without the frontend: surface the same
 	// guidance in the status line so Settings users do not need a separate run.
 	if m.cursor == toolRowBargeIn && value && !m.cfg.VoiceFrontendEnabled {
 		m.message += " · enable Voice frontend (AEC) to reduce echo false-triggers"
+	}
+	if m.cursor == toolRowVoiceFrontend && value && !m.cfg.BargeInEnabled {
+		// Frontend alone still runs the noise suppressor, which over-gates
+		// normal speech (see voice_frontend_suppression_test.go).
+		m.message += " · can over-suppress normal speech; intended with barge-in"
 	}
 	if m.cursor == toolRowVoiceFrontend && !value && m.cfg.BargeInEnabled {
 		m.message += " · barge-in is on; echo may self-interrupt without AEC"
