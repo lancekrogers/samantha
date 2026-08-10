@@ -57,6 +57,48 @@ type Enrollment struct {
 	profiles map[string]Profile // key = slug
 }
 
+// LoadEnrollment opens the store only when it already exists on disk.
+// Runtime paths use this so unenrolled installs stay byte-for-byte
+// untouched — no directories are created. Returns (nil, nil) when absent.
+func LoadEnrollment(dir string) (*Enrollment, error) {
+	if strings.TrimSpace(dir) == "" {
+		return nil, nil
+	}
+	if _, err := os.Stat(filepath.Join(dir, profilesFileName)); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("speaker: stat enrollment store: %w", err)
+	}
+	return OpenEnrollment(dir)
+}
+
+// SeedFromStore registers every stored profile whose model revision matches
+// the engine's current embedding model. Stale-revision profiles are skipped
+// and returned by name (re-enroll to refresh them). Engines without seeding
+// support, and nil stores, seed nothing.
+func SeedFromStore(eng Engine, store *Enrollment) (seeded int, skipped []string, err error) {
+	seeder, ok := eng.(EnrolledSeeder)
+	if !ok || store == nil {
+		return 0, nil, nil
+	}
+	rev := seeder.EmbeddingRev()
+	for _, p := range store.List() {
+		if p.ModelRev != rev {
+			skipped = append(skipped, p.Name)
+			continue
+		}
+		embs, err := store.Embeddings(p.Name)
+		if err != nil {
+			return seeded, skipped, err
+		}
+		if err := seeder.SeedEnrolled(p.Name, p.ModelRev, embs); err != nil {
+			return seeded, skipped, err
+		}
+		seeded++
+	}
+	return seeded, skipped, nil
+}
+
 // OpenEnrollment loads (or initializes) the store at dir.
 func OpenEnrollment(dir string) (*Enrollment, error) {
 	if strings.TrimSpace(dir) == "" {

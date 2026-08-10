@@ -75,6 +75,9 @@ Notes:
 			if err != nil {
 				return err
 			}
+			seedEnrolledProfiles(&cfg, engine, func(msg string) {
+				fmt.Fprintln(cmd.ErrOrStderr(), "  warning: "+msg)
+			})
 			analyzer, err := speaker.NewAnalyzer(sp, engine)
 			if err != nil {
 				_ = engine.Close()

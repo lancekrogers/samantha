@@ -75,6 +75,9 @@ type SherpaEngine struct {
 	searchThreshold float32
 	// nextSpeaker allocates speaker-N labels for unrecruited voices.
 	nextSpeaker int
+	// enrolled maps lower-cased seeded names to the embedding model revision
+	// their durable profile was produced with.
+	enrolled map[string]string
 
 	closed bool
 }
@@ -146,6 +149,45 @@ func NewSherpaLiveEngine(cfg Config, modelsDir string) (*SherpaEngine, error) {
 // EmbeddingRev identifies the live embedding model. Enrolled profiles are
 // only comparable to embeddings produced by the same revision.
 func (e *SherpaEngine) EmbeddingRev() string { return sherpaLiveRev }
+
+// SeedEnrolled registers a durable profile's embeddings into the manager so
+// Search resolves the enrolled name before anonymous registration invents a
+// speaker-N for that voice. Callers are responsible for skipping profiles
+// from a different embedding revision (SeedFromStore does).
+func (e *SherpaEngine) SeedEnrolled(name, modelRev string, embeddings [][]float32) error {
+	name = strings.TrimSpace(name)
+	if name == "" || len(embeddings) == 0 {
+		return fmt.Errorf("speaker: seed enrolled: empty name or embeddings")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed || e.manager == nil {
+		return fmt.Errorf("speaker: seed enrolled %q: live identification unavailable", name)
+	}
+	if !e.manager.RegisterV(name, embeddings) {
+		return fmt.Errorf("speaker: seed enrolled %q: manager rejected embeddings", name)
+	}
+	if e.enrolled == nil {
+		e.enrolled = make(map[string]string)
+	}
+	e.enrolled[strings.ToLower(name)] = modelRev
+	return nil
+}
+
+// EnrollRevFor reports the enrollment revision for a seeded label; "" means
+// the label is not an enrolled name.
+func (e *SherpaEngine) EnrollRevFor(label string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.enrolled[strings.ToLower(strings.TrimSpace(label))]
+}
+
+// EnrolledCount reports how many named profiles were seeded.
+func (e *SherpaEngine) EnrolledCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.enrolled)
+}
 
 func (e *SherpaEngine) initLiveEmbedding(modelPath string, threads int) error {
 	ex := sherpa.NewSpeakerEmbeddingExtractor(&sherpa.SpeakerEmbeddingExtractorConfig{

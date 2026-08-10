@@ -100,6 +100,9 @@ func (a *Analyzer) Finalize(ctx context.Context, samples []float32) (Timeline, e
 	if cfg.Meeting.NumSpeakers == 0 {
 		tl = MergeSparseLabels(tl, MergeOpts{})
 	}
+	if res, ok := eng.(EnrolledResolver); ok && res.EnrolledCount() > 0 {
+		tl = a.resolveEnrolledClusters(ctx, eng, res, samples, tl)
+	}
 	tl.FinalizedAt = time.Now()
 
 	summary := Observation{
@@ -180,6 +183,9 @@ func (a *Analyzer) IdentifySegment(ctx context.Context, seg Segment) (Observatio
 	obs.Label = ApplyThreshold(label, conf, th)
 	obs.Confidence = conf
 	obs.State = StateStable
+	if res, ok := eng.(EnrolledResolver); ok && !IsUnknown(obs.Label) {
+		obs.EnrollRev = res.EnrollRevFor(obs.Label)
+	}
 	return obs, nil
 }
 

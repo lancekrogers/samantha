@@ -285,6 +285,7 @@ func prepareMeetingSpeakers(ctx context.Context, cfg *config.Config, capture *au
 	if err != nil {
 		return nil, err
 	}
+	seedEnrolledProfiles(cfg, engine, nil)
 	analyzer, err := speaker.NewAnalyzer(sp, engine)
 	if err != nil {
 		_ = engine.Close()
