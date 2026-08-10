@@ -78,6 +78,9 @@ type SherpaEngine struct {
 	// enrolled maps lower-cased seeded names to the embedding model revision
 	// their durable profile was produced with.
 	enrolled map[string]string
+	// windowMS is the normalized live analysis window; part of EmbeddingRev
+	// because embeddings are only comparable at matching durations.
+	windowMS int
 
 	closed bool
 }
@@ -123,6 +126,7 @@ func NewSherpaEngine(cfg Config, modelsDir string) (*SherpaEngine, error) {
 		diarizer:        native,
 		native:          native,
 		searchThreshold: searchThreshold(cfg),
+		windowMS:        cfg.LiveWindowMS(),
 	}
 	if err := engine.initLiveEmbedding(paths.Embedding, threads); err != nil {
 		_ = engine.Close()
@@ -139,16 +143,21 @@ func NewSherpaLiveEngine(cfg Config, modelsDir string) (*SherpaEngine, error) {
 	if err := requireModelFile("embedding", paths.Embedding); err != nil {
 		return nil, err
 	}
-	engine := &SherpaEngine{searchThreshold: searchThreshold(cfg)}
+	engine := &SherpaEngine{searchThreshold: searchThreshold(cfg), windowMS: cfg.LiveWindowMS()}
 	if err := engine.initLiveEmbedding(paths.Embedding, sherpaThreads()); err != nil {
 		return nil, err
 	}
 	return engine, nil
 }
 
-// EmbeddingRev identifies the live embedding model. Enrolled profiles are
-// only comparable to embeddings produced by the same revision.
-func (e *SherpaEngine) EmbeddingRev() string { return sherpaLiveRev }
+// EmbeddingRev identifies the enrollment recipe: embedding model plus the
+// live analysis window it embeds at. Embeddings are only comparable when
+// both match — the same model at mismatched durations measured FRR 0.80
+// (tests/ownerverify) — so changing speaker.live.window_ms marks stored
+// profiles stale and SeedFromStore skips them with re-enroll messaging.
+func (e *SherpaEngine) EmbeddingRev() string {
+	return fmt.Sprintf("%s-w%d", sherpaLiveRev, e.windowMS)
+}
 
 // SeedEnrolled registers a durable profile's embeddings into the manager so
 // Search resolves the enrolled name before anonymous registration invents a

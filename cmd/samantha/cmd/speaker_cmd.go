@@ -93,7 +93,7 @@ Record a clip on macOS (16 kHz mono):
 			if err != nil {
 				return err
 			}
-			profile, err := speaker.EnrollFromWAVs(cmd.Context(), engine, store, name, engine.EmbeddingRev(), wavs)
+			profile, err := speaker.EnrollFromWAVs(cmd.Context(), engine, store, name, engine.EmbeddingRev(), sp.LiveWindowMS(), wavs)
 			if err != nil {
 				return err
 			}

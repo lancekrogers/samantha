@@ -236,59 +236,71 @@ func TestEnrollFromWAVs(t *testing.T) {
 	}
 
 	// Error cases first.
-	if _, err := EnrollFromWAVs(ctx, eng, store, "lance", "rev", nil); err == nil {
+	if _, err := EnrollFromWAVs(ctx, eng, store, "lance", "rev", 0, []string{"x.wav"}); err == nil {
+		t.Fatal("zero window must fail — callers pass Config.LiveWindowMS")
+	}
+	if _, err := EnrollFromWAVs(ctx, eng, store, "lance", "rev", 1500, nil); err == nil {
 		t.Fatal("no clips must fail")
 	}
-	if _, err := EnrollFromWAVs(ctx, eng, store, "lance", "rev", []string{filepath.Join(dir, "missing.wav")}); err == nil {
+	if _, err := EnrollFromWAVs(ctx, eng, store, "lance", "rev", 1500, []string{filepath.Join(dir, "missing.wav")}); err == nil {
 		t.Fatal("missing clip must fail")
 	}
 	short := writeWAV(t, "short.wav", 0.2, audio.SampleRate)
-	if _, err := EnrollFromWAVs(ctx, eng, store, "lance", "rev", []string{short}); err == nil {
+	if _, err := EnrollFromWAVs(ctx, eng, store, "lance", "rev", 1500, []string{short}); err == nil {
 		t.Fatal("clip under the minimum embed window must fail")
 	}
 	wrongRate := writeWAV(t, "rate.wav", 1.0, 44100)
-	if _, err := EnrollFromWAVs(ctx, eng, store, "lance", "rev", []string{wrongRate}); err == nil {
+	if _, err := EnrollFromWAVs(ctx, eng, store, "lance", "rev", 1500, []string{wrongRate}); err == nil {
 		t.Fatal("wrong sample rate must fail")
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
 	good := writeWAV(t, "good.wav", 1.0, audio.SampleRate)
-	if _, err := EnrollFromWAVs(canceled, eng, store, "lance", "rev", []string{good}); !errors.Is(err, context.Canceled) {
+	if _, err := EnrollFromWAVs(canceled, eng, store, "lance", "rev", 1500, []string{good}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled ctx: %v", err)
 	}
 	if len(store.List()) != 0 {
 		t.Fatal("failed enrollments must not persist")
 	}
 
-	// Happy path: short clips embed whole; long clips split into 1.5s
-	// live-window rows (duration-matched to verification — see
-	// enrollWindowSamples).
+	// Happy path: short clips embed whole; long clips split into
+	// live-window-sized rows (duration-matched to verification).
 	second := writeWAV(t, "good2.wav", 1.5, audio.SampleRate)
 	long := writeWAV(t, "long.wav", 4.0, audio.SampleRate)
-	p, err := EnrollFromWAVs(ctx, eng, store, "Lance", "titanet", []string{good, second, long})
+	p, err := EnrollFromWAVs(ctx, eng, store, "Lance", "titanet", 1500, []string{good, second, long})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 1.0s → 1 whole-clip row; 1.5s → 1 window; 4.0s → 2 windows.
+	// At 1500ms: 1.0s → 1 whole-clip row; 1.5s → 1 window; 4.0s → 2 windows.
 	if p.Samples != 4 || p.Dim != 4 || p.ModelRev != "titanet" {
 		t.Fatalf("profile = %+v", p)
+	}
+
+	// A non-default window resizes the split: at 1000ms, 4.0s → 4 windows.
+	p, err = EnrollFromWAVs(ctx, eng, store, "Lance", "titanet", 1000, []string{long})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Samples != 4 {
+		t.Fatalf("1000ms window over 4s clip: samples = %d, want 4", p.Samples)
 	}
 }
 
 func TestEnrollWindows(t *testing.T) {
+	const window = 3 * audio.SampleRate / 2 // 1.5s default live window
 	cases := []struct {
 		name    string
 		samples int
 		want    int
 	}{
-		{"short clip embeds whole", enrollWindowSamples - 1, 1},
-		{"exactly one window", enrollWindowSamples, 1},
-		{"two windows, remainder dropped", 2*enrollWindowSamples + 100, 2},
-		{"capped at max", 20 * enrollWindowSamples, maxEnrollWindowsPerClip},
+		{"short clip embeds whole", window - 1, 1},
+		{"exactly one window", window, 1},
+		{"two windows, remainder dropped", 2*window + 100, 2},
+		{"capped at max", 20 * window, maxEnrollWindowsPerClip},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := len(enrollWindows(make([]float32, tc.samples))); got != tc.want {
+			if got := len(enrollWindows(make([]float32, tc.samples), window)); got != tc.want {
 				t.Fatalf("enrollWindows(%d samples) = %d windows, want %d", tc.samples, got, tc.want)
 			}
 		})

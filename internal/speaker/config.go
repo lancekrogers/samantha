@@ -117,3 +117,9 @@ func (c Config) LiveThreshold() float32 {
 func (c Config) MeetingThreshold() float32 {
 	return c.Normalize().Threshold
 }
+
+// LiveWindowMS is the live analysis window after Normalize defaults.
+// Enrollment embeds must use this same duration (see EnrollFromWAVs).
+func (c Config) LiveWindowMS() int {
+	return c.Normalize().Live.WindowMS
+}
