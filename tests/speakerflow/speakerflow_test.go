@@ -1,5 +1,5 @@
-//go:build integration
-// +build integration
+//go:build speakerflow
+// +build speakerflow
 
 // Package speakerflow exercises meeting speaker diarization against real
 // multi-voice meeting audio (YouTube product marketing meeting clip).
@@ -10,6 +10,11 @@
 //   - sherpa OfflineSpeakerDiarization runs on real samples
 //   - AttributeTranscript labels utterances from the timeline
 //   - analysis JSON is written beside the fixture
+//
+// Tagged `speakerflow`, not `integration`: the integration tag selects the
+// CGO-free container binary (internal/meeting's speaker files are
+// !integration for exactly that build), while this suite exists to exercise
+// sherpa's native runtime — the two are mutually exclusive by design.
 //
 // Fixture (shared across worktrees — not re-downloaded every run):
 //
