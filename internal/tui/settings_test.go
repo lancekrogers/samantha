@@ -258,6 +258,87 @@ func TestSettingsToolsSkillsRowOllamaOnly(t *testing.T) {
 	}
 }
 
+func TestSettingsToolsBargeInAndFrontendToggles(t *testing.T) {
+	// Voice barge-in + AEC frontend must be reachable from Settings → Tools so
+	// users are not forced to edit yaml / export BARGE_IN_ENABLED.
+	cfg := &config.Config{
+		BrainProvider:        "ollama",
+		BargeInEnabled:       false,
+		VoiceFrontendEnabled: false,
+	}
+	m := newSettings(cfg, nil)
+	m.section = sectionTools
+	if len(m.toolItems) != toolRowCount {
+		t.Fatalf("tool rows = %d, want %d: %v", len(m.toolItems), toolRowCount, m.toolItems)
+	}
+	if !strings.Contains(m.toolItems[toolRowBargeIn], "Voice barge-in") || !strings.Contains(m.toolItems[toolRowBargeIn], "OFF") {
+		t.Fatalf("barge-in row = %q", m.toolItems[toolRowBargeIn])
+	}
+	if !strings.Contains(m.toolItems[toolRowVoiceFrontend], "Voice frontend") || !strings.Contains(m.toolItems[toolRowVoiceFrontend], "OFF") {
+		t.Fatalf("frontend row = %q", m.toolItems[toolRowVoiceFrontend])
+	}
+
+	saved := map[string]any{}
+	m.saveConfig = func(key string, value any) error {
+		saved[key] = value
+		return nil
+	}
+
+	// Enabling frontend alone (no barge-in) must caution about over-suppression.
+	m.cursor = toolRowVoiceFrontend
+	m.selectCurrent()
+	if saved["voice_frontend_enabled"] != true || !cfg.VoiceFrontendEnabled {
+		t.Fatalf("frontend enable failed: saved=%v live=%v", saved["voice_frontend_enabled"], cfg.VoiceFrontendEnabled)
+	}
+	if !strings.Contains(m.message, "over-suppress") {
+		t.Fatalf("enabling frontend without barge-in should warn: %q", m.message)
+	}
+	// Turn frontend back off so barge-in-without-AEC path is clean below.
+	m.selectCurrent()
+	if cfg.VoiceFrontendEnabled {
+		t.Fatal("frontend should toggle off")
+	}
+
+	m.cursor = toolRowBargeIn
+	m.selectCurrent()
+	if saved["barge_in_enabled"] != true {
+		t.Fatalf("saved barge_in_enabled = %v, want true", saved["barge_in_enabled"])
+	}
+	if !cfg.BargeInEnabled {
+		t.Fatal("live BargeInEnabled not flipped")
+	}
+	if !strings.Contains(m.toolItems[toolRowBargeIn], "ON") {
+		t.Fatalf("barge-in row after toggle = %q", m.toolItems[toolRowBargeIn])
+	}
+	if !strings.Contains(m.message, "Voice frontend") {
+		t.Fatalf("enabling barge-in without AEC should warn: %q", m.message)
+	}
+	if !strings.Contains(m.message, "new conversation") {
+		t.Fatalf("message should say start a new conversation: %q", m.message)
+	}
+
+	m.cursor = toolRowVoiceFrontend
+	m.selectCurrent()
+	if saved["voice_frontend_enabled"] != true {
+		t.Fatalf("saved voice_frontend_enabled = %v, want true", saved["voice_frontend_enabled"])
+	}
+	if !cfg.VoiceFrontendEnabled {
+		t.Fatal("live VoiceFrontendEnabled not flipped")
+	}
+	if !strings.Contains(m.toolItems[toolRowVoiceFrontend], "ON") {
+		t.Fatalf("frontend row after toggle = %q", m.toolItems[toolRowVoiceFrontend])
+	}
+
+	// Turning frontend off while barge-in is on should warn about echo.
+	m.selectCurrent()
+	if cfg.VoiceFrontendEnabled {
+		t.Fatal("frontend should toggle off")
+	}
+	if !strings.Contains(m.message, "barge-in") {
+		t.Fatalf("disabling AEC with barge-in on should warn: %q", m.message)
+	}
+}
+
 func TestSettingsSelectTTSProviderPersistsAndRefreshesVoices(t *testing.T) {
 	modelsDir := t.TempDir()
 	writeNativeTUITestInstall(t, modelsDir)

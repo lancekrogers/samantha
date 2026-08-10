@@ -115,10 +115,6 @@ func liveSpeakerStatusStyle(status speaker.LiveStatus) lipgloss.Style {
 	}
 }
 
-func renderLiveSpeakerFooter(stats speaker.LiveStats) string {
-	return renderLiveSpeakerFooterNamed(stats, "")
-}
-
 func renderLiveSpeakerFooterNamed(stats speaker.LiveStats, display string) string {
 	rendered := liveSpeakerStatusStyle(stats.Status).Render(liveSpeakerStatusLabel(stats.Status))
 	label := strings.TrimSpace(display)
