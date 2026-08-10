@@ -44,6 +44,7 @@ func (r *Router) RouteMeeting(ctx context.Context, note RenderedNote, dest Desti
 	if err := ctx.Err(); err != nil {
 		return Receipt{}, err
 	}
+	dest = NormalizeDestination(dest)
 	sink, err := r.sinkFor(dest)
 	if err != nil {
 		return Receipt{

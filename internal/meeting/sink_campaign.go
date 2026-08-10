@@ -62,12 +62,33 @@ func (s CampaignSink) Route(ctx context.Context, note RenderedNote) (Receipt, er
 	}
 
 	capture := NormalizeCampaignCapture(s.Dest.Capture)
-	switch capture {
-	case CaptureIntent, CaptureNote:
+	// Explicit non-meeting note body → lifecycle/note idea add.
+	if capture == CaptureNote {
 		return s.routeIdeaAdd(ctx, campBin, campaign, capture, note)
-	default:
-		return s.routeImportMeeting(ctx, campBin, campaign, note)
 	}
+
+	// Prefer notes/meetings (CI0009) whenever camp can import and the bundle is
+	// available — including capture:intent. Filing meetings as lifecycle
+	// intents under inbox/ is the misroute CI0009 exists to prevent; older
+	// configs and auto-saved destinations often still say capture:intent.
+	hasBundle := strings.TrimSpace(note.Summary.Bundle) != ""
+	if hasBundle {
+		if err := SupportsImportMeeting(ctx, s.Run, s.LookPath); err == nil {
+			return s.routeImportMeeting(ctx, campBin, campaign, note)
+		} else if capture == CaptureMeeting {
+			// Default path: fail closed rather than misfile into inbox.
+			return Receipt{}, err
+		}
+		// capture:intent + old camp without importer → fall through to idea add.
+	} else if capture == CaptureMeeting {
+		return Receipt{}, fmt.Errorf("meeting: import-meeting requires Summary.Bundle (path to the .meeting directory); re-select the recording or use capture: note explicitly")
+	}
+
+	// Legacy: capture:intent without a modern camp, or without a bundle path.
+	if capture == CaptureIntent {
+		return s.routeIdeaAdd(ctx, campBin, campaign, capture, note)
+	}
+	return Receipt{}, fmt.Errorf("meeting: cannot route campaign %q (capture=%s)", campaign, capture)
 }
 
 // NormalizeCampaignCapture maps user-facing capture spellings onto the three
@@ -85,6 +106,15 @@ func NormalizeCampaignCapture(raw string) string {
 		// Unknown values prefer the safe meetings importer.
 		return CaptureMeeting
 	}
+}
+
+// NormalizeDestination fills campaign capture defaults so every route path
+// (TUI auto, picker, serve, CLI) applies the same CI0009 policy.
+func NormalizeDestination(d Destination) Destination {
+	if d.Type == TypeCampaign {
+		d.Capture = NormalizeCampaignCapture(d.Capture)
+	}
+	return d
 }
 
 func (s CampaignSink) routeImportMeeting(ctx context.Context, campBin, campaign string, note RenderedNote) (Receipt, error) {
