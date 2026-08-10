@@ -43,9 +43,11 @@ type Options struct {
 	// Ingress, when set, enables remote push-to-talk (Phase 4 / WI-62e19b).
 	// The serve pipeline's STT must already be wired to this same ingress.
 	Ingress *audio.Ingress
-	// OnListening is called once the TCP listener is bound, before Accept
-	// loops run. Use it to print banners with the real bound address.
-	OnListening func(addr net.Addr)
+	// OnListening is called once every TCP listener is bound, before Accept
+	// loops run. addrs are the actual bound addresses (primary first, deduped,
+	// real ports under :0 requests) — advertise these, never the requested
+	// bind strings.
+	OnListening func(addrs []net.Addr)
 	// IntentSink configures POST /v1/intent (PROTOCOL_DELTAS D3). Optional;
 	// defaults to file mode under credentials Dir/intents.
 	IntentSink IntentSinkConfig
@@ -206,7 +208,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.mu.Unlock()
 
 	if s.opts.OnListening != nil {
-		s.opts.OnListening(lns[0].Addr())
+		s.opts.OnListening(s.Addrs())
 	}
 
 	errCh := make(chan error, len(lns))

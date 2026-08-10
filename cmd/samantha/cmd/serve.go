@@ -318,22 +318,30 @@ func runServe(cfg *config.Config) error {
 			STT:   sttName,
 			TTS:   cfg.TTSProvider,
 		},
-		OnListening: func(bound net.Addr) {
-			// Prefer the real bound address (port 0, dual-stack formatting).
-			listenAddr := bound.String()
-			if listenAddr == "" {
-				listenAddr = addr
+		OnListening: func(bound []net.Addr) {
+			// Advertise the real listener addresses (port 0 resolution,
+			// dedupe, dual-stack formatting), never the requested strings.
+			listenAddr := addr
+			if len(bound) > 0 && bound[0].String() != "" {
+				listenAddr = bound[0].String()
+			}
+			var extras []string
+			if len(bound) > 1 {
+				extras = make([]string, 0, len(bound)-1)
+				for _, a := range bound[1:] {
+					extras = append(extras, a.String())
+				}
 			}
 			allBinds := []string(nil)
-			if len(extraBinds) > 0 {
-				allBinds = append([]string{listenAddr}, extraBinds...)
+			if len(extras) > 0 {
+				allBinds = append([]string{listenAddr}, extras...)
 			}
 			if serveBannerJSON {
 				emitServeBannerJSON(listenAddr, allBinds, creds)
 			} else {
 				printServeBanner(listenAddr, creds, cfg)
-				if len(extraBinds) > 0 {
-					fmt.Fprintln(serveHumanOut, dimStyle.Render("  Also listening: https://"+strings.Join(extraBinds, "  https://")))
+				if len(extras) > 0 {
+					fmt.Fprintln(serveHumanOut, dimStyle.Render("  Also listening: https://"+strings.Join(extras, "  https://")))
 				}
 			}
 			if !serveNoMDNS {
