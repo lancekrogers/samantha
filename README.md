@@ -212,18 +212,23 @@ commands are local — they do not cancel speech recognition or block the chat.
 | `Ctrl+J` | Insert a newline in the draft |
 | Mouse wheel / trackpad, `Page Up` / `Page Down` | Scroll the transcript or focused activity feed |
 | `Ctrl+T` | Focus/unfocus the activity timeline |
+| `Ctrl+Y` | Copy the last assistant reply to the clipboard |
+| `Ctrl+C` (empty composer, after a reply) | Copy the last assistant reply; press again within ~1.5s to quit (`/quit` also exits) |
 | `Ctrl+G` | Pause/resume voice input (capture may stay armed; listening stops) |
 | `Ctrl+O` | Mute/unmute spoken responses (also stops current playback) |
 | `Home` / `End` | Jump to the start/end of the focused feed (on Chat, only when the composer is empty) |
 | `Ctrl+Home` / `Ctrl+End` | Always jump to the start/end of the focused feed |
+| `/copy` | Copy the last assistant reply |
+| `/copy all` | Copy the full plain-text conversation |
 
 Scrolling with the wheel requires Samantha to claim the mouse, which means the
 terminal no longer handles click-drag selection itself. To select and copy
 transcript text, hold **option** (iTerm2), **fn** (Terminal.app), or **shift**
 (kitty, GNOME Terminal, Windows Terminal) while dragging. The claim is held
 only while you are in the conversation — the launcher, settings, and meeting
-screens keep unmodified selection. If you copy from the transcript often, set
-`tui_mouse_enabled: false` to give unmodified selection back everywhere;
+screens keep unmodified selection. Prefer `/copy`, `Ctrl+Y`, or empty-composer
+`Ctrl+C` for the last reply. If you still want unmodified drag selection,
+turn off **Settings → Tools → Mouse scroll** (or set `tui_mouse_enabled: false`);
 `Page Up` / `Page Down` still scroll.
 
 `/vim` enables modal composer editing (`/vim off` disables it). The input label
@@ -635,7 +640,7 @@ Prompt bodies stay in `prompts/` (see `samantha prompts`).
 | `vad_threshold` | `0.6` | `VAD_THRESHOLD` | Speech-detection confidence (raise to ignore background noise) |
 | `vad_min_speech_duration` | `0.25` | `VAD_MIN_SPEECH_DURATION` | Minimum speech length in seconds (raise to ignore brief noises) |
 | `voice_frontend_enabled` | `false` | `VOICE_FRONTEND_ENABLED` | Local AEC/NS/AGC on mic input (off by default: the noise suppressor currently over-suppresses normal-volume speech; enable only with barge-in) |
-| `tui_mouse_enabled` | `true` | `TUI_MOUSE_ENABLED` | Let the wheel/trackpad scroll the transcript. Claiming the mouse means click-drag selection needs a modifier (option/fn/shift); set to `false` for unmodified selection. Read at startup — restart Samantha to apply |
+| `tui_mouse_enabled` | `true` | `TUI_MOUSE_ENABLED` | Let the wheel/trackpad scroll the transcript. Claiming the mouse means click-drag selection needs a modifier (option/fn/shift); set to `false` for unmodified selection. Applies on next enter/leave of conversation (Settings → Tools toggle or re-entry); no full process restart required for the TUI claim |
 | `agent_name` | `Samantha` | | Display name |
 | `persona` | `samantha` | `PERSONA` | Prompt document name for the interactive persona |
 | `prompts_dir` | empty | `PROMPTS_DIR` | Prompt document directory; defaults to `~/.obey/agents/voice/festival-voice/prompts` when unset |

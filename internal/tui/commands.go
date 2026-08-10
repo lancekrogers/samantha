@@ -27,6 +27,7 @@ const (
 	commandSettings
 	commandVoice
 	commandSpeakers
+	commandCopy
 	commandVim
 	commandQuit
 )
@@ -54,6 +55,7 @@ var slashCommands = []slashCommand{
 	{id: commandSettings, name: "/settings", usage: "/settings", description: "Open TUI settings"},
 	{id: commandVoice, name: "/voice", usage: "/voice", description: "Return to voice mode after fallback", aliases: []string{"/v"}},
 	{id: commandSpeakers, name: "/speakers", usage: "/speakers [on|off|status|name|names]", description: "Live speaker labels, renames, and status"},
+	{id: commandCopy, name: "/copy", usage: "/copy [all]", description: "Copy last reply (or full chat) to the clipboard", aliases: []string{"/yank"}},
 	{id: commandVim, name: "/vim", usage: "/vim [on|off|insert]", description: "Toggle modal Vim editing"},
 	{id: commandQuit, name: "/quit", usage: "/quit", description: "Exit Samantha", aliases: []string{"/q", "/exit"}},
 }
@@ -152,7 +154,7 @@ func sharedPrefixLen(a, b string) int {
 }
 
 func (m *conversationModel) executeSlashCommand(command slashCommand, args []string) tea.Cmd {
-	if command.id != commandHelp && command.id != commandVim && command.id != commandSpeakers && len(args) > 0 {
+	if command.id != commandHelp && command.id != commandVim && command.id != commandSpeakers && command.id != commandCopy && len(args) > 0 {
 		m.commandError(fmt.Sprintf("%s does not take arguments", command.name))
 		return m.resumeListening()
 	}
@@ -196,6 +198,9 @@ func (m *conversationModel) executeSlashCommand(command slashCommand, args []str
 	case commandSpeakers:
 		m.configureLiveSpeakers(args)
 		return m.resumeListening()
+	case commandCopy:
+		m.runCopyCommand(args)
+		return m.resumeListening()
 	case commandVim:
 		m.configureVim(args)
 		return m.resumeListening()
@@ -204,6 +209,26 @@ func (m *conversationModel) executeSlashCommand(command slashCommand, args []str
 		return tea.Quit
 	default:
 		return m.resumeListening()
+	}
+}
+
+// runCopyCommand handles /copy [all|last]. Default is last assistant reply.
+func (m *conversationModel) runCopyCommand(args []string) {
+	if len(args) == 0 {
+		m.copyLastAssistant()
+		return
+	}
+	if len(args) > 1 {
+		m.commandError("usage: /copy [all]")
+		return
+	}
+	switch strings.ToLower(args[0]) {
+	case "all", "chat", "full":
+		m.copyPlainChat()
+	case "last", "reply":
+		m.copyLastAssistant()
+	default:
+		m.commandError("usage: /copy [all]")
 	}
 }
 

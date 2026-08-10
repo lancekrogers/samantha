@@ -157,12 +157,14 @@ func (m *settingsModel) buildModelItems() {
 }
 
 // Tools tab row indices — keep in lockstep with buildToolItems().
+// Combined from #212 (barge-in/AEC) and #213 (mouse scroll).
 const (
 	toolRowLocalTools    = 0
 	toolRowSkills        = 1
 	toolRowBargeIn       = 2
 	toolRowVoiceFrontend = 3
-	toolRowCount         = 4
+	toolRowMouse         = 4
+	toolRowCount         = 5
 )
 
 func (m *settingsModel) buildToolItems() {
@@ -184,6 +186,11 @@ func (m *settingsModel) buildToolItems() {
 		fmt.Sprintf("Voice barge-in — %s", enabledLabel(m.cfg.BargeInEnabled)),
 		fmt.Sprintf("Voice frontend (AEC) — %s", enabledLabel(m.cfg.VoiceFrontendEnabled)),
 	)
+	// Mouse claim enables wheel scroll in chat but steals unmodified drag-select.
+	// OFF restores terminal selection; Page Up/Down still scroll either way.
+	m.toolItems = append(m.toolItems,
+		fmt.Sprintf("Mouse scroll (claims mouse) — %s", enabledLabel(m.cfg.TUIMouseEnabled)),
+	)
 }
 
 func enabledLabel(enabled bool) string {
@@ -195,7 +202,7 @@ func enabledLabel(enabled bool) string {
 
 // selectToolItem toggles the focused Tools-tab row and persists it.
 // Pipeline-level knobs (barge-in, voice frontend) only take effect after the
-// conversation is rebuilt — same restart guidance as local tools/skills.
+// conversation is rebuilt; mouse claim applies on next enter/leave of chat.
 func (m *settingsModel) selectToolItem() tea.Cmd {
 	if m.cursor < 0 || m.cursor >= len(m.toolItems) {
 		return nil
@@ -227,6 +234,10 @@ func (m *settingsModel) selectToolItem() tea.Cmd {
 		key, label = "voice_frontend_enabled", "Voice frontend (AEC)"
 		value = !m.cfg.VoiceFrontendEnabled
 		field = &m.cfg.VoiceFrontendEnabled
+	case toolRowMouse:
+		key, label = "tui_mouse_enabled", "Mouse scroll"
+		value = !m.cfg.TUIMouseEnabled
+		field = &m.cfg.TUIMouseEnabled
 	default:
 		return nil
 	}
@@ -240,22 +251,28 @@ func (m *settingsModel) selectToolItem() tea.Cmd {
 	}
 	*field = value
 	m.buildToolItems()
-	// Pipeline knobs (and tools/skills) are not hot-reloaded when /settings
-	// returns to a live conversation — only a new conversation or process
-	// restart rebuilds capture/VAD/frontend/BargeInVAD.
-	m.message = fmt.Sprintf("%s %s; restart app or start a new conversation to apply", label, enabledLabel(value))
-	// Doctor warns when barge-in is on without the frontend: surface the same
-	// guidance in the status line so Settings users do not need a separate run.
-	if m.cursor == toolRowBargeIn && value && !m.cfg.VoiceFrontendEnabled {
-		m.message += " · enable Voice frontend (AEC) to reduce echo false-triggers"
-	}
-	if m.cursor == toolRowVoiceFrontend && value && !m.cfg.BargeInEnabled {
-		// Frontend alone still runs the noise suppressor, which over-gates
-		// normal speech (see voice_frontend_suppression_test.go).
-		m.message += " · can over-suppress normal speech; intended with barge-in"
-	}
-	if m.cursor == toolRowVoiceFrontend && !value && m.cfg.BargeInEnabled {
-		m.message += " · barge-in is on; echo may self-interrupt without AEC"
+	switch m.cursor {
+	case toolRowMouse:
+		// Mouse claim is re-evaluated on conversation enter/leave — no full restart.
+		if value {
+			m.message = "Mouse scroll ON · wheel scrolls chat; hold option/fn/shift to select text · applies when you return to chat"
+		} else {
+			m.message = "Mouse scroll OFF · unmodified drag-select works · PgUp/PgDn still scroll · applies when you return to chat"
+		}
+	default:
+		// Pipeline knobs (and tools/skills) are not hot-reloaded when /settings
+		// returns to a live conversation — only a new conversation or process
+		// restart rebuilds capture/VAD/frontend/BargeInVAD.
+		m.message = fmt.Sprintf("%s %s; restart app or start a new conversation to apply", label, enabledLabel(value))
+		if m.cursor == toolRowBargeIn && value && !m.cfg.VoiceFrontendEnabled {
+			m.message += " · enable Voice frontend (AEC) to reduce echo false-triggers"
+		}
+		if m.cursor == toolRowVoiceFrontend && value && !m.cfg.BargeInEnabled {
+			m.message += " · can over-suppress normal speech; intended with barge-in"
+		}
+		if m.cursor == toolRowVoiceFrontend && !value && m.cfg.BargeInEnabled {
+			m.message += " · barge-in is on; echo may self-interrupt without AEC"
+		}
 	}
 	return nil
 }
