@@ -70,10 +70,10 @@ type settingsModel struct {
 	newPreviewPlayer func() audio.Engine
 	// ensureTTSAssets installs TTS assets; onProgress may be nil (preview) or
 	// feed the Settings install progress bridge.
-	ensureTTSAssets  func(ctx context.Context, cfg *config.Config, onProgress func(name string, pct float64)) error
-	newTTSProvider   func(*config.Config) (tts.Provider, func(), error)
-	saveConfig       func(string, any) error
-	message          string
+	ensureTTSAssets func(ctx context.Context, cfg *config.Config, onProgress func(name string, pct float64)) error
+	newTTSProvider  func(*config.Config) (tts.Provider, func(), error)
+	saveConfig      func(string, any) error
+	message         string
 
 	qwenStatus        managedqwen.Status
 	nativeStatus      managedqwen.NativeStatus
