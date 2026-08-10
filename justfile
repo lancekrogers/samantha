@@ -178,12 +178,14 @@ speakerflow:
     if [[ -n "${SAMANTHA_MEETING_FIXTURE:-}" ]]; then
         fixture="$SAMANTHA_MEETING_FIXTURE"
     else
+        # App cache slug matches config.AppSlug / fetch-meeting-fixture.sh —
+        # never the retired `samantha` slug (WI-afaf92).
         if [[ -n "${SAMANTHA_FIXTURE_CACHE:-}" ]]; then
             cache="${SAMANTHA_FIXTURE_CACHE}"
         elif [[ -n "${XDG_CACHE_HOME:-}" ]]; then
-            cache="${XDG_CACHE_HOME}/samantha/fixtures/meetings"
+            cache="${XDG_CACHE_HOME}/festival-voice/fixtures/meetings"
         else
-            cache="${HOME}/.cache/samantha/fixtures/meetings"
+            cache="${HOME}/.cache/festival-voice/fixtures/meetings"
         fi
         fixture="${cache}/product-marketing-meeting-90s.wav"
     fi
@@ -196,8 +198,8 @@ speakerflow:
         exit 1
     fi
     echo "==> speakerflow: using $fixture"
-    echo "==> speakerflow: integration tests"
-    go test -tags=integration -count=1 -timeout 3m -v ./tests/speakerflow/...
+    echo "==> speakerflow: native fixture tests"
+    go test -tags=speakerflow -count=1 -timeout 3m -v ./tests/speakerflow/...
     if [[ "${SPEAKERFLOW_SKIP_VHS:-}" == "1" ]]; then
         echo "==> speakerflow: skipping VHS (SPEAKERFLOW_SKIP_VHS=1)"
         exit 0
