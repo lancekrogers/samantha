@@ -62,7 +62,7 @@ type conversationModel struct {
 	// for the bus event).
 	pendingUserEcho string
 	// lastAssistantText is the plain body of the latest agent reply (no bubble
-	// chrome) for /copy, y, and idle ctrl+c / ctrl+y yank.
+	// chrome) for /copy and idle ctrl+c / ctrl+y yank.
 	lastAssistantText string
 	// plainTurns mirrors user/assistant bodies for /copy all (scrollback chrome
 	// is ANSI-styled and not clipboard-friendly).
@@ -311,13 +311,9 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 		if msg.String() == "enter" {
 			return m, m.handleSubmit()
 		}
-		// Bare "y" with an empty composer yanks the last reply (mouse claim
-		// makes terminal selection awkward; this is the zero-friction path).
-		if msg.String() == "y" && strings.TrimSpace(m.input.Value()) == "" &&
-			(!m.vim.enabled || m.vim.mode == vimNormal) {
-			m.copyLastAssistant()
-			return m, nil
-		}
+		// Do not bind bare "y" for yank: empty-composer "y" steals the first
+		// letter of ordinary messages (yes/you/yeah). Use Ctrl+Y, /copy, or
+		// idle Ctrl+C instead. Vim NORMAL keeps its own y/yy operators below.
 		if m.vim.enabled {
 			switch m.vim.mode {
 			case vimNormal:

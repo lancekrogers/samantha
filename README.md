@@ -213,7 +213,6 @@ commands are local — they do not cancel speech recognition or block the chat.
 | Mouse wheel / trackpad, `Page Up` / `Page Down` | Scroll the transcript or focused activity feed |
 | `Ctrl+T` | Focus/unfocus the activity timeline |
 | `Ctrl+Y` | Copy the last assistant reply to the clipboard |
-| `y` (empty composer) | Same as `Ctrl+Y` |
 | `Ctrl+C` (empty composer, after a reply) | Copy the last assistant reply (does not quit; use `/quit`) |
 | `Ctrl+G` | Pause/resume voice input (capture may stay armed; listening stops) |
 | `Ctrl+O` | Mute/unmute spoken responses (also stops current playback) |
@@ -228,7 +227,7 @@ transcript text, hold **option** (iTerm2), **fn** (Terminal.app), or **shift**
 (kitty, GNOME Terminal, Windows Terminal) while dragging. The claim is held
 only while you are in the conversation — the launcher, settings, and meeting
 screens keep unmodified selection. Prefer `/copy`, `Ctrl+Y`, or empty-composer
-`y` / `Ctrl+C` for the last reply. If you still want unmodified drag selection,
+`Ctrl+C` for the last reply. If you still want unmodified drag selection,
 turn off **Settings → Tools → Mouse scroll** (or set `tui_mouse_enabled: false`);
 `Page Up` / `Page Down` still scroll.
 

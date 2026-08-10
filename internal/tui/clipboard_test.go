@@ -57,21 +57,19 @@ func TestCopyLastAssistantViaKeysAndCommand(t *testing.T) {
 		t.Fatalf("ctrl+y clipboard = %q", clip.value)
 	}
 
-	// Bare y with empty composer also yanks.
+	// Bare y must type into the composer, even when a reply is ready to yank.
+	// Empty-composer yank would steal the first letter of yes/you/yeah.
 	clip.value = ""
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
-	if clip.value != "Hello from Samantha." {
-		t.Fatalf("y clipboard = %q", clip.value)
-	}
-
-	// Typing y into a non-empty draft must not steal the key.
-	clip.value = ""
-	m.input.SetValue("yes")
-	m.moveCursorToOffset(len([]rune("yes")))
+	m.input.SetValue("")
 	m.syncEditorFromTextarea()
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	for _, r := range []rune{'y', 'e', 's'} {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if got := m.input.Value(); got != "yes" {
+		t.Fatalf("typing yes from empty composer = %q, want yes", got)
+	}
 	if clip.value != "" {
-		t.Fatalf("y while drafting must not copy, clipboard=%q", clip.value)
+		t.Fatalf("bare y must not copy, clipboard=%q", clip.value)
 	}
 
 	// /copy all includes user + assistant plain text.
@@ -121,6 +119,32 @@ func TestIdleCtrlCCopiesLastReplyInsteadOfQuitting(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("expected quit command")
+	}
+}
+
+func TestIdleCtrlCQuitsWhenNothingToCopy(t *testing.T) {
+	app := App{
+		cfg:          &config.Config{},
+		screen:       screenConversation,
+		conversation: sizedConversation(t, 80, 24),
+	}
+	clip := &testClipboard{}
+	app.conversation.deps.clipboard = clip
+	app.conversation.lastAssistantText = ""
+	app.conversation.streamingAgent = ""
+	app.conversation.input.SetValue("")
+	app.conversation.syncEditorFromTextarea()
+
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	app = model.(App)
+	if !app.quitting {
+		t.Fatal("idle ctrl+c with nothing to copy must still quit")
+	}
+	if cmd == nil {
+		t.Fatal("expected quit command")
+	}
+	if clip.value != "" {
+		t.Fatalf("clipboard must stay empty, got %q", clip.value)
 	}
 }
 
