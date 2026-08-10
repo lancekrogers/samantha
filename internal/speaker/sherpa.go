@@ -143,6 +143,10 @@ func NewSherpaLiveEngine(cfg Config, modelsDir string) (*SherpaEngine, error) {
 	return engine, nil
 }
 
+// EmbeddingRev identifies the live embedding model. Enrolled profiles are
+// only comparable to embeddings produced by the same revision.
+func (e *SherpaEngine) EmbeddingRev() string { return sherpaLiveRev }
+
 func (e *SherpaEngine) initLiveEmbedding(modelPath string, threads int) error {
 	ex := sherpa.NewSpeakerEmbeddingExtractor(&sherpa.SpeakerEmbeddingExtractorConfig{
 		Model:      modelPath,
