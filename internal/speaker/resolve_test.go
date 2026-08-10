@@ -2,6 +2,7 @@ package speaker
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -106,6 +107,34 @@ func TestFinalizeResolvesEnrolledClusters(t *testing.T) {
 		if obs := byID[id]; obs.Label != "speaker-3" || obs.State == StateRevised {
 			t.Fatalf("split-vote cluster must stay anonymous: %+v", obs)
 		}
+	}
+}
+
+// cancelAfterDiarizeEngine cancels the Finalize context as Diarize returns,
+// so the enrolled-cluster resolution pass starts with ctx already canceled.
+type cancelAfterDiarizeEngine struct {
+	*FakeEngine
+	cancel context.CancelFunc
+}
+
+func (e *cancelAfterDiarizeEngine) Diarize(ctx context.Context, samples []float32, n int) (Timeline, error) {
+	tl, err := e.FakeEngine.Diarize(ctx, samples, n)
+	e.cancel()
+	return tl, err
+}
+
+func TestFinalizePropagatesCancellationFromResolve(t *testing.T) {
+	inner, samples := resolveFixture()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a, err := NewAnalyzer(meetingTestConfig(), &cancelAfterDiarizeEngine{FakeEngine: inner, cancel: cancel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = a.Close() }()
+
+	if _, err := a.Finalize(ctx, samples); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Finalize after mid-flight cancel = %v, want context.Canceled", err)
 	}
 }
 

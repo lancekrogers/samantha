@@ -101,7 +101,9 @@ func (a *Analyzer) Finalize(ctx context.Context, samples []float32) (Timeline, e
 		tl = MergeSparseLabels(tl, MergeOpts{})
 	}
 	if res, ok := eng.(EnrolledResolver); ok && res.EnrolledCount() > 0 {
-		tl = a.resolveEnrolledClusters(ctx, eng, res, samples, tl)
+		if tl, err = a.resolveEnrolledClusters(ctx, eng, res, samples, tl); err != nil {
+			return Timeline{}, err
+		}
 	}
 	tl.FinalizedAt = time.Now()
 

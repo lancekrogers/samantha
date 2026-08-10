@@ -16,10 +16,12 @@ const maxResolveSpansPerCluster = 3
 // enrolled names when a strict majority of a cluster's longest spans
 // identify as one enrolled profile. Additive: clusters without a majority
 // keep their anonymous label, and spans that already carry a non-anonymous
-// label are never touched. Identify may auto-register unmatched meeting
-// voices into the engine's in-memory manager; that state is scoped to this
-// engine instance and discarded with it.
-func (a *Analyzer) resolveEnrolledClusters(ctx context.Context, eng Engine, res EnrolledResolver, samples []float32, tl Timeline) Timeline {
+// label are never touched. Per-span model failures are best-effort skips;
+// context cancellation is propagated so Finalize never reports success on a
+// canceled pass. Identify may auto-register unmatched meeting voices into
+// the engine's in-memory manager; that state is scoped to this engine
+// instance and discarded with it.
+func (a *Analyzer) resolveEnrolledClusters(ctx context.Context, eng Engine, res EnrolledResolver, samples []float32, tl Timeline) (Timeline, error) {
 	clusters := map[string][]int{}
 	for i, obs := range tl.Observations {
 		if strings.HasPrefix(strings.ToLower(obs.Label), LabelSpeakerPrefix) {
@@ -27,7 +29,7 @@ func (a *Analyzer) resolveEnrolledClusters(ctx context.Context, eng Engine, res 
 		}
 	}
 	if len(clusters) == 0 {
-		return tl
+		return tl, nil
 	}
 
 	a.engineMu.Lock()
@@ -35,13 +37,13 @@ func (a *Analyzer) resolveEnrolledClusters(ctx context.Context, eng Engine, res 
 	a.stateMu.Lock()
 	if a.closed {
 		a.stateMu.Unlock()
-		return tl
+		return tl, nil
 	}
 	a.stateMu.Unlock()
 
 	for _, idxs := range clusters {
-		if ctx.Err() != nil {
-			return tl
+		if err := ctx.Err(); err != nil {
+			return tl, err
 		}
 		votes := map[string]int{}
 		sampled := 0
@@ -52,10 +54,16 @@ func (a *Analyzer) resolveEnrolledClusters(ctx context.Context, eng Engine, res 
 			}
 			emb, err := eng.Embed(ctx, span)
 			if err != nil {
+				if cerr := ctx.Err(); cerr != nil {
+					return tl, cerr
+				}
 				continue
 			}
 			name, _, err := eng.Identify(ctx, emb)
 			if err != nil {
+				if cerr := ctx.Err(); cerr != nil {
+					return tl, cerr
+				}
 				continue
 			}
 			sampled++
@@ -75,7 +83,7 @@ func (a *Analyzer) resolveEnrolledClusters(ctx context.Context, eng Engine, res 
 			}
 		}
 	}
-	return tl
+	return tl, nil
 }
 
 // longestSpans returns up to max observation indices sorted by duration,
