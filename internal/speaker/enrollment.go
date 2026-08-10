@@ -82,6 +82,9 @@ func OpenEnrollment(dir string) (*Enrollment, error) {
 		if err != nil {
 			return nil, fmt.Errorf("speaker: stored profile %q: %w", p.Name, err)
 		}
+		if prev, ok := e.profiles[slug]; ok {
+			return nil, fmt.Errorf("speaker: stored profiles %q and %q collide on key %q", prev.Name, p.Name, slug)
+		}
 		e.profiles[slug] = p
 	}
 	return e, nil
@@ -92,6 +95,8 @@ func (e *Enrollment) Dir() string { return e.dir }
 
 // Add persists a named profile with one embedding row per sample clip,
 // replacing any existing profile with the same (case-insensitive) name.
+// A different name that maps to the same storage key is rejected rather
+// than silently overwriting.
 func (e *Enrollment) Add(ctx context.Context, name, modelRev string, embeddings [][]float32) (Profile, error) {
 	if err := ctx.Err(); err != nil {
 		return Profile{}, err
@@ -126,6 +131,11 @@ func (e *Enrollment) Add(ctx context.Context, name, modelRev string, embeddings 
 		UpdatedAt: now,
 	}
 	if prev, ok := e.profiles[slug]; ok {
+		// Same slug is only a re-enroll when the names match case-insensitively;
+		// distinct names ("Mary Jane" vs "Mary-Jane") must never overwrite.
+		if !strings.EqualFold(strings.TrimSpace(prev.Name), strings.TrimSpace(name)) {
+			return Profile{}, fmt.Errorf("speaker: enroll %q: collides with enrolled profile %q (both stored as %q); remove it first or choose a distinct name", name, prev.Name, slug)
+		}
 		profile.CreatedAt = prev.CreatedAt
 	}
 

@@ -128,6 +128,39 @@ func TestEnrollmentRoundTripAndReplace(t *testing.T) {
 	}
 }
 
+func TestEnrollmentRejectsSlugCollision(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenEnrollment(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	first := [][]float32{{1, 2, 3}}
+	if _, err := store.Add(ctx, "Mary Jane", "rev", first); err != nil {
+		t.Fatal(err)
+	}
+	// Distinct name, same storage key — must be rejected, not overwrite.
+	if _, err := store.Add(ctx, "Mary-Jane", "rev", [][]float32{{9, 9, 9}}); err == nil {
+		t.Fatal("colliding name overwrote existing profile")
+	}
+	got, err := store.Embeddings("Mary Jane")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, first) {
+		t.Fatalf("original embeddings clobbered: %v", got)
+	}
+	profiles := store.List()
+	if len(profiles) != 1 || profiles[0].Name != "Mary Jane" {
+		t.Fatalf("profiles = %+v", profiles)
+	}
+	// Case variants of the SAME name still re-enroll in place.
+	if _, err := store.Add(ctx, "mary jane", "rev", [][]float32{{7, 7, 7}}); err != nil {
+		t.Fatalf("case-variant re-enroll rejected: %v", err)
+	}
+}
+
 func TestEnrollmentRemoveDeletesEmbeddingFile(t *testing.T) {
 	dir := t.TempDir()
 	store, err := OpenEnrollment(dir)
