@@ -67,6 +67,9 @@ type conversationModel struct {
 	// plainTurns mirrors user/assistant bodies for /copy all (scrollback chrome
 	// is ANSI-styled and not clipboard-friendly).
 	plainTurns []plainChatTurn
+	// lastIdleCopyAt arms a second idle Ctrl+C as quit after a yank (review:
+	// first Ctrl+C must not remove the only non-slash exit forever).
+	lastIdleCopyAt time.Time
 
 	bridge      *eventBridge
 	lastMetrics events.TurnMetrics
@@ -161,8 +164,9 @@ type activityEntry struct {
 
 // plainChatTurn is a clipboard-friendly transcript line without bubble styling.
 type plainChatTurn struct {
-	role string // "user" or "assistant"
-	text string
+	role    string // "user" or "assistant"
+	text    string
+	speaker string // optional display label for multi-speaker user turns
 }
 
 func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
@@ -461,17 +465,23 @@ func (m *conversationModel) rememberAssistant(text string) {
 	m.plainTurns = append(m.plainTurns, plainChatTurn{role: "assistant", text: text})
 }
 
-// rememberUser keeps a plain user turn for /copy all.
-func (m *conversationModel) rememberUser(text string) {
+// rememberUser keeps a plain user turn for /copy all. speaker is an optional
+// display label (renamed speaker-N); empty falls back to "You:" when formatting.
+func (m *conversationModel) rememberUser(text string, speaker ...string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
 	}
-	m.plainTurns = append(m.plainTurns, plainChatTurn{role: "user", text: text})
+	label := ""
+	if len(speaker) > 0 {
+		label = strings.TrimSpace(speaker[0])
+	}
+	m.plainTurns = append(m.plainTurns, plainChatTurn{role: "user", text: text, speaker: label})
 }
 
 // copyLastAssistant writes the latest agent reply to the system clipboard.
-func (m *conversationModel) copyLastAssistant() {
+// When fromIdleCtrlC is true, arm a second Ctrl+C within idleCopyQuitWindow as quit.
+func (m *conversationModel) copyLastAssistant(fromIdleCtrlC ...bool) {
 	text := strings.TrimSpace(m.lastAssistantText)
 	if text == "" {
 		text = strings.TrimSpace(m.streamingAgent)
@@ -484,8 +494,17 @@ func (m *conversationModel) copyLastAssistant() {
 		m.commandError("copy failed: " + err.Error())
 		return
 	}
+	if len(fromIdleCtrlC) > 0 && fromIdleCtrlC[0] {
+		m.lastIdleCopyAt = time.Now()
+		m.commandNotice(fmt.Sprintf("Copied last reply (%d characters) · Ctrl+C again to quit · /quit also exits", runeLen(text)))
+		return
+	}
+	m.lastIdleCopyAt = time.Time{}
 	m.commandNotice(fmt.Sprintf("Copied last reply (%d characters)", runeLen(text)))
 }
+
+// idleCopyQuitWindow is how long a second idle Ctrl+C counts as quit after yank.
+const idleCopyQuitWindow = 1500 * time.Millisecond
 
 // copyPlainChat writes the full plain-text conversation to the clipboard.
 func (m *conversationModel) copyPlainChat() {
@@ -508,7 +527,12 @@ func (m *conversationModel) copyPlainChat() {
 			b.WriteString(name)
 			b.WriteString(": ")
 		default:
-			b.WriteString("You: ")
+			if turn.speaker != "" {
+				b.WriteString(turn.speaker)
+				b.WriteString(": ")
+			} else {
+				b.WriteString("You: ")
+			}
 		}
 		b.WriteString(turn.text)
 	}
@@ -679,7 +703,7 @@ func (m *conversationModel) seedTranscript(turns []brain.Turn) {
 	for _, t := range turns {
 		switch t.Role {
 		case "user":
-			m.rememberUser(t.Content)
+			m.rememberUser(t.Content, m.displaySpeakerLabel(t.Speaker))
 			m.appendTranscript(renderSpeakerUserTurn(m.displaySpeakerLabel(t.Speaker), t.Content))
 		case "assistant":
 			m.rememberAssistant(t.Content)
@@ -780,7 +804,7 @@ func (m *conversationModel) handleEvent(e events.Event) {
 		if label == "" {
 			label = m.currentLiveSpeakerLabel()
 		}
-		m.rememberUser(e.Text)
+		m.rememberUser(e.Text, m.displaySpeakerLabel(label))
 		m.appendTranscript(renderSpeakerUserTurn(m.displaySpeakerLabel(label), e.Text))
 
 	case events.ThinkingStarted:

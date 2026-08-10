@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -195,14 +196,19 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.conversation.copySelection()
 				return a, nil
 			}
-			// Idle chat (empty draft): yank the last assistant reply so users
-			// are not stuck when the mouse claim blocks terminal selection.
-			// /quit still exits; with a non-empty draft Ctrl+C keeps quitting.
+			// Idle chat (empty draft): first Ctrl+C yanks the last reply so the
+			// mouse claim does not block copy; a second Ctrl+C within the
+			// arming window falls through to quit (review: keep a non-slash exit).
 			if a.conversation.composerIdle() &&
 				(strings.TrimSpace(a.conversation.lastAssistantText) != "" ||
 					strings.TrimSpace(a.conversation.streamingAgent) != "") {
-				a.conversation.copyLastAssistant()
-				return a, nil
+				armed := !a.conversation.lastIdleCopyAt.IsZero() &&
+					time.Since(a.conversation.lastIdleCopyAt) <= idleCopyQuitWindow
+				if !armed {
+					a.conversation.copyLastAssistant(true)
+					return a, nil
+				}
+				// Second press within the window: continue to quit path below.
 			}
 		}
 		// Meeting owns Ctrl+C as "stop recording" (returns to launcher).

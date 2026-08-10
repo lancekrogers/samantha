@@ -213,7 +213,7 @@ commands are local — they do not cancel speech recognition or block the chat.
 | Mouse wheel / trackpad, `Page Up` / `Page Down` | Scroll the transcript or focused activity feed |
 | `Ctrl+T` | Focus/unfocus the activity timeline |
 | `Ctrl+Y` | Copy the last assistant reply to the clipboard |
-| `Ctrl+C` (empty composer, after a reply) | Copy the last assistant reply (does not quit; use `/quit`) |
+| `Ctrl+C` (empty composer, after a reply) | Copy the last assistant reply; press again within ~1.5s to quit (`/quit` also exits) |
 | `Ctrl+G` | Pause/resume voice input (capture may stay armed; listening stops) |
 | `Ctrl+O` | Mute/unmute spoken responses (also stops current playback) |
 | `Home` / `End` | Jump to the start/end of the focused feed (on Chat, only when the composer is empty) |
@@ -640,7 +640,7 @@ Prompt bodies stay in `prompts/` (see `samantha prompts`).
 | `vad_threshold` | `0.6` | `VAD_THRESHOLD` | Speech-detection confidence (raise to ignore background noise) |
 | `vad_min_speech_duration` | `0.25` | `VAD_MIN_SPEECH_DURATION` | Minimum speech length in seconds (raise to ignore brief noises) |
 | `voice_frontend_enabled` | `false` | `VOICE_FRONTEND_ENABLED` | Local AEC/NS/AGC on mic input (off by default: the noise suppressor currently over-suppresses normal-volume speech; enable only with barge-in) |
-| `tui_mouse_enabled` | `true` | `TUI_MOUSE_ENABLED` | Let the wheel/trackpad scroll the transcript. Claiming the mouse means click-drag selection needs a modifier (option/fn/shift); set to `false` for unmodified selection. Read at startup — restart Samantha to apply |
+| `tui_mouse_enabled` | `true` | `TUI_MOUSE_ENABLED` | Let the wheel/trackpad scroll the transcript. Claiming the mouse means click-drag selection needs a modifier (option/fn/shift); set to `false` for unmodified selection. Applies on next enter/leave of conversation (Settings → Tools toggle or re-entry); no full process restart required for the TUI claim |
 | `agent_name` | `Samantha` | | Display name |
 | `persona` | `samantha` | `PERSONA` | Prompt document name for the interactive persona |
 | `prompts_dir` | empty | `PROMPTS_DIR` | Prompt document directory; defaults to `~/.obey/agents/voice/festival-voice/prompts` when unset |

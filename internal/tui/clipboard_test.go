@@ -107,8 +107,30 @@ func TestIdleCtrlCCopiesLastReplyInsteadOfQuitting(t *testing.T) {
 	if clip.value != "Copy me" {
 		t.Fatalf("clipboard = %q, want Copy me", clip.value)
 	}
+	// Notice should arm second Ctrl+C for quit.
+	if app.conversation.lastIdleCopyAt.IsZero() {
+		t.Fatal("first idle copy should arm quit window")
+	}
+
+	// Second idle Ctrl+C within the window quits.
+	app.quitting = false
+	model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	app = model.(App)
+	if !app.quitting {
+		t.Fatal("second idle ctrl+c must quit")
+	}
+	if cmd == nil {
+		t.Fatal("expected quit command on second ctrl+c")
+	}
 
 	// With a draft, ctrl+c still quits.
+	app = App{
+		cfg:          &config.Config{},
+		screen:       screenConversation,
+		conversation: sizedConversation(t, 80, 24),
+	}
+	app.conversation.deps.clipboard = clip
+	app.conversation.lastAssistantText = "Copy me"
 	app.conversation.input.SetValue("draft")
 	app.conversation.syncEditorFromTextarea()
 	app.quitting = false
@@ -119,6 +141,21 @@ func TestIdleCtrlCCopiesLastReplyInsteadOfQuitting(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("expected quit command")
+	}
+}
+
+func TestCopyAllIncludesSpeakerLabels(t *testing.T) {
+	m := sizedConversation(t, 80, 24)
+	clip := &testClipboard{}
+	m.deps.clipboard = clip
+	m.rememberUser("hello from the floor", "speaker-1")
+	m.rememberAssistant("heard you")
+	m.copyPlainChat()
+	if !strings.Contains(clip.value, "speaker-1: hello from the floor") {
+		t.Fatalf("/copy all missing speaker label: %q", clip.value)
+	}
+	if !strings.Contains(clip.value, "heard you") {
+		t.Fatalf("/copy all missing assistant text: %q", clip.value)
 	}
 }
 
