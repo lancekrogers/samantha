@@ -327,9 +327,19 @@ func atomicWrite(path string, data []byte) error {
 	return nil
 }
 
-// EnrollFromWAVs embeds each 16 kHz mono clip with eng — one embedding row
-// per clip, mirroring sherpa's RegisterV multi-sample enrollment — and
-// persists the named profile in store.
+// enrollWindowSamples matches the live path's 1.5s analysis window.
+// Enrollment embeds must be duration-matched to verification embeds:
+// whole-span embeds of 20-45s audio measured FRR 0.80 against 1.5s verify
+// windows on the meeting fixture; windowed enrollment measured 0.30 at the
+// same 0.00 FAR (tests/ownerverify).
+const enrollWindowSamples = 3 * audio.SampleRate / 2
+
+// maxEnrollWindowsPerClip bounds embeds for very long clips.
+const maxEnrollWindowsPerClip = 8
+
+// EnrollFromWAVs embeds each 16 kHz mono clip with eng in live-window-sized
+// pieces (one row per 1.5s window, whole clip when shorter — sherpa
+// RegisterV multi-sample shape) and persists the named profile in store.
 func EnrollFromWAVs(ctx context.Context, eng Engine, store *Enrollment, name, modelRev string, wavPaths []string) (Profile, error) {
 	if len(wavPaths) == 0 {
 		return Profile{}, fmt.Errorf("speaker: enroll %q: no clips given", name)
@@ -350,11 +360,26 @@ func EnrollFromWAVs(ctx context.Context, eng Engine, store *Enrollment, name, mo
 			return Profile{}, fmt.Errorf("speaker: enroll clip %s: %.2fs of audio, want at least %.1fs",
 				path, float64(len(samples))/float64(audio.SampleRate), float64(minLiveEmbedSamples)/float64(audio.SampleRate))
 		}
-		emb, err := eng.Embed(ctx, samples)
-		if err != nil {
-			return Profile{}, fmt.Errorf("speaker: enroll clip %s: %w", path, err)
+		for _, win := range enrollWindows(samples) {
+			emb, err := eng.Embed(ctx, win)
+			if err != nil {
+				return Profile{}, fmt.Errorf("speaker: enroll clip %s: %w", path, err)
+			}
+			embeddings = append(embeddings, emb)
 		}
-		embeddings = append(embeddings, emb)
 	}
 	return store.Add(ctx, name, modelRev, embeddings)
+}
+
+// enrollWindows splits a clip into live-window-sized pieces; a clip shorter
+// than one window embeds whole.
+func enrollWindows(samples []float32) [][]float32 {
+	if len(samples) < enrollWindowSamples {
+		return [][]float32{samples}
+	}
+	out := make([][]float32, 0, maxEnrollWindowsPerClip)
+	for start := 0; start+enrollWindowSamples <= len(samples) && len(out) < maxEnrollWindowsPerClip; start += enrollWindowSamples {
+		out = append(out, samples[start:start+enrollWindowSamples])
+	}
+	return out
 }

@@ -70,9 +70,9 @@ func newPersonas(cfg *config.Config) personasModel {
 		loadPromptForProfile: persona.LoadSystemPromptForProfile,
 		defaultPrompt:        persona.DefaultSystemPrompt,
 		starterPrompt:        persona.StarterSystemPrompt,
-		nameInput:       newPersonaCreateInput(),
-		promptTA:        newPromptEditor(),
-		brainModelInput: newPersonaStackInput("empty = provider default"),
+		nameInput:            newPersonaCreateInput(),
+		promptTA:             newPromptEditor(),
+		brainModelInput:      newPersonaStackInput("empty = provider default"),
 	}
 	m.reload()
 	return m

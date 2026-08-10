@@ -144,8 +144,8 @@ type RouteReceipt struct {
 // Status is the GET /v1/meeting/{id} payload. MissingSeqs is truncated to
 // maxReportedMissing entries; MissingCount is always the true total.
 type Status struct {
-	MeetingID    string              `json:"meeting_id"`
-	State        State               `json:"state"`
+	MeetingID string `json:"meeting_id"`
+	State     State  `json:"state"`
 	// Step names the pipeline stage while State is processing — transcribing,
 	// filing ideas, diarizing — so the phone can show what is actually
 	// happening instead of an anonymous spinner. Empty outside processing.

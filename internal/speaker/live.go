@@ -47,6 +47,9 @@ type LiveStats struct {
 	LastError             string
 	// LastLabel is the most recent stable/provisional speaker id (indicator mode).
 	LastLabel string
+	// LastEnrollRev is the enrollment revision behind LastLabel; empty when
+	// the last label is anonymous or unknown (owner-verify consults this).
+	LastEnrollRev string
 }
 
 type liveFrame struct{ segment Segment }
@@ -60,15 +63,16 @@ type LiveAdapter struct {
 	frames   chan liveFrame
 	events   chan Event
 
-	mu       sync.Mutex
-	closed   bool
-	enabled  bool
-	status   LiveStatus
-	lastErr  string
-	session  uint64
-	sequence uint64
-	previous string
-	wg       sync.WaitGroup
+	mu          sync.Mutex
+	closed      bool
+	enabled     bool
+	status      LiveStatus
+	lastErr     string
+	session     uint64
+	sequence    uint64
+	previous    string
+	previousRev string
+	wg          sync.WaitGroup
 
 	dropped               atomic.Uint64
 	processed             atomic.Uint64
@@ -197,6 +201,7 @@ func (a *LiveAdapter) process(segment Segment) {
 			ev.Kind = EventSpeakerChanged
 		}
 		a.previous = obs.Label
+		a.previousRev = obs.EnrollRev
 	}
 	select {
 	case a.events <- ev:
@@ -242,6 +247,7 @@ func (a *LiveAdapter) Reset() error {
 	a.session++
 	a.sequence = 0
 	a.previous = ""
+	a.previousRev = ""
 	return nil
 }
 
@@ -260,6 +266,7 @@ func (a *LiveAdapter) Stats() LiveStats {
 		LastResponsePathNanos: a.lastResponsePathNanos.Load(),
 		LastError:             a.lastErr,
 		LastLabel:             a.previous,
+		LastEnrollRev:         a.previousRev,
 	}
 }
 
