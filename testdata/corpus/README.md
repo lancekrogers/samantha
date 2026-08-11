@@ -63,9 +63,13 @@ the corpus is empty and enforces strictly once it is not.
 
 ## Feeding it to the benchmark
 
-`just bench corpus-args` expands the manifest into the repeatable
-`--audio-fixture` / `--expect-text` flags `samantha benchmark` already accepts,
-so nothing in the Go benchmark plumbing needed changing to consume it.
+`just bench corpus-args` expands the manifest into repeatable
+`--full-turn-fixture` / `--expect-text` flags.
+
+It is `--full-turn-fixture`, not `--audio-fixture`: the latter stops at the
+final transcript and never reaches the brain or TTS, so it cannot measure a
+turn. See `003_MEASURE/FINDINGS.md` in the festival for why that distinction
+cost a round of rework.
 
 ## Git
 

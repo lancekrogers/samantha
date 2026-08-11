@@ -49,6 +49,16 @@ corpus-check:
     total=$(jq '.samples | length' "$manifest")
     echo "  samples: $total"
 
+    # An unrecorded corpus is a valid state, not a failure: recording is a human
+    # step. tests/corpus skips on empty for the same reason - the two validators
+    # must agree, or the documented command is red on a fresh clone and people
+    # learn to ignore it.
+    if [[ "$total" -eq 0 ]]; then
+        echo ""
+        echo "  corpus not recorded yet — run: just bench record"
+        exit 0
+    fi
+
     # Every listed WAV must exist. A manifest referencing a missing file is worse
     # than an empty one: the benchmark would silently score fewer samples.
     while read -r p; do
@@ -81,4 +91,4 @@ corpus-check:
 
 [doc('Print manifest as repeatable --full-turn-fixture/--expect-text benchmark flags')]
 corpus-args:
-    @cd "{{repo}}" && jq -r '.samples[] | "--full-turn-fixture=testdata/corpus/\(.path) --expect-text=\(.expect)"' testdata/corpus/manifest.json | tr '\n' ' '
+    @cd "{{repo}}" && jq -r '.samples[] | "--full-turn-fixture=testdata/corpus/\(.path)", "--expect-text=\(.expect)"' testdata/corpus/manifest.json

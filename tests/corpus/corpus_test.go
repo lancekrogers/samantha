@@ -1,4 +1,4 @@
-// Package main validates the recorded utterance corpus manifest.
+// Package corpus validates the recorded utterance corpus manifest.
 //
 // The corpus feeds the committed latency baseline and the batch-vs-streaming
 // STT accuracy comparison. Both read testdata/corpus/manifest.json, so a

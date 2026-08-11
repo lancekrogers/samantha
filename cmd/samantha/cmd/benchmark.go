@@ -104,13 +104,13 @@ var benchmarkCmd = &cobra.Command{
 }
 
 func init() {
-	benchmarkCmd.Flags().StringSliceVar(&benchmarkPrompts, "prompt", nil, "Benchmark prompt (repeatable)")
+	benchmarkCmd.Flags().StringArrayVar(&benchmarkPrompts, "prompt", nil, "Benchmark prompt (repeatable)")
 	benchmarkCmd.Flags().StringVar(&benchmarkJSONOutput, "json", "", "Write benchmark results to a JSON file")
 	benchmarkCmd.Flags().IntVar(&benchmarkIterations, "iterations", 1, "Number of times to run each benchmark prompt")
-	benchmarkCmd.Flags().StringSliceVar(&benchmarkAudioFixtures, "audio-fixture", nil, "WAV fixture for STT benchmarking (repeatable)")
-	benchmarkCmd.Flags().StringSliceVar(&benchmarkFullTurnFixtures, "full-turn-fixture", nil, "WAV fixture driven through the full voice turn: capture, VAD, STT, brain, TTS (repeatable)")
-	benchmarkCmd.Flags().StringSliceVar(&benchmarkExpectedTranscripts, "expect-text", nil, "Expected transcript for each fixture (repeatable)")
-	benchmarkCmd.Flags().StringSliceVar(&benchmarkSTTProviders, "stt-provider", nil, "STT provider(s) to benchmark in fixture mode (repeatable)")
+	benchmarkCmd.Flags().StringArrayVar(&benchmarkAudioFixtures, "audio-fixture", nil, "WAV fixture for STT benchmarking (repeatable)")
+	benchmarkCmd.Flags().StringArrayVar(&benchmarkFullTurnFixtures, "full-turn-fixture", nil, "WAV fixture driven through the full voice turn: capture, VAD, STT, brain, TTS (repeatable)")
+	benchmarkCmd.Flags().StringArrayVar(&benchmarkExpectedTranscripts, "expect-text", nil, "Expected transcript for each fixture (repeatable)")
+	benchmarkCmd.Flags().StringArrayVar(&benchmarkSTTProviders, "stt-provider", nil, "STT provider(s) to benchmark in fixture mode (repeatable)")
 	benchmarkCmd.Flags().BoolVar(&benchmarkFixtureRealtime, "fixture-realtime", true, "Replay fixture audio in real time for latency measurements")
 	benchmarkCmd.Flags().DurationVar(&benchmarkMaxTotal, "max-total", 0, "Fail when total benchmark time exceeds this duration")
 	benchmarkCmd.Flags().DurationVar(&benchmarkMaxFirstModelChunk, "max-first-model-chunk", 0, "Fail when first model chunk exceeds this duration")
@@ -218,16 +218,25 @@ func runFullTurnBenchmarks(ctx context.Context, cfg *config.Config) ([]benchmark
 				if err != nil {
 					result.Errors = append(result.Errors, benchmarkErrorLog{Stage: "benchmark", Message: err.Error()})
 				}
-				result.Violations = append(evaluateTextThresholds(result), evaluateSTTThresholds(result)...)
+				result.Violations = fullTurnViolations(result)
 				results = append(results, result)
 
 				if ctx.Err() != nil {
-					return results, nil
+					// Surface the cancellation: a truncated run must not be
+					// written as if it were a complete one.
+					return results, ctx.Err()
 				}
 			}
 		}
 	}
 	return results, nil
+}
+
+// fullTurnViolations evaluates a full-turn result against both threshold
+// families: a turn crosses the latency budgets and the transcript budget, and
+// checking only one would let the other regress unnoticed.
+func fullTurnViolations(result benchmarkResult) []string {
+	return append(evaluateTextThresholds(result), evaluateSTTThresholds(result)...)
 }
 
 // runSingleFullTurnBenchmark builds a pipeline whose microphone is a WAV and

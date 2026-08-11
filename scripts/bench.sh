@@ -39,10 +39,6 @@ command -v jq >/dev/null 2>&1 || { echo "error: jq is required" >&2; exit 1; }
 
 mkdir -p "$BENCH_DIR"
 
-# The metric the latency track is judged on: time from turn start to audio
-# actually starting to play. Nanoseconds in the raw output.
-METRIC="PlaybackStartElapsed"
-
 # Read one config value. `samantha config <key>` prints "  key = value" with
 # ANSI styling; strip both.
 cfg_get() {
@@ -60,7 +56,7 @@ provenance() {
 		--arg cpu "$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)" \
 		--arg os "$(sw_vers -productName 2>/dev/null || uname -s) $(sw_vers -productVersion 2>/dev/null || uname -r)" \
 		--arg commit "$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)" \
-		--arg dirty "$(git -C "$REPO_ROOT" diff --quiet 2>/dev/null && echo clean || echo dirty)" \
+		--arg dirty "$(git -C "$REPO_ROOT" diff --quiet 2>/dev/null && git -C "$REPO_ROOT" diff --cached --quiet 2>/dev/null && echo clean || echo dirty)" \
 		--arg persona "$(cfg_get active_persona)" \
 		--arg provider "${BRAIN_PROVIDER:-$(cfg_get brain_provider)}" \
 		--arg model "${OLLAMA_MODEL:-$(cfg_get ollama_model)}" \
@@ -73,20 +69,49 @@ provenance() {
 		  recorded_at: $at}'
 }
 
-# A comparison across different hardware OR a different model is meaningless.
+# A comparison across different hardware, model or fixture kind is meaningless.
+# Both sides are read from their envelopes: FIXTURE_KIND is set inside measure(),
+# which runs in a command substitution, so it cannot be read from a variable here.
 warn_if_incomparable() {
-	local file="$1" field label current
-	for pair in "machine:$(sysctl -n hw.model 2>/dev/null || echo unknown)" \
-	            "brain_model:${OLLAMA_MODEL:-$(cfg_get ollama_model)}" \
-	            "fixtures:${FIXTURE_KIND:-unknown}"; do
-		field="${pair%%:*}"; current="${pair#*:}"
-		label="$(jq -r --arg f "$field" '.provenance[$f] // "unknown"' "$file")"
-		if [[ "$label" != "$current" ]]; then
+	local base="$1" cur="$2" field was now
+	for field in machine brain_model fixtures; do
+		was="$(jq -r --arg f "$field" '.provenance[$f] // "unknown"' "$base")"
+		now="$(jq -r --arg f "$field" '.provenance[$f] // "unknown"' "$cur")"
+		if [[ "$was" != "$now" ]]; then
 			echo ""
-			echo "  ⚠ ${field} mismatch: baseline recorded with '${label}', running with '${current}'"
+			echo "  ⚠ ${field} mismatch: baseline recorded with '${was}', running with '${now}'"
 			echo "    these numbers are not comparable; re-baseline to use the diff"
 		fi
 	done
+}
+
+# B2 guard: a run in which turns failed must never read as a clean pass.
+require_clean_run() {
+	local file="$1" n
+	n="$(jq '[.results[] | select((.errors // []) | length > 0)] | length' "$file")"
+	if [[ "$n" -gt 0 ]]; then
+		echo "" >&2
+		echo "  ✗ ${n} turn(s) reported errors — the measurement is not trustworthy:" >&2
+		jq -r '.results[] | select((.errors // []) | length > 0)
+			| "      \(.fixture | split("/") | last): \(.errors[0].message)"' "$file" >&2 | sort -u
+		return 1
+	fi
+}
+
+# B2 guard: comparing across different fixture sets silently changes the
+# population. A fixture that errors out drops from group_by and can make the
+# median improve.
+require_same_fixtures() {
+	local base="$1" cur="$2" a b
+	a="$(jq -r '[.results[] | .fixture | split("/") | last] | unique | join(",")' "$base")"
+	b="$(jq -r '[.results[] | .fixture | split("/") | last] | unique | join(",")' "$cur")"
+	if [[ "$a" != "$b" ]]; then
+		echo "" >&2
+		echo "  ✗ fixture set differs from the baseline — medians are not comparable" >&2
+		echo "      baseline: ${a}" >&2
+		echo "      current:  ${b}" >&2
+		return 1
+	fi
 }
 
 # The fixed sentences behind the synthetic fixtures. Changing this list changes
@@ -109,15 +134,23 @@ ensure_synth_fixtures() {
 	[[ "$missing" -eq 1 ]] || return 0
 
 	echo "  generating synthetic fixtures in ${SYNTH_DIR} ..." >&2
-	local gtts
-	gtts="$(mktemp -d)/golden-tts"
+	local tmpdir gtts out
+	tmpdir="$(mktemp -d)"
+	gtts="${tmpdir}/golden-tts"
 	(cd "$REPO_ROOT" && go build -o "$gtts" ./cmd/golden-tts) || {
-		echo "error: could not build cmd/golden-tts" >&2; return 1; }
+		rm -rf "$tmpdir"; echo "error: could not build cmd/golden-tts" >&2; return 1; }
 	i=0
 	for text in "${SYNTH_TEXTS[@]}"; do
 		i=$((i + 1))
-		"$gtts" -text "$text" -out "${SYNTH_DIR}/synth-$(printf '%02d' "$i").wav" >/dev/null 2>&1
+		out="${SYNTH_DIR}/synth-$(printf '%02d' "$i").wav"
+		if ! "$gtts" -text "$text" -out "$out" >/dev/null 2>&1 || [[ ! -s "$out" ]]; then
+			rm -rf "$tmpdir"
+			rm -f "$out"
+			echo "error: failed to synthesize fixture ${i} (is the TTS model installed?)" >&2
+			return 1
+		fi
 	done
+	rm -rf "$tmpdir"
 }
 
 # Expand the synthetic set into full-turn benchmark arguments.
@@ -142,9 +175,24 @@ corpus_args() {
 		'.samples[] | "--full-turn-fixture=\($root)/testdata/corpus/\(.path)", "--expect-text=\(.expect)"' "$MANIFEST"
 }
 
+# M5 guard: a run whose model or machine is unknown cannot be compared against
+# anything, which is the whole point of recording provenance.
+require_comparable_provenance() {
+	local file="$1" v
+	for field in machine brain_model; do
+		v="$(jq -r --arg f "$field" '.provenance[$f] // ""' "$file")"
+		if [[ -z "$v" || "$v" == "unknown" ]]; then
+			echo "error: provenance.${field} is empty - set it (e.g. OLLAMA_MODEL=...) before recording an artifact" >&2
+			return 1
+		fi
+	done
+}
+
 measure() {
 	local raw envelope
 	raw="$(mktemp)"
+	envelope="$(mktemp)"
+	trap 'rm -f "$raw"' RETURN
 	local args=() kind="recorded corpus"
 	while IFS= read -r a; do [[ -n "$a" ]] && args+=("$a"); done < <(corpus_args)
 	if [[ ${#args[@]} -eq 0 ]]; then
@@ -161,7 +209,6 @@ measure() {
 
 	[[ -s "$raw" ]] || { echo "error: benchmark produced no JSON (is a brain provider reachable?)" >&2; exit 1; }
 
-	envelope="$(mktemp)"
 	jq -n \
 		--argjson provenance "$(provenance)" \
 		--argjson results "$(cat "$raw")" \
@@ -171,7 +218,6 @@ measure() {
 		  provenance: $provenance,
 		  thresholds: {playback_start_p50_ms: $target, regression_tolerance_pct: $tolerance},
 		  results: $results}' >"$envelope"
-	rm -f "$raw"
 	echo "$envelope"
 }
 
@@ -193,14 +239,20 @@ measure() {
 #           chunking and first-sentence-length changes move. Reported.
 stage_table() {
 	jq -r '
+		# True median: with the default 3 iterations each fixture has 2 warm
+		# samples, and taking the lower element would silently report the
+		# faster of two runs as if it were typical.
+		def med: sort | if length == 0 then null
+			elif length % 2 == 1 then .[(length - 1) / 2]
+			else (.[length / 2 - 1] + .[length / 2]) / 2 end;
 		[.results[] | select(.iteration > 1) | select(.metrics.STTFinalElapsed > 0)]
 		| group_by(.fixture)
 		| map({
 			fixture: (.[0].fixture | split("/") | last),
 			n: length,
-			stt:   ([.[] | .metrics.STTFinalElapsed / 1000000] | sort | .[(length - 1) / 2 | floor]),
-			model: ([.[] | (.metrics.FirstModelChunkElapsed - .metrics.STTFinalElapsed) / 1000000] | sort | .[(length - 1) / 2 | floor]),
-			synth: ([.[] | (.metrics.FirstAudioReadyElapsed - .metrics.FirstSegmentElapsed) / 1000000] | sort | .[(length - 1) / 2 | floor])
+			stt:   ([.[] | .metrics.STTFinalElapsed / 1000000] | med),
+			model: ([.[] | (.metrics.FirstModelChunkElapsed - .metrics.STTFinalElapsed) / 1000000] | med),
+			synth: ([.[] | (.metrics.FirstAudioReadyElapsed - .metrics.FirstSegmentElapsed) / 1000000] | med)
 		})
 		| .[] | "\(.fixture)\t\(.n)\t\(.stt)\t\(.model)\t\(.synth)"' "$1"
 }
@@ -215,7 +267,11 @@ print_stages() {
 # Gated metric: median stt stage across fixtures. Reported for a quick headline.
 stt_median() {
 	stage_table "$1" | awk -F'\t' '{print $3}' | sort -n |
-		awk '{a[NR]=$1} END {if (NR==0) print "null"; else print a[int((NR+1)/2)]}'
+		awk '{a[NR]=$1} END {
+			if (NR == 0) { print "null" }
+			else if (NR % 2) { print a[(NR + 1) / 2] }
+			else { print (a[NR / 2] + a[NR / 2 + 1]) / 2 }
+		}'
 }
 
 case "${1:-diff}" in
@@ -227,9 +283,19 @@ run)
 	;;
 
 baseline)
+	# M6: the reference numbers must be attributable to committed code.
+	if [[ "$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | grep -vc '^??')" != "0" && -z "${BENCH_ALLOW_DIRTY:-}" ]]; then
+		echo "error: worktree is dirty — a baseline recorded from uncommitted code cannot be reproduced" >&2
+		echo "       commit first, or set BENCH_ALLOW_DIRTY=1 to override deliberately" >&2
+		exit 1
+	fi
 	env_file="$(measure)"
+	trap 'rm -f "$env_file"' EXIT
+	require_clean_run "$env_file" || exit 1
+	require_comparable_provenance "$env_file" || exit 1
 	med="$(stt_median "$env_file")"
 	[[ "$med" != "null" ]] || { echo "error: no completed turns - refusing to write a baseline with no data" >&2; exit 1; }
+	trap - EXIT
 	mv "$env_file" "$BASELINE"
 	print_stages "$BASELINE"
 	echo ""
@@ -243,6 +309,8 @@ baseline)
 save)
 	label="${2:?usage: bench.sh save <label>   e.g. bench.sh save L1}"
 	env_file="$(measure)"
+	require_clean_run "$env_file" || { rm -f "$env_file"; exit 1; }
+	require_comparable_provenance "$env_file" || { rm -f "$env_file"; exit 1; }
 	out="${BENCH_DIR}/${label}-$(date -u +%Y-%m-%d).json"
 	mv "$env_file" "$out"
 	print_stages "$out"
@@ -254,12 +322,15 @@ save)
 diff)
 	[[ -f "$BASELINE" ]] || { echo "error: no baseline at $BASELINE (run: just bench baseline)" >&2; exit 1; }
 	env_file="$(measure)"
+	trap 'rm -f "$env_file"' EXIT
+	require_clean_run "$env_file" || exit 1
+	require_same_fixtures "$BASELINE" "$env_file" || exit 1
+
 	now="$(stt_median "$env_file")"
 	base="$(stt_median "$BASELINE")"
+	[[ "$now" != "null" && "$base" != "null" ]] || { echo "error: no completed turns on one side" >&2; exit 1; }
 
-	[[ "$now" != "null" && "$base" != "null" ]] || { echo "error: no completed turns on one side" >&2; rm -f "$env_file"; exit 1; }
-
-	warn_if_incomparable "$BASELINE"
+	warn_if_incomparable "$BASELINE" "$env_file"
 
 	echo ""
 	echo "  baseline:"
@@ -267,7 +338,6 @@ diff)
 	echo ""
 	echo "  current:"
 	print_stages "$env_file"
-	rm -f "$env_file"
 
 	delta_pct="$(jq -n --argjson n "$now" --argjson b "$base" '(($n - $b) / $b) * 100')"
 	printf "\n  gated metric (median stt stage): %.0f ms -> %.0f ms   %+.1f%%  (fail above +%s%%)\n\n" \

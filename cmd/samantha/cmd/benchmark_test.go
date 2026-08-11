@@ -241,17 +241,16 @@ func TestFullTurnBenchmarkRejectsMismatchedExpectations(t *testing.T) {
 // A full turn crosses both the latency and the transcript budgets, so its
 // results must be evaluated against both threshold families.
 func TestFullTurnResultsCarryBothThresholdFamilies(t *testing.T) {
-	defer restoreBenchmarkFlags()()
+	savedPlayback, savedScore := benchmarkMaxPlaybackStart, benchmarkMinTranscriptScore
+	defer func() {
+		benchmarkMaxPlaybackStart, benchmarkMinTranscriptScore = savedPlayback, savedScore
+	}()
 	benchmarkMaxPlaybackStart = 500 * time.Millisecond
 	benchmarkMinTranscriptScore = 0.9
-	defer func() {
-		benchmarkMaxPlaybackStart = 0
-		benchmarkMinTranscriptScore = 0
-	}()
 
 	result := benchmarkResult{Mode: "voice", TranscriptScore: 0.5}
 	result.Metrics.PlaybackStartElapsed = 900 * time.Millisecond
-	violations := append(evaluateTextThresholds(result), evaluateSTTThresholds(result)...)
+	violations := fullTurnViolations(result)
 
 	var sawLatency, sawScore bool
 	for _, v := range violations {

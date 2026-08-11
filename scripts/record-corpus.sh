@@ -63,10 +63,17 @@ echo ""
 echo "Input device: ${DEVICE}  (override with AUDIO_DEVICE, list with --devices)"
 echo ""
 
+# Index from the manifest, then skip past any file already on disk. A recording
+# interrupted between ffmpeg finishing and the manifest append leaves an orphan
+# WAV; without this it would be silently overwritten by ffmpeg -y.
 next_index() {
 	local cat="$1" n
 	n=$(jq --arg c "$cat" '[.samples[] | select(.category == $c)] | length' "$MANIFEST")
-	printf "%02d" "$((n + 1))"
+	n=$((n + 1))
+	while [[ -e "${CORPUS_DIR}/${cat}-$(printf '%02d' "$n").wav" ]]; do
+		n=$((n + 1))
+	done
+	printf "%02d" "$n"
 }
 
 append_sample() {
@@ -116,7 +123,16 @@ while true; do
 		continue
 	fi
 
-	DURATION="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$OUT" 2>/dev/null || echo "?")"
+	# ffmpeg patches the RIFF sizes on finalize, so a killed recording leaves a
+	# non-empty but unreadable file. Require a plausible duration before the
+	# manifest is allowed to reference it.
+	DURATION="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$OUT" 2>/dev/null || echo "")"
+	if [[ -z "$DURATION" ]] || ! awk -v d="$DURATION" 'BEGIN { exit !(d > 0.3) }'; then
+		echo "  ✗ recording looks truncated or unreadable (duration: ${DURATION:-unknown}) - discarded"
+		rm -f "$OUT"
+		echo ""
+		continue
+	fi
 	append_sample "$NAME" "$EXPECT" "$CATEGORY" "$NOTES"
 	echo "  ✓ saved ${NAME} (${DURATION}s) and added to manifest.json"
 	echo ""
