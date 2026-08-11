@@ -22,6 +22,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/netapi"
+	"github.com/lancekrogers/samantha/internal/persona"
 	"github.com/lancekrogers/samantha/internal/pipeline"
 	"github.com/lancekrogers/samantha/internal/session"
 	"github.com/lancekrogers/samantha/internal/stt"
@@ -31,6 +32,7 @@ import (
 const defaultServePort = 7262 // "SAMA"
 
 var (
+	servePersona      string
 	serveBind         string
 	servePort         int
 	serveNoVoice      bool
@@ -104,11 +106,22 @@ remote_tools_enabled is set.`,
 		if err != nil {
 			return fmt.Errorf("load config: %w", err)
 		}
+		// --persona overrides the active persona for this process only.
+		// config.Load already applied the configured persona via the
+		// SetAfterLoad hook, so this simply re-binds to a different one.
+		if id := strings.TrimSpace(servePersona); id != "" {
+			binding, err := persona.ResolveBinding(cfg, id)
+			if err != nil {
+				return fmt.Errorf("resolve persona: %w", err)
+			}
+			cfg = binding.Config()
+		}
 		return runServe(cfg)
 	},
 }
 
 func init() {
+	serveCmd.Flags().StringVar(&servePersona, "persona", "", "Serve as this persona for this process only (never persisted)")
 	serveCmd.Flags().StringVar(&serveBind, "bind", "", "IP(s) to bind, comma-separated (default: auto-detected private LAN address + 127.0.0.1)")
 	serveCmd.Flags().IntVar(&servePort, "port", defaultServePort, "Port to listen on")
 	serveCmd.Flags().BoolVar(&serveNoVoice, "no-voice", false, "Do not speak responses through the local speaker")

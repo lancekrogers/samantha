@@ -100,10 +100,16 @@ func shouldSeedPrompts(cmd *cobra.Command) bool {
 	return cmd.CommandPath() != "samantha config migrate"
 }
 
+// personaOverride is --persona: a process-scoped identity override. It is
+// deliberately not persisted — `samantha persona use` is the persisting path —
+// so trying a persona never edits config.yaml behind the user's back.
+var personaOverride string
+
 func init() {
 	rootCmd.Flags().BoolVarP(&textMode, "text", "t", false, "Text-only input mode (no microphone)")
 	rootCmd.Flags().BoolVarP(&noVoice, "no-voice", "n", false, "Disable TTS output")
 	rootCmd.Flags().BoolVar(&skipTUI, "no-tui", false, "Skip TUI launcher, start directly")
+	rootCmd.Flags().StringVar(&personaOverride, "persona", "", "Run as this persona for this process only (never persisted; see `samantha persona use` to persist)")
 	rootCmd.PersistentFlags().StringVar(&debugAudioDir, "debug-audio", "", "Record TTS source WAVs, exact device-output WAV, and callback timing (optional DIR)")
 	rootCmd.PersistentFlags().Lookup("debug-audio").NoOptDefVal = "auto"
 	rootCmd.PersistentFlags().StringVar(&transcriptLogPath, "transcript-log", "", "Append conversation events as JSONL to FILE (harnesses, field debugging)")
@@ -163,9 +169,15 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 		// Bind the session's identity now: the runtime is built from this
 		// snapshot, so later persona switches/edits (Settings, Personas, other
 		// sessions) cannot mutate this conversation's prompt, name, or voice.
-		// The system prompt doc itself is resolved exactly once, inside the
-		// brain constructor below — nothing may re-read it mid-session, or
-		// disk edits would leak into an in-flight conversation.
+		//
+		// The *document body* behind that identity is re-read each turn, so an
+		// edit to the bound persona lands on the next reply (R-P2). Those are
+		// two different axes and only the first is pinned: switching to another
+		// persona mid-session still cannot retarget this conversation. See
+		// internal/brain/reresolve.go.
+		if personaID == "" {
+			personaID = personaOverride
+		}
 		binding, err := persona.ResolveBinding(cfg, personaID)
 		if err != nil {
 			return nil, fmt.Errorf("resolve persona: %w", err)
@@ -357,8 +369,9 @@ func startPipeline(cfg *config.Config, resumeSession *session.Session) error {
 	defer cancel()
 
 	// Same binding rule as the TUI runtime: the CLI conversation runs on an
-	// identity snapshot, not the live global overlay.
-	binding, err := persona.ResolveBinding(cfg, "")
+	// identity snapshot, not the live global overlay. --persona selects which
+	// identity, for this process only.
+	binding, err := persona.ResolveBinding(cfg, personaOverride)
 	if err != nil {
 		return fmt.Errorf("resolve persona: %w", err)
 	}
