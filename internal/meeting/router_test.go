@@ -28,7 +28,7 @@ func TestFileSinkRoutesAndKeepsOriginal(t *testing.T) {
 		t.Fatal(err)
 	}
 	bundle := filepath.Join(meetDir, "standup.meeting")
-	w, err := meetinglog.CreateBundle(bundle, "Standup", "fake")
+	w, err := meetinglog.CreateBundle(bundle, "Standup", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +438,7 @@ func TestCampaignSinkMeetingFailsClosedWithoutImporter(t *testing.T) {
 	_ = os.MkdirAll(bundle, 0o700)
 	_ = os.WriteFile(filepath.Join(bundle, "meeting.md"), []byte("# m\n"), 0o600)
 	sink := CampaignSink{
-		Dest: Destination{ID: "c", Type: TypeCampaign, Campaign: "JobSearch", Capture: CaptureMeeting},
+		Dest:     Destination{ID: "c", Type: TypeCampaign, Campaign: "JobSearch", Capture: CaptureMeeting},
 		LookPath: func(string) (string, error) { return "/bin/camp", nil },
 		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			return []byte("Error: unknown command"), fmt.Errorf("exit 1")
@@ -475,7 +475,7 @@ func TestAvailableDestinationsHidesCampaignWithoutCamp(t *testing.T) {
 func TestLoadSummaryAndResolveMostRecent(t *testing.T) {
 	dir := t.TempDir()
 	bundleA := filepath.Join(dir, "a.meeting")
-	w, err := meetinglog.CreateBundle(bundleA, "A", "fake")
+	w, err := meetinglog.CreateBundle(bundleA, "A", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +488,7 @@ func TestLoadSummaryAndResolveMostRecent(t *testing.T) {
 	// Ensure the second session starts later.
 	time.Sleep(10 * time.Millisecond)
 	bundleB := filepath.Join(dir, "b.meeting")
-	w2, err := meetinglog.CreateBundle(bundleB, "B", "fake")
+	w2, err := meetinglog.CreateBundle(bundleB, "B", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +536,7 @@ func TestLoadSummaryAndResolveMostRecent(t *testing.T) {
 func TestResolveMeetingBundleRejectsFlatArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	bundlePath := filepath.Join(dir, "new-20260722-090000.meeting")
-	bundled, err := meetinglog.CreateBundle(bundlePath, "Bundled", "fake")
+	bundled, err := meetinglog.CreateBundle(bundlePath, "Bundled", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -589,7 +589,7 @@ func TestResolveMeetingBundleRejectsFlatArtifacts(t *testing.T) {
 }
 
 func TestAppendRoutedEvent(t *testing.T) {
-	w, err := meetinglog.CreateBundle(filepath.Join(t.TempDir(), "m.meeting"), "M", "fake")
+	w, err := meetinglog.CreateBundle(filepath.Join(t.TempDir(), "m.meeting"), "M", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}

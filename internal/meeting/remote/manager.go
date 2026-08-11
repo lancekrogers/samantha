@@ -130,11 +130,15 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (*Session, error)
 
 	now := m.opts.Now()
 	title := sanitizeTitle(req.Title)
+	source, err := normalizeSource(req.Source)
+	if err != nil {
+		return nil, err
+	}
 	id, err := newMeetingID()
 	if err != nil {
 		return nil, err
 	}
-	bundlePath, writer, err := createBundle(m.opts.Root, title, m.opts.STTLabel, id, now)
+	bundlePath, writer, err := createBundle(m.opts.Root, title, m.opts.STTLabel, source, id, now)
 	if err != nil {
 		return nil, err
 	}
@@ -296,10 +300,10 @@ func sanitizeTitle(title string) string {
 // createBundle creates the meeting directory, retrying once with the meeting
 // id appended. Bundle names are second-resolution, so a stop-then-start inside
 // one second would otherwise collide and fail the client's request.
-func createBundle(root, title, sttLabel, id string, now time.Time) (string, *meetinglog.Writer, error) {
+func createBundle(root, title, sttLabel, source, id string, now time.Time) (string, *meetinglog.Writer, error) {
 	name := meeting.BundleName(title, now)
 	path := filepath.Join(root, name)
-	writer, err := meetinglog.CreateBundle(path, title, sttLabel)
+	writer, err := meetinglog.CreateBundle(path, title, sttLabel, source)
 	if err == nil {
 		return path, writer, nil
 	}
@@ -308,11 +312,24 @@ func createBundle(root, title, sttLabel, id string, now time.Time) (string, *mee
 	}
 	unique := strings.TrimSuffix(name, meeting.BundleSuffix) + "-" + id + meeting.BundleSuffix
 	path = filepath.Join(root, unique)
-	writer, err = meetinglog.CreateBundle(path, title, sttLabel)
+	writer, err = meetinglog.CreateBundle(path, title, sttLabel, source)
 	if err != nil {
 		return "", nil, err
 	}
 	return path, writer, nil
+}
+
+// normalizeSource validates the capture surface a start request claims.
+// Empty means ios: phones were the only clients before the field existed, so
+// absence keeps meaning what it always did.
+func normalizeSource(source string) (string, error) {
+	switch source {
+	case "":
+		return "ios", nil
+	case "ios", "mac", "watch":
+		return source, nil
+	}
+	return "", fmt.Errorf("%w %q", ErrBadStart, source)
 }
 
 // newMeetingID mints an opaque handle, matching the intent sink's id shape.
