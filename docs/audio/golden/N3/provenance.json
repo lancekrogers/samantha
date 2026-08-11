@@ -1,0 +1,72 @@
+{
+  "item": "N3",
+  "claim": "First chunk stays one sentence; later chunks batch two, so the synthesiser carries intonation across the boundary instead of resetting at every period.",
+  "before": {
+    "text": "This is the opening sentence.||It continues here.||Then a third thought arrives.||And finally it closes.",
+    "audio": "before.wav",
+    "measured": {
+      "duration_s": 6.059,
+      "sample_rate": 24000,
+      "num_samples": 145406,
+      "peak": 0.4584,
+      "rms": 0.0641,
+      "rms_dbfs": -23.86
+    }
+  },
+  "after": {
+    "text": "This is the opening sentence.||It continues here. Then a third thought arrives.||And finally it closes.",
+    "audio": "after.wav",
+    "measured": {
+      "duration_s": 6.058,
+      "sample_rate": 24000,
+      "num_samples": 145401,
+      "peak": 0.4635,
+      "rms": 0.0641,
+      "rms_dbfs": -23.87
+    }
+  },
+  "tts": {
+    "provider": "kokoro",
+    "voice": "af_heart",
+    "speed": 0.95,
+    "pack": "sherpa-multi-lang-v1_0",
+    "model_sha256": "c436dc6a842b62aba06af67e40bafcfb9c60ac3af895358f1974ad9a7f7c026b"
+  },
+  "provenance": {
+    "samantha_commit": "95616cc655c026ee83d41ba2b8c8162515150645-dirty",
+    "before_synthesized_at": "working-tree",
+    "machine": "arm64",
+    "os": "Darwin 25.5.0"
+  },
+  "listen_check": {
+    "status": "pending",
+    "instructions": "Play before.wav then after.wav. Both are ~6.06 s \u2014 total duration is expected to be near-identical, because merging two synthesis calls does not change how much speech there is. What to listen for is the boundary between sentences two and three: does the after side carry intonation across it instead of resetting flat? Duration and loudness cannot measure this; only a listener can.",
+    "verdict": null,
+    "listener": null
+  },
+  "segmentation": {
+    "note": "Each '||' is an independent synthesis call, concatenated as raw PCM \u2014 the same thing the pipeline's player does. Synthesizing the reply as one blob would hide the chunk boundaries under test.",
+    "before_segments": [
+      "This is the opening sentence.",
+      "It continues here.",
+      "Then a third thought arrives.",
+      "And finally it closes."
+    ],
+    "after_segments": [
+      "This is the opening sentence.",
+      "It continues here. Then a third thought arrives.",
+      "And finally it closes."
+    ]
+  },
+  "first_audio_claim": {
+    "requirement": "FirstAudioReadyElapsed is unchanged",
+    "benchmark_result": "cannot resolve \u2014 FirstAudioReadyElapsed moved +601 ms on synth-01 and -437 ms on synth-03 between consecutive runs, in opposite directions. That is the end-to-end noise floor recorded in FINDINGS F4, not an effect of this change.",
+    "structural_argument": "The opening chunk is unchanged by construction: chunking still emits exactly one sentence first (firstChunkSentences = 1), so the first synthesis call receives byte-identical text to before. Only chunks two onward batch.",
+    "enforced_by": [
+      "brain.TestChunkSentencesEmitsFirstSentenceAloneForLowLatency",
+      "brain.TestChunkSentencesOpeningPolicyIsPerStream",
+      "pipeline.TestProgressiveTTSSegmentsFeedWorker (asserts calls[0] == \"Hello there.\")"
+    ],
+    "conclusion": "The claim is carried by the tests, not by the benchmark. Stated this way deliberately: reporting the noisy numbers as confirmation would be overclaiming."
+  }
+}

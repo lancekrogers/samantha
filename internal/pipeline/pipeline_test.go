@@ -81,10 +81,16 @@ func TestRunTurnOverlapsSynthesisWithPlayback(t *testing.T) {
 func TestRunTurnDrainsFullPlaybackQueue(t *testing.T) {
 	bus := events.NewBus()
 	sttProvider := &fakeSTT{text: "hello"}
-	// More sentences than voiceQueueDepth so the playback queue fills and the
+	// More SEGMENTS than voiceQueueDepth so the playback queue fills and the
 	// loop must apply backpressure without blocking — a regression guard for
 	// the slotSem deadlock that hung voice mode once the queue was full.
-	brainProvider := &fakeBrain{chunks: []string{"One. Two. Three. Four. Five."}}
+	//
+	// Sentences are not segments: chunking emits one sentence for the opening
+	// and two thereafter, so nine sentences produce five segments
+	// (1 + ceil(8/2)). Keep the segment count well above voiceQueueDepth if you
+	// change this — dropping to two or three would still pass while no longer
+	// filling the queue, which is the only thing this test is guarding.
+	brainProvider := &fakeBrain{chunks: []string{"One. Two. Three. Four. Five. Six. Seven. Eight. Nine."}}
 	ttsProvider := &fakeTTS{delay: 5 * time.Millisecond}
 	player := newFakePlayer(60 * time.Millisecond)
 	defer player.Close()

@@ -134,12 +134,19 @@ func TestProgressiveTTSSegmentsFeedWorker(t *testing.T) {
 	}
 
 	calls := provider.Calls()
-	if len(calls) < 3 {
-		t.Fatalf("Synthesize calls = %v, want 3 progressive segments", calls)
+	// Chunking is adaptive: one sentence for the opening, two thereafter (see
+	// brain.firstChunkSentences). Three sentences therefore reach TTS as two
+	// segments. What matters is that synthesis is progressive at all — the
+	// opening segment must go out while the brain is still streaming — not the
+	// exact count, so assert the invariant rather than the arithmetic.
+	if len(calls) < 2 {
+		t.Fatalf("Synthesize calls = %q, want the reply split into progressive segments", calls)
 	}
-	// First segment must not be the entire multi-sentence reply.
-	if strings.Contains(calls[0], "Third") {
-		t.Fatalf("first synth was full reply, not progressive: %q", calls[0])
+	// The opening segment must be exactly the first sentence: time-to-first-audio
+	// waits on it, so batching or full-reply synthesis here is the regression
+	// this test exists to catch.
+	if calls[0] != "Hello there." {
+		t.Fatalf("first synth = %q, want %q — the opening segment must be one sentence", calls[0], "Hello there.")
 	}
 	if metrics.firstSegment.IsZero() {
 		t.Fatal("firstSegment metric not stamped")

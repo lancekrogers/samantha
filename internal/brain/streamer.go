@@ -5,9 +5,24 @@ import (
 	"unicode"
 )
 
-// sentencesPerChunk controls how many sentences are batched before sending to TTS.
-// Keep this at 1 for low latency so Samantha can start speaking on the first complete sentence.
-const sentencesPerChunk = 1
+// Chunking is adaptive: the first chunk is one sentence, every chunk after it is
+// two.
+//
+// Time-to-first-audio waits on the first chunk finishing synthesis, so chunk one
+// stays a single sentence — that is what the old flat policy of 1 was protecting,
+// and it is still right for the opening.
+//
+// It is unnecessary for the rest. Once audio is playing the listener is no longer
+// waiting on the pipeline, and a chunk boundary is not free: each chunk is an
+// independent synthesis call, so prosody resets at every boundary and the player
+// concatenates the raw buffers. Batching later chunks lets the synthesiser carry
+// intonation across a sentence boundary instead of restarting flat at each one.
+//
+// Constant policy, not a config key, until someone asks for the knob.
+const (
+	firstChunkSentences = 1
+	laterChunkSentences = 2
+)
 
 // CleanForVoice strips markdown and vocal fillers from text bound for TTS.
 // Exported for consumers that must inspect the model's original structure
@@ -16,8 +31,7 @@ const sentencesPerChunk = 1
 func CleanForVoice(s string) string { return cleanForVoice(s) }
 
 // ChunkSentences reads text chunks from input and emits voice-cleaned batches
-// of sentences for TTS. Batches sentencesPerChunk sentences together for
-// smoother playback.
+// of sentences for TTS, one sentence for the opening chunk and two thereafter.
 func ChunkSentences(input <-chan string) <-chan string {
 	out := make(chan string, 4)
 	go func() {
@@ -40,6 +54,9 @@ func ChunkSentencesRaw(input <-chan string) <-chan string {
 		defer close(out)
 		var buf strings.Builder
 		var sentences []string
+		// Per-stream, not package state: two concurrent turns must each get
+		// their own short opening chunk.
+		target := firstChunkSentences
 
 		for chunk := range input {
 			buf.WriteString(chunk)
@@ -59,9 +76,10 @@ func ChunkSentencesRaw(input <-chan string) <-chan string {
 				buf.WriteString(text[idx+1:])
 
 				// Emit batch when we have enough sentences.
-				if len(sentences) >= sentencesPerChunk {
+				if len(sentences) >= target {
 					out <- strings.Join(sentences, " ")
 					sentences = sentences[:0]
+					target = laterChunkSentences
 				}
 			}
 		}

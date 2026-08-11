@@ -247,11 +247,7 @@ func (g *GrokBrain) thinkFullAttempt(ctx context.Context, streamOpts StreamOptio
 	}
 
 	// Clean first, then fall back, so the fallback is spoken verbatim.
-	response := cleanForVoice(result.Text)
-	if response == "" {
-		response = fallbackResponse
-	}
-	return response, nil
+	return spokenOrFallback(cleanForVoice(result.Text)), nil
 }
 
 // dropSession clears the CLI resume id. Call whenever the session is

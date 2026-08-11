@@ -1,0 +1,91 @@
+{
+  "item": "N2",
+  "claim": "Voiced fillers (hmm, haha) reach TTS instead of being deleted, so the reply keeps its beat of thought.",
+  "before": {
+    "text": "good question. right.",
+    "audio": "before.wav",
+    "measured": {
+      "duration_s": 1.289,
+      "sample_rate": 24000,
+      "num_samples": 30936,
+      "peak": 0.3989,
+      "rms": 0.0649,
+      "rms_dbfs": -23.76
+    }
+  },
+  "after": {
+    "text": "Hmm, good question. Haha, right.",
+    "audio": "after.wav",
+    "measured": {
+      "duration_s": 2.218,
+      "sample_rate": 24000,
+      "num_samples": 53235,
+      "peak": 0.4923,
+      "rms": 0.0671,
+      "rms_dbfs": -23.47
+    }
+  },
+  "tts": {
+    "provider": "kokoro",
+    "voice": "af_heart",
+    "speed": 0.95,
+    "pack": "sherpa-multi-lang-v1_0",
+    "model_sha256": "c436dc6a842b62aba06af67e40bafcfb9c60ac3af895358f1974ad9a7f7c026b"
+  },
+  "provenance": {
+    "samantha_commit": "95616cc655c026ee83d41ba2b8c8162515150645-dirty",
+    "machine": "arm64",
+    "os": "Darwin 25.5.0"
+  },
+  "listen_check": {
+    "status": "pending",
+    "instructions": "Play before.wav then after.wav for the A/B. Then play each per-filler sample and decide whether any of umm/uhh/ahh/mmm/heh should be promoted to the voiced tier, or whether hmm/haha should be demoted. Record the verdict and listener here.",
+    "verdict": null,
+    "listener": null
+  },
+  "tier_probe": {
+    "method": "each filler synthesized alone as '<filler>.' through the same Kokoro pack",
+    "per_filler": {
+      "hmm": {
+        "duration_s": 0.603,
+        "rms_dbfs": -23.02
+      },
+      "haha": {
+        "duration_s": 0.723,
+        "rms_dbfs": -23.71
+      },
+      "umm": {
+        "duration_s": 0.596,
+        "rms_dbfs": -22.89
+      },
+      "uhh": {
+        "duration_s": 0.576,
+        "rms_dbfs": -22.41
+      },
+      "ahh": {
+        "duration_s": 0.626,
+        "rms_dbfs": -23.52
+      },
+      "mmm": {
+        "duration_s": 0.799,
+        "rms_dbfs": -22.86
+      },
+      "heh": {
+        "duration_s": 0.636,
+        "rms_dbfs": -23.83
+      }
+    },
+    "voiced_tier": [
+      "hmm",
+      "haha"
+    ],
+    "stripped_tier": [
+      "umm",
+      "uhh",
+      "ahh",
+      "mmm",
+      "heh"
+    ],
+    "conclusion": "Duration and loudness DO NOT discriminate the tiers. Every filler produced 0.58-0.80s at -22 to -24 dBFS; none is silent and none is spelled out letter by letter. The tier split is a product decision pending a listen check, not a measured result -- do not cite these numbers as justification for it."
+  }
+}

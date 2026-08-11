@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/lancekrogers/claude-code-go/pkg/claude"
 
@@ -454,11 +455,7 @@ func (b *Brain) thinkFullAttempt(ctx context.Context, streamOpts StreamOptions) 
 	}
 
 	// Clean first, then fall back, so the fallback is spoken verbatim.
-	response := cleanForVoice(result.Result)
-	if response == "" {
-		response = fallbackResponse
-	}
-	return response, nil
+	return spokenOrFallback(cleanForVoice(result.Result)), nil
 }
 
 // buildPrompt renders the next turn for the CLI. omitTurnInstruction leaves off
@@ -557,8 +554,11 @@ func normalizePromptHistory(turns []Turn) []Turn {
 	return out
 }
 
-// fallbackResponse is spoken verbatim when a provider returns nothing; it must
-// be substituted after cleanForVoice, which would strip its "Hmm, " prefix.
+// fallbackResponse is spoken verbatim when a provider returns nothing, and is
+// substituted after cleaning rather than passed through it — see
+// spokenOrFallback. Its "Hmm, " prefix would now survive cleaning anyway ("hmm"
+// is a voiced filler), but the substitution stays after cleaning so the recovery
+// line is never at the mercy of whatever the cleaning rules become.
 const fallbackResponse = "Hmm, I lost my train of thought for a second. What were you saying?"
 
 // RecoveryReply is spoken when a turn dies on a hard brain or tool error, so
@@ -566,16 +566,73 @@ const fallbackResponse = "Hmm, I lost my train of thought for a second. What wer
 // pipeline's degraded-turn path; the error detail goes to the activity feed.
 const RecoveryReply = "I hit an error while working on that. Want me to try a simpler approach?"
 
+// Vocal fillers fall into two tiers.
+//
+// voicedFillers reach TTS untouched. Deleting them threw away the beat of
+// thought that makes a spoken reply sound like a person considering the
+// question — "Hmm, good question" jumped straight to "good question".
+//
+// strippedFillers are still removed.
+//
+// What the evidence actually shows (docs/audio/golden/N2/provenance.json):
+// synthesizing all seven fillers in isolation produced 0.58-0.80s of audio at
+// -22 to -24 dBFS for every one of them. Nothing is silent and nothing is being
+// spelled out letter by letter, so **duration and loudness do not discriminate
+// the tiers**. The split is currently a product decision awaiting a listen
+// check, not a measured result. Do not cite the measurements as justification.
+//
+// To move a filler between tiers, play it through Kokoro, listen, and record the
+// verdict in the golden provenance. Do not move one on the theory that it
+// "should" sound fine — that theory is what this comment used to assert, and the
+// measurement did not support it.
+var (
+	voicedFillers   = []string{`hmm+`, `haha`}
+	strippedFillers = []string{`umm+`, `uhh+`, `ahh+`, `mmm+`, `heh`}
+)
+
 var (
 	markdownReplacer = strings.NewReplacer("**", "", "```", "", "##", "", "# ", "")
-	// Vocal fillers that TTS spells out instead of vocalizing. Whole words only,
-	// plus a trailing comma so "Hmm, hello" cleans to "hello".
-	fillerRE = regexp.MustCompile(`(?i)\b(?:hmm+|umm+|uhh+|ahh+|mmm+|haha|heh)\b,?\s*`)
+	// Whole words only, plus a trailing comma, so "Umm, hello" cleans to "hello"
+	// while "The hummingbird" and "a summary" survive intact.
+	fillerRE = regexp.MustCompile(`(?i)\b(?:` + strings.Join(strippedFillers, "|") + `)\b,?\s*`)
+	// Used to decide whether a reply carries content, not to remove anything.
+	voicedFillerRE = regexp.MustCompile(`(?i)\b(?:` + strings.Join(voicedFillers, "|") + `)\b,?\s*`)
 )
 
 func cleanForVoice(s string) string {
 	s = fillerRE.ReplaceAllString(markdownReplacer.Replace(s), "")
+	// Emoji go here rather than at the synthesis boundary alone, for two reasons.
+	// The persona document bans them, so a reply containing one is already out of
+	// contract and echoing it back into conversation history teaches the model to
+	// keep doing it. And the pipeline decides whether a segment is worth speaking
+	// by testing this function's output — if emoji survived here, an emoji-only
+	// segment would pass that gate and only become empty inside the synthesiser.
+	s = textclean.StripEmoji(s)
 	return strings.TrimSpace(textclean.StripUnsupportedKokoroMarks(s))
+}
+
+// hasSpeakableContent reports whether cleaned text carries anything beyond voiced
+// fillers and punctuation.
+//
+// Voiced fillers reach TTS on purpose, which means cleaning no longer empties a
+// reply of nothing but "Hmm." — and a turn that ends on a bare hesitation with no
+// content is exactly the degraded turn the recovery line exists for. Emptiness is
+// therefore no longer the right question to ask; this is.
+func hasSpeakableContent(s string) bool {
+	stripped := voicedFillerRE.ReplaceAllString(s, "")
+	return strings.TrimFunc(stripped, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r)
+	}) != ""
+}
+
+// spokenOrFallback substitutes the recovery line when a cleaned reply carries no
+// content. The fallback is returned rather than cleaned, so it is always spoken
+// verbatim.
+func spokenOrFallback(cleaned string) string {
+	if hasSpeakableContent(cleaned) {
+		return cleaned
+	}
+	return fallbackResponse
 }
 
 // finalizeStreamedText cleans a streamed assistant reply and guarantees a
@@ -584,7 +641,10 @@ func cleanForVoice(s string) string {
 // TTS do not silently end the turn with an empty ResponseReady.
 func finalizeStreamedText(ctx context.Context, out chan<- string, raw string) (string, error) {
 	cleaned := cleanForVoice(raw)
-	if cleaned != "" {
+	// Not "cleaned != """: a reply of nothing but "Hmm." now survives cleaning,
+	// because hmm is a voiced filler. It is still a turn that said nothing, and
+	// ending on a bare hesitation is precisely what the recovery line is for.
+	if hasSpeakableContent(cleaned) {
 		return cleaned, nil
 	}
 	// Nothing usable: stream the fallback only when no raw text was produced

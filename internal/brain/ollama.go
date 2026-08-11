@@ -390,10 +390,7 @@ func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOp
 		}
 
 		// Text response. Clean first, then fall back, so the fallback is spoken verbatim.
-		text := cleanForVoice(response.Content)
-		if text == "" {
-			text = fallbackResponse
-		}
+		text := spokenOrFallback(cleanForVoice(response.Content))
 		o.history = append(o.history, api.Message{Role: "assistant", Content: text})
 		o.trimHistory()
 		return text, nil

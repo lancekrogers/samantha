@@ -260,7 +260,8 @@ func TestSegmentStageProducesSentencesWithoutPlayback(t *testing.T) {
 	chunks, _ := p.observeStream(context.Background(), stream, metrics)
 	sentences := collect(t, brain.ChunkSentences(chunks))
 
-	want := []string{"First sentence.", "Second one!", "Third?"}
+	// Opening chunk is one sentence, later chunks batch two.
+	want := []string{"First sentence.", "Second one! Third?"}
 	if len(sentences) != len(want) {
 		t.Fatalf("segment stage produced %v, want %v", sentences, want)
 	}

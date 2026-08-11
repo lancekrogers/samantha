@@ -17,7 +17,9 @@ func StripUnsupportedKokoroMarks(s string) string {
 	return unsupportedKokoroMarks.Replace(s)
 }
 
-// PrepareKokoroText is the synthesis-boundary text transform for Kokoro.
+// PrepareKokoroText is the synthesis-boundary text transform for Kokoro: the
+// shared spoken-text rules (see PrepareSpokenText) plus the Kokoro-specific
+// combining-mark cleanup.
 //
 // Contractions and ordinary English are left alone so narration stays human
 // ("wasn't", "isn't", "don't"). eSpeak may still emit syllabic-n (U+0329) for
@@ -27,5 +29,5 @@ func StripUnsupportedKokoroMarks(s string) string {
 // Input cleanup still strips a few combining marks if they appear in source
 // text (PDF artifacts, etc.). Conversation UI should keep original spelling.
 func PrepareKokoroText(s string) string {
-	return StripUnsupportedKokoroMarks(s)
+	return StripUnsupportedKokoroMarks(PrepareSpokenText(s))
 }
