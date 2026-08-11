@@ -86,6 +86,9 @@ func liveSpeakerEngineBuilder(
 		if err != nil && buildFull != nil {
 			engine, err = buildFull()
 		}
+		if err == nil {
+			seedEnrolledProfiles(cfg, engine, nil)
+		}
 		return engine, err
 	}
 }

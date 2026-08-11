@@ -182,6 +182,32 @@ func newSpeakerRemoveCmd() *cobra.Command {
 	}
 }
 
+// seedEnrolledProfiles loads the durable enrollment store (when it exists)
+// and seeds revision-matching profiles into the engine, so live labels and
+// meeting diarization resolve enrolled names. Absence of a store is normal;
+// failures degrade to anonymous labels and are reported through warn.
+func seedEnrolledProfiles(cfg *config.Config, eng speaker.Engine, warn func(string)) {
+	if warn == nil {
+		warn = func(string) {}
+	}
+	store, err := speaker.LoadEnrollment(speakerEnrollmentDir(cfg))
+	if err != nil {
+		warn(fmt.Sprintf("speaker enrollment unavailable: %v", err))
+		return
+	}
+	if store == nil {
+		return
+	}
+	seeded, skipped, err := speaker.SeedFromStore(eng, store)
+	if err != nil {
+		warn(fmt.Sprintf("speaker enrollment seeding failed after %d profile(s): %v", seeded, err))
+		return
+	}
+	if len(skipped) > 0 {
+		warn(fmt.Sprintf("speaker profiles from an older embedding model skipped (re-enroll to refresh): %v", skipped))
+	}
+}
+
 // speakerAssetProgress reports model download progress on first-time enroll;
 // silent for --json output.
 func speakerAssetProgress(cmd *cobra.Command, jsonOut bool) func(string, float64) {

@@ -28,6 +28,54 @@ type FakeEngine struct {
 	// SlowDiarize blocks Diarize until the channel receives or context cancels.
 	SlowDiarize <-chan struct{}
 	Closed      bool
+	// Enrolled maps enrolled names to model revisions (EnrolledResolver).
+	// SeedEnrolled populates it; tests may also set it directly.
+	Enrolled map[string]string
+	// EmbedRev is returned by EmbeddingRev (default "fake-embedding-rev").
+	EmbedRev string
+	// FailSeed injects an error into SeedEnrolled.
+	FailSeed error
+}
+
+// EmbeddingRev implements EnrolledSeeder.
+func (f *FakeEngine) EmbeddingRev() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.EmbedRev != "" {
+		return f.EmbedRev
+	}
+	return "fake-embedding-rev"
+}
+
+// SeedEnrolled implements EnrolledSeeder by recording the name and revision.
+func (f *FakeEngine) SeedEnrolled(name, modelRev string, embeddings [][]float32) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.FailSeed != nil {
+		return f.FailSeed
+	}
+	if name == "" || len(embeddings) == 0 {
+		return fmt.Errorf("speaker: fake seed: empty name or embeddings")
+	}
+	if f.Enrolled == nil {
+		f.Enrolled = make(map[string]string)
+	}
+	f.Enrolled[name] = modelRev
+	return nil
+}
+
+// EnrollRevFor implements EnrolledResolver.
+func (f *FakeEngine) EnrollRevFor(label string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Enrolled[label]
+}
+
+// EnrolledCount implements EnrolledResolver.
+func (f *FakeEngine) EnrolledCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.Enrolled)
 }
 
 func (f *FakeEngine) dim() int {

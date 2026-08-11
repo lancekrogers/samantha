@@ -39,3 +39,18 @@ type Engine interface {
 	// other Engine methods (Analyzer enforces this).
 	Close() error
 }
+
+// EnrolledSeeder is optionally implemented by engines that accept durable
+// named profiles (see SeedFromStore).
+type EnrolledSeeder interface {
+	SeedEnrolled(name, modelRev string, embeddings [][]float32) error
+	EmbeddingRev() string
+}
+
+// EnrolledResolver is optionally implemented by engines seeded with named
+// profiles; it lets the Analyzer stamp Observation.EnrollRev and map
+// diarized clusters onto enrolled names at finalize.
+type EnrolledResolver interface {
+	EnrollRevFor(label string) string
+	EnrolledCount() int
+}
