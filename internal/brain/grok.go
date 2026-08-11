@@ -59,7 +59,7 @@ func NewGrok(cfg *config.Config) (*GrokBrain, error) {
 		return nil, err
 	}
 
-	return &GrokBrain{
+	g := &GrokBrain{
 		client:          client,
 		cfg:             cfg,
 		systemPrompt:    systemPrompt,
@@ -68,7 +68,9 @@ func NewGrok(cfg *config.Config) (*GrokBrain, error) {
 			fmt.Fprintf(os.Stderr, "samantha: persona prompt changed (hash %s)\n", hash)
 		}),
 		turnReloader: newPromptReloader(prompts.KindTurn, cfg.TurnPrompt, turn, nil),
-	}, nil
+	}
+	g.systemPrompt = g.assembleSystem(systemPrompt)
+	return g, nil
 }
 
 // Available returns true if the grok CLI can be located.
@@ -80,10 +82,22 @@ func (g *GrokBrain) Available() bool {
 // ThinkStream sends input to Grok and returns a channel of streaming text chunks.
 // Only spoken "text" events are forwarded; "thought" (reasoning) events are
 // dropped so Samantha never voices her chain of thought.
+// assembleSystem builds Grok's system prompt through the shared policy, so it
+// receives the same machine grounding every other provider does.
+func (g *GrokBrain) assembleSystem(persona string) string {
+	workDir, _ := os.Getwd()
+	return AssembleSystemPrompt(SystemPromptInput{
+		Provider: providerGrok,
+		Persona:  persona,
+		WorkDir:  workDir,
+		Cfg:      g.cfg,
+	})
+}
+
 // refreshPrompts re-resolves the bound persona and turn documents each turn.
 func (g *GrokBrain) refreshPrompts(onWarn func(string)) {
 	if persona, _, err := g.personaReloader.resolve(g.cfg); err == nil {
-		g.systemPrompt = persona
+		g.systemPrompt = g.assembleSystem(persona)
 	} else if onWarn != nil {
 		onWarn(err.Error())
 	}

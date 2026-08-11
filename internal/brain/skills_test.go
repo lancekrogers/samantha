@@ -76,7 +76,7 @@ func TestSkillContextTruncatesLongDescription(t *testing.T) {
 func TestAssembledSystemPromptIncludesSkillsCatalog(t *testing.T) {
 	t.Parallel()
 
-	sys := assembleSystemPrompt("You are Samantha.", "/work", fixtureCatalog())
+	sys := assembleSystemPrompt("You are Samantha.", "/work", fixtureCatalog(), "", nil)
 	if !strings.Contains(sys, "- hello: A friendly greeting skill for tests.") {
 		t.Fatalf("system prompt missing advertised skill: %q", sys)
 	}
@@ -94,7 +94,7 @@ func TestActivatedSkillBodiesRideTheUserMessage(t *testing.T) {
 	o := &OllamaBrain{
 		workDir:          "/work",
 		cfg:              &config.Config{AgentName: "Samantha", MaxHistory: 10},
-		fullSystemPrompt: assembleSystemPrompt("You are Samantha.", "/work", fixtureCatalog()),
+		fullSystemPrompt: assembleSystemPrompt("You are Samantha.", "/work", fixtureCatalog(), "", nil),
 		skills:           fixtureCatalog(),
 		history:          []api.Message{{Role: "user", Content: "greet me"}},
 	}
@@ -113,7 +113,7 @@ func TestActivatedSkillBodiesRideTheUserMessage(t *testing.T) {
 func TestAssembledSystemPromptOmitsSkillsWhenEmpty(t *testing.T) {
 	t.Parallel()
 
-	sys := assembleSystemPrompt("You are Samantha.", "/work", nil)
+	sys := assembleSystemPrompt("You are Samantha.", "/work", nil, "", nil)
 	if strings.Contains(sys, "Available skills") {
 		t.Fatalf("system prompt should omit skills block when catalog empty: %q", sys)
 	}

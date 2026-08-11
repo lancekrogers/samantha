@@ -98,7 +98,7 @@ func New(cfg *config.Config) (*Brain, error) {
 		return nil, err
 	}
 
-	return &Brain{
+	b := &Brain{
 		client:          client,
 		cfg:             cfg,
 		systemPrompt:    systemPrompt,
@@ -107,7 +107,9 @@ func New(cfg *config.Config) (*Brain, error) {
 			fmt.Fprintf(os.Stderr, "samantha: persona prompt changed (hash %s)\n", hash)
 		}),
 		turnReloader: newPromptReloader(prompts.KindTurn, cfg.TurnPrompt, turn, nil),
-	}, nil
+	}
+	b.systemPrompt = b.assembleSystem(systemPrompt)
+	return b, nil
 }
 
 // Available returns true if the claude CLI is on PATH.
@@ -146,12 +148,25 @@ func (b *Brain) runOptions(format claude.OutputFormat, toolsEnabled bool) *claud
 
 // ThinkStream sends input to Claude and returns a channel of streaming message chunks.
 // Each message on the channel may contain partial text.
+// assembleSystem builds Claude's system prompt through the shared policy.
+// R-P3: Claude previously received the persona prompt alone, with no machine
+// grounding, so it could not answer "what directory am I in" that ollama could.
+func (b *Brain) assembleSystem(persona string) string {
+	workDir, _ := os.Getwd()
+	return AssembleSystemPrompt(SystemPromptInput{
+		Provider: providerClaude,
+		Persona:  persona,
+		WorkDir:  workDir,
+		Cfg:      b.cfg,
+	})
+}
+
 // refreshPrompts re-resolves the persona and turn documents this session is
 // bound to, so an edit lands on the next turn. Resolution failures keep the
 // last good text and surface as a warning rather than ending the turn.
 func (b *Brain) refreshPrompts(onWarn func(string)) {
 	if persona, _, err := b.personaReloader.resolve(b.cfg); err == nil {
-		b.systemPrompt = persona
+		b.systemPrompt = b.assembleSystem(persona)
 	} else if onWarn != nil {
 		onWarn(err.Error())
 	}

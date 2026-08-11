@@ -29,11 +29,16 @@ type OllamaBrain struct {
 	history      []api.Message
 	cfg          *config.Config
 	systemPrompt string
-	// fullSystemPrompt is assembled once at construction (persona prompt +
-	// environment + skills catalog) and sent byte-for-byte on every request,
-	// so Ollama's KV prefix cache survives across turns. Per-turn skill
-	// activations are spliced onto the current user message instead.
+	// fullSystemPrompt is the assembled prompt (persona + environment + skills
+	// catalog + turn instruction) sent byte-for-byte on every request, so
+	// Ollama's KV prefix cache survives across turns. It is rebuilt only when
+	// the persona document actually changes. Per-turn skill activations are
+	// spliced onto the current user message instead.
 	fullSystemPrompt string
+	// turnInstruction is the per-reply voice instruction. R-P3 brought it to
+	// ollama, which previously received none — so the same persona produced
+	// longer, more markdown-shaped replies here than on Claude or Grok.
+	turnInstruction string
 	// personaReloader re-reads the persona document each turn so an edit lands
 	// on the next reply. The assembled prompt is only rebuilt when the document
 	// actually changed, which keeps the server's prefix cache intact on the
@@ -115,6 +120,12 @@ func NewOllama(cfg *config.Config) (*OllamaBrain, error) {
 	if err != nil {
 		return nil, err
 	}
+	// R-P3: ollama previously received no turn instruction, so the same persona
+	// produced longer, more markdown-shaped replies here than on Claude/Grok.
+	turn, err := turnInstruction(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	catalog, err := loadSkillsCatalog(context.Background(), cfg, workDir)
 	if err != nil {
@@ -142,7 +153,8 @@ func NewOllama(cfg *config.Config) (*OllamaBrain, error) {
 		workDir:          workDir,
 		cfg:              cfg,
 		systemPrompt:     systemPrompt,
-		fullSystemPrompt: assembleSystemPrompt(systemPrompt, workDir, catalog),
+		fullSystemPrompt: assembleSystemPrompt(systemPrompt, workDir, catalog, turn, cfg),
+		turnInstruction:  turn,
 		personaReloader: newPromptReloader(prompts.KindPersona, cfg.Persona, systemPrompt, func(hash string) {
 			fmt.Fprintf(os.Stderr, "samantha: persona prompt changed (hash %s)\n", hash)
 		}),
@@ -501,18 +513,21 @@ func (o *OllamaBrain) refreshSystemPrompt(onWarn func(message string)) {
 		return
 	}
 	o.systemPrompt = persona
-	o.fullSystemPrompt = assembleSystemPrompt(persona, o.workDir, o.skills)
+	o.fullSystemPrompt = assembleSystemPrompt(persona, o.workDir, o.skills, o.turnInstruction, o.cfg)
 }
 
 // assembleSystemPrompt builds the session-stable system prompt: persona
 // prompt, environment grounding, and the Tier-1 skills catalog. It runs once
 // per brain — the result must stay byte-identical across a session's requests.
-func assembleSystemPrompt(personaPrompt, workDir string, catalog []skills.Skill) string {
-	full := personaPrompt + "\n" + EnvironmentContext(workDir)
-	if sc := SkillContext(catalog); sc != "" {
-		full += sc
-	}
-	return full
+func assembleSystemPrompt(personaPrompt, workDir string, catalog []skills.Skill, turn string, cfg *config.Config) string {
+	return AssembleSystemPrompt(SystemPromptInput{
+		Provider: providerOllama,
+		Persona:  personaPrompt,
+		WorkDir:  workDir,
+		Skills:   catalog,
+		Turn:     turn,
+		Cfg:      cfg,
+	})
 }
 
 // buildMessages assembles one chat request: the frozen system prompt, the
