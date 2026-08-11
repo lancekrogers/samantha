@@ -59,6 +59,26 @@ func prepareLiveSpeaker(
 	return controller, stop, "live speakers starting (auto-label speaker-1..N)"
 }
 
+// ownerVerifyGate vetoes voice turns while the live speaker resolves to a
+// label that is not an enrolled profile. It fails open whenever the analyzer
+// is not confidently running (disabled, unavailable, degraded, or no label
+// yet) — a lagging engine must not brick the assistant. This is an opt-in
+// privacy guard against confident non-owner speech, not an auth boundary.
+func ownerVerifyGate(stats func() speaker.LiveStats) func(string) string {
+	return func(string) string {
+		st := stats()
+		switch st.Status {
+		case speaker.LiveHealthy, speaker.LiveRunning:
+		default:
+			return ""
+		}
+		if st.LastLabel == "" || st.LastEnrollRev != "" {
+			return ""
+		}
+		return fmt.Sprintf("utterance ignored: %q is not an enrolled speaker (speaker.live.mode=owner_verify)", st.LastLabel)
+	}
+}
+
 // liveSpeakerEngineBuilder ensures the managed embedding before the lazy first
 // build. EnsureRuntimeAssets verifies existing files and skips their download,
 // so repeated application starts remain network-free once TitaNet is present.

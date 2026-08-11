@@ -229,6 +229,12 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 		// Session-local rename table: UI bubbles + model prompt attribution.
 		speakerNames := speaker.NewNameMap()
 		brain.AttachSpeakerNames(p.Brain, speakerNames)
+		if liveSpeaker != nil {
+			liveCfg := speaker.FromAppConfig(cfg).Normalize()
+			if liveCfg.LiveActive() && liveCfg.Live.Mode == speaker.LiveModeOwnerVerify {
+				p.SpeakerGate = ownerVerifyGate(liveSpeaker.Stats)
+			}
+		}
 		p.CurrentSpeaker = func() string {
 			if liveSpeaker == nil {
 				return ""

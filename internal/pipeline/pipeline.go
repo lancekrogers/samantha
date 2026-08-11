@@ -71,6 +71,11 @@ type Pipeline struct {
 	// defaultBrainTurnTimeout; negative disables the bound.
 	BrainTurnTimeout time.Duration
 
+	// SpeakerGate, when set, may veto a voice turn after transcription based
+	// on the live speaker state; a non-empty return is the user-facing reason
+	// the utterance was dropped. Wired only for speaker.live.mode=owner_verify
+	// — identity never gates turns by default, and text turns are never gated.
+	SpeakerGate func(label string) (rejectReason string)
 	// CurrentSpeaker returns the stable live speaker id (speaker-1) for the
 	// in-flight user turn when live labels are active. Optional; nil/empty
 	// means ordinary single-user attribution.
@@ -415,6 +420,15 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 
 	turn.to(TurnThinking)
 	speakerID := p.currentSpeakerID()
+	if p.SpeakerGate != nil {
+		if reason := p.SpeakerGate(speakerID); reason != "" {
+			// Reuses TurnTimedOut's "no usable speech" terminal semantics;
+			// the Info event carries the actual veto reason.
+			p.emit(events.Info{Message: reason})
+			turn.finish(TurnTimedOut)
+			return "", nil
+		}
+	}
 	p.emit(events.UserInput{Text: text, Speaker: speakerID})
 	p.emit(events.ThinkingStarted{})
 
