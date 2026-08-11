@@ -171,6 +171,12 @@ func NewOllama(cfg *config.Config) (*OllamaBrain, error) {
 // and then checks the configured Samantha skills_dir. .claude/skills is
 // intentionally not scanned — Claude Code owns that path. Missing dirs yield
 // empty contributions, not errors.
+// SkillsCatalogFor exposes the loader the ollama brain uses, so the CLI preview
+// renders the same catalog the model sees rather than a re-derived one.
+func SkillsCatalogFor(ctx context.Context, cfg *config.Config, workDir string) ([]skills.Skill, error) {
+	return loadSkillsCatalog(ctx, cfg, workDir)
+}
+
 func loadSkillsCatalog(ctx context.Context, cfg *config.Config, workDir string) ([]skills.Skill, error) {
 	if cfg == nil || !cfg.SkillsEnabled {
 		return nil, nil
