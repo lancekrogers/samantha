@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -108,7 +109,7 @@ remote_tools_enabled is set.`,
 }
 
 func init() {
-	serveCmd.Flags().StringVar(&serveBind, "bind", "", "IP to bind (default: auto-detected private LAN address)")
+	serveCmd.Flags().StringVar(&serveBind, "bind", "", "IP(s) to bind, comma-separated (default: auto-detected private LAN address + 127.0.0.1)")
 	serveCmd.Flags().IntVar(&servePort, "port", defaultServePort, "Port to listen on")
 	serveCmd.Flags().BoolVar(&serveNoVoice, "no-voice", false, "Do not speak responses through the local speaker")
 	serveCmd.Flags().BoolVar(&serveAllowPublic, "allow-public", false, "Allow binding a non-private interface (dangerous)")
@@ -252,12 +253,10 @@ func runServe(cfg *config.Config) error {
 		if servePublicHost != "" {
 			id.DNSNames = append(id.DNSNames, servePublicHost)
 		}
-		bindForSAN := serveBind
-		if bindForSAN == "" {
-			bindForSAN = defaultServeBind()
-		}
-		if ip := net.ParseIP(bindForSAN); ip != nil {
-			id.IPs = append(id.IPs, ip)
+		for _, host := range resolveServeBindHosts() {
+			if ip := net.ParseIP(host); ip != nil {
+				id.IPs = append(id.IPs, ip)
+			}
 		}
 		if len(id.DNSNames) > 0 || len(id.IPs) > 0 {
 			creds, err = netapi.LoadOrCreateCredentialsWithIdentity(credsDir, id)
@@ -280,11 +279,12 @@ func runServe(cfg *config.Config) error {
 	})
 	go dispatcher.Run(ctx)
 
-	bind := serveBind
-	if bind == "" {
-		bind = defaultServeBind()
+	bindHosts := resolveServeBindHosts()
+	addr := net.JoinHostPort(bindHosts[0], strconv.Itoa(servePort))
+	extraBinds := make([]string, 0, len(bindHosts)-1)
+	for _, host := range bindHosts[1:] {
+		extraBinds = append(extraBinds, net.JoinHostPort(host, strconv.Itoa(servePort)))
 	}
-	addr := net.JoinHostPort(bind, strconv.Itoa(servePort))
 
 	sttName := ""
 	if ingress != nil {
@@ -303,6 +303,7 @@ func runServe(cfg *config.Config) error {
 
 	server := netapi.New(netapi.Options{
 		Bind:         addr,
+		ExtraBinds:   extraBinds,
 		AllowPublic:  serveAllowPublic,
 		Credentials:  creds,
 		Bus:          bus,
@@ -317,16 +318,31 @@ func runServe(cfg *config.Config) error {
 			STT:   sttName,
 			TTS:   cfg.TTSProvider,
 		},
-		OnListening: func(bound net.Addr) {
-			// Prefer the real bound address (port 0, dual-stack formatting).
-			listenAddr := bound.String()
-			if listenAddr == "" {
-				listenAddr = addr
+		OnListening: func(bound []net.Addr) {
+			// Advertise the real listener addresses (port 0 resolution,
+			// dedupe, dual-stack formatting), never the requested strings.
+			listenAddr := addr
+			if len(bound) > 0 && bound[0].String() != "" {
+				listenAddr = bound[0].String()
+			}
+			var extras []string
+			if len(bound) > 1 {
+				extras = make([]string, 0, len(bound)-1)
+				for _, a := range bound[1:] {
+					extras = append(extras, a.String())
+				}
+			}
+			allBinds := []string(nil)
+			if len(extras) > 0 {
+				allBinds = append([]string{listenAddr}, extras...)
 			}
 			if serveBannerJSON {
-				emitServeBannerJSON(listenAddr, creds)
+				emitServeBannerJSON(listenAddr, allBinds, creds)
 			} else {
 				printServeBanner(listenAddr, creds, cfg)
+				if len(extras) > 0 {
+					fmt.Fprintln(serveHumanOut, dimStyle.Render("  Also listening: https://"+strings.Join(extras, "  https://")))
+				}
 			}
 			if !serveNoMDNS {
 				if disc, err := netapi.StartDiscovery(listenAddr, creds.Fingerprint, cfg.AgentName); err != nil {
@@ -522,7 +538,7 @@ func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config
 // pairing_code line when a code is minted) to stdout, one JSON object per
 // line. The supervising process reads the ready line to learn the URL,
 // credentials, and fingerprint instead of scraping the human banner.
-func emitServeBannerJSON(listenAddr string, creds *netapi.Credentials) {
+func emitServeBannerJSON(listenAddr string, allBinds []string, creds *netapi.Credentials) {
 	host, port := hostPortFromAddr(listenAddr)
 	pageHost := servePublicHost
 	if pageHost == "" {
@@ -539,6 +555,7 @@ func emitServeBannerJSON(listenAddr string, creds *netapi.Credentials) {
 		MDNS:            !serveNoMDNS,
 		Tailscale:       serveTailscale,
 		PID:             os.Getpid(),
+		Binds:           allBinds,
 	})
 
 	if creds.Pairing != nil {
@@ -652,6 +669,31 @@ func defaultServeBind() string {
 		return tailscale
 	}
 	return "127.0.0.1"
+}
+
+// resolveServeBindHosts returns the hosts this serve binds: the comma-
+// separated --bind list verbatim when set (tailscale mode sets it to the
+// tailnet IP), else the auto-detected private LAN address plus loopback so
+// local clients (the Mac app, same-machine tools) and LAN devices reach one
+// serve. The first host is primary: it feeds the banner URL, mDNS, and QR
+// pairing payloads.
+func resolveServeBindHosts() []string {
+	if serveBind != "" {
+		hosts := make([]string, 0, 2)
+		for h := range strings.SplitSeq(serveBind, ",") {
+			if h = strings.TrimSpace(h); h != "" {
+				hosts = append(hosts, h)
+			}
+		}
+		if len(hosts) > 0 {
+			return hosts
+		}
+	}
+	hosts := []string{defaultServeBind()}
+	if hosts[0] != "127.0.0.1" {
+		hosts = append(hosts, "127.0.0.1")
+	}
+	return hosts
 }
 
 // sessionRef holds the session remote turns save into; resume swaps it while

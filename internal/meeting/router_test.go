@@ -135,7 +135,7 @@ func TestCampaignSinkImportMeeting(t *testing.T) {
 
 func TestCampaignSinkImportMeetingRequiresBundle(t *testing.T) {
 	sink := CampaignSink{
-		Dest: Destination{ID: "mytools", Type: TypeCampaign, Campaign: "My_Tools"},
+		Dest:     Destination{ID: "mytools", Type: TypeCampaign, Campaign: "My_Tools"},
 		LookPath: func(string) (string, error) { return "/bin/camp", nil },
 		Run: func(context.Context, string, ...string) ([]byte, error) {
 			t.Fatal("should not shell out without a bundle")

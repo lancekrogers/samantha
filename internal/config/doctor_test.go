@@ -288,7 +288,6 @@ func TestQwenTierRAMAdvice(t *testing.T) {
 	}
 }
 
-
 func TestDiagnoseQwenNativeWorker(t *testing.T) {
 	cfg := &Config{
 		STTProvider:   "sherpa",

@@ -24,6 +24,10 @@ type ReadyBanner struct {
 	MDNS            bool   `json:"mdns"`
 	Tailscale       bool   `json:"tailscale"`
 	PID             int    `json:"pid"`
+	// Binds lists every bound host:port (primary first) when serve listens
+	// on more than one interface (e.g. LAN + loopback). Absent on
+	// single-bind serves so older consumers see an unchanged shape.
+	Binds []string `json:"binds,omitempty"`
 }
 
 // PairingCodeBanner is written to stdout whenever serve mints a pairing code

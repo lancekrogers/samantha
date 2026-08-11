@@ -72,10 +72,10 @@ func NativeInstallPaths(modelsDir string) NativePaths {
 
 // NativeStatus is the inspect/ensure result for the native package.
 type NativeStatus struct {
-	Installed    bool     `json:"installed"`
-	WorkerReady  bool     `json:"worker_ready"`
-	ModelReady   bool     `json:"model_ready"`
-	PresetsReady bool     `json:"presets_ready"`
+	Installed    bool `json:"installed"`
+	WorkerReady  bool `json:"worker_ready"`
+	ModelReady   bool `json:"model_ready"`
+	PresetsReady bool `json:"presets_ready"`
 	// RuntimeReady is true when bin/ ships the shared libs the worker needs
 	// (libqwen3tts + libggml*). Older Darwin packages only shipped libqwen3tts
 	// and relied on absolute lab RPATHs — those report RuntimeReady=false so

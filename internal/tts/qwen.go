@@ -73,6 +73,7 @@ type qwenCommand func(context.Context, string, ...string) *exec.Cmd
 //  1. Explicit native worker binary (qwen3-tts-worker) + model dir
 //  2. Installed native package under models_dir/qwen3-tts/ (product default)
 //  3. External one-shot qwen3-tts-cli / worker (lab/debug only)
+//
 // There is no managed Python product path after cutover.
 type Qwen3TTS struct {
 	binary              string

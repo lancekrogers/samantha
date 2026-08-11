@@ -27,14 +27,14 @@ type Session struct {
 	now            func() time.Time
 	processTimeout time.Duration
 
-	mu           sync.Mutex
-	writer       *meetinglog.Writer
-	state        State
+	mu     sync.Mutex
+	writer *meetinglog.Writer
+	state  State
 	// finalizing serializes segment acceptance against Stop/abandon: while a
 	// finalize pass drains and reconciles, new uploads are refused, and putWG
 	// tracks uploads already accepted so reconciliation never runs while one
 	// is mid-write (an acked segment must never miss assembly).
-	finalizing bool
+	finalizing   bool
 	lastActivity time.Time
 	lastSeq      int64
 	missing      []int64
