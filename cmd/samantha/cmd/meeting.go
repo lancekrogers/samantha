@@ -64,9 +64,10 @@ utterance, note, bookmark, error, session_end) with offset_ms from the start.
 --no-tui and --json keep plain line-oriented console sinks while writing the
 same meeting bundle.
 
-After recording, notes can be routed to a configured destination (campaign intent,
-filesystem path, or Apple Notes). Defaults live under meeting.route in config;
---route / --no-route override for one shot. Use samantha meeting route later if skipped.
+After recording, notes can be routed to a configured destination (campaign
+notes/meetings via camp idea notes import-meeting, filesystem path, or Apple
+Notes). Defaults live under meeting.route in config; --route / --no-route
+override for one shot. Use samantha meeting route later if skipped.
 
 Stop with Ctrl+C / Ctrl+Q or by saying one of the stop phrases ("stop recording",
 "end meeting", "stop listening" — exact full utterance after normalization, not

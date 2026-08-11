@@ -234,11 +234,12 @@ func DestinationLabel(d Destination) string {
 			name = d.ID
 		}
 		// Surface capture mode so operators know meetings go to notes/meetings
-		// (default) vs legacy lifecycle intents.
+		// (default). capture:intent is legacy — with a modern camp the sink
+		// still imports into notes/meetings when a bundle is present.
 		cap := NormalizeCampaignCapture(d.Capture)
 		switch cap {
 		case CaptureIntent:
-			return fmt.Sprintf("%s [campaign/intent]", name)
+			return fmt.Sprintf("%s [campaign/meetings*]", name)
 		case CaptureNote:
 			return fmt.Sprintf("%s [campaign/note]", name)
 		default:

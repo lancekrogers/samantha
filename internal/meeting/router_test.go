@@ -3,6 +3,8 @@ package meeting
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -96,6 +98,10 @@ func TestCampaignSinkImportMeeting(t *testing.T) {
 			return "", os.ErrNotExist
 		},
 		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			// SupportsImportMeeting probes import-meeting --help first.
+			if len(args) >= 4 && args[2] == "import-meeting" && args[3] == "--help" {
+				return []byte("Import a meeting bundle into notes/meetings/"), nil
+			}
 			gotArgs = append([]string{name}, args...)
 			return []byte(`{"schema_version":"intent-meeting-import/v1alpha1"}`), nil
 		},
@@ -294,6 +300,9 @@ func TestCampaignSinkImportMeetingEmbedsTagsInSummary(t *testing.T) {
 		},
 		LookPath: func(string) (string, error) { return "/bin/camp", nil },
 		Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if len(args) >= 4 && args[2] == "import-meeting" && args[3] == "--help" {
+				return []byte("Import a meeting bundle into notes/meetings/"), nil
+			}
 			for i, a := range args {
 				if a == "--summary-file" && i+1 < len(args) {
 					// Read while the temp file still exists (Route defers Remove).
@@ -324,7 +333,8 @@ func TestCampaignSinkImportMeetingEmbedsTagsInSummary(t *testing.T) {
 	}
 }
 
-func TestCampaignSinkLegacyIntentAdd(t *testing.T) {
+func TestCampaignSinkLegacyIntentAddWithoutImporter(t *testing.T) {
+	// Old camp without import-meeting: capture:intent still uses idea add.
 	var gotArgs []string
 	sink := CampaignSink{
 		Dest: Destination{ID: "mytools", Type: TypeCampaign, Campaign: "My_Tools", Capture: CaptureIntent},
@@ -335,6 +345,10 @@ func TestCampaignSinkLegacyIntentAdd(t *testing.T) {
 			return "", os.ErrNotExist
 		},
 		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			// Probe fails → SupportsImportMeeting returns error.
+			if len(args) >= 3 && args[0] == "idea" && args[1] == "notes" && args[2] == "import-meeting" {
+				return []byte("Error: unknown command"), fmt.Errorf("exit 1")
+			}
 			gotArgs = append([]string{name}, args...)
 			return []byte("created intent"), nil
 		},
@@ -344,9 +358,13 @@ func TestCampaignSinkLegacyIntentAdd(t *testing.T) {
 		Body:  "# hi\n",
 		Summary: meetinglog.Summary{
 			Description: "X",
-			StartedAt:   time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC),
+			// Bundle present but importer unsupported → idea add fallback.
+			Bundle:    filepath.Join(t.TempDir(), "x.meeting"),
+			StartedAt: time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC),
 		},
 	}
+	_ = os.MkdirAll(note.Summary.Bundle, 0o700)
+	_ = os.WriteFile(filepath.Join(note.Summary.Bundle, "meeting.md"), []byte("# m\n"), 0o600)
 	receipt, err := sink.Route(context.Background(), note)
 	if err != nil {
 		t.Fatal(err)
@@ -363,6 +381,76 @@ func TestCampaignSinkLegacyIntentAdd(t *testing.T) {
 	}
 	if !strings.Contains(joined, "--body-file") {
 		t.Fatalf("missing body-file: %v", gotArgs)
+	}
+}
+
+func TestCampaignSinkIntentUpgradesToImportMeeting(t *testing.T) {
+	// capture:intent with a modern camp + bundle must use notes/meetings, not inbox.
+	bundle := filepath.Join(t.TempDir(), "x.meeting")
+	if err := os.MkdirAll(bundle, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundle, "meeting.md"), []byte("# Meeting\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var gotArgs []string
+	sink := CampaignSink{
+		Dest: Destination{ID: "jobsearch", Type: TypeCampaign, Campaign: "JobSearch", Capture: CaptureIntent},
+		LookPath: func(name string) (string, error) {
+			if name == "camp" {
+				return "/bin/camp", nil
+			}
+			return "", os.ErrNotExist
+		},
+		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			// SupportsImportMeeting probes --help.
+			if len(args) >= 4 && args[2] == "import-meeting" && args[3] == "--help" {
+				return []byte("Import a meeting bundle into notes/meetings/"), nil
+			}
+			gotArgs = append([]string{name}, args...)
+			return []byte(`{"schema_version":"intent-meeting-import/v1alpha1"}`), nil
+		},
+		ResolveCampaignDir: func(context.Context, string) (string, error) { return "", nil },
+	}
+	_, err := sink.Route(context.Background(), RenderedNote{
+		Title: "Meeting: X",
+		Body:  "# hi\n",
+		Summary: meetinglog.Summary{
+			Description: "X",
+			Bundle:      bundle,
+			StartedAt:   time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(gotArgs, " ")
+	if !strings.Contains(joined, "import-meeting") {
+		t.Fatalf("expected import-meeting for capture:intent, got %v", gotArgs)
+	}
+	if strings.Contains(joined, "idea add") || strings.Contains(joined, "--body-file") {
+		t.Fatalf("must not fall back to idea add: %v", gotArgs)
+	}
+}
+
+func TestCampaignSinkMeetingFailsClosedWithoutImporter(t *testing.T) {
+	bundle := filepath.Join(t.TempDir(), "x.meeting")
+	_ = os.MkdirAll(bundle, 0o700)
+	_ = os.WriteFile(filepath.Join(bundle, "meeting.md"), []byte("# m\n"), 0o600)
+	sink := CampaignSink{
+		Dest: Destination{ID: "c", Type: TypeCampaign, Campaign: "JobSearch", Capture: CaptureMeeting},
+		LookPath: func(string) (string, error) { return "/bin/camp", nil },
+		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			return []byte("Error: unknown command"), fmt.Errorf("exit 1")
+		},
+	}
+	_, err := sink.Route(context.Background(), RenderedNote{
+		Title:   "T",
+		Body:    "# hi\n",
+		Summary: meetinglog.Summary{Bundle: bundle, Description: "T"},
+	})
+	if err == nil || (!errors.Is(err, ErrImportMeetingUnsupported) && !strings.Contains(err.Error(), "import-meeting")) {
+		t.Fatalf("err = %v, want import-meeting unsupported", err)
 	}
 }
 

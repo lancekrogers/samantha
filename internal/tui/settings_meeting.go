@@ -298,14 +298,17 @@ func (m *settingsModel) ensureDestinationConfigured(dest meeting.Destination) er
 			return nil
 		}
 	}
+	// Persist the normalized capture so restarts do not reintroduce empty or
+	// ambiguous values; campaign defaults to import-meeting → notes/meetings.
+	norm := meeting.NormalizeDestination(dest)
 	entry := config.MeetingDestinationConfig{
-		ID:       dest.ID,
-		Type:     dest.Type,
-		Campaign: dest.Campaign,
-		Capture:  dest.Capture,
-		Tags:     dest.Tags,
-		Path:     dest.Path,
-		Folder:   dest.Folder,
+		ID:       norm.ID,
+		Type:     norm.Type,
+		Campaign: norm.Campaign,
+		Capture:  norm.Capture,
+		Tags:     norm.Tags,
+		Path:     norm.Path,
+		Folder:   norm.Folder,
 	}
 	next := append(append([]config.MeetingDestinationConfig{}, m.cfg.Meeting.Route.Destinations...), entry)
 	if err := config.SetAndSave("meeting.route.destinations", next); err != nil {

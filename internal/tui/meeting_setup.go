@@ -163,22 +163,15 @@ func (m meetingSetupModel) afterTitleConfirm() (meetingSetupModel, tea.Cmd) {
 			def := strings.TrimSpace(m.cfg.Meeting.Route.Default)
 			if def != "" {
 				// Prefer a full Destination from configured YAML when present.
-				for _, d := range m.cfg.Meeting.Route.Destinations {
-					if d.ID == def {
-						return m, func() tea.Msg {
-							return startMeetingMsg{
-								Description: desc,
-								RoutePlan:   routePlanDest,
-								Destination: meeting.Destination{
-									ID:       d.ID,
-									Type:     d.Type,
-									Campaign: d.Campaign,
-									Capture:  d.Capture,
-									Tags:     d.Tags,
-									Path:     d.Path,
-									Folder:   d.Folder,
-								},
-							}
+				// Normalize through meeting.FromConfig so empty capture becomes
+				// notes/meetings (import-meeting), not a raw unnormalized copy.
+				routeCfg := meeting.FromConfig(m.cfg)
+				if d, ok := routeCfg.DestinationByID(def); ok {
+					return m, func() tea.Msg {
+						return startMeetingMsg{
+							Description: desc,
+							RoutePlan:   routePlanDest,
+							Destination: meeting.NormalizeDestination(d),
 						}
 					}
 				}
