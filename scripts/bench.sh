@@ -23,7 +23,10 @@ MANIFEST="${REPO_ROOT}/testdata/corpus/manifest.json"
 SAMANTHA="${SAMANTHA_BIN:-${REPO_ROOT}/bin/samantha}"
 
 # Regression tolerance and the absolute target from the latency spec.
-REGRESSION_PCT="${BENCH_REGRESSION_PCT:-10}"
+REGRESSION_PCT="${BENCH_REGRESSION_PCT:-25}"
+# Iteration 1 is discarded as warmup: ollama model load and kokoro first-synth
+# dominate it, and a baseline that bakes in cold start cannot detect regressions.
+ITERATIONS="${BENCH_ITERATIONS:-3}"
 TARGET_PLAYBACK_START_MS="${BENCH_TARGET_PLAYBACK_START_MS:-1200}"
 
 command -v jq >/dev/null 2>&1 || { echo "error: jq is required" >&2; exit 1; }
@@ -98,7 +101,7 @@ measure() {
 	echo "  running benchmark ($([[ ${#args[@]} -gt 0 ]] && echo "prompts + ${#args[@]} corpus args" || echo "prompts only, corpus not recorded"))..." >&2
 	# A threshold violation is reported in the JSON and via exit status; capture
 	# the results either way and let the diff decide.
-	"$SAMANTHA" benchmark --json "$raw" "${args[@]+"${args[@]}"}" >/dev/null 2>&1 || true
+	"$SAMANTHA" benchmark --iterations "$ITERATIONS" --json "$raw" "${args[@]+"${args[@]}"}" >/dev/null 2>&1 || true
 
 	[[ -s "$raw" ]] || { echo "error: benchmark produced no JSON (is a brain provider reachable?)" >&2; exit 1; }
 
@@ -116,12 +119,29 @@ measure() {
 	echo "$envelope"
 }
 
-# p50 of the metric across text-mode results, in milliseconds.
-p50_ms() {
+# Warm samples only: iteration 1 is warmup. Falls back to all samples when a
+# run had a single iteration, so a one-off `run` still reports something.
+warm_samples() {
 	jq --arg m "$METRIC" '
-		[.results[] | select(.mode != "stt") | .metrics[$m] // empty | select(. > 0)]
-		| sort
-		| if length == 0 then null else .[(length - 1) / 2 | floor] / 1000000 end' "$1"
+		[.results[] | select(.mode != "stt")] as $all
+		| ([$all[] | select(.iteration > 1)] | if length > 0 then . else $all end)
+		| [.[] | .metrics[$m] // empty | select(. > 0) | . / 1000000]
+		| sort' "$1"
+}
+
+# p50 of the metric across warm text-mode results, in milliseconds.
+p50_ms() {
+	warm_samples "$1" | jq 'if length == 0 then null else .[(length - 1) / 2 | floor] end'
+}
+
+# Spread of the warm samples, as a percentage of the median. This is the noise
+# floor: a regression tolerance tighter than it produces false failures.
+spread_pct() {
+	warm_samples "$1" | jq '
+		if length < 2 then null
+		else (.[(length - 1) / 2 | floor]) as $med
+		| ((.[-1] - .[0]) / $med * 100 | round)
+		end'
 }
 
 case "${1:-diff}" in
@@ -139,8 +159,10 @@ baseline)
 	mv "$env_file" "$BASELINE"
 	echo ""
 	echo "  ✓ wrote $(realpath --relative-to="$REPO_ROOT" "$BASELINE" 2>/dev/null || echo "$BASELINE")"
-	echo "    p50 ${METRIC}: ${p50} ms  (target < ${TARGET_PLAYBACK_START_MS} ms)"
-	echo "    this run defines the reference machine for every later comparison"
+	echo "    p50 ${METRIC}: ${p50} ms  (aspirational target < ${TARGET_PLAYBACK_START_MS} ms)"
+	echo "    warm-sample spread: $(spread_pct "$BASELINE")% of median  (n=$(warm_samples "$BASELINE" | jq length))"
+	echo "    model: $(jq -r .provenance.brain_model "$BASELINE")  machine: $(jq -r .provenance.machine "$BASELINE")"
+	echo "    this run defines the reference for every later comparison"
 	;;
 
 save)

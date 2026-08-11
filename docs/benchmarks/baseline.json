@@ -1,0 +1,208 @@
+{
+  "schema": "samantha.benchmark.v1",
+  "provenance": {
+    "machine": "Mac16,9",
+    "cpu": "Apple M4 Max",
+    "os": "macOS 26.5",
+    "samantha_commit": "8854f4d",
+    "worktree": "dirty",
+    "persona": "samantha",
+    "brain_provider": "ollama",
+    "brain_model": "qwen3.6",
+    "tts_provider": "kokoro",
+    "recorded_at": "2026-08-11T07:14:07Z"
+  },
+  "thresholds": {
+    "playback_start_p50_ms": 1200,
+    "regression_tolerance_pct": 25
+  },
+  "results": [
+    {
+      "mode": "text",
+      "iteration": 1,
+      "prompt": "Explain in one sentence why fast feedback matters in software development.",
+      "elapsed": 27942004208,
+      "metrics": {
+        "Outcome": "completed",
+        "Degraded": false,
+        "Interrupted": false,
+        "STTFinalElapsed": 0,
+        "FirstModelChunkElapsed": 13197362083,
+        "ModelCompleteElapsed": 13523383917,
+        "FirstSegmentElapsed": 13523417042,
+        "FirstAudioReadyElapsed": 19246281792,
+        "PlaybackStartElapsed": 19246281792,
+        "PlaybackCompleteElapsed": 27941980875,
+        "BargeInElapsed": 0,
+        "ToolLeakLines": 0
+      }
+    },
+    {
+      "mode": "text",
+      "iteration": 1,
+      "prompt": "Give me two short sentences on how to review a pull request carefully.",
+      "elapsed": 26215005625,
+      "metrics": {
+        "Outcome": "completed",
+        "Degraded": false,
+        "Interrupted": false,
+        "STTFinalElapsed": 0,
+        "FirstModelChunkElapsed": 8814893583,
+        "ModelCompleteElapsed": 9215106625,
+        "FirstSegmentElapsed": 9215145625,
+        "FirstAudioReadyElapsed": 15789399458,
+        "PlaybackStartElapsed": 15789399458,
+        "PlaybackCompleteElapsed": 26214994875,
+        "BargeInElapsed": 0,
+        "ToolLeakLines": 0
+      }
+    },
+    {
+      "mode": "text",
+      "iteration": 1,
+      "prompt": "Summarize why barge-in matters for a voice assistant in two sentences.",
+      "elapsed": 31195634375,
+      "metrics": {
+        "Outcome": "completed",
+        "Degraded": false,
+        "Interrupted": false,
+        "STTFinalElapsed": 0,
+        "FirstModelChunkElapsed": 4661123500,
+        "ModelCompleteElapsed": 5321444875,
+        "FirstSegmentElapsed": 5321500250,
+        "FirstAudioReadyElapsed": 15104414875,
+        "PlaybackStartElapsed": 15104414875,
+        "PlaybackCompleteElapsed": 31195620792,
+        "BargeInElapsed": 0,
+        "ToolLeakLines": 0
+      }
+    },
+    {
+      "mode": "text",
+      "iteration": 2,
+      "prompt": "Explain in one sentence why fast feedback matters in software development.",
+      "elapsed": 24531579542,
+      "metrics": {
+        "Outcome": "completed",
+        "Degraded": false,
+        "Interrupted": false,
+        "STTFinalElapsed": 0,
+        "FirstModelChunkElapsed": 9830452291,
+        "ModelCompleteElapsed": 10164783625,
+        "FirstSegmentElapsed": 10164816083,
+        "FirstAudioReadyElapsed": 15638468958,
+        "PlaybackStartElapsed": 15638468958,
+        "PlaybackCompleteElapsed": 24531567291,
+        "BargeInElapsed": 0,
+        "ToolLeakLines": 0
+      }
+    },
+    {
+      "mode": "text",
+      "iteration": 2,
+      "prompt": "Give me two short sentences on how to review a pull request carefully.",
+      "elapsed": 35259106042,
+      "metrics": {
+        "Outcome": "completed",
+        "Degraded": false,
+        "Interrupted": false,
+        "STTFinalElapsed": 0,
+        "FirstModelChunkElapsed": 11364791250,
+        "ModelCompleteElapsed": 11943445958,
+        "FirstSegmentElapsed": 11943499250,
+        "FirstAudioReadyElapsed": 20862885542,
+        "PlaybackStartElapsed": 20862885542,
+        "PlaybackCompleteElapsed": 35259093958,
+        "BargeInElapsed": 0,
+        "ToolLeakLines": 0
+      }
+    },
+    {
+      "mode": "text",
+      "iteration": 2,
+      "prompt": "Summarize why barge-in matters for a voice assistant in two sentences.",
+      "elapsed": 39914588584,
+      "metrics": {
+        "Outcome": "completed",
+        "Degraded": false,
+        "Interrupted": false,
+        "STTFinalElapsed": 0,
+        "FirstModelChunkElapsed": 9627473958,
+        "ModelCompleteElapsed": 10328680583,
+        "FirstSegmentElapsed": 10328747708,
+        "FirstAudioReadyElapsed": 21675502167,
+        "PlaybackStartElapsed": 21675502167,
+        "PlaybackCompleteElapsed": 39914571000,
+        "BargeInElapsed": 0,
+        "ToolLeakLines": 0
+      }
+    },
+    {
+      "mode": "text",
+      "iteration": 3,
+      "prompt": "Explain in one sentence why fast feedback matters in software development.",
+      "elapsed": 26609768792,
+      "metrics": {
+        "Outcome": "completed",
+        "Degraded": false,
+        "Interrupted": false,
+        "STTFinalElapsed": 0,
+        "FirstModelChunkElapsed": 13220495000,
+        "ModelCompleteElapsed": 13546257000,
+        "FirstSegmentElapsed": 13546289333,
+        "FirstAudioReadyElapsed": 18564100458,
+        "PlaybackStartElapsed": 18564100458,
+        "PlaybackCompleteElapsed": 26609759166,
+        "BargeInElapsed": 0,
+        "ToolLeakLines": 0
+      }
+    },
+    {
+      "mode": "text",
+      "iteration": 3,
+      "prompt": "Give me two short sentences on how to review a pull request carefully.",
+      "elapsed": 32577194708,
+      "metrics": {
+        "Outcome": "completed",
+        "Degraded": false,
+        "Interrupted": false,
+        "STTFinalElapsed": 0,
+        "FirstModelChunkElapsed": 10902320333,
+        "ModelCompleteElapsed": 11425002416,
+        "FirstSegmentElapsed": 11425050458,
+        "FirstAudioReadyElapsed": 19585729583,
+        "PlaybackStartElapsed": 19585729583,
+        "PlaybackCompleteElapsed": 32577183958,
+        "BargeInElapsed": 0,
+        "ToolLeakLines": 0
+      }
+    },
+    {
+      "mode": "text",
+      "iteration": 3,
+      "prompt": "Summarize why barge-in matters for a voice assistant in two sentences.",
+      "elapsed": 45069413333,
+      "metrics": {
+        "Outcome": "completed",
+        "Degraded": false,
+        "Interrupted": false,
+        "STTFinalElapsed": 0,
+        "FirstModelChunkElapsed": 12030497834,
+        "ModelCompleteElapsed": 12759124000,
+        "FirstSegmentElapsed": 12759181209,
+        "FirstAudioReadyElapsed": 28815583834,
+        "PlaybackStartElapsed": 28815583834,
+        "PlaybackCompleteElapsed": 45069403209,
+        "BargeInElapsed": 0,
+        "ToolLeakLines": 0
+      }
+    }
+  ],
+  "measures": "text-mode (non-streaming): brain -> whole-reply TTS. NOT the streaming voice path (RunTurn) that L1/L2/L3/N3 change. See festival 003_MEASURE/FINDINGS.md F1/F2.",
+  "caveats": [
+    "FirstSegmentElapsed == ModelCompleteElapsed on every sample: text mode synthesises the entire reply as one segment.",
+    "Warm-sample spread is 67% of median, so the specced 10% regression gate is inside the noise; tolerance raised to 25% provisionally.",
+    "p50 is ~16x the specced 1200ms target because the whole reply is synthesised at ~1x realtime before playback starts.",
+    "Superseded as the latency reference once the full-turn benchmark mode lands."
+  ]
+}
