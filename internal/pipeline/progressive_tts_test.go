@@ -108,10 +108,9 @@ func TestProgressiveTTSSegmentsFeedWorker(t *testing.T) {
 			return
 		}
 		// Brain still streaming after first synth started. Six sentences, not
-		// three: with later segments batched in pairs, three sentences would
-		// produce exactly two calls and leave the count assertion below with no
-		// headroom — a policy that batched "one, then everything else" would
-		// pass it unchanged.
+		// three: asserting the full segment shape below needs enough segments to
+		// distinguish "one per sentence" from "the opening, then everything
+		// else" — a count alone cannot.
 		chunks <- "Second sentence is ready. "
 		chunks <- "Third continues the thought. "
 		chunks <- "Fourth keeps going. "
@@ -141,14 +140,15 @@ func TestProgressiveTTSSegmentsFeedWorker(t *testing.T) {
 	}
 
 	calls := provider.Calls()
-	// Six sentences batch as 1 + 2 + 2 + 1 (the last is the end-of-stream
-	// flush). Asserting the whole shape, not just a lower bound: the count alone
-	// cannot distinguish "pairs after the opening" from "the opening, then the
-	// entire rest of the reply".
+	// One sentence per synthesis call (laterBatchSegments = 1, D009). Asserting
+	// the whole shape, not just a lower bound: a count alone cannot distinguish
+	// this from "the opening, then the entire rest of the reply".
 	want := []string{
 		"Hello there.",
-		"Second sentence is ready. Third continues the thought.",
-		"Fourth keeps going. Fifth is still here.",
+		"Second sentence is ready.",
+		"Third continues the thought.",
+		"Fourth keeps going.",
+		"Fifth is still here.",
 		"Sixth finishes the reply.",
 	}
 	if len(calls) != len(want) {

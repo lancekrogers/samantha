@@ -39,8 +39,8 @@
     "os": "Darwin 25.5.0"
   },
   "listen_check": {
-    "status": "pending",
-    "instructions": "Play before.wav then after.wav. Both are ~6.06 s \u2014 merging synthesis calls does not change how much speech there is. Listen at the boundary between sentences two and three: does the after side carry intonation across it? Then listen for a GAP right after the opening sentence, which is the unmeasured risk recorded above. If that gap is audible, the batching is not worth it and laterBatchSegments should go back to 1.",
+    "status": "withdrawn",
+    "instructions": "No longer needed for the batching decision: D009 reverted it on measured grounds (804 ms gap, no measurable prosody benefit). The pair is kept as the record of what was tried. before.wav = 4 separate segments, after.wav = the 3-segment batched variant that was NOT shipped.",
     "verdict": null,
     "listener": null
   },
@@ -73,5 +73,48 @@
     "note": "Raised by adversarial review, recorded rather than resolved. Both need the listen check that is still pending.",
     "seg1_to_seg2_gap": "Kokoro generates a whole segment before emitting a sample, so time-to-first-frame for segment 2 roughly doubles while segment 1's playback duration is unchanged at one sentence. If synthesis of two sentences outruns the playback of one, the listener hears a gap right after the opening \u2014 the most audible position in a reply. Segments 3+ are ratio-neutral. NOT measured.",
     "barge_in_mutex": "Kokoro holds its provider mutex across an uncancellable cgo generate and does not implement SoftCanceler, so an orphaned generate now holds it for a two-sentence synthesis. The turn loop still returns promptly; the cost is that the NEXT turn's first Kokoro call can block behind it. NOT measured."
+  },
+  "outcome": "REVERTED \u2014 see festival decision D009",
+  "measurement_that_reverted_it": {
+    "benefit": {
+      "method": "two sentences synthesized separately vs merged into one call",
+      "total_duration": {
+        "separate_s": 2.749,
+        "merged_s": 2.749
+      },
+      "boundary_silence_ms": {
+        "separate": 160,
+        "merged": 160
+      },
+      "onset_f0_hz": {
+        "separate": [
+          263.7,
+          247.4
+        ],
+        "merged": [
+          263.7,
+          247.4
+        ]
+      },
+      "waveform_difference_dbfs": -45.3,
+      "verdict": "audio differs, but duration, boundary pause and onset F0 are identical. The declination-carries-across-the-boundary marker did not appear. No measurable improvement."
+    },
+    "cost": {
+      "method": "go test -tags integration ./internal/tts/ -run TestKokoroRealtimeFactor (M4 Max)",
+      "one_sentence": {
+        "synth_ms": 901.2,
+        "audio_s": 1.185,
+        "realtime_factor": 1.32
+      },
+      "two_sentences": {
+        "synth_ms": 1988.6,
+        "audio_s": 2.749,
+        "realtime_factor": 1.38
+      },
+      "pipeline_timeline": "seg1 ready 0.901s plays to 2.086s; seg2 (2 sentences) not ready until 2.890s",
+      "gap_ms": 804,
+      "verdict": "804 ms of silence immediately after the opening sentence \u2014 the most audible position in a reply."
+    },
+    "threshold": "Batching needs a realtime factor above ~2.3x. Kokoro is at 1.32x, so synthesis must get ~1.8x faster. R-N7's bake-off should score candidates on this."
   }
 }

@@ -20,13 +20,33 @@ import (
 
 const voiceQueueDepth = 2
 
-// How many speakable segments are batched into one synthesis call. The opening
-// goes out alone so time-to-first-audio is unaffected; later batches trade a
-// little latency the listener is no longer waiting on for intonation that
-// carries across a sentence boundary. Constant policy, not a config key.
+// How many speakable segments go into one synthesis call.
+//
+// laterBatchSegments is 1, and the 2 it was briefly set to is why this comment
+// exists. Batching two sentences per call was supposed to let the synthesiser
+// carry intonation across a sentence boundary. Measurement killed it:
+//
+//	Kokoro realtime factor         1.32x   (0.901 s to synthesize 1.185 s of audio)
+//	synth(2 sentences)             1.989 s
+//	playback(1 opening sentence)   1.185 s
+//	=> 804 ms of silence after the opening sentence
+//
+// The synthesis worker is single and ordered, so segment 2 is synthesized while
+// segment 1 plays. At 1.32x, a two-sentence segment 2 cannot finish in time and
+// the listener hears a gap in the most audible position in the reply. Meanwhile
+// the prosody benefit was unverifiable: merged audio measurably differs from
+// concatenated audio, but total duration, inter-sentence pause and onset F0 were
+// identical, so nothing showed the difference was an improvement.
+//
+// Batching becomes free above a realtime factor of about 2.3x — roughly 1.8x
+// faster than Kokoro is today. `go test -tags integration ./internal/tts/ -run
+// TestKokoroRealtimeFactor` is the measurement; phase 009's TTS bake-off should
+// re-run it, and a candidate that clears 2.3x makes this a one-constant change.
+//
+// See festival decision D009.
 const (
 	openingBatchSegments = 1
-	laterBatchSegments   = 2
+	laterBatchSegments   = 1
 )
 
 // hasPronounceableContent reports whether a segment contains anything a

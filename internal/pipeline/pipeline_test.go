@@ -85,15 +85,11 @@ func TestRunTurnDrainsFullPlaybackQueue(t *testing.T) {
 	// loop must apply backpressure without blocking — a regression guard for
 	// the slotSem deadlock that hung voice mode once the queue was full.
 	//
-	// Sentences are not segments: the turn loop speaks the opening alone and
-	// batches two thereafter, so nine sentences produce five segments — four
-	// in-loop emits plus the end-of-stream flush of "Nine.", which has no
-	// trailing space and so is never seen by findSentenceEnd.
-	//
-	// Keep the SEGMENT count well above voiceQueueDepth if you change this.
-	// Dropping to two or three would still pass while no longer filling the
-	// queue, which is the only thing this test is guarding.
-	brainProvider := &fakeBrain{chunks: []string{"One. Two. Three. Four. Five. Six. Seven. Eight. Nine."}}
+	// Count SEGMENTS, not sentences. They are 1:1 only while laterBatchSegments
+	// is 1 (D009); re-enabling batching would cut five segments to three and this
+	// test would still pass while no longer filling the queue, which is the only
+	// thing it guards.
+	brainProvider := &fakeBrain{chunks: []string{"One. Two. Three. Four. Five."}}
 	ttsProvider := &fakeTTS{delay: 5 * time.Millisecond}
 	player := newFakePlayer(60 * time.Millisecond)
 	defer player.Close()
@@ -1141,14 +1137,18 @@ func TestRecoverTurnDoesNotDuplicateRecoveryReply(t *testing.T) {
 	}
 }
 
-// The opening segment's one-sentence budget belongs to the first thing the
-// listener HEARS, not the first thing the chunker emits.
+// Batching counts segments the listener will actually HEAR, not chunks the
+// segmenter emitted.
 //
-// This was a real defect. Batching used to live in brain.ChunkSentencesRaw,
-// which counts emitted chunks and cannot see the voice gate. A reply opening
-// with a suppressed tool line therefore spent the budget on silence, and the
-// first audible segment was a two-sentence synthesis — doubling
-// time-to-first-audio in exactly the case the policy exists to protect.
+// This was a real defect while laterBatchSegments was 2: batching lived in
+// brain.ChunkSentencesRaw, which cannot see the voice gate, so a reply opening
+// with a suppressed tool line spent its one-sentence budget on silence and the
+// first audible segment was a two-sentence synthesis.
+//
+// D009 has since set laterBatchSegments to 1, which makes batching an identity
+// today. These cases still earn their place: they pin the accounting (audible
+// segments, no unpronounceable residue, nothing dropped at end of stream) that
+// has to hold the moment a faster synthesiser lets batching switch back on.
 func TestVoiceBatchingCountsAudibleSegments(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -1160,26 +1160,27 @@ func TestVoiceBatchingCountsAudibleSegments(t *testing.T) {
 			// sentence must still go out alone.
 			name:  "suppressed tool opener does not spend the budget",
 			reply: "I called the search tool. Here is what I found. There are three results. That is all.",
-			want:  []string{"Here is what I found.", "There are three results. That is all."},
+			want:  []string{"Here is what I found.", "There are three results.", "That is all."},
 		},
 		{
 			// "Umm." cleans to a bare "." — unpronounceable, and previously it
 			// both reached TTS and got glued onto the next real sentence.
 			name:  "filler residue is neither spoken nor batched onto real speech",
 			reply: "Umm. Let me think about this. Here is the answer. Done.",
-			want:  []string{"Let me think about this.", "Here is the answer. Done."},
+			want:  []string{"Let me think about this.", "Here is the answer.", "Done."},
 		},
 		{
-			name:  "an ordinary reply batches one then pairs",
+			name:  "an ordinary reply is one segment per sentence",
 			reply: "First. Second. Third. Fourth. Fifth.",
-			want:  []string{"First.", "Second. Third.", "Fourth. Fifth."},
+			want:  []string{"First.", "Second.", "Third.", "Fourth.", "Fifth."},
 		},
 		{
-			// A half-full batch at end of stream must still be spoken, or the
-			// last sentence of every odd-length reply is silently dropped.
-			name:  "odd remainder is flushed, not dropped",
+			// A partial batch at end of stream must still be spoken, or the last
+			// sentence of a reply is silently dropped. This matters again the
+			// moment laterBatchSegments goes above 1.
+			name:  "the final sentence is flushed, not dropped",
 			reply: "First. Second. Third. Fourth.",
-			want:  []string{"First.", "Second. Third.", "Fourth."},
+			want:  []string{"First.", "Second.", "Third.", "Fourth."},
 		},
 	}
 
