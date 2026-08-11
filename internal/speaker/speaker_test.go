@@ -65,6 +65,15 @@ func TestConfigNormalizeAndFlags(t *testing.T) {
 	if c.Live.Mode != LiveModeIndicator {
 		t.Fatalf("invalid mode clamp: %q", c.Live.Mode)
 	}
+	// sub-embed-floor window clamps to the effective live window, so
+	// enrollment and EmbeddingRev match what StartLiveFeed actually uses.
+	c = Config{Live: LiveConfig{WindowMS: 200}}.Normalize()
+	if c.Live.WindowMS != 500 {
+		t.Fatalf("window floor clamp: %d, want 500", c.Live.WindowMS)
+	}
+	if got := (Config{Live: LiveConfig{WindowMS: 200}}).LiveWindowMS(); got != 500 {
+		t.Fatalf("LiveWindowMS() = %d, want clamped 500", got)
+	}
 	// live threshold inherits root
 	c = Config{Threshold: 0.75, Live: LiveConfig{Threshold: 0}}.Normalize()
 	if c.Live.Threshold != 0.75 {

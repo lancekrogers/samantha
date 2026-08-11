@@ -1,6 +1,16 @@
 package speaker
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/lancekrogers/samantha/internal/audio"
+)
+
+// minLiveWindowMS is the effective window floor, derived from
+// minLiveEmbedSamples (~0.5s): shorter windows cannot embed, and
+// StartLiveFeed clamps to the same floor. Normalize applies it so live
+// verification, enrollment, and EmbeddingRev all agree on the real window.
+const minLiveWindowMS = minLiveEmbedSamples * 1000 / audio.SampleRate
 
 // Config controls optional speaker analysis. All features default off so
 // existing installs are unaffected until models and flags are set.
@@ -63,6 +73,9 @@ func (c Config) Normalize() Config {
 	}
 	if c.Live.WindowMS <= 0 {
 		c.Live.WindowMS = 1500
+	}
+	if c.Live.WindowMS < minLiveWindowMS {
+		c.Live.WindowMS = minLiveWindowMS
 	}
 	switch c.Live.Mode {
 	case "", LiveModeIndicator:
