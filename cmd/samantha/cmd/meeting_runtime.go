@@ -64,7 +64,7 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 	}
 	bundlePath := filepath.Join(outDir, meetingBundleName(opts.Description, time.Now()))
 
-	writer, err := meetinglog.CreateBundle(bundlePath, opts.Description, sttLabel)
+	writer, err := meetinglog.CreateBundle(bundlePath, opts.Description, sttLabel, "mac")
 	if err != nil {
 		return err
 	}
@@ -190,7 +190,7 @@ func meetingRuntimeBuilder() appTUI.MeetingBuilder {
 		if os.Getenv("SAMANTHA_DEMO_MEETING") == "1" ||
 			os.Getenv("SAMANTHA_DEMO_MEETING") == "true" ||
 			os.Getenv("SAMANTHA_DEMO_MEETING") == "yes" {
-			writer, err := meetinglog.CreateBundle(bundlePath, description, "demo")
+			writer, err := meetinglog.CreateBundle(bundlePath, description, "demo", "mac")
 			if err != nil {
 				return nil, err
 			}
@@ -211,7 +211,7 @@ func meetingRuntimeBuilder() appTUI.MeetingBuilder {
 		if err != nil {
 			return nil, err
 		}
-		writer, err := meetinglog.CreateBundle(bundlePath, description, sttLabel)
+		writer, err := meetinglog.CreateBundle(bundlePath, description, sttLabel, "mac")
 		if err != nil {
 			cleanup()
 			return nil, err

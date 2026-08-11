@@ -87,6 +87,8 @@ var (
 	ErrBadSegment = errors.New("meeting: malformed audio segment")
 	// ErrBadControl is an unsupported control action.
 	ErrBadControl = errors.New("meeting: unsupported control action")
+	// ErrBadStart is a start request with an unknown capture source.
+	ErrBadStart = errors.New("meeting: unknown capture source")
 	// ErrPipelineUnavailable means serve has no transcription pipeline
 	// configured; the recording is kept, only the results are missing.
 	ErrPipelineUnavailable = errors.New("meeting: no processing pipeline configured")
@@ -95,10 +97,14 @@ var (
 	ErrNotRoutable = errors.New("meeting: meeting has no finished notes to route yet")
 )
 
-// StartRequest is the client's POST /v1/meeting/start body.
+// StartRequest is the client's POST /v1/meeting/start body. Source names the
+// capture surface (ios, mac, watch); empty means ios — phones were the only
+// clients before the field existed, so absence keeps meaning what it always
+// did.
 type StartRequest struct {
 	Title    string `json:"title,omitempty"`
 	Campaign string `json:"campaign,omitempty"`
+	Source   string `json:"source,omitempty"`
 }
 
 // StartResponse tells the client how to chunk and buffer audio.

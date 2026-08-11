@@ -29,7 +29,7 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	base := time.Now()
 	bundlePath := filepath.Join(t.TempDir(), "standup.meeting")
-	writer, err := meetinglog.CreateBundle(bundlePath, "Standup", "test-stt")
+	writer, err := meetinglog.CreateBundle(bundlePath, "Standup", "test-stt", "")
 	if err != nil {
 		t.Fatalf("CreateBundle() error = %v", err)
 	}

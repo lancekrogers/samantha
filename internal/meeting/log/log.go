@@ -71,6 +71,7 @@ type Event struct {
 	Label        string  `json:"label,omitempty"`   // bookmark or speaker label
 	Message      string  `json:"message,omitempty"` // error text
 	STT          string  `json:"stt,omitempty"`     // session_start only
+	Source       string  `json:"source,omitempty"`  // session_start only: capture surface (mac, ios, watch)
 	Desc         string  `json:"description,omitempty"`
 	Status       string  `json:"status,omitempty"`
 	Artifact     string  `json:"artifact,omitempty"`
@@ -168,8 +169,10 @@ type Writer struct {
 
 // CreateBundle creates one private meeting directory with a canonical
 // meeting.md document and hidden machine event stream. bundlePath must not
-// already exist, preventing accidental mixing of two recordings.
-func CreateBundle(bundlePath, description, sttLabel string) (*Writer, error) {
+// already exist, preventing accidental mixing of two recordings. source names
+// the capture surface (mac, ios, watch); empty omits it from the document and
+// event stream.
+func CreateBundle(bundlePath, description, sttLabel, source string) (*Writer, error) {
 	if err := os.Mkdir(bundlePath, 0o700); err != nil {
 		return nil, fmt.Errorf("meetinglog: create bundle %s: %w", bundlePath, err)
 	}
@@ -180,7 +183,7 @@ func CreateBundle(bundlePath, description, sttLabel string) (*Writer, error) {
 	}
 	documentPath := filepath.Join(bundlePath, BundleDocumentName)
 	eventsPath := filepath.Join(internalDir, BundleEventsName)
-	w, err := createAt(documentPath, eventsPath, bundlePath, description, sttLabel)
+	w, err := createAt(documentPath, eventsPath, bundlePath, description, sttLabel, source)
 	if err != nil {
 		_ = os.RemoveAll(bundlePath)
 		return nil, err
@@ -188,7 +191,7 @@ func CreateBundle(bundlePath, description, sttLabel string) (*Writer, error) {
 	return w, nil
 }
 
-func createAt(path, jsonlPath, bundlePath, description, sttLabel string) (*Writer, error) {
+func createAt(path, jsonlPath, bundlePath, description, sttLabel, source string) (*Writer, error) {
 	// 0o600: meeting transcripts are private (credentials, personal speech).
 	logF, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
@@ -211,16 +214,21 @@ func createAt(path, jsonlPath, bundlePath, description, sttLabel string) (*Write
 		sttLabel:    sttLabel,
 		started:     time.Now(),
 	}
-	header := fmt.Sprintf("# Meeting: %s\n# Started: %s\n# STT: %s\n# JSONL: %s\n\n",
-		description, w.started.Format(time.RFC3339), sttLabel, jsonlPath)
+	header := fmt.Sprintf("# Meeting: %s\n# Started: %s\n# STT: %s\n",
+		description, w.started.Format(time.RFC3339), sttLabel)
+	if source != "" {
+		header += "# Source: " + source + "\n"
+	}
+	header += fmt.Sprintf("# JSONL: %s\n\n", jsonlPath)
 	if err := w.writeLog(header); err != nil {
 		_ = w.abortCreate()
 		return nil, err
 	}
 	if err := w.writeEvent(Event{
-		Type: TypeSessionStart,
-		Desc: description,
-		STT:  sttLabel,
+		Type:   TypeSessionStart,
+		Desc:   description,
+		STT:    sttLabel,
+		Source: source,
 	}); err != nil {
 		_ = w.abortCreate()
 		return nil, err

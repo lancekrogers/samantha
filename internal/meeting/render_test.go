@@ -77,7 +77,7 @@ func TestRenderEventsPrefersSpeakerAttributedTranscript(t *testing.T) {
 func TestRenderFromMeetingBundle(t *testing.T) {
 	dir := t.TempDir()
 	bundle := filepath.Join(dir, "m.meeting")
-	w, err := meetinglog.CreateBundle(bundle, "Design review", "fake")
+	w, err := meetinglog.CreateBundle(bundle, "Design review", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}

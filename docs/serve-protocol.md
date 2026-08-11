@@ -169,12 +169,17 @@ touches the audio queues.
 
 ```http
 POST /v1/meeting/start
-{"title":"Standup","campaign":"mytools"}
+{"title":"Standup","campaign":"mytools","source":"watch"}
 ```
 
 ```json
 {"meeting_id":"…","segment_seconds":5,"outbox_cap_segments":120}
 ```
+
+`source` names the capture surface — `ios` (default when absent), `mac`, or
+`watch` — and is recorded in the bundle's `session_start` event and as a
+`# Source:` header in `meeting.md`, so diarized exports say where the mic
+was. An unknown value is a `400`.
 
 Segment uploads are **idempotent per `(meeting_id, seq)`** and tolerate
 out-of-order arrival, so a client may retry freely. `seq` is monotonic from 0.
