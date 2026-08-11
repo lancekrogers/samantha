@@ -438,7 +438,7 @@ func TestCampaignSinkMeetingFailsClosedWithoutImporter(t *testing.T) {
 	_ = os.MkdirAll(bundle, 0o700)
 	_ = os.WriteFile(filepath.Join(bundle, "meeting.md"), []byte("# m\n"), 0o600)
 	sink := CampaignSink{
-		Dest: Destination{ID: "c", Type: TypeCampaign, Campaign: "JobSearch", Capture: CaptureMeeting},
+		Dest:     Destination{ID: "c", Type: TypeCampaign, Campaign: "JobSearch", Capture: CaptureMeeting},
 		LookPath: func(string) (string, error) { return "/bin/camp", nil },
 		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			return []byte("Error: unknown command"), fmt.Errorf("exit 1")

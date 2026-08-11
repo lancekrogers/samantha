@@ -22,7 +22,7 @@ func TestPersonaSystemPromptDefaultMatchesEmbeddedPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Default(persona) error = %v", err)
 	}
-	want, err := prompts.ResolvePlaceholders(doc.Assemble(), prompts.PlaceholderNames(), prompts.PlaceholderValues(cfg.AgentName))
+	want, err := prompts.ResolvePlaceholders(doc.Assemble(), prompts.PlaceholderNames(), prompts.PlaceholderValues(cfg.AgentName, prompts.PlaceholderEnv{}))
 	if err != nil {
 		t.Fatalf("ResolvePlaceholders() error = %v", err)
 	}

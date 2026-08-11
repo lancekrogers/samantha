@@ -2,8 +2,11 @@ package prompts
 
 import (
 	"fmt"
+	"os"
 	"regexp"
+	"runtime"
 	"strings"
+	"time"
 )
 
 var placeholderPattern = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
@@ -26,6 +29,18 @@ var PersonaPlaceholders = []Placeholder{
 		Name:        "agent_name",
 		Description: "Active persona display name (from the profile)",
 	},
+	{
+		Name:        "date",
+		Description: "Today's date, e.g. Monday, 11 August 2026 (resolved per turn)",
+	},
+	{
+		Name:        "user_name",
+		Description: "The operating-system user running samantha",
+	},
+	{
+		Name:        "os",
+		Description: "Host operating system and architecture, e.g. darwin/arm64",
+	},
 }
 
 // PlaceholderNames returns the bare names from PersonaPlaceholders.
@@ -37,12 +52,41 @@ func PlaceholderNames() []string {
 	return out
 }
 
-// PlaceholderValues maps each persona placeholder to its runtime value for cfg.
-// Unknown/empty agent names still produce a value so ResolvePlaceholders does
-// not fail on an allowed but empty field.
-func PlaceholderValues(agentName string) map[string]string {
+// PlaceholderEnv carries the values that are not derived from the persona.
+// Zero fields fall back to the host, so callers that do not care (tests,
+// previews) get production behaviour rather than blanks.
+type PlaceholderEnv struct {
+	UserName string
+	OS       string
+	// Now is resolved at call time so {date} tracks the day rather than
+	// freezing at process start. Zero means "ask the clock".
+	Now time.Time
+}
+
+// PlaceholderValues maps each persona placeholder to its runtime value.
+// An allowed-but-empty field still produces a value so ResolvePlaceholders does
+// not fail on it.
+//
+// {date} is resolved here, per call, which is why prompt resolution must happen
+// per turn: resolved once at construction it would be wrong by the next morning.
+func PlaceholderValues(agentName string, env PlaceholderEnv) map[string]string {
+	now := env.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	userName := env.UserName
+	if userName == "" {
+		userName = os.Getenv("USER")
+	}
+	osName := env.OS
+	if osName == "" {
+		osName = runtime.GOOS + "/" + runtime.GOARCH
+	}
 	return map[string]string{
 		"agent_name": agentName,
+		"date":       now.Format("Monday, 2 January 2006"),
+		"user_name":  userName,
+		"os":         osName,
 	}
 }
 
