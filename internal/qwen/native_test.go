@@ -325,11 +325,17 @@ func TestExtractNativeTarGzRejectsUnsafeSymlinks(t *testing.T) {
 }
 
 func TestNormalizeTier(t *testing.T) {
-	if normalizeTier("0.6B") != DefaultModelTier {
-		t.Fatal(normalizeTier("0.6B"))
+	if NormalizeModelTier("0.6B") != DefaultModelTier {
+		t.Fatal(NormalizeModelTier("0.6B"))
 	}
-	if normalizeTier("1.7") != Tier1_7B {
-		t.Fatal(normalizeTier("1.7"))
+	if NormalizeModelTier("1.7") != Tier1_7B {
+		t.Fatal(NormalizeModelTier("1.7"))
+	}
+	if NormalizeModelTier("") != DefaultModelTier {
+		t.Fatal(NormalizeModelTier(""))
+	}
+	if NormalizeModelTier("1b7") != Tier1_7B {
+		t.Fatal(NormalizeModelTier("1b7"))
 	}
 }
 

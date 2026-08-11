@@ -78,6 +78,7 @@ type qwenCommand func(context.Context, string, ...string) *exec.Cmd
 type Qwen3TTS struct {
 	binary              string
 	model               string
+	modelTier           string // QWEN3_TTS_TIER for multi-tier native packages (0.6b / 1.7b)
 	timeout             time.Duration
 	timeoutSet          bool // true when cfg.QwenTTSTimeout was explicitly set
 	command             qwenCommand
@@ -111,6 +112,7 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 
 	binary := strings.TrimSpace(cfg.QwenTTSBinary)
 	model := strings.TrimSpace(cfg.QwenTTSModel)
+	modelTier := managedqwen.NormalizeModelTier(cfg.QwenTTSModelTier)
 	modelsDir := config.ModelsDirFrom(cfg)
 	managed := false
 	native := false
@@ -122,7 +124,7 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 			return nil, errors.New("qwen3-tts: qwen_tts_model is required for the native worker")
 		}
 		native = true
-	} else if install, ok := findNativeInstall(modelsDir, cfg.QwenTTSModelTier); ok && managedqwen.UseManaged(binary, model) {
+	} else if install, ok := findNativeInstall(modelsDir, modelTier); ok && managedqwen.UseManaged(binary, model) {
 		// Product default: empty binary/model → ensure-installed native package.
 		binary = install.Worker
 		model = install.ModelDir
@@ -182,6 +184,7 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 
 	q := newQwen3TTS(binaryPath, model, timeout, exec.CommandContext)
 	q.timeoutSet = timeoutSet
+	q.modelTier = modelTier
 	q.mode = VoiceMode(strings.TrimSpace(cfg.QwenTTSMode))
 	q.voice = strings.TrimSpace(cfg.QwenTTSVoice)
 	q.language = strings.TrimSpace(cfg.QwenTTSLanguage)
@@ -211,7 +214,7 @@ func NewQwen3TTS(cfg *config.Config) (*Qwen3TTS, error) {
 	startupTimeout := max(timeout, 10*time.Minute)
 	q.startupTimeout = startupTimeout
 	if native {
-		session, err := startNativeQwenSession(context.Background(), binaryPath, model, startupTimeout)
+		session, err := startNativeQwenSession(context.Background(), binaryPath, model, q.modelTier, startupTimeout)
 		if err != nil {
 			q.alive.Store(false)
 			return nil, fmt.Errorf("qwen3-tts: %w", err)
@@ -510,7 +513,7 @@ func (q *Qwen3TTS) ensureNativeSessionLocked(ctx context.Context) error {
 	if timeout <= 0 {
 		timeout = max(q.timeout, 10*time.Minute)
 	}
-	session, err := startNativeQwenSession(ctx, q.binary, q.model, timeout)
+	session, err := startNativeQwenSession(ctx, q.binary, q.model, q.modelTier, timeout)
 	if err != nil {
 		return fmt.Errorf("start native worker: %w", err)
 	}
