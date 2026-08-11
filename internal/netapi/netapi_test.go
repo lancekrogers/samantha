@@ -1548,3 +1548,93 @@ func TestSubmitVoiceRequiresVoiceRunner(t *testing.T) {
 		t.Fatal("SubmitVoice must fail without voice runner")
 	}
 }
+
+// set_persona must fail cleanly when the server was built without the
+// capability, rather than silently accepting and doing nothing.
+func TestSetPersonaDisabledReportsClearly(t *testing.T) {
+	s := &Server{}
+	conn := &streamConn{out: make(chan []byte, 4)}
+
+	s.handleSetPersona(conn, "pirate")
+
+	select {
+	case raw := <-conn.out:
+		if !strings.Contains(string(raw), "not enabled") {
+			t.Errorf("expected a not-enabled error, got %s", raw)
+		}
+	default:
+		t.Fatal("expected an error envelope")
+	}
+}
+
+// An empty name is a client bug; say so instead of resolving the active persona
+// and reporting success for a request that asked for nothing.
+func TestSetPersonaRejectsEmptyName(t *testing.T) {
+	s := &Server{opts: Options{SetPersona: func(string) (PersonaAck, error) {
+		t.Fatal("resolver must not be called for an empty name")
+		return PersonaAck{}, nil
+	}}}
+	conn := &streamConn{out: make(chan []byte, 4)}
+
+	s.handleSetPersona(conn, "   ")
+
+	select {
+	case raw := <-conn.out:
+		if !strings.Contains(string(raw), "requires a name") {
+			t.Errorf("expected a missing-name error, got %s", raw)
+		}
+	default:
+		t.Fatal("expected an error envelope")
+	}
+}
+
+// A resolver failure (unknown persona) must reach the client verbatim, since
+// the resolver's message names the personas that do exist.
+func TestSetPersonaSurfacesResolverError(t *testing.T) {
+	s := &Server{opts: Options{SetPersona: func(string) (PersonaAck, error) {
+		return PersonaAck{}, errors.New(`persona "ghost" not found (available: alpha, beta)`)
+	}}}
+	conn := &streamConn{out: make(chan []byte, 4)}
+
+	s.handleSetPersona(conn, "ghost")
+
+	select {
+	case raw := <-conn.out:
+		if !strings.Contains(string(raw), "available: alpha, beta") {
+			t.Errorf("resolver error should reach the client, got %s", raw)
+		}
+	default:
+		t.Fatal("expected an error envelope")
+	}
+}
+
+// The ack must state that the change applies to the next turn. A session binds
+// its identity for its whole life, so an ack implying the in-flight turn changed
+// would be a lie the client acts on.
+func TestSetPersonaAckSaysItAppliesToTheNextTurn(t *testing.T) {
+	s := &Server{opts: Options{SetPersona: func(id string) (PersonaAck, error) {
+		return PersonaAck{ID: id, DisplayName: "Pirate", PromptHash: "abc123"}, nil
+	}}}
+	conn := &streamConn{out: make(chan []byte, 4)}
+
+	s.handleSetPersona(conn, "pirate")
+
+	select {
+	case raw := <-conn.out:
+		var got map[string]any
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("ack is not valid JSON: %v", err)
+		}
+		if got["type"] != "set_persona_ack" {
+			t.Errorf("type = %v", got["type"])
+		}
+		if got["applies_to"] != "next_turn" {
+			t.Errorf("applies_to = %v, want next_turn — the in-flight turn keeps its identity", got["applies_to"])
+		}
+		if got["id"] != "pirate" || got["display_name"] != "Pirate" || got["prompt_hash"] != "abc123" {
+			t.Errorf("ack lost detail: %v", got)
+		}
+	default:
+		t.Fatal("expected an ack envelope")
+	}
+}

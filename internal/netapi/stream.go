@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -478,6 +479,44 @@ func (s *Server) sendAudioOutputAck(conn *streamConn, mode string) {
 	msg, err := json.Marshal(map[string]any{
 		"type": "audio_output_ack",
 		"mode": mode,
+	})
+	if err != nil {
+		return
+	}
+	select {
+	case conn.out <- msg:
+	default:
+		conn.evict("client too slow")
+	}
+}
+
+// handleSetPersona switches the persona used by subsequent turns.
+//
+// It deliberately does not touch the turn in flight: a session binds its
+// identity at start and keeps it for its whole life, so retargeting a live
+// conversation is not possible and the ack must not imply otherwise. The
+// applies_to field says so explicitly rather than leaving the client to guess.
+func (s *Server) handleSetPersona(conn *streamConn, name string) {
+	if s.opts.SetPersona == nil {
+		s.sendError(conn, "set_persona is not enabled on this server")
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		s.sendError(conn, "set_persona requires a name")
+		return
+	}
+	ack, err := s.opts.SetPersona(name)
+	if err != nil {
+		s.sendError(conn, err.Error())
+		return
+	}
+	msg, err := json.Marshal(map[string]any{
+		"type":         "set_persona_ack",
+		"id":           ack.ID,
+		"display_name": ack.DisplayName,
+		"prompt_hash":  ack.PromptHash,
+		"applies_to":   "next_turn",
 	})
 	if err != nil {
 		return

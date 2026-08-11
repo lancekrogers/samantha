@@ -32,6 +32,16 @@ type Options struct {
 	// Duplicates of Bind or of earlier entries are ignored.
 	ExtraBinds []string
 
+	// SetPersona, when set, enables the set_persona control message. It is a
+	// callback rather than a config reference because netapi must not own
+	// persona resolution — serve builds it from the persona package.
+	//
+	// Semantics the implementation must honour: the change applies to
+	// SUBSEQUENT turns/sessions, never the one in flight. A session binds its
+	// identity for its whole life, so an ack claiming the current turn changed
+	// would be a lie the client acts on.
+	SetPersona func(id string) (PersonaAck, error)
+
 	Credentials  *Credentials
 	Bus          *events.Bus
 	Dispatcher   *Dispatcher
@@ -68,6 +78,15 @@ type Options struct {
 type RouteMeetingFunc func(ctx context.Context, summary meetinglog.Summary, campaign, capture string) (remote.RouteReceipt, error)
 
 // Server is the LAN-facing HTTPS + WebSocket surface around one pipeline.
+// PersonaAck describes the persona a set_persona request selected.
+type PersonaAck struct {
+	ID          string
+	DisplayName string
+	// PromptHash identifies the assembled prompt, so a client can tell whether
+	// the model is seeing the document it expects.
+	PromptHash string
+}
+
 type Server struct {
 	opts         Options
 	dispatcher   *Dispatcher

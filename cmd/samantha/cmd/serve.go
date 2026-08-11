@@ -315,6 +315,7 @@ func runServe(cfg *config.Config) error {
 	go meetings.RunJanitor(ctx)
 
 	server := netapi.New(netapi.Options{
+		SetPersona:   serveSetPersona(cfg),
 		Bind:         addr,
 		ExtraBinds:   extraBinds,
 		AllowPublic:  serveAllowPublic,
@@ -381,6 +382,39 @@ func runServe(cfg *config.Config) error {
 //
 // Fanout always owns the local player (if any) so cleanup is single-owner —
 // no double Close between serve and buildPipeline.
+// serveSetPersona backs the set_persona control message.
+//
+// It validates and resolves the persona, then records it as the one subsequent
+// turns should use. It deliberately does not persist: a remote client switching
+// persona for a session should not rewrite the host's config.yaml, the same rule
+// --persona follows locally.
+func serveSetPersona(cfg *config.Config) func(string) (netapi.PersonaAck, error) {
+	return func(id string) (netapi.PersonaAck, error) {
+		binding, err := persona.ResolveBinding(cfg, id)
+		if err != nil {
+			return netapi.PersonaAck{}, err
+		}
+		// Apply to the live config so the next session binds to it. The turn in
+		// flight keeps the identity it started with — that is the invariant, not
+		// a limitation to work around.
+		persona.Apply(cfg, mustProfile(binding.PersonaID))
+		return netapi.PersonaAck{
+			ID:          binding.PersonaID,
+			DisplayName: binding.DisplayName,
+			PromptHash:  binding.PromptRef,
+		}, nil
+	}
+}
+
+// mustProfile loads a profile that ResolveBinding already validated.
+func mustProfile(id string) *persona.Profile {
+	p, err := persona.Load(id)
+	if err != nil {
+		return nil // Apply is a no-op on nil; the binding above already succeeded.
+	}
+	return p
+}
+
 func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, muteHost, remoteMic bool) (*pipeline.Pipeline, *netapi.AudioFanout, *audio.Ingress, func(), error) {
 	// Brain only first (text=true, silent=true): no host mic, no default TTS/player.
 	p, baseCleanup, err := buildPipeline(ctx, cfg, bus, true, true)

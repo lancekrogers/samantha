@@ -287,6 +287,7 @@ Connect: `wss://host:port/v1/stream?token=...` (or Bearer on non-browser clients
 | `voice_start` | | Exclusive mic claim + start remote STT turn |
 | `audio_input` | `data` base64, `sample_rate` 16000 | PCM s16le mono @ 16 kHz |
 | `voice_end` | | Finalize utterance; release mic claim |
+| `set_persona` | `name`: persona id | Switch persona for **subsequent** turns (see below) |
 
 ### Server → client
 
@@ -304,6 +305,7 @@ Connect: `wss://host:port/v1/stream?token=...` (or Bearer on non-browser clients
 | `audio_end` | `segment_id`, `reason` (`complete` / `interrupted` / …) |
 | `audio_reset` | Clear client playback after interrupt |
 | `audio_output_ack` | `mode` applied |
+| `set_persona_ack` | `id`, `display_name`, `prompt_hash`, `applies_to` |
 
 ## Audio formats
 
@@ -327,3 +329,34 @@ Connect: `wss://host:port/v1/stream?token=...` (or Bearer on non-browser clients
 5. Text: `text_input`. Voice: `voice_start` → stream `audio_input` → `voice_end`.
 6. On interrupt: stop local playback, send `interrupt`, wait for `audio_reset`.
 7. Reconnect with same token after backgrounding; optional `GET /v1/sessions` + resume.
+
+
+## `set_persona`
+
+```json
+{"type": "set_persona", "name": "pirate"}
+```
+
+Ack:
+
+```json
+{"type": "set_persona_ack", "id": "pirate", "display_name": "Pirate",
+ "prompt_hash": "a1b2c3d4e5f6", "applies_to": "next_turn"}
+```
+
+**`applies_to` is always `next_turn`, and that is a guarantee rather than a
+limitation.** A conversation binds its identity — persona, prompt, voice, brain
+routing — when it starts, and keeps it for its whole life. A switch therefore
+cannot retarget a turn already in flight, and the ack says so explicitly rather
+than leaving the client to assume otherwise.
+
+Editing the *document* behind the persona a session is already bound to does
+take effect on the next turn; that is a different axis from switching identity.
+
+The change is not persisted: a remote client selecting a persona does not
+rewrite the host's `config.yaml`. `samantha persona use` remains the persisting
+path.
+
+An unknown name returns an error envelope naming the personas that do exist.
+Per-connection personas are out of scope — the pipeline is single-brained, so
+this is per-instance.
