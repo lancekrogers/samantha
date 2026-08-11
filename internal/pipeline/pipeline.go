@@ -446,6 +446,7 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 		OnToolEnd:     p.toolEndHook(),
 		OnUsage:       p.usageHook(),
 		OnSessionWarn: p.sessionWarnHook(),
+		OnPromptWarn:  p.promptWarnHook(),
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -532,6 +533,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 		OnToolEnd:     p.toolEndHook(),
 		OnUsage:       p.usageHook(),
 		OnSessionWarn: p.sessionWarnHook(),
+		OnPromptWarn:  p.promptWarnHook(),
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -1325,6 +1327,17 @@ func (p *Pipeline) usageHook() func(prefill, gen int) {
 
 // sessionWarnHook emits SessionWarning so a growing harness session is visible
 // in the activity feed before it becomes a latency or cost problem.
+// promptWarnHook surfaces a non-fatal prompt-resolution failure. The turn keeps
+// speaking on its last good prompt, so this is reported as an error event for
+// visibility rather than failing the turn — a half-saved persona file must not
+// end a live conversation, but it must not be silent either, or the user is left
+// wondering why their edit did nothing.
+func (p *Pipeline) promptWarnHook() func(message string) {
+	return func(message string) {
+		p.emit(events.Error{Stage: "prompt", Message: message})
+	}
+}
+
 func (p *Pipeline) sessionWarnHook() func(promptTokens, threshold int) {
 	return func(promptTokens, threshold int) {
 		p.emit(events.SessionWarning{PromptTokens: promptTokens, Threshold: threshold})

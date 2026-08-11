@@ -12,6 +12,7 @@ import (
 	"github.com/lancekrogers/claude-code-go/pkg/claude"
 
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/prompts"
 	"github.com/lancekrogers/samantha/internal/textclean"
 )
 
@@ -29,6 +30,8 @@ type Brain struct {
 	client          claudeRunner
 	cfg             *config.Config
 	systemPrompt    string
+	personaReloader *promptReloader
+	turnReloader    *promptReloader
 	turnInstruction string
 	history         []Turn
 	// speakerNames resolves stable speaker ids for flatten prompts (optional).
@@ -100,6 +103,10 @@ func New(cfg *config.Config) (*Brain, error) {
 		cfg:             cfg,
 		systemPrompt:    systemPrompt,
 		turnInstruction: turn,
+		personaReloader: newPromptReloader(prompts.KindPersona, cfg.Persona, systemPrompt, func(hash string) {
+			fmt.Fprintf(os.Stderr, "samantha: persona prompt changed (hash %s)\n", hash)
+		}),
+		turnReloader: newPromptReloader(prompts.KindTurn, cfg.TurnPrompt, turn, nil),
 	}, nil
 }
 
@@ -139,7 +146,24 @@ func (b *Brain) runOptions(format claude.OutputFormat, toolsEnabled bool) *claud
 
 // ThinkStream sends input to Claude and returns a channel of streaming message chunks.
 // Each message on the channel may contain partial text.
+// refreshPrompts re-resolves the persona and turn documents this session is
+// bound to, so an edit lands on the next turn. Resolution failures keep the
+// last good text and surface as a warning rather than ending the turn.
+func (b *Brain) refreshPrompts(onWarn func(string)) {
+	if persona, _, err := b.personaReloader.resolve(b.cfg); err == nil {
+		b.systemPrompt = persona
+	} else if onWarn != nil {
+		onWarn(err.Error())
+	}
+	if turn, _, err := b.turnReloader.resolve(b.cfg); err == nil {
+		b.turnInstruction = turn
+	} else if onWarn != nil {
+		onWarn(err.Error())
+	}
+}
+
 func (b *Brain) ThinkStream(ctx context.Context, input string, streamOpts StreamOptions) (*Stream, error) {
+	b.refreshPrompts(streamOpts.OnPromptWarn)
 	b.history = append(b.history, Turn{Role: "user", Content: input, Speaker: streamOpts.Speaker})
 
 	out := make(chan string, 8)

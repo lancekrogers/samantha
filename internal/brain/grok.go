@@ -9,6 +9,7 @@ import (
 	"github.com/lancekrogers/grok-go-sdk/pkg/grok"
 
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/prompts"
 )
 
 // grokRunner is the slice of the grok client the brain needs: streaming for
@@ -27,6 +28,8 @@ type GrokBrain struct {
 	cfg             *config.Config
 	systemPrompt    string
 	turnInstruction string
+	personaReloader *promptReloader
+	turnReloader    *promptReloader
 	history         []Turn
 	// speakerNames resolves stable speaker ids for flatten prompts (optional).
 	speakerNames SpeakerNames
@@ -61,6 +64,10 @@ func NewGrok(cfg *config.Config) (*GrokBrain, error) {
 		cfg:             cfg,
 		systemPrompt:    systemPrompt,
 		turnInstruction: turn,
+		personaReloader: newPromptReloader(prompts.KindPersona, cfg.Persona, systemPrompt, func(hash string) {
+			fmt.Fprintf(os.Stderr, "samantha: persona prompt changed (hash %s)\n", hash)
+		}),
+		turnReloader: newPromptReloader(prompts.KindTurn, cfg.TurnPrompt, turn, nil),
 	}, nil
 }
 
@@ -73,7 +80,22 @@ func (g *GrokBrain) Available() bool {
 // ThinkStream sends input to Grok and returns a channel of streaming text chunks.
 // Only spoken "text" events are forwarded; "thought" (reasoning) events are
 // dropped so Samantha never voices her chain of thought.
+// refreshPrompts re-resolves the bound persona and turn documents each turn.
+func (g *GrokBrain) refreshPrompts(onWarn func(string)) {
+	if persona, _, err := g.personaReloader.resolve(g.cfg); err == nil {
+		g.systemPrompt = persona
+	} else if onWarn != nil {
+		onWarn(err.Error())
+	}
+	if turn, _, err := g.turnReloader.resolve(g.cfg); err == nil {
+		g.turnInstruction = turn
+	} else if onWarn != nil {
+		onWarn(err.Error())
+	}
+}
+
 func (g *GrokBrain) ThinkStream(ctx context.Context, input string, streamOpts StreamOptions) (*Stream, error) {
+	g.refreshPrompts(streamOpts.OnPromptWarn)
 	g.history = append(g.history, Turn{Role: "user", Content: input, Speaker: streamOpts.Speaker})
 
 	out := make(chan string, 8)

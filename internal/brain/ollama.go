@@ -12,6 +12,7 @@ import (
 	"github.com/ollama/ollama/api"
 
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/prompts"
 	"github.com/lancekrogers/samantha/internal/skills"
 )
 
@@ -32,7 +33,12 @@ type OllamaBrain struct {
 	// environment + skills catalog) and sent byte-for-byte on every request,
 	// so Ollama's KV prefix cache survives across turns. Per-turn skill
 	// activations are spliced onto the current user message instead.
-	fullSystemPrompt  string
+	fullSystemPrompt string
+	// personaReloader re-reads the persona document each turn so an edit lands
+	// on the next reply. The assembled prompt is only rebuilt when the document
+	// actually changed, which keeps the server's prefix cache intact on the
+	// overwhelmingly common no-change path.
+	personaReloader   *promptReloader
 	keepAlive         *api.Duration
 	skills            []skills.Skill
 	skillRouter       *semanticSkillRouter
@@ -131,12 +137,15 @@ func NewOllama(cfg *config.Config) (*OllamaBrain, error) {
 	}
 
 	return &OllamaBrain{
-		client:            client,
-		model:             cfg.OllamaModel,
-		workDir:           workDir,
-		cfg:               cfg,
-		systemPrompt:      systemPrompt,
-		fullSystemPrompt:  assembleSystemPrompt(systemPrompt, workDir, catalog),
+		client:           client,
+		model:            cfg.OllamaModel,
+		workDir:          workDir,
+		cfg:              cfg,
+		systemPrompt:     systemPrompt,
+		fullSystemPrompt: assembleSystemPrompt(systemPrompt, workDir, catalog),
+		personaReloader: newPromptReloader(prompts.KindPersona, cfg.Persona, systemPrompt, func(hash string) {
+			fmt.Fprintf(os.Stderr, "samantha: persona prompt changed (hash %s)\n", hash)
+		}),
 		keepAlive:         keepAlive,
 		skills:            catalog,
 		skillRouter:       router,
@@ -170,6 +179,7 @@ func loadSkillsCatalog(ctx context.Context, cfg *config.Config, workDir string) 
 // Implements an agent loop: if the model returns tool calls, executes them
 // and re-requests until the model produces a text response.
 func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts StreamOptions) (*Stream, error) {
+	o.refreshSystemPrompt(opts.OnPromptWarn)
 	skillCtx := o.routeSkillContext(ctx, input, opts.OnToolStart, opts.OnToolEnd)
 	o.history = append(o.history, api.Message{Role: "user", Content: encodeOllamaUser(opts.Speaker, input)})
 	o.ensureContextBudget(skillCtx)
@@ -471,6 +481,27 @@ func (o *OllamaBrain) LoadHistory(turns []Turn) {
 		}
 		o.history[i] = api.Message{Role: role, Content: content}
 	}
+}
+
+// refreshSystemPrompt re-resolves the persona document and rebuilds the
+// assembled system prompt only if it changed.
+//
+// The rebuild is conditional for a concrete reason: buildMessages sends
+// fullSystemPrompt as the leading message, and ollama caches the prefix of a
+// conversation server-side. Emitting a different system prompt invalidates that
+// cache and re-processes the whole transcript. So an unchanged persona keeps the
+// exact same string, and a genuinely edited one pays the invalidation once —
+// which is correct, because the user did change what the model should see.
+func (o *OllamaBrain) refreshSystemPrompt(onWarn func(message string)) {
+	persona, changed, err := o.personaReloader.resolve(o.cfg)
+	if err != nil && onWarn != nil {
+		onWarn(err.Error())
+	}
+	if !changed {
+		return
+	}
+	o.systemPrompt = persona
+	o.fullSystemPrompt = assembleSystemPrompt(persona, o.workDir, o.skills)
 }
 
 // assembleSystemPrompt builds the session-stable system prompt: persona
