@@ -116,10 +116,14 @@ require_same_fixtures() {
 
 # The fixed sentences behind the synthetic fixtures. Changing this list changes
 # the instrument, so treat it as you would a committed baseline.
+# Deliberately elicit SHORT replies. The gated metric is the stt stage, so reply
+# length contributes nothing but noise — and a long first sentence synthesizes
+# at roughly 1x realtime, which can trip the pipeline's 8s playback-stall
+# watchdog and abort the turn.
 SYNTH_TEXTS=(
-	"What is the capital of France?"
-	"Give me two short sentences about reviewing a pull request."
-	"Summarize why barge-in matters for a voice assistant."
+	"What is the capital of France? Answer in one word."
+	"What is two plus two? Answer with just the number."
+	"Say hello in exactly three words."
 )
 
 # Generate the synthetic fixture set if missing. Uses the project's own TTS, so
