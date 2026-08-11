@@ -1,0 +1,52 @@
+{
+  "schema": "samantha.bench.stt-ab.v1",
+  "item": "L2",
+  "date": "2026-08-11",
+  "question": "Should the default STT provider flip from batch whisper to sherpa-streaming?",
+  "criteria_fixed_in_advance": {
+    "source": "task 007_LATENCY/01/01 item 3 \u2014 written before the numbers were seen",
+    "flip_only_if": "accuracy within 2 absolute points AND STTFinalElapsed improves by more than 200 ms"
+  },
+  "providers": {
+    "sherpa": {
+      "runs": 9,
+      "runs_without_a_final_transcript": 0,
+      "mean_transcript_score": 0.9333,
+      "median_stt_final_ms": 3193.7,
+      "sample_transcripts": [
+        "What is the capital of France? Answer in one word.",
+        "What is 2 plus 2? Answer with just the number.",
+        "Say hello in exactly three words."
+      ]
+    },
+    "sherpa-streaming": {
+      "runs": 9,
+      "runs_without_a_final_transcript": 6,
+      "mean_transcript_score": 0.037,
+      "median_stt_final_ms": 2466.7,
+      "sample_transcripts": [
+        "Now inste",
+        "Now in",
+        "Now in"
+      ]
+    }
+  },
+  "result": {
+    "accuracy_gap_points": 89.6,
+    "accuracy_criterion_met": false,
+    "latency_delta_ms": -727.0,
+    "latency_criterion_met": true,
+    "decision": "KEEP batch whisper (sherpa). Do not flip."
+  },
+  "reading_the_numbers": "The latency criterion passes and the accuracy criterion fails catastrophically. But the precise finding is narrower and more useful than 'streaming is less accurate': 6 of 9 streaming runs produced NO final transcript at all ('stt timed out'), and those that did returned fragments -- 'Now in' for 'What is the capital of France? Answer in one word.' That is the signature of a provider not working in this harness, not of a model that mishears. Whether the fault is the streaming Zipformer, its endpointing against fixture audio, or the wiring is UNRESOLVED and was not chased: the decision is the same either way, and D005 makes the recorded decision the deliverable rather than the flip.",
+  "evidence_limits": "Ran on 3 synthetic TTS fixtures, not the recorded corpus, which is still empty (0 samples) pending Lance's recordings -- see 003_MEASURE/DEFERRAL_recorded_corpus.md. Synthetic speech is the EASY case: clean, noise-free, no natural mid-sentence pauses. Accuracy measured on it does not generalize to a real microphone, and a 2-point criterion cannot honestly be adjudicated on 3 clean utterances. It is reported because the gap is enormous and most streaming runs failed outright, which no plausible corpus reverses. Had the numbers been close, the honest answer would have been 'insufficient evidence', not a decision.",
+  "durable_value": "Per D005 the corpus and its numbers are the durable asset regardless of which provider wins. This run establishes the batch-whisper accuracy baseline that any future STT change is measured against.",
+  "provenance": {
+    "samantha_commit": "78b428f48a77f1fecf85eb6c872c7ba76c22f8a4",
+    "machine": "Mac16,9",
+    "cpu": "Apple M4 Max",
+    "os": "macOS 26.5",
+    "fixtures": "synthetic (3 utterances, TTS-generated)",
+    "iterations": 3
+  }
+}

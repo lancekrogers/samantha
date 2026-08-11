@@ -260,8 +260,9 @@ func TestSegmentStageProducesSentencesWithoutPlayback(t *testing.T) {
 	chunks, _ := p.observeStream(context.Background(), stream, metrics)
 	sentences := collect(t, brain.ChunkSentences(chunks))
 
-	// Opening chunk is one sentence, later chunks batch two.
-	want := []string{"First sentence.", "Second one! Third?"}
+	// The segment stage emits one sentence per chunk; batching for prosody
+	// happens later, in the turn loop, where speakability is known.
+	want := []string{"First sentence.", "Second one!", "Third?"}
 	if len(sentences) != len(want) {
 		t.Fatalf("segment stage produced %v, want %v", sentences, want)
 	}

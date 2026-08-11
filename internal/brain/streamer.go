@@ -5,24 +5,21 @@ import (
 	"unicode"
 )
 
-// Chunking is adaptive: the first chunk is one sentence, every chunk after it is
-// two.
+// sentencesPerChunk is 1: this package segments, it does not batch.
 //
-// Time-to-first-audio waits on the first chunk finishing synthesis, so chunk one
-// stays a single sentence — that is what the old flat policy of 1 was protecting,
-// and it is still right for the opening.
+// Batching for prosody — one sentence for the opening, two thereafter — lives in
+// the pipeline, and it has to. The property worth protecting is "the first
+// AUDIBLE chunk is short", and this package cannot tell which chunks become
+// audio: the pipeline's voice gate suppresses tool output and code fences, and
+// cleaning can empty a segment outright.
 //
-// It is unnecessary for the rest. Once audio is playing the listener is no longer
-// waiting on the pipeline, and a chunk boundary is not free: each chunk is an
-// independent synthesis call, so prosody resets at every boundary and the player
-// concatenates the raw buffers. Batching later chunks lets the synthesiser carry
-// intonation across a sentence boundary instead of restarting flat at each one.
+// Batching here counted emitted chunks instead, so a reply that opens with a
+// suppressed tool line spent its one-sentence budget on silence, and the first
+// thing the listener actually heard was a two-sentence synthesis — doubling
+// time-to-first-audio in exactly the case the policy exists to protect.
 //
-// Constant policy, not a config key, until someone asks for the knob.
-const (
-	firstChunkSentences = 1
-	laterChunkSentences = 2
-)
+// See internal/pipeline/pipeline.go, where speakability is known.
+const sentencesPerChunk = 1
 
 // CleanForVoice strips markdown and vocal fillers from text bound for TTS.
 // Exported for consumers that must inspect the model's original structure
@@ -30,8 +27,8 @@ const (
 // this removes, so it gates first and cleans after.
 func CleanForVoice(s string) string { return cleanForVoice(s) }
 
-// ChunkSentences reads text chunks from input and emits voice-cleaned batches
-// of sentences for TTS, one sentence for the opening chunk and two thereafter.
+// ChunkSentences reads text chunks from input and emits one voice-cleaned
+// sentence at a time for TTS.
 func ChunkSentences(input <-chan string) <-chan string {
 	out := make(chan string, 4)
 	go func() {
@@ -54,9 +51,6 @@ func ChunkSentencesRaw(input <-chan string) <-chan string {
 		defer close(out)
 		var buf strings.Builder
 		var sentences []string
-		// Per-stream, not package state: two concurrent turns must each get
-		// their own short opening chunk.
-		target := firstChunkSentences
 
 		for chunk := range input {
 			buf.WriteString(chunk)
@@ -76,10 +70,9 @@ func ChunkSentencesRaw(input <-chan string) <-chan string {
 				buf.WriteString(text[idx+1:])
 
 				// Emit batch when we have enough sentences.
-				if len(sentences) >= target {
+				if len(sentences) >= sentencesPerChunk {
 					out <- strings.Join(sentences, " ")
 					sentences = sentences[:0]
-					target = laterChunkSentences
 				}
 			}
 		}

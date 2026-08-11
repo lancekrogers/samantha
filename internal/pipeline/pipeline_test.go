@@ -85,11 +85,14 @@ func TestRunTurnDrainsFullPlaybackQueue(t *testing.T) {
 	// loop must apply backpressure without blocking — a regression guard for
 	// the slotSem deadlock that hung voice mode once the queue was full.
 	//
-	// Sentences are not segments: chunking emits one sentence for the opening
-	// and two thereafter, so nine sentences produce five segments
-	// (1 + ceil(8/2)). Keep the segment count well above voiceQueueDepth if you
-	// change this — dropping to two or three would still pass while no longer
-	// filling the queue, which is the only thing this test is guarding.
+	// Sentences are not segments: the turn loop speaks the opening alone and
+	// batches two thereafter, so nine sentences produce five segments — four
+	// in-loop emits plus the end-of-stream flush of "Nine.", which has no
+	// trailing space and so is never seen by findSentenceEnd.
+	//
+	// Keep the SEGMENT count well above voiceQueueDepth if you change this.
+	// Dropping to two or three would still pass while no longer filling the
+	// queue, which is the only thing this test is guarding.
 	brainProvider := &fakeBrain{chunks: []string{"One. Two. Three. Four. Five. Six. Seven. Eight. Nine."}}
 	ttsProvider := &fakeTTS{delay: 5 * time.Millisecond}
 	player := newFakePlayer(60 * time.Millisecond)
@@ -1135,5 +1138,78 @@ func TestRecoverTurnDoesNotDuplicateRecoveryReply(t *testing.T) {
 		if n := strings.Count(got[i], brain.RecoveryReply); n != 1 {
 			t.Fatalf("case %d: RecoveryReply appears %d times", i, n)
 		}
+	}
+}
+
+// The opening segment's one-sentence budget belongs to the first thing the
+// listener HEARS, not the first thing the chunker emits.
+//
+// This was a real defect. Batching used to live in brain.ChunkSentencesRaw,
+// which counts emitted chunks and cannot see the voice gate. A reply opening
+// with a suppressed tool line therefore spent the budget on silence, and the
+// first audible segment was a two-sentence synthesis — doubling
+// time-to-first-audio in exactly the case the policy exists to protect.
+func TestVoiceBatchingCountsAudibleSegments(t *testing.T) {
+	tests := []struct {
+		name  string
+		reply string
+		want  []string
+	}{
+		{
+			// The opener is suppressed by toolRegionRE, so the first AUDIBLE
+			// sentence must still go out alone.
+			name:  "suppressed tool opener does not spend the budget",
+			reply: "I called the search tool. Here is what I found. There are three results. That is all.",
+			want:  []string{"Here is what I found.", "There are three results. That is all."},
+		},
+		{
+			// "Umm." cleans to a bare "." — unpronounceable, and previously it
+			// both reached TTS and got glued onto the next real sentence.
+			name:  "filler residue is neither spoken nor batched onto real speech",
+			reply: "Umm. Let me think about this. Here is the answer. Done.",
+			want:  []string{"Let me think about this.", "Here is the answer. Done."},
+		},
+		{
+			name:  "an ordinary reply batches one then pairs",
+			reply: "First. Second. Third. Fourth. Fifth.",
+			want:  []string{"First.", "Second. Third.", "Fourth. Fifth."},
+		},
+		{
+			// A half-full batch at end of stream must still be spoken, or the
+			// last sentence of every odd-length reply is silently dropped.
+			name:  "odd remainder is flushed, not dropped",
+			reply: "First. Second. Third. Fourth.",
+			want:  []string{"First.", "Second. Third.", "Fourth."},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ttsProvider := &fakeTTS{delay: time.Millisecond}
+			player := newFakePlayer(2 * time.Millisecond)
+			defer player.Close()
+
+			p := &Pipeline{
+				STT:    &fakeSTT{text: "hello"},
+				Brain:  &fakeBrain{chunks: []string{tt.reply}},
+				TTS:    ttsProvider,
+				Player: player,
+				Events: events.NewBus(),
+			}
+
+			if _, err := p.RunTurn(context.Background()); err != nil {
+				t.Fatalf("RunTurn() error = %v", err)
+			}
+
+			got := ttsProvider.Texts()
+			if len(got) != len(tt.want) {
+				t.Fatalf("TTS segments = %q, want %q", got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("segment %d = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
 	}
 }

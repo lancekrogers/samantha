@@ -107,9 +107,16 @@ func TestProgressiveTTSSegmentsFeedWorker(t *testing.T) {
 			t.Error("first segment never reached TTS before more brain tokens")
 			return
 		}
-		// Brain still streaming after first synth started.
+		// Brain still streaming after first synth started. Six sentences, not
+		// three: with later segments batched in pairs, three sentences would
+		// produce exactly two calls and leave the count assertion below with no
+		// headroom — a policy that batched "one, then everything else" would
+		// pass it unchanged.
 		chunks <- "Second sentence is ready. "
-		chunks <- "Third finishes the reply."
+		chunks <- "Third continues the thought. "
+		chunks <- "Fourth keeps going. "
+		chunks <- "Fifth is still here. "
+		chunks <- "Sixth finishes the reply."
 		// Release first synth so the ordered worker can process remaining sentences.
 		close(holdFirst)
 		done <- brain.StreamResult{}
@@ -129,24 +136,28 @@ func TestProgressiveTTSSegmentsFeedWorker(t *testing.T) {
 	if interrupted {
 		t.Fatal("unexpected interrupt")
 	}
-	if !strings.Contains(response, "Hello") || !strings.Contains(response, "Third") {
+	if !strings.Contains(response, "Hello") || !strings.Contains(response, "Sixth") {
 		t.Fatalf("response = %q", response)
 	}
 
 	calls := provider.Calls()
-	// Chunking is adaptive: one sentence for the opening, two thereafter (see
-	// brain.firstChunkSentences). Three sentences therefore reach TTS as two
-	// segments. What matters is that synthesis is progressive at all — the
-	// opening segment must go out while the brain is still streaming — not the
-	// exact count, so assert the invariant rather than the arithmetic.
-	if len(calls) < 2 {
-		t.Fatalf("Synthesize calls = %q, want the reply split into progressive segments", calls)
+	// Six sentences batch as 1 + 2 + 2 + 1 (the last is the end-of-stream
+	// flush). Asserting the whole shape, not just a lower bound: the count alone
+	// cannot distinguish "pairs after the opening" from "the opening, then the
+	// entire rest of the reply".
+	want := []string{
+		"Hello there.",
+		"Second sentence is ready. Third continues the thought.",
+		"Fourth keeps going. Fifth is still here.",
+		"Sixth finishes the reply.",
 	}
-	// The opening segment must be exactly the first sentence: time-to-first-audio
-	// waits on it, so batching or full-reply synthesis here is the regression
-	// this test exists to catch.
-	if calls[0] != "Hello there." {
-		t.Fatalf("first synth = %q, want %q — the opening segment must be one sentence", calls[0], "Hello there.")
+	if len(calls) != len(want) {
+		t.Fatalf("Synthesize calls = %q, want %q", calls, want)
+	}
+	for i := range want {
+		if calls[i] != want[i] {
+			t.Errorf("segment %d = %q, want %q", i, calls[i], want[i])
+		}
 	}
 	if metrics.firstSegment.IsZero() {
 		t.Fatal("firstSegment metric not stamped")

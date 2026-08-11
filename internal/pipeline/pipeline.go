@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/brain"
@@ -18,6 +19,29 @@ import (
 )
 
 const voiceQueueDepth = 2
+
+// How many speakable segments are batched into one synthesis call. The opening
+// goes out alone so time-to-first-audio is unaffected; later batches trade a
+// little latency the listener is no longer waiting on for intonation that
+// carries across a sentence boundary. Constant policy, not a config key.
+const (
+	openingBatchSegments = 1
+	laterBatchSegments   = 2
+)
+
+// hasPronounceableContent reports whether a segment contains anything a
+// synthesiser can say. Punctuation left behind by cleaning — a bare "." from
+// "Umm." — is not speech, and must not reach TTS or be batched onto a real
+// sentence. Letters and digits count; a voiced filler like "Hmm." therefore
+// still qualifies, which is the point of the voiced tier.
+func hasPronounceableContent(s string) bool {
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return true
+		}
+	}
+	return false
+}
 
 // defaultBrainTurnTimeout bounds model + tool work for one conversational
 // turn. Without this, a hung Ollama/Claude stream after tools leaves the TUI
@@ -775,7 +799,8 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 	// Synthesis runs on a single ordered worker so this loop keeps servicing
 	// barge-in and playback events while a sentence is being generated —
 	// PlayStream cannot return until the TTS engine has produced audio, and
-	// Kokoro generates a whole sentence per uncancellable cgo call. One worker
+	// Kokoro generates a whole BATCH per uncancellable cgo call, holding its
+	// provider mutex for the duration (see openingBatchSegments). One worker
 	// (not one goroutine per sentence) preserves playback order. Backpressure is
 	// unchanged: the pending gate keeps at most voiceQueueDepth sentences
 	// outstanding, so the buffered handoff below never blocks.
@@ -788,6 +813,32 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 	var synthQueueOnce sync.Once
 	closeSynthQueue := func() { synthQueueOnce.Do(func() { close(synthQueue) }) }
 	defer closeSynthQueue()
+
+	// Adaptive batching: the first segment that will actually be heard goes out
+	// alone, and later segments are synthesized two at a time.
+	//
+	// The opening stays short because time-to-first-audio waits on it finishing
+	// synthesis. After that the listener is no longer waiting, and a chunk
+	// boundary is not free: each batch is an independent synthesis call, so
+	// prosody resets at every boundary and the player concatenates raw buffers.
+	// Batching lets the synthesiser carry intonation across a sentence boundary.
+	//
+	// This lives here rather than in brain.ChunkSentencesRaw because only this
+	// loop knows which segments become audio — the voice gate below suppresses
+	// tool output and code fences, and cleaning can empty a segment. Counting
+	// emitted chunks instead of audible ones spent the opening's budget on
+	// silence whenever a reply began with a suppressed tool line.
+	var voiceBatch []string
+	openingSpoken := false
+	flushVoiceBatch := func() {
+		if len(voiceBatch) == 0 {
+			return
+		}
+		pending++
+		synthQueue <- strings.Join(voiceBatch, " ")
+		voiceBatch = voiceBatch[:0]
+		openingSpoken = true
+	}
 	go func() {
 		for sentence := range synthQueue {
 			if !p.synthesizeSegment(streamCtx, loopDone, sentence, &audioStarted, playbackEvents, &stickFallback) {
@@ -867,6 +918,12 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 		case sentence, ok := <-sentenceCh:
 			if !ok {
 				sentences = nil
+				// A half-full batch is still a real segment: flush it before
+				// closing, or the last sentence of every odd-length reply is
+				// silently never spoken.
+				if !interrupted {
+					flushVoiceBatch()
+				}
 				closeSynthQueue() // no more handoffs; let the worker exit
 				continue
 			}
@@ -896,7 +953,11 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 
 			p.recordStrips(stripped, metrics)
 			speakable := brain.CleanForVoice(voiceText)
-			if speakable == "" {
+			// Not just != "": stripping a filler from "Umm." leaves a bare ".",
+			// which is non-empty, unpronounceable, and — now that segments are
+			// batched — would be glued onto the front of a real sentence inside
+			// one synthesis call.
+			if !hasPronounceableContent(speakable) {
 				continue
 			}
 
@@ -909,8 +970,14 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 				go p.watchPlaybackStall(streamCtx, &audioStarted, cancel, stalled, p.stallTimeout())
 			}
 
-			pending++
-			synthQueue <- speakable
+			voiceBatch = append(voiceBatch, speakable)
+			target := laterBatchSegments
+			if !openingSpoken {
+				target = openingBatchSegments
+			}
+			if len(voiceBatch) >= target {
+				flushVoiceBatch()
+			}
 
 		case event := <-playbackEvents:
 			if interrupted && event.kind == playbackStarted && p.Player != nil {

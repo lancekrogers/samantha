@@ -72,7 +72,7 @@ func TestRunTurnCancellationUnderFullQueueReturnsPromptly(t *testing.T) {
 
 	p := &Pipeline{
 		STT:    &fakeSTT{text: "hello"},
-		Brain:  &fakeBrain{chunks: []string{"One. Two. Three. Four. Five. Six."}},
+		Brain:  &fakeBrain{chunks: []string{"One. Two. Three. Four. Five. Six. Seven. Eight. Nine. Ten. Eleven."}},
 		TTS:    ttsProvider,
 		Player: player,
 		Events: bus,
@@ -87,6 +87,11 @@ func TestRunTurnCancellationUnderFullQueueReturnsPromptly(t *testing.T) {
 
 	// Wait until the playback queue is full (voiceQueueDepth segments synthesized
 	// and enqueued), then cancel.
+	//
+	// Eleven sentences, not six: the turn loop batches two segments after the
+	// opening, so six sentences would now yield four segments instead of six and
+	// quietly halve this test's margin over voiceQueueDepth. Count SEGMENTS here,
+	// not sentences.
 	waitForCond(t, func() bool { return len(ttsProvider.CallTimes()) >= voiceQueueDepth },
 		2*time.Second, "playback queue did not fill")
 	cancel()

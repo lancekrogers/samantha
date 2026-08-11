@@ -34,8 +34,12 @@ func TestBargeInResponsiveUnderSynthAndQueueLoad(t *testing.T) {
 	vad := &fakeVAD{}
 
 	p := &Pipeline{
-		STT:        &fakeSTT{text: "hello"},
-		Brain:      &fakeBrain{chunks: []string{"One. Two. Three. Four. Five. Six. Seven."}},
+		STT:   &fakeSTT{text: "hello"},
+		Brain: &fakeBrain{chunks: []string{"One. Two. Three. Four. Five. Six. Seven. Eight. Nine. Ten. Eleven. Twelve. Thirteen."}},
+		// Thirteen sentences yields seven SEGMENTS: the turn loop speaks the
+		// opening alone and batches two thereafter. Seven sentences used to mean
+		// seven segments; leaving it there would have halved the load this test
+		// puts on the queue without failing.
 		TTS:        &fakeTTS{delay: 30 * time.Millisecond},
 		Player:     player,
 		Capture:    capture,

@@ -1,14 +1,14 @@
 {
   "item": "N3",
-  "claim": "First chunk stays one sentence; later chunks batch two, so the synthesiser carries intonation across the boundary instead of resetting at every period.",
+  "claim": "The first AUDIBLE segment stays one sentence; later segments batch two so the synthesiser carries intonation across the boundary.",
   "before": {
     "text": "This is the opening sentence.||It continues here.||Then a third thought arrives.||And finally it closes.",
     "audio": "before.wav",
     "measured": {
       "duration_s": 6.059,
       "sample_rate": 24000,
-      "num_samples": 145406,
-      "peak": 0.4584,
+      "num_samples": 145410,
+      "peak": 0.4534,
       "rms": 0.0641,
       "rms_dbfs": -23.86
     }
@@ -17,12 +17,12 @@
     "text": "This is the opening sentence.||It continues here. Then a third thought arrives.||And finally it closes.",
     "audio": "after.wav",
     "measured": {
-      "duration_s": 6.058,
+      "duration_s": 6.059,
       "sample_rate": 24000,
-      "num_samples": 145401,
-      "peak": 0.4635,
+      "num_samples": 145413,
+      "peak": 0.4527,
       "rms": 0.0641,
-      "rms_dbfs": -23.87
+      "rms_dbfs": -23.86
     }
   },
   "tts": {
@@ -33,19 +33,19 @@
     "model_sha256": "c436dc6a842b62aba06af67e40bafcfb9c60ac3af895358f1974ad9a7f7c026b"
   },
   "provenance": {
-    "samantha_commit": "95616cc655c026ee83d41ba2b8c8162515150645-dirty",
+    "samantha_commit": "78b428f48a77f1fecf85eb6c872c7ba76c22f8a4-dirty",
     "before_synthesized_at": "working-tree",
     "machine": "arm64",
     "os": "Darwin 25.5.0"
   },
   "listen_check": {
     "status": "pending",
-    "instructions": "Play before.wav then after.wav. Both are ~6.06 s \u2014 total duration is expected to be near-identical, because merging two synthesis calls does not change how much speech there is. What to listen for is the boundary between sentences two and three: does the after side carry intonation across it instead of resetting flat? Duration and loudness cannot measure this; only a listener can.",
+    "instructions": "Play before.wav then after.wav. Both are ~6.06 s \u2014 merging synthesis calls does not change how much speech there is. Listen at the boundary between sentences two and three: does the after side carry intonation across it? Then listen for a GAP right after the opening sentence, which is the unmeasured risk recorded above. If that gap is audible, the batching is not worth it and laterBatchSegments should go back to 1.",
     "verdict": null,
     "listener": null
   },
   "segmentation": {
-    "note": "Each '||' is an independent synthesis call, concatenated as raw PCM \u2014 the same thing the pipeline's player does. Synthesizing the reply as one blob would hide the chunk boundaries under test.",
+    "note": "Each '||' is an independent synthesis call, concatenated as raw PCM \u2014 what the pipeline's player does. Synthesizing the reply as one blob would hide the chunk boundaries under test.",
     "before_segments": [
       "This is the opening sentence.",
       "It continues here.",
@@ -60,13 +60,18 @@
   },
   "first_audio_claim": {
     "requirement": "FirstAudioReadyElapsed is unchanged",
-    "benchmark_result": "cannot resolve \u2014 FirstAudioReadyElapsed moved +601 ms on synth-01 and -437 ms on synth-03 between consecutive runs, in opposite directions. That is the end-to-end noise floor recorded in FINDINGS F4, not an effect of this change.",
-    "structural_argument": "The opening chunk is unchanged by construction: chunking still emits exactly one sentence first (firstChunkSentences = 1), so the first synthesis call receives byte-identical text to before. Only chunks two onward batch.",
+    "benchmark_result": "cannot resolve \u2014 FirstAudioReadyElapsed moved +601 ms on one fixture and -437 ms on another between consecutive runs, in opposite directions. That is the end-to-end noise floor recorded in FINDINGS F4.",
+    "structural_argument": "The first AUDIBLE segment is one sentence by construction. Batching lives in the pipeline turn loop, which counts segments that survive the voice gate and cleaning \u2014 so a reply opening with suppressed tool output still spends its one-sentence budget on the first thing the listener hears.",
     "enforced_by": [
-      "brain.TestChunkSentencesEmitsFirstSentenceAloneForLowLatency",
-      "brain.TestChunkSentencesOpeningPolicyIsPerStream",
-      "pipeline.TestProgressiveTTSSegmentsFeedWorker (asserts calls[0] == \"Hello there.\")"
+      "pipeline.TestVoiceBatchingCountsAudibleSegments (suppressed tool opener, filler residue, odd remainder)",
+      "pipeline.TestProgressiveTTSSegmentsFeedWorker (asserts the full 1+2+2+1 shape, not just a count)",
+      "brain.TestChunkSentencesEmitsOneSentencePerChunk"
     ],
-    "conclusion": "The claim is carried by the tests, not by the benchmark. Stated this way deliberately: reporting the noisy numbers as confirmation would be overclaiming."
+    "conclusion": "The claim is carried by the tests, not by the benchmark. Reporting the noisy numbers as confirmation would be overclaiming."
+  },
+  "unmeasured_risks": {
+    "note": "Raised by adversarial review, recorded rather than resolved. Both need the listen check that is still pending.",
+    "seg1_to_seg2_gap": "Kokoro generates a whole segment before emitting a sample, so time-to-first-frame for segment 2 roughly doubles while segment 1's playback duration is unchanged at one sentence. If synthesis of two sentences outruns the playback of one, the listener hears a gap right after the opening \u2014 the most audible position in a reply. Segments 3+ are ratio-neutral. NOT measured.",
+    "barge_in_mutex": "Kokoro holds its provider mutex across an uncancellable cgo generate and does not implement SoftCanceler, so an orphaned generate now holds it for a two-sentence synthesis. The turn loop still returns promptly; the cost is that the NEXT turn's first Kokoro call can block behind it. NOT measured."
   }
 }
