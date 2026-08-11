@@ -16,16 +16,37 @@ just bench run        # measure and print, writing nothing
 just bench save L1    # measure and write L1-<date>.json (per-item delta artifact)
 ```
 
-## What is measured
+## What is measured, and what is gated
 
-`PlaybackStartElapsed` p50 — turn start to audio actually beginning to play.
-Target: **under 1.2 s now, 800 ms goal**. Regressions over **10 %** fail.
+Runs drive whole voice turns from recorded audio (`--full-turn-fixture`), so the
+measurement covers capture → VAD → STT → brain → TTS → playback.
 
-The benchmark runs a fixed prompt set built into the binary, so runs are
-comparable without pinning prompts here. When `testdata/corpus/` has recordings,
-they are added as `--audio-fixture` / `--expect-text` arguments automatically,
-which extends coverage from model latency to the *full* turn including capture,
-VAD and STT.
+Timings are reported **per fixture, per stage** — never pooled. Pooling
+different utterances into one median mixes populations: a 1.5 s clip and a 4 s
+clip have genuinely different stage timings, so a pooled figure moves when the
+fixture mix changes rather than when performance does.
+
+| Stage | What it is | Gated? |
+|---|---|---|
+| `stt` | Endpointing + recognition | **Yes.** Measured at ±0.6 % run to run |
+| `model` | First model chunk after the transcript | No — swings 1.5 s–24 s on a large local model, and nothing in this track changes it. Gating it would produce only false failures |
+| `synth` | First segment → first audio (first-sentence synthesis) | No, reported |
+
+The gate is the **median stt stage across fixtures**, with a 10 % tolerance
+against a measured 0.6 % noise floor — a ~16× margin.
+
+That choice is deliberate: the VAD-window and STT-provider changes move the stt
+stage directly, while end-to-end `PlaybackStartElapsed` is dominated by model
+think time. An end-to-end gate measured 307 % spread and could not have detected
+a 300 ms improvement; the stage gate detects a 500 ms one at +17 %.
+
+**Fixtures.** A recorded corpus in `testdata/corpus/` is used when present. When
+it is absent, the harness generates deterministic synthetic speech from a fixed
+sentence list using the project's own TTS, so a baseline never blocks on a
+recording session. Synthetic fixtures are reproducible and good for regression
+detection, but they contain no natural mid-sentence pauses — they cannot judge
+endpointing behaviour. The fixture kind is recorded in provenance and a diff
+warns when it changes.
 
 ## Provenance is not optional
 
@@ -48,9 +69,19 @@ differs from the baseline's.
 ## Verifying the gate still bites
 
 A regression gate that has never caught anything is decorative. To confirm it
-works, insert a deliberate delay in the turn path — the brain-to-TTS boundary is
-the clearest spot — and run `just bench diff`. It must fail. Restore the code
+works, insert a deliberate delay where the gated stage is measured — a
+`time.Sleep` immediately before `metrics.sttFinal = time.Now()` in
+`transcribeTurn` — and run `just bench diff`. It must fail. Restore the code
 afterwards.
+
+Verified 2026-08-11 with a 500 ms injection. Every fixture moved by almost
+exactly the injected amount (+487 ms, +554 ms, +495 ms), the gated median went
+2837 ms → 3332 ms (**+17.4 %**), and the recipe exited non-zero:
+
+```
+  gated metric (median stt stage): 2837 ms -> 3332 ms   +17.4%  (fail above +10%)
+  ✗ REGRESSION: stt stage is more than 10% slower than baseline
+```
 
 This is worth re-running after any change to the benchmark itself, because the
 failure mode is silent: a gate that stopped comparing anything still passes.
