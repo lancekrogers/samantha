@@ -11,6 +11,22 @@ manifest := repo / "testdata/corpus/manifest.json"
 default:
     @just --list --justfile {{source_file()}}
 
+[doc('Measure and diff against the committed baseline (fails on >10% regression)')]
+diff:
+    @{{repo}}/scripts/bench.sh diff
+
+[doc('Measure and (re)write docs/benchmarks/baseline.json — defines the reference machine')]
+baseline:
+    @{{repo}}/scripts/bench.sh baseline
+
+[doc('Measure and print, writing nothing')]
+run:
+    @{{repo}}/scripts/bench.sh run
+
+[doc('Measure and save a labelled delta artifact, e.g. `just bench save L1`')]
+save label:
+    @{{repo}}/scripts/bench.sh save {{label}}
+
 [doc('List audio input devices for recording')]
 devices:
     @{{repo}}/scripts/record-corpus.sh --devices
