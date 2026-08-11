@@ -88,8 +88,10 @@ corpus_args() {
 	local n
 	n=$(jq '.samples | length' "$MANIFEST")
 	[[ "$n" -gt 0 ]] || return 0
+	# --full-turn-fixture, not --audio-fixture: the latter stops at the final
+	# transcript and never reaches brain or TTS, so it cannot measure a turn.
 	jq -r --arg root "$REPO_ROOT" \
-		'.samples[] | "--audio-fixture=\($root)/testdata/corpus/\(.path)", "--expect-text=\(.expect)"' "$MANIFEST"
+		'.samples[] | "--full-turn-fixture=\($root)/testdata/corpus/\(.path)", "--expect-text=\(.expect)"' "$MANIFEST"
 }
 
 measure() {

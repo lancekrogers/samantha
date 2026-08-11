@@ -28,6 +28,7 @@ var (
 	benchmarkJSONOutput          string
 	benchmarkIterations          int
 	benchmarkAudioFixtures       []string
+	benchmarkFullTurnFixtures    []string
 	benchmarkExpectedTranscripts []string
 	benchmarkSTTProviders        []string
 	benchmarkFixtureRealtime     bool
@@ -78,9 +79,12 @@ var benchmarkCmd = &cobra.Command{
 		defer cancel()
 
 		var results []benchmarkResult
-		if len(benchmarkAudioFixtures) > 0 {
+		switch {
+		case len(benchmarkFullTurnFixtures) > 0:
+			results, err = runFullTurnBenchmarks(ctx, cfg)
+		case len(benchmarkAudioFixtures) > 0:
 			results, err = runSTTBenchmarks(ctx, cfg)
-		} else {
+		default:
 			results, err = runTextBenchmarks(ctx, cfg)
 		}
 		if err != nil {
@@ -104,6 +108,7 @@ func init() {
 	benchmarkCmd.Flags().StringVar(&benchmarkJSONOutput, "json", "", "Write benchmark results to a JSON file")
 	benchmarkCmd.Flags().IntVar(&benchmarkIterations, "iterations", 1, "Number of times to run each benchmark prompt")
 	benchmarkCmd.Flags().StringSliceVar(&benchmarkAudioFixtures, "audio-fixture", nil, "WAV fixture for STT benchmarking (repeatable)")
+	benchmarkCmd.Flags().StringSliceVar(&benchmarkFullTurnFixtures, "full-turn-fixture", nil, "WAV fixture driven through the full voice turn: capture, VAD, STT, brain, TTS (repeatable)")
 	benchmarkCmd.Flags().StringSliceVar(&benchmarkExpectedTranscripts, "expect-text", nil, "Expected transcript for each fixture (repeatable)")
 	benchmarkCmd.Flags().StringSliceVar(&benchmarkSTTProviders, "stt-provider", nil, "STT provider(s) to benchmark in fixture mode (repeatable)")
 	benchmarkCmd.Flags().BoolVar(&benchmarkFixtureRealtime, "fixture-realtime", true, "Replay fixture audio in real time for latency measurements")
@@ -177,6 +182,152 @@ func runTextBenchmarks(ctx context.Context, cfg *config.Config) ([]benchmarkResu
 	}
 
 	return results, nil
+}
+
+// runFullTurnBenchmarks drives recorded utterances through the whole voice
+// turn — capture, VAD, STT, brain, TTS, playback — via RunTurn.
+//
+// This is the only mode that measures what the voice pipeline actually does.
+// Fixture mode stops at the final transcript and never reaches the brain; text
+// mode skips capture and STT entirely and synthesizes the whole reply as one
+// segment, so neither can show a first-sentence or endpointing change. Only
+// RunTurn populates FirstSegmentElapsed and FirstAudioReadyElapsed from real
+// sentence chunking.
+func runFullTurnBenchmarks(ctx context.Context, cfg *config.Config) ([]benchmarkResult, error) {
+	if len(benchmarkExpectedTranscripts) > 0 && len(benchmarkExpectedTranscripts) != len(benchmarkFullTurnFixtures) {
+		return nil, fmt.Errorf("--expect-text count (%d) must match --full-turn-fixture count (%d)", len(benchmarkExpectedTranscripts), len(benchmarkFullTurnFixtures))
+	}
+	if benchmarkIterations < 1 {
+		benchmarkIterations = 1
+	}
+
+	providers := benchmarkSTTProviders
+	if len(providers) == 0 {
+		providers = []string{""} // configured provider
+	}
+
+	var results []benchmarkResult
+	for _, providerName := range providers {
+		for iteration := 1; iteration <= benchmarkIterations; iteration++ {
+			for idx, fixture := range benchmarkFullTurnFixtures {
+				expected := ""
+				if idx < len(benchmarkExpectedTranscripts) {
+					expected = benchmarkExpectedTranscripts[idx]
+				}
+				result, err := runSingleFullTurnBenchmark(ctx, cfg, providerName, fixture, expected, iteration)
+				if err != nil {
+					result.Errors = append(result.Errors, benchmarkErrorLog{Stage: "benchmark", Message: err.Error()})
+				}
+				result.Violations = append(evaluateTextThresholds(result), evaluateSTTThresholds(result)...)
+				results = append(results, result)
+
+				if ctx.Err() != nil {
+					return results, nil
+				}
+			}
+		}
+	}
+	return results, nil
+}
+
+// runSingleFullTurnBenchmark builds a pipeline whose microphone is a WAV and
+// runs exactly one turn through it.
+//
+// The pipeline is rebuilt per turn on purpose: audio.FixtureSource is
+// single-shot (Exhausted), and the STT provider retains it, so a reused
+// pipeline would replay an empty source on the second turn. Rebuilding costs
+// model load time, which is why iteration 1 is treated as warmup by callers.
+func runSingleFullTurnBenchmark(ctx context.Context, cfg *config.Config, providerName, fixture, expected string, iteration int) (benchmarkResult, error) {
+	result := benchmarkResult{
+		Mode:      "voice",
+		Provider:  providerName,
+		Iteration: iteration,
+		Fixture:   fixture,
+		Expected:  expected,
+	}
+
+	cfgCopy := *cfg
+	if providerName != "" {
+		// An explicit alias must fully select the path rather than conflicting
+		// with the user's configured mode.
+		cfgCopy.STTProvider = providerName
+		cfgCopy.STTMode = ""
+	}
+	// Every shipped STT backend rejects a nil VAD.
+	cfgCopy.VADEnabled = true
+
+	if err := config.EnsureRuntimeAssets(ctx, &cfgCopy, config.AssetRequest{NeedSTT: true, NeedVAD: true, NeedTTS: !noVoice}, nil); err != nil {
+		return result, err
+	}
+
+	bus := events.NewBus()
+	metricsCh := make(chan events.TurnMetrics, 64)
+	errorCh := make(chan events.Error, 64)
+	// Handlers run on the emitting goroutine, so they must never block.
+	events.Subscribe(bus, func(e events.TurnMetrics) {
+		select {
+		case metricsCh <- e:
+		default:
+		}
+	})
+	events.Subscribe(bus, func(e events.Error) {
+		select {
+		case errorCh <- e:
+		default:
+		}
+	})
+
+	// text=true skips the live microphone; silent=noVoice keeps TTS and the
+	// player unless the caller asked for silence.
+	p, cleanup, err := buildPipeline(ctx, &cfgCopy, bus, true, noVoice)
+	if err != nil {
+		return result, fmt.Errorf("init full-turn pipeline: %w", err)
+	}
+	defer cleanup()
+
+	source, err := audio.NewFixtureSourceFromWAV(fixture, audio.ChunkSize, benchmarkFixtureRealtime)
+	if err != nil {
+		return result, err
+	}
+
+	vad, err := audio.NewVAD(&cfgCopy)
+	if err != nil {
+		return result, err
+	}
+	defer vad.Delete()
+
+	sttProvider, sttCleanup, err := stt.NewProvider(&cfgCopy, source, vad)
+	if err != nil {
+		return result, err
+	}
+	if sttCleanup != nil {
+		defer sttCleanup()
+	}
+
+	p.STT = sttProvider
+	p.VAD = vad
+	// Capture stays nil deliberately. FixtureSource is not a captureMonitor,
+	// and transcribeTurn calls Capture.Reset() before every listen — a fixture
+	// wired there would rewind the WAV and replay the same audio forever.
+	// Barge-in is therefore not measured in this mode.
+
+	drainBenchmarkChannels(metricsCh, errorCh)
+	p.Brain.ClearHistory()
+
+	start := time.Now()
+	transcript, runErr := p.RunTurn(ctx)
+	result.Elapsed = time.Since(start)
+	result.Metrics = readBenchmarkMetrics(metricsCh)
+	result.Errors = append(result.Errors, readBenchmarkErrors(errorCh)...)
+	result.Transcript = transcript
+
+	if expected != "" {
+		result.TranscriptScore = transcriptScore(expected, transcript)
+	}
+	if runErr != nil {
+		return result, runErr
+	}
+	return result, nil
 }
 
 func runSTTBenchmarks(ctx context.Context, cfg *config.Config) ([]benchmarkResult, error) {
@@ -434,8 +585,25 @@ func printBenchmarkSummary(results []benchmarkResult) {
 				printMetric("transcript", result.Transcript)
 			}
 		default:
-			fmt.Printf("  %s %s\n", sectionStyle.Render(fmt.Sprintf("[%d]", result.Iteration)), result.Prompt)
+			// Full-turn results carry a fixture instead of a prompt.
+			header := result.Prompt
+			if header == "" && result.Fixture != "" {
+				header = filepath.Base(result.Fixture)
+				if result.Provider != "" {
+					header = fmt.Sprintf("%s :: %s", result.Provider, header)
+				}
+			}
+			fmt.Printf("  %s %s\n", sectionStyle.Render(fmt.Sprintf("[%d]", result.Iteration)), header)
 			printMetric("total", result.Elapsed.Round(time.Millisecond).String())
+			if result.Metrics.STTFinalElapsed > 0 {
+				printMetric("stt final", formatMetric(result.Metrics.STTFinalElapsed))
+			}
+			if result.Transcript != "" {
+				printMetric("transcript", result.Transcript)
+			}
+			if result.Expected != "" {
+				printMetric("transcript score", fmt.Sprintf("%.2f", result.TranscriptScore))
+			}
 			printMetric("first model chunk", formatMetric(result.Metrics.FirstModelChunkElapsed))
 			printMetric("model complete", formatMetric(result.Metrics.ModelCompleteElapsed))
 			printMetric("first segment", formatMetric(result.Metrics.FirstSegmentElapsed))

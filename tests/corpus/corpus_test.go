@@ -7,7 +7,7 @@
 //
 // Recording is a human step, so an empty corpus is a valid state and skips
 // rather than fails. Whatever is present is validated strictly.
-package main
+package corpus
 
 import (
 	"encoding/json"

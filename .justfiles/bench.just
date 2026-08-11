@@ -79,6 +79,6 @@ corpus-check:
     echo ""
     echo "✓ corpus valid"
 
-[doc('Print manifest as repeatable --audio-fixture/--expect-text benchmark flags')]
+[doc('Print manifest as repeatable --full-turn-fixture/--expect-text benchmark flags')]
 corpus-args:
-    @cd "{{repo}}" && jq -r '.samples[] | "--audio-fixture=testdata/corpus/\(.path) --expect-text=\(.expect)"' testdata/corpus/manifest.json | tr '\n' ' '
+    @cd "{{repo}}" && jq -r '.samples[] | "--full-turn-fixture=testdata/corpus/\(.path) --expect-text=\(.expect)"' testdata/corpus/manifest.json | tr '\n' ' '
