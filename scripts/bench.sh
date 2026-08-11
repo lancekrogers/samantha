@@ -120,6 +120,11 @@ require_same_fixtures() {
 # length contributes nothing but noise — and a long first sentence synthesizes
 # at roughly 1x realtime, which can trip the pipeline's 8s playback-stall
 # watchdog and abort the turn.
+# Trailing silence appended to every synthetic fixture, in seconds. Must exceed
+# the largest vad_silence_duration being compared, or endpointing never fires
+# from silence and the measurement is blind to it.
+SYNTH_TRAILING_SILENCE="${SYNTH_TRAILING_SILENCE:-1.5}"
+
 SYNTH_TEXTS=(
 	"What is the capital of France? Answer in one word."
 	"What is two plus two? Answer with just the number."
@@ -147,10 +152,19 @@ ensure_synth_fixtures() {
 	for text in "${SYNTH_TEXTS[@]}"; do
 		i=$((i + 1))
 		out="${SYNTH_DIR}/synth-$(printf '%02d' "$i").wav"
-		if ! "$gtts" -text "$text" -out "$out" >/dev/null 2>&1 || [[ ! -s "$out" ]]; then
+		if ! "$gtts" -text "$text" -out "${tmpdir}/raw.wav" >/dev/null 2>&1 || [[ ! -s "${tmpdir}/raw.wav" ]]; then
 			rm -rf "$tmpdir"
-			rm -f "$out"
 			echo "error: failed to synthesize fixture ${i} (is the TTS model installed?)" >&2
+			return 1
+		fi
+		# Append trailing silence. Without it the WAV ends the instant speech
+		# does, so the source hits EOF and emits Final before the VAD silence
+		# window can elapse — which makes any endpointing change invisible.
+		# The pad must exceed the largest silence window under comparison.
+		if ! ffmpeg -hide_banner -loglevel error -i "${tmpdir}/raw.wav" \
+			-af "apad=pad_dur=${SYNTH_TRAILING_SILENCE}" -c:a pcm_s16le -y "$out" >/dev/null 2>&1; then
+			rm -rf "$tmpdir"
+			echo "error: could not pad fixture ${i} with trailing silence (ffmpeg required)" >&2
 			return 1
 		fi
 	done

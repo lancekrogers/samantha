@@ -636,7 +636,7 @@ Prompt bodies stay in `prompts/` (see `samantha prompts`).
 | `whispercpp_model` | `base.en` | `WHISPERCPP_MODEL` | Downloadable whisper.cpp model name |
 | `whispercpp_model_path` | `~/.cache/festival-voice/models/whispercpp/ggml-base.en.bin` | `WHISPERCPP_MODEL_PATH` | whisper.cpp model path |
 | `vad_enabled` | `true` | | Enable voice activity detection |
-| `vad_silence_duration` | `0.8` | | Seconds of silence before ending speech (raise to stop being cut off) |
+| `vad_silence_duration` | `0.5` | | Seconds of silence before ending speech (raise to stop being cut off) |
 | `vad_threshold` | `0.6` | `VAD_THRESHOLD` | Speech-detection confidence (raise to ignore background noise) |
 | `vad_min_speech_duration` | `0.25` | `VAD_MIN_SPEECH_DURATION` | Minimum speech length in seconds (raise to ignore brief noises) |
 | `voice_frontend_enabled` | `false` | `VOICE_FRONTEND_ENABLED` | Local AEC/NS/AGC on mic input (off by default: the noise suppressor currently over-suppresses normal-volume speech; enable only with barge-in) |

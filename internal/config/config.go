@@ -285,7 +285,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("whispercpp_model_path", filepath.Join(DefaultModelsDir(), "whispercpp", "ggml-base.en.bin"))
 
 	v.SetDefault("vad_enabled", true)
-	v.SetDefault("vad_silence_duration", 0.8)
+	v.SetDefault("vad_silence_duration", 0.5)
 	v.SetDefault("vad_threshold", 0.6)
 	v.SetDefault("vad_min_speech_duration", 0.25)
 	v.SetDefault("vad_pre_roll_ms", 300)
@@ -466,6 +466,7 @@ func loadLocked() (*Config, error) {
 		"barge_in_enabled":           "BARGE_IN_ENABLED",
 		"vad_threshold":              "VAD_THRESHOLD",
 		"vad_min_speech_duration":    "VAD_MIN_SPEECH_DURATION",
+		"vad_silence_duration":       "VAD_SILENCE_DURATION",
 		"voice_frontend_enabled":     "VOICE_FRONTEND_ENABLED",
 		"tui_mouse_enabled":          "TUI_MOUSE_ENABLED",
 		"calibre_enabled":            "CALIBRE_ENABLED",
