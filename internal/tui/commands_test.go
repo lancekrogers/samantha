@@ -21,6 +21,8 @@ func TestSlashCommandRegistryMatchesCanonicalNamesAndAliases(t *testing.T) {
 		{input: "/speaker", want: commandAudio},
 		{input: "/timeline", want: commandActivity},
 		{input: "/settings", want: commandSettings},
+		{input: "/copy", want: commandCopy},
+		{input: "/yank", want: commandCopy},
 		{input: "/q", want: commandQuit},
 		{input: "/vim on", want: commandVim},
 	}

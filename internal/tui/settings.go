@@ -156,6 +156,17 @@ func (m *settingsModel) buildModelItems() {
 	}
 }
 
+// Tools tab row indices — keep in lockstep with buildToolItems().
+// Combined from #212 (barge-in/AEC) and #213 (mouse scroll).
+const (
+	toolRowLocalTools    = 0
+	toolRowSkills        = 1
+	toolRowBargeIn       = 2
+	toolRowVoiceFrontend = 3
+	toolRowMouse         = 4
+	toolRowCount         = 5
+)
+
 func (m *settingsModel) buildToolItems() {
 	m.toolItems = []string{
 		fmt.Sprintf("Local tools — %s", enabledLabel(m.cfg.VoiceToolsEnabled)),
@@ -168,6 +179,18 @@ func (m *settingsModel) buildToolItems() {
 	} else {
 		m.toolItems = append(m.toolItems, "Agent Skills — n/a (Ollama only)")
 	}
+	// Voice barge-in is opt-in (default off): without a solid AEC path the mic
+	// hears TTS playback and self-interrupts. Voice frontend is the AEC/NS/AGC
+	// chain doctor recommends when barge-in is on.
+	m.toolItems = append(m.toolItems,
+		fmt.Sprintf("Voice barge-in — %s", enabledLabel(m.cfg.BargeInEnabled)),
+		fmt.Sprintf("Voice frontend (AEC) — %s", enabledLabel(m.cfg.VoiceFrontendEnabled)),
+	)
+	// Mouse claim enables wheel scroll in chat but steals unmodified drag-select.
+	// OFF restores terminal selection; Page Up/Down still scroll either way.
+	m.toolItems = append(m.toolItems,
+		fmt.Sprintf("Mouse scroll (claims mouse) — %s", enabledLabel(m.cfg.TUIMouseEnabled)),
+	)
 }
 
 func enabledLabel(enabled bool) string {
@@ -175,6 +198,83 @@ func enabledLabel(enabled bool) string {
 		return "ON ✓"
 	}
 	return "OFF"
+}
+
+// selectToolItem toggles the focused Tools-tab row and persists it.
+// Pipeline-level knobs (barge-in, voice frontend) only take effect after the
+// conversation is rebuilt; mouse claim applies on next enter/leave of chat.
+func (m *settingsModel) selectToolItem() tea.Cmd {
+	if m.cursor < 0 || m.cursor >= len(m.toolItems) {
+		return nil
+	}
+	var (
+		key   string
+		value bool
+		label string
+		field *bool
+	)
+	switch m.cursor {
+	case toolRowLocalTools:
+		key, label = "voice_tools_enabled", "Local tools"
+		value = !m.cfg.VoiceToolsEnabled
+		field = &m.cfg.VoiceToolsEnabled
+	case toolRowSkills:
+		if !strings.EqualFold(m.cfg.BrainProvider, "ollama") {
+			m.message = "Agent Skills apply only when brain provider is Ollama"
+			return nil
+		}
+		key, label = "skills_enabled", "Agent Skills"
+		value = !m.cfg.SkillsEnabled
+		field = &m.cfg.SkillsEnabled
+	case toolRowBargeIn:
+		key, label = "barge_in_enabled", "Voice barge-in"
+		value = !m.cfg.BargeInEnabled
+		field = &m.cfg.BargeInEnabled
+	case toolRowVoiceFrontend:
+		key, label = "voice_frontend_enabled", "Voice frontend (AEC)"
+		value = !m.cfg.VoiceFrontendEnabled
+		field = &m.cfg.VoiceFrontendEnabled
+	case toolRowMouse:
+		key, label = "tui_mouse_enabled", "Mouse scroll"
+		value = !m.cfg.TUIMouseEnabled
+		field = &m.cfg.TUIMouseEnabled
+	default:
+		return nil
+	}
+	saveConfig := m.saveConfig
+	if saveConfig == nil {
+		saveConfig = config.SetAndSave
+	}
+	if err := saveConfig(key, value); err != nil {
+		m.message = fmt.Sprintf("Failed to save %s: %v", label, err)
+		return nil
+	}
+	*field = value
+	m.buildToolItems()
+	switch m.cursor {
+	case toolRowMouse:
+		// Mouse claim is re-evaluated on conversation enter/leave — no full restart.
+		if value {
+			m.message = "Mouse scroll ON · wheel scrolls chat; hold option/fn/shift to select text · applies when you return to chat"
+		} else {
+			m.message = "Mouse scroll OFF · unmodified drag-select works · PgUp/PgDn still scroll · applies when you return to chat"
+		}
+	default:
+		// Pipeline knobs (and tools/skills) are not hot-reloaded when /settings
+		// returns to a live conversation — only a new conversation or process
+		// restart rebuilds capture/VAD/frontend/BargeInVAD.
+		m.message = fmt.Sprintf("%s %s; restart app or start a new conversation to apply", label, enabledLabel(value))
+		if m.cursor == toolRowBargeIn && value && !m.cfg.VoiceFrontendEnabled {
+			m.message += " · enable Voice frontend (AEC) to reduce echo false-triggers"
+		}
+		if m.cursor == toolRowVoiceFrontend && value && !m.cfg.BargeInEnabled {
+			m.message += " · can over-suppress normal speech; intended with barge-in"
+		}
+		if m.cursor == toolRowVoiceFrontend && !value && m.cfg.BargeInEnabled {
+			m.message += " · barge-in is on; echo may self-interrupt without AEC"
+		}
+	}
+	return nil
 }
 
 type ttsSettingItem struct {
@@ -488,36 +588,7 @@ func (m *settingsModel) selectCurrent() tea.Cmd {
 			m.message = fmt.Sprintf("Model set to %s", model)
 		}
 	case sectionTools:
-		if m.cursor >= len(m.toolItems) {
-			return nil
-		}
-		key := "voice_tools_enabled"
-		value := !m.cfg.VoiceToolsEnabled
-		label := "Local tools"
-		if m.cursor == 1 {
-			if !strings.EqualFold(m.cfg.BrainProvider, "ollama") {
-				m.message = "Agent Skills apply only when brain provider is Ollama"
-				return nil
-			}
-			key = "skills_enabled"
-			value = !m.cfg.SkillsEnabled
-			label = "Agent Skills"
-		}
-		saveConfig := m.saveConfig
-		if saveConfig == nil {
-			saveConfig = config.SetAndSave
-		}
-		if err := saveConfig(key, value); err != nil {
-			m.message = fmt.Sprintf("Failed to save %s: %v", label, err)
-			return nil
-		}
-		if key == "voice_tools_enabled" {
-			m.cfg.VoiceToolsEnabled = value
-		} else {
-			m.cfg.SkillsEnabled = value
-		}
-		m.buildToolItems()
-		m.message = fmt.Sprintf("%s %s; restart or re-enter conversation to apply", label, enabledLabel(value))
+		return m.selectToolItem()
 	case sectionTTS:
 		if m.cursor < len(m.ttsItems) {
 			provider := m.ttsItems[m.cursor].provider

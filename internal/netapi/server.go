@@ -25,6 +25,12 @@ type Options struct {
 	// serve refuses broader exposure by default.
 	Bind        string
 	AllowPublic bool
+	// ExtraBinds are additional host:port addresses served by the same
+	// handler, TLS certificate, and auth. Each entry passes the same
+	// validateBind policy as Bind. Lets one serve reach loopback clients
+	// (the Mac app) and LAN clients (a paired phone) simultaneously.
+	// Duplicates of Bind or of earlier entries are ignored.
+	ExtraBinds []string
 
 	Credentials  *Credentials
 	Bus          *events.Bus
@@ -37,9 +43,11 @@ type Options struct {
 	// Ingress, when set, enables remote push-to-talk (Phase 4 / WI-62e19b).
 	// The serve pipeline's STT must already be wired to this same ingress.
 	Ingress *audio.Ingress
-	// OnListening is called once the TCP listener is bound, before Accept
-	// loops run. Use it to print banners with the real bound address.
-	OnListening func(addr net.Addr)
+	// OnListening is called once every TCP listener is bound, before Accept
+	// loops run. addrs are the actual bound addresses (primary first, deduped,
+	// real ports under :0 requests) — advertise these, never the requested
+	// bind strings.
+	OnListening func(addrs []net.Addr)
 	// IntentSink configures POST /v1/intent (PROTOCOL_DELTAS D3). Optional;
 	// defaults to file mode under credentials Dir/intents.
 	IntentSink IntentSinkConfig
@@ -76,8 +84,9 @@ type Server struct {
 	segmentLimiter *rateLimiter
 	started        time.Time
 
-	mu   sync.Mutex
-	addr net.Addr
+	mu    sync.Mutex
+	addr  net.Addr
+	addrs []net.Addr
 }
 
 func New(opts Options) *Server {
@@ -101,19 +110,39 @@ func New(opts Options) *Server {
 	}
 }
 
-// Addr returns the bound listener address once ListenAndServe has started.
+// Addr returns the primary bound listener address once ListenAndServe has
+// started.
 func (s *Server) Addr() net.Addr {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.addr
 }
 
+// Addrs returns every bound listener address (Bind first, then ExtraBinds)
+// once ListenAndServe has started.
+func (s *Server) Addrs() []net.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]net.Addr(nil), s.addrs...)
+}
+
 // ListenAndServe serves until ctx is canceled, then shuts down gracefully.
 // The bus subscription is detached on return — the pipeline outlives the
 // server cleanly.
 func (s *Server) ListenAndServe(ctx context.Context) error {
-	if err := validateBind(s.opts.Bind, s.opts.AllowPublic); err != nil {
-		return err
+	binds := []string{s.opts.Bind}
+	seen := map[string]struct{}{s.opts.Bind: {}}
+	for _, b := range s.opts.ExtraBinds {
+		if _, dup := seen[b]; dup {
+			continue
+		}
+		seen[b] = struct{}{}
+		binds = append(binds, b)
+	}
+	for _, b := range binds {
+		if err := validateBind(b, s.opts.AllowPublic); err != nil {
+			return err
+		}
 	}
 
 	detach := s.hub.attachBus(s.opts.Bus)
@@ -158,21 +187,34 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		},
 	}
 
-	ln, err := net.Listen("tcp", s.opts.Bind)
-	if err != nil {
-		return fmt.Errorf("listen on %s: %w", s.opts.Bind, err)
+	lns := make([]net.Listener, 0, len(binds))
+	for _, b := range binds {
+		ln, err := net.Listen("tcp", b)
+		if err != nil {
+			for _, open := range lns {
+				_ = open.Close()
+			}
+			return fmt.Errorf("listen on %s: %w", b, err)
+		}
+		lns = append(lns, ln)
 	}
 	s.mu.Lock()
-	s.addr = ln.Addr()
+	s.addr = lns[0].Addr()
+	s.addrs = make([]net.Addr, len(lns))
+	for i, ln := range lns {
+		s.addrs[i] = ln.Addr()
+	}
 	s.started = time.Now()
 	s.mu.Unlock()
 
 	if s.opts.OnListening != nil {
-		s.opts.OnListening(ln.Addr())
+		s.opts.OnListening(s.Addrs())
 	}
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- server.ServeTLS(ln, "", "") }()
+	errCh := make(chan error, len(lns))
+	for _, ln := range lns {
+		go func() { errCh <- server.ServeTLS(ln, "", "") }()
+	}
 	monitorCtx, stopMonitor := context.WithCancel(ctx)
 	defer stopMonitor()
 	revoked := s.watchToken(monitorCtx)
@@ -193,6 +235,10 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
+		// One listener failed; bring the rest down before reporting.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
 		return err
 	}
 }
