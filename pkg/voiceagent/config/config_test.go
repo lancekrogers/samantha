@@ -863,3 +863,32 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// LoadWithoutHooks must read the same configuration as Load while skipping the
+// after-load hook. The hook is registered from persona's init, so a library
+// consumer gets persona application merely by importing the wrong thing —
+// LoadWithoutHooks is its opt-out.
+func TestLoadWithoutHooksSkipsTheAfterLoadHook(t *testing.T) {
+	prev := afterLoad
+	t.Cleanup(func() { afterLoad = prev })
+
+	var calls int
+	SetAfterLoad(func(*Config) error {
+		calls++
+		return nil
+	})
+
+	if _, err := LoadWithoutHooks(); err != nil {
+		t.Fatalf("LoadWithoutHooks: %v", err)
+	}
+	if calls != 0 {
+		t.Errorf("after-load hook ran %d times under LoadWithoutHooks, want 0", calls)
+	}
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("after-load hook ran %d times under Load, want 1 — the CLI's behaviour must not change", calls)
+	}
+}

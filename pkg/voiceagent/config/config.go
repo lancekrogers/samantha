@@ -385,8 +385,25 @@ var afterLoad func(*Config) error
 
 // SetAfterLoad registers a hook invoked at the end of Load (after unlock).
 // Used by the persona package to migrate/apply active persona profiles.
+//
+// This is a process-wide side effect of loading config, and it is load-bearing
+// for the CLI: persona application happens here and nowhere else. A library
+// consumer that never wants a persona overlaid on its config should call
+// LoadWithout instead of trying to unregister the hook — unregistering would
+// change behaviour for every other caller in the process.
 func SetAfterLoad(fn func(*Config) error) {
 	afterLoad = fn
+}
+
+// LoadWithoutHooks reads configuration exactly as Load does but skips the
+// after-load hook.
+//
+// It exists for embedders. The hook is registered from an init function in the
+// persona package, so merely importing something that transitively imports
+// persona opts a host into persona application it may not want. Load remains the
+// CLI's entry point and its behaviour is unchanged.
+func LoadWithoutHooks() (*Config, error) {
+	return loadLocked()
 }
 
 // Load reads configuration from disk and environment.

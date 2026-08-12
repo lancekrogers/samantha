@@ -39,14 +39,14 @@ func New(provider, model string) *Session {
 
 // Save persists the session to disk.
 func (s *Session) Save(turns []brain.Turn) error {
-	return s.saveTo(config.SessionsDir(), turns)
+	return DefaultStore().Save(s, turns)
 }
 
 // SaveBackup writes the given turns to a sibling <id>.pre-compact.json so one
 // recovery generation survives /compact rewriting the live session. Each
 // compact overwrites the previous backup; the main session file is untouched.
 func (s *Session) SaveBackup(turns []brain.Turn) error {
-	return s.saveBackupTo(config.SessionsDir(), turns)
+	return DefaultStore().SaveBackup(s, turns)
 }
 
 func (s *Session) saveBackupTo(dir string, turns []brain.Turn) error {
@@ -144,7 +144,7 @@ func normalizeTurns(turns []brain.Turn) []brain.Turn {
 
 // Load reads a session from disk by ID.
 func Load(id string) (*Session, error) {
-	return loadFrom(config.SessionsDir(), id)
+	return DefaultStore().Load(id)
 }
 
 func loadFrom(dir, id string) (*Session, error) {
@@ -172,7 +172,7 @@ func Latest() *Session {
 
 // List returns all sessions sorted by most recently updated.
 func List() []Session {
-	return listIn(config.SessionsDir())
+	return DefaultStore().List()
 }
 
 func listIn(dir string) []Session {
@@ -218,4 +218,46 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// Store persists sessions under an explicit directory.
+//
+// The package-level Save/Load/List/Latest resolve their directory from global
+// config, which is correct for the CLI and wrong for a library: an embedder
+// holding its own configuration must not have its sessions written to whatever
+// path the process last loaded. Store is the injectable form; the package-level
+// functions delegate to it so both paths share one implementation.
+type Store struct {
+	dir string
+}
+
+// NewStore returns a Store rooted at dir.
+func NewStore(dir string) *Store { return &Store{dir: dir} }
+
+// DefaultStore returns a Store rooted at the process-wide sessions directory.
+// This is what the CLI uses, and what the package-level helpers delegate to.
+func DefaultStore() *Store { return NewStore(config.SessionsDir()) }
+
+// Save writes the session's turns.
+func (st *Store) Save(s *Session, turns []brain.Turn) error { return s.saveTo(st.dir, turns) }
+
+// SaveBackup writes a backup copy, used before a destructive operation.
+func (st *Store) SaveBackup(s *Session, turns []brain.Turn) error {
+	return s.saveBackupTo(st.dir, turns)
+}
+
+// Load reads a session by id.
+func (st *Store) Load(id string) (*Session, error) { return loadFrom(st.dir, id) }
+
+// List returns every session in the store, newest first.
+func (st *Store) List() []Session { return listIn(st.dir) }
+
+// Latest returns the most recent session, or nil when the store is empty.
+func (st *Store) Latest() *Session {
+	sessions := st.List()
+	if len(sessions) == 0 {
+		return nil
+	}
+	newest := sessions[0]
+	return &newest
 }
