@@ -13,6 +13,7 @@ package voiceagent
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/brain"
@@ -32,6 +33,12 @@ import (
 // part of the library's surface. Narrowing comes after the surface is known.
 type Agent struct {
 	*pipeline.Pipeline
+
+	// Turn cancellation for Interrupt. turnSeq identifies the turn that owns
+	// cancelTurn, so a finishing turn cannot clear a newer turn's cancel.
+	mu         sync.Mutex
+	cancelTurn context.CancelFunc
+	turnSeq    uint64
 }
 
 // Options configures New. Every provider field is optional: nil means "build it

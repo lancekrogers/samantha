@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/brain"
@@ -190,3 +191,138 @@ func (s *stubPlayer) PlayStream(context.Context, *audio.PCMStream) (*audio.Playb
 func (s *stubPlayer) Stop()           {}
 func (s *stubPlayer) IsPlaying() bool { return false }
 func (s *stubPlayer) Close() error    { return nil }
+
+// --- event stream ----------------------------------------------------------
+
+// The bus is synchronous: its handlers run inline on the pipeline's goroutine.
+// A slow consumer must therefore lose events rather than stall speech, and must
+// be able to tell that it did.
+func TestEventStreamDropsRatherThanBlocking(t *testing.T) {
+	agent, cleanup := textAgent(t)
+	defer cleanup()
+
+	const buffer = 4
+	stream := agent.EventStream(buffer)
+	defer stream.Close()
+
+	// Emit well past the buffer without reading a single event. If the adapter
+	// blocked, this would deadlock and the test would time out.
+	const emitted = 50
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range emitted {
+			agent.Pipeline.Events.Emit(events.Error{Stage: "test", Message: "x"})
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("publishing blocked — a full EventStream must drop, not stall the pipeline")
+	}
+
+	if got := stream.Dropped(); got == 0 {
+		t.Error("Dropped() = 0 after overflowing the buffer; a silent drop policy is " +
+			"indistinguishable from a bug")
+	}
+	if got := len(stream.C()); got > buffer {
+		t.Errorf("buffered %d events, want at most %d", got, buffer)
+	}
+}
+
+func TestEventStreamDeliversWhenKeepingUp(t *testing.T) {
+	agent, cleanup := textAgent(t)
+	defer cleanup()
+
+	stream := agent.EventStream(16)
+	defer stream.Close()
+
+	agent.Pipeline.Events.Emit(events.Error{Stage: "test", Message: "hello"})
+	select {
+	case e := <-stream.C():
+		if got, ok := e.(events.Error); !ok || got.Message != "hello" {
+			t.Errorf("received %#v, want the published Error event", e)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("published event never arrived")
+	}
+	if got := stream.Dropped(); got != 0 {
+		t.Errorf("Dropped() = %d with a consumer keeping up, want 0", got)
+	}
+}
+
+// Close must unsubscribe. A stream that keeps receiving after Close would panic
+// on send-to-closed-channel the moment the next event fires.
+func TestEventStreamCloseUnsubscribes(t *testing.T) {
+	agent, cleanup := textAgent(t)
+	defer cleanup()
+
+	stream := agent.EventStream(8)
+	stream.Close()
+	stream.Close() // must be idempotent
+
+	// Publishing after Close must not panic.
+	agent.Pipeline.Events.Emit(events.Error{Stage: "test", Message: "after close"})
+
+	if _, open := <-stream.C(); open {
+		t.Error("channel should be closed and drained after Close")
+	}
+}
+
+// A zero or negative buffer must not produce an unbuffered channel, which would
+// drop everything except perfectly-timed reads.
+func TestEventStreamRejectsUnbufferedRequest(t *testing.T) {
+	agent, cleanup := textAgent(t)
+	defer cleanup()
+
+	for _, buffer := range []int{0, -1} {
+		stream := agent.EventStream(buffer)
+		if cap(stream.C()) == 0 {
+			t.Errorf("EventStream(%d) produced an unbuffered channel", buffer)
+		}
+		stream.Close()
+	}
+}
+
+// --- interrupt -------------------------------------------------------------
+
+// Both are ordinary host states, not errors: a hotkey pressed before anything is
+// running, and a hotkey pressed twice.
+func TestInterruptIsSafeWithNoTurnAndWhenRepeated(t *testing.T) {
+	agent, cleanup := textAgent(t)
+	defer cleanup()
+
+	agent.Interrupt()
+	agent.Interrupt()
+}
+
+func TestSendTextClearsOnlyItsOwnCancel(t *testing.T) {
+	agent, cleanup := textAgent(t)
+	defer cleanup()
+
+	if err := agent.SendText(context.Background(), "first"); err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
+	// After a completed turn there is nothing in flight, so Interrupt is a no-op
+	// rather than a panic or a stale cancel firing into the next turn.
+	agent.Interrupt()
+
+	if err := agent.SendText(context.Background(), "second"); err != nil {
+		t.Fatalf("second SendText: %v", err)
+	}
+}
+
+func textAgent(t *testing.T) (*Agent, func()) {
+	t.Helper()
+	agent, cleanup, err := New(context.Background(), Options{
+		Config:   &config.Config{AgentName: "Test"},
+		Events:   events.NewBus(),
+		Brain:    &stubBrain{},
+		TextOnly: true,
+		Silent:   true,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return agent, cleanup
+}
