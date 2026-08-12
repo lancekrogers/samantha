@@ -135,6 +135,11 @@ type Config struct {
 	// Prompts
 	Persona    string `mapstructure:"persona"`
 	PromptsDir string `mapstructure:"prompts_dir"`
+
+	// BackchannelEnabled plays a short filler ("Mm-hm") while a slow turn is
+	// still being produced. Defaults to FALSE: it is a taste feature, and one
+	// the plan expects may be removed after dogfooding.
+	BackchannelEnabled bool `mapstructure:"backchannel_enabled"`
 	// CompactPrompt names the kind=compact document used as /compact's
 	// summarize-turn instruction. Empty selects the embedded default.
 	CompactPrompt string `mapstructure:"compact_prompt"`
@@ -342,6 +347,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("active_persona", "samantha")
 	v.SetDefault("persona", "samantha")
 	v.SetDefault("prompts_dir", "")
+	v.SetDefault("backchannel_enabled", false)
 	v.SetDefault("skills_enabled", true)
 	v.SetDefault("skills_dir", "")
 	v.SetDefault("models_dir", DefaultModelsDir())
@@ -481,6 +487,7 @@ func loadLocked() (*Config, error) {
 		"compact_prompt":              "COMPACT_PROMPT",
 		"active_persona":              "ACTIVE_PERSONA",
 		"prompts_dir":                 "PROMPTS_DIR",
+		"backchannel_enabled":         "BACKCHANNEL_ENABLED",
 		"skills_enabled":              "SKILLS_ENABLED",
 		"skills_dir":                  "SKILLS_DIR",
 		"barge_in_enabled":            "BARGE_IN_ENABLED",

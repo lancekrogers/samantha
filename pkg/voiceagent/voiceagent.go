@@ -182,6 +182,12 @@ func New(ctx context.Context, opts Options) (*Agent, func(), error) {
 		}
 	}
 
+	// Backchannel, if enabled: synthesizes its phrase pool once, here, so a turn
+	// never pays for it. Off by default; see pipeline/backchannel.go.
+	if cfg.BackchannelEnabled && !opts.Silent && p.HasTTS() {
+		p.EnableBackchannel(ctx)
+	}
+
 	// Capture + VAD + STT (skipped in text mode).
 	if !opts.TextOnly {
 		var frontend *audio.VoiceFrontend

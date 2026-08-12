@@ -241,3 +241,13 @@ type VoiceGateStripped struct {
 }
 
 func (e VoiceGateStripped) eventType() string { return "voice_gate_stripped" }
+
+// BackchannelStarted reports that a short filler ("Mm-hm", "Let me think") began
+// playing while the real reply was still being produced. Emitted so the TUI and
+// serve clients can render it as a filler rather than as speech the model chose
+// to say — the distinction matters in a transcript.
+type BackchannelStarted struct {
+	Phrase string
+}
+
+func (e BackchannelStarted) eventType() string { return "backchannel_started" }

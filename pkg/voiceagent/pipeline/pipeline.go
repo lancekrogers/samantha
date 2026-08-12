@@ -108,7 +108,9 @@ type Pipeline struct {
 	BargeInVAD        VoiceDetector
 	Events            *events.Bus
 	VoiceToolsEnabled bool
-	OnTurn            func() // called after each completed turn for session auto-save
+	// backchannel is nil unless config.BackchannelEnabled; see backchannel.go.
+	backchannel *backchannel
+	OnTurn      func() // called after each completed turn for session auto-save
 
 	// CompactPrompt is the resolved kind=compact instruction for /compact's
 	// summarize turn. Empty disables compaction with a clear error.
@@ -474,6 +476,10 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 	}
 
 	turn.to(TurnThinking)
+	// The wait a backchannel covers starts here: the user has stopped talking
+	// and nothing will be heard until the brain and TTS finish. No-op unless
+	// enabled and unless recent turns were actually slow.
+	p.playBackchannel(ctx)
 	speakerID := p.currentSpeakerID()
 	if p.SpeakerGate != nil {
 		if reason := p.SpeakerGate(speakerID); reason != "" {
@@ -1229,6 +1235,9 @@ func (p *Pipeline) applyPlaybackEvent(event playbackEvent, metrics *turnMetrics,
 		armAt.CompareAndSwap(0, time.Now().Add(bargeInArmDelay).UnixNano())
 		if metrics.firstAudioReady.IsZero() {
 			metrics.firstAudioReady = time.Now()
+			if p.backchannel != nil {
+				p.backchannel.observe(metrics.elapsed(metrics.firstAudioReady))
+			}
 		}
 		if metrics.playbackStart.IsZero() {
 			metrics.playbackStart = time.Now()
