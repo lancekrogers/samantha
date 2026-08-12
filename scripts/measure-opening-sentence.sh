@@ -46,7 +46,7 @@ mkdir -p "$WORK/no-overrides"
 PROMPTS_DIR="$WORK/no-overrides" go run ./cmd/samantha prompts show persona \
   --provider ollama 2>/dev/null | tail -n +5 > "$WORK/after.txt"
 
-NUDGE='Make your first sentence a short one — a dozen words at most — then say the rest however it needs to be said.'
+NUDGE='Get to the point in your first sentence, then say the rest however it needs to be said.'
 python3 - "$WORK/after.txt" "$WORK/before.txt" "$NUDGE" <<'PY'
 import sys
 after, before, nudge = sys.argv[1], sys.argv[2], sys.argv[3]

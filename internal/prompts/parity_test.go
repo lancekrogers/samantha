@@ -49,7 +49,7 @@ func TestDefaultTurnGolden(t *testing.T) {
 		// and Kokoro runs at ~1.32x realtime, so a shorter opening reaches the
 		// listener sooner. The second clause frees the rest of the reply on
 		// purpose — the failure mode of this instruction is a curt agent.
-		"Make your first sentence a short one — a dozen words at most — then say the rest however it needs to be said.",
+		"Get to the point in your first sentence, then say the rest however it needs to be said.",
 	}
 	want := original
 	for _, add := range additions {
