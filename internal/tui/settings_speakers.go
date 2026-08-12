@@ -3,7 +3,7 @@ package tui
 import (
 	"fmt"
 
-	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 // Speakers settings row indices — keep in lockstep with speakerItems().

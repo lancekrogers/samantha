@@ -3,7 +3,7 @@ package discovery
 import (
 	"testing"
 
-	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 func TestDiscoverProvidersIncludesAllBackends(t *testing.T) {

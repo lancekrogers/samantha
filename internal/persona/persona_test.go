@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 func setConfigDir(t *testing.T, dir string) {

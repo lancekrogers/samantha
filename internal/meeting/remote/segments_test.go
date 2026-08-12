@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/lancekrogers/samantha/internal/audio"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
 )
 
 // testGapSamples is the stand-in segment length for the tiny fixtures in this

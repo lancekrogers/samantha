@@ -3,7 +3,7 @@ package speaker
 import (
 	"testing"
 
-	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 func TestFromAppConfigNumSpeakers(t *testing.T) {

@@ -11,8 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/speaker"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 // newSpeakerCmd builds the `samantha speaker` command group: durable, named

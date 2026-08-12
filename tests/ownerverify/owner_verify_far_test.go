@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lancekrogers/samantha/internal/audio"
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/speaker"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 // TestOwnerVerifyFalseAcceptRate measures enrollment match quality on the

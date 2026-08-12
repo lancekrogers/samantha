@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lancekrogers/samantha/internal/events"
-	"github.com/lancekrogers/samantha/internal/pipeline"
-	"github.com/lancekrogers/samantha/internal/stt"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/events"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/pipeline"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/stt"
 )
 
 func TestClassifyVoiceFailure(t *testing.T) {

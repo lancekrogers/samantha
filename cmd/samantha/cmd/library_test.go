@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/lancekrogers/samantha/internal/calibre"
-	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 func TestLibrarySearchDisabled(t *testing.T) {

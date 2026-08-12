@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lancekrogers/samantha/internal/events"
-	"github.com/lancekrogers/samantha/internal/pipeline"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/events"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/pipeline"
 )
 
 const (

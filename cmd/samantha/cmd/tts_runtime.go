@@ -7,9 +7,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/lancekrogers/samantha/internal/config"
-	"github.com/lancekrogers/samantha/internal/pipeline"
-	"github.com/lancekrogers/samantha/internal/tts"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/pipeline"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/tts"
 )
 
 // ttsProviderSet is the selected provider plus its explicitly configured

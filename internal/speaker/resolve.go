@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
 )
 
 // maxResolveSpansPerCluster bounds per-cluster embedding cost when mapping

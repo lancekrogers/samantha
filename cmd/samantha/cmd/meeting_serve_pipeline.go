@@ -12,8 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lancekrogers/samantha/internal/audio"
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/listen"
 	"github.com/lancekrogers/samantha/internal/meeting"
 	"github.com/lancekrogers/samantha/internal/meeting/ideas"
@@ -21,7 +19,9 @@ import (
 	"github.com/lancekrogers/samantha/internal/meeting/remote"
 	"github.com/lancekrogers/samantha/internal/netapi"
 	"github.com/lancekrogers/samantha/internal/speaker"
-	"github.com/lancekrogers/samantha/internal/stt"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/stt"
 )
 
 // This file wires serve's phone-driven meeting capture (PROTOCOL_DELTAS D6) to

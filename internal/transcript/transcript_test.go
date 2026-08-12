@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/events"
 )
 
 func readRecords(t *testing.T, path string) []record {

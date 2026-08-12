@@ -7,8 +7,8 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/persona"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 const personasCreateLabel = "+ Create new persona…"

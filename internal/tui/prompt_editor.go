@@ -7,8 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/lancekrogers/samantha/internal/prompts"
 	"github.com/lancekrogers/samantha/internal/tui/vim"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/prompts"
 )
 
 // promptEditor adapts the vim.Editor (ported from camp) to the persona form:

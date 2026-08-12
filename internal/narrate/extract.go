@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lancekrogers/samantha/internal/textclean"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/textclean"
 )
 
 // PageText is one extracted PDF page.

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lancekrogers/samantha/internal/stt"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/stt"
 )
 
 type fakeSession struct{ events []stt.Event }

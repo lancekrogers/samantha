@@ -10,13 +10,13 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lancekrogers/samantha/internal/audio"
-	"github.com/lancekrogers/samantha/internal/brain"
-	"github.com/lancekrogers/samantha/internal/config"
-	"github.com/lancekrogers/samantha/internal/session"
-	"github.com/lancekrogers/samantha/internal/stt"
-	"github.com/lancekrogers/samantha/internal/tts"
 	appTUI "github.com/lancekrogers/samantha/internal/tui"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/brain"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/session"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/stt"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/tts"
 )
 
 var (

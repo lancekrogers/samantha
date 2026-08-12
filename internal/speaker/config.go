@@ -3,7 +3,7 @@ package speaker
 import (
 	"fmt"
 
-	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
 )
 
 // minLiveWindowMS is the effective window floor, derived from

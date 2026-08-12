@@ -14,7 +14,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/meeting"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 	"github.com/lancekrogers/samantha/internal/speaker"
-	"github.com/lancekrogers/samantha/internal/stt"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/stt"
 )
 
 // demoMeetingSpeakersEnv scripts a multi-voice meeting + speaker analysis

@@ -21,8 +21,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lancekrogers/samantha/internal/config"
-	"github.com/lancekrogers/samantha/internal/platforminfo"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/platforminfo"
 )
 
 // Sentinel errors for common resolution outcomes.

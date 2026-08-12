@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 // Piped stdin must route to the plain app.Run loop, never the full-screen

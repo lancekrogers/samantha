@@ -3,7 +3,7 @@ package aecprobe
 import (
 	"sync"
 
-	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
 )
 
 // Recorder wraps a real audio.Frontend and records every stream that crosses

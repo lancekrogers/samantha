@@ -12,11 +12,11 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/listen"
 	"github.com/lancekrogers/samantha/internal/meeting"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 	"github.com/lancekrogers/samantha/internal/tui/anim"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 func sizedMeeting(t *testing.T, w, h int) meetingModel {

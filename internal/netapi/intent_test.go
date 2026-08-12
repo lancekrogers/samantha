@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/events"
 )
 
 func TestIntentPOSTCreatesFile(t *testing.T) {

@@ -1,0 +1,1216 @@
+package pipeline
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/brain"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/events"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/stt"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/tts"
+)
+
+func TestRunTurnOverlapsSynthesisWithPlayback(t *testing.T) {
+	bus := events.NewBus()
+	sttProvider := &fakeSTT{text: "hello"}
+	brainProvider := &fakeBrain{chunks: []string{"First sentence. Second sentence."}}
+	ttsProvider := &fakeTTS{
+		delay: time.Millisecond * 20,
+	}
+	player := newFakePlayer(120 * time.Millisecond)
+	defer player.Close()
+
+	var metrics events.TurnMetrics
+	metricsSeen := make(chan struct{}, 1)
+	events.Subscribe(bus, func(e events.TurnMetrics) {
+		metrics = e
+		select {
+		case metricsSeen <- struct{}{}:
+		default:
+		}
+	})
+
+	p := &Pipeline{
+		STT:    sttProvider,
+		Brain:  brainProvider,
+		TTS:    ttsProvider,
+		Player: player,
+		Events: bus,
+	}
+
+	text, err := p.RunTurn(context.Background())
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if text != "hello" {
+		t.Fatalf("RunTurn() text = %q, want %q", text, "hello")
+	}
+
+	callTimes := ttsProvider.CallTimes()
+	if len(callTimes) != 2 {
+		t.Fatalf("TTS call count = %d, want 2", len(callTimes))
+	}
+
+	finished := player.FinishedTimes()
+	if len(finished) == 0 {
+		t.Fatal("player recorded no finished segments")
+	}
+
+	if !callTimes[1].Before(finished[0]) {
+		t.Fatalf("second synthesis started at %v, want before first playback finished at %v", callTimes[1], finished[0])
+	}
+	select {
+	case <-metricsSeen:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for TurnMetrics event")
+	}
+	if metrics.FirstModelChunkElapsed <= 0 {
+		t.Fatalf("FirstModelChunkElapsed = %v, want > 0", metrics.FirstModelChunkElapsed)
+	}
+	if metrics.ModelCompleteElapsed <= 0 {
+		t.Fatalf("ModelCompleteElapsed = %v, want > 0", metrics.ModelCompleteElapsed)
+	}
+}
+
+func TestRunTurnDrainsFullPlaybackQueue(t *testing.T) {
+	bus := events.NewBus()
+	sttProvider := &fakeSTT{text: "hello"}
+	// More SEGMENTS than voiceQueueDepth so the playback queue fills and the
+	// loop must apply backpressure without blocking — a regression guard for
+	// the slotSem deadlock that hung voice mode once the queue was full.
+	//
+	// Count SEGMENTS, not sentences. They are 1:1 only while laterBatchSegments
+	// is 1 (D009); re-enabling batching would cut five segments to three and this
+	// test would still pass while no longer filling the queue, which is the only
+	// thing it guards.
+	brainProvider := &fakeBrain{chunks: []string{"One. Two. Three. Four. Five."}}
+	ttsProvider := &fakeTTS{delay: 5 * time.Millisecond}
+	player := newFakePlayer(60 * time.Millisecond)
+	defer player.Close()
+
+	p := &Pipeline{
+		STT:    sttProvider,
+		Brain:  brainProvider,
+		TTS:    ttsProvider,
+		Player: player,
+		Events: bus,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.RunTurn(context.Background())
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunTurn() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunTurn deadlocked with a full playback queue")
+	}
+
+	if got := len(ttsProvider.CallTimes()); got != 5 {
+		t.Fatalf("TTS call count = %d, want 5", got)
+	}
+	if got := len(player.FinishedTimes()); got != 5 {
+		t.Fatalf("played segment count = %d, want 5", got)
+	}
+}
+
+func TestSetOutputMutedStopsPlayback(t *testing.T) {
+	player := newFakePlayer(time.Second)
+	defer player.Close()
+	p := &Pipeline{Player: player}
+
+	p.SetOutputMuted(true)
+	if !p.OutputMuted() {
+		t.Fatal("pipeline did not retain muted output state")
+	}
+	if player.StopCount() != 1 {
+		t.Fatalf("Stop count = %d, want 1", player.StopCount())
+	}
+	p.SetOutputMuted(false)
+	if p.OutputMuted() {
+		t.Fatal("pipeline did not unmute output")
+	}
+}
+
+func TestRunTurnBargeInInterruptsPlayback(t *testing.T) {
+	bus := events.NewBus()
+	sttProvider := &fakeSTT{text: "hello"}
+	brainProvider := &fakeBrain{chunks: []string{"This answer should be interrupted."}}
+	ttsProvider := &fakeTTS{
+		delay: time.Millisecond * 10,
+	}
+	// Play longer than bargeInArmDelay so barge-in is still armed when speech arrives.
+	player := newFakePlayer(2 * time.Second)
+	defer player.Close()
+
+	capture := newFakeCapture()
+	vad := &fakeVAD{}
+
+	var response events.ResponseReady
+	responseSeen := make(chan struct{}, 1)
+	events.Subscribe(bus, func(e events.ResponseReady) {
+		response = e
+		select {
+		case responseSeen <- struct{}{}:
+		default:
+		}
+	})
+
+	p := &Pipeline{
+		STT:        sttProvider,
+		Brain:      brainProvider,
+		TTS:        ttsProvider,
+		Player:     player,
+		Capture:    capture,
+		VAD:        &fakeVAD{},
+		BargeInVAD: vad,
+		Events:     bus,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.RunTurn(context.Background())
+		done <- err
+	}()
+
+	select {
+	case <-player.StartedSignal():
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for playback to start")
+	}
+
+	time.Sleep(bargeInArmDelay + 80*time.Millisecond)
+	for range bargeInMinSpeechChunks {
+		capture.Publish([]float32{0.9, 0.9, 0.9})
+		time.Sleep(60 * time.Millisecond)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunTurn() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for interrupted turn to finish")
+	}
+
+	select {
+	case <-responseSeen:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for ResponseReady event")
+	}
+
+	if !response.Interrupted {
+		t.Fatal("ResponseReady.Interrupted = false, want true")
+	}
+	if player.StopCount() == 0 {
+		t.Fatal("player Stop() was not called during barge-in")
+	}
+	// One reset from the listen-start drain; the barge-in itself must add none,
+	// and it arms keepCapture so the next turn preserves the user's in-progress
+	// audio instead of draining it.
+	if capture.ResetCount() != 1 {
+		t.Fatalf("capture.Reset() count = %d, want 1 (listen drain only)", capture.ResetCount())
+	}
+	if !p.keepCapture {
+		t.Fatal("barge-in should arm keepCapture so the next turn preserves the user's audio")
+	}
+}
+
+func TestTranscribeTurnDrainsCaptureExceptAfterBargeIn(t *testing.T) {
+	capture := newFakeCapture()
+	p := &Pipeline{
+		STT:     &fakeSTT{text: "hello"},
+		Brain:   &fakeBrain{chunks: []string{"hi there"}},
+		VAD:     &fakeVAD{},
+		Capture: capture,
+		Events:  events.NewBus(),
+		// No TTS/Player: the speak path is skipped, isolating the listen drain.
+	}
+
+	// A normal turn drains the stale capture buffer exactly once before listening.
+	if _, err := p.RunTurn(context.Background()); err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if capture.ResetCount() != 1 {
+		t.Fatalf("capture.Reset() count = %d, want 1 after a normal turn", capture.ResetCount())
+	}
+
+	// Simulate a prior barge-in: the next listen must preserve the buffer.
+	p.keepCapture = true
+	if _, err := p.RunTurn(context.Background()); err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if capture.ResetCount() != 1 {
+		t.Fatalf("capture.Reset() count = %d, want 1 (drain skipped after barge-in)", capture.ResetCount())
+	}
+	if p.keepCapture {
+		t.Fatal("keepCapture should clear after the preserved turn")
+	}
+}
+
+func TestWatchBargeInDisabledWhenVADNil(t *testing.T) {
+	// With barge-in disabled (BargeInVAD nil), the interrupt controller must not
+	// subscribe to capture or return a trigger channel.
+	capture := newFakeCapture()
+	p := &Pipeline{
+		Player:  newFakePlayer(time.Second),
+		Capture: capture,
+	}
+	defer p.Player.(*fakePlayer).Close()
+
+	var armAt atomic.Int64
+	if ch := p.newInterruptController().watch(context.Background(), &armAt); ch != nil {
+		t.Fatal("interrupt controller returned a non-nil channel with BargeInVAD nil")
+	}
+	if got := len(capture.subs); got != 0 {
+		t.Fatalf("capture subscriptions = %d, want 0 when barge-in disabled", got)
+	}
+}
+
+func TestRunTurnBargeInCancelsBrainProducer(t *testing.T) {
+	player := newFakePlayer(2 * time.Second)
+	defer player.Close()
+	capture := newFakeCapture()
+	vad := &fakeVAD{}
+	brainProvider := &bargeCancelBrain{ctxCanceled: make(chan struct{})}
+
+	p := &Pipeline{
+		STT:        &fakeSTT{text: "hello"},
+		Brain:      brainProvider,
+		TTS:        &fakeTTS{delay: time.Millisecond},
+		Player:     player,
+		Capture:    capture,
+		VAD:        &fakeVAD{},
+		BargeInVAD: vad,
+		Events:     events.NewBus(),
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.RunTurn(context.Background())
+		done <- err
+	}()
+
+	select {
+	case <-player.StartedSignal():
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for playback to start")
+	}
+
+	time.Sleep(bargeInArmDelay + 80*time.Millisecond)
+	for range bargeInMinSpeechChunks {
+		capture.Publish([]float32{0.9, 0.9, 0.9})
+		time.Sleep(60 * time.Millisecond)
+	}
+
+	select {
+	case <-brainProvider.ctxCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("barge-in did not cancel the brain producer context")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunTurn() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunTurn did not return after barge-in canceled the brain producer")
+	}
+}
+
+func TestRunTurnRecoversBrainStreamError(t *testing.T) {
+	// The recovery invariant (WI-c8884d P1): a hard brain error must close the
+	// turn with a user-visible recovery reply, not a silent error return that
+	// callers count as a voice-input failure.
+	bus := events.NewBus()
+	var ready atomic.Value
+	events.Subscribe(bus, func(e events.ResponseReady) { ready.Store(e) })
+	var errEvt atomic.Value
+	events.Subscribe(bus, func(e events.Error) { errEvt.Store(e) })
+
+	p := &Pipeline{
+		STT:    &fakeSTT{text: "hello"},
+		Brain:  &fakeBrain{streamErr: errors.New("boom")},
+		Events: bus,
+	}
+
+	text, err := p.RunTurn(context.Background())
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v, want nil (recovered turn)", err)
+	}
+	if text != "hello" {
+		t.Fatalf("RunTurn() text = %q, want transcript preserved", text)
+	}
+	e, ok := ready.Load().(events.ResponseReady)
+	if !ok {
+		t.Fatal("no ResponseReady emitted for recovered turn")
+	}
+	if !e.Degraded {
+		t.Fatalf("ResponseReady.Degraded = false, want true: %+v", e)
+	}
+	if !strings.Contains(e.Response, brain.RecoveryReply) {
+		t.Fatalf("ResponseReady.Response = %q, want recovery reply", e.Response)
+	}
+	ev, ok := errEvt.Load().(events.Error)
+	if !ok || !strings.Contains(ev.Message, "boom") {
+		t.Fatalf("Error event = %+v, want brain failure detail in activity", ev)
+	}
+}
+
+func TestRunTurnSpeaksRecoveryReply(t *testing.T) {
+	// Degraded turns still close the loop audibly: the recovery line goes
+	// through TTS so a hands-free user hears the failure instead of silence.
+	bus := events.NewBus()
+	var spoke atomic.Value
+	events.Subscribe(bus, func(e events.SpeakingStarted) { spoke.Store(e) })
+
+	player := newFakePlayer(10 * time.Millisecond)
+	defer player.Close()
+	p := &Pipeline{
+		STT:    &fakeSTT{text: "hello"},
+		Brain:  &fakeBrain{streamErr: errors.New("boom")},
+		TTS:    &fakeTTS{},
+		Player: player,
+		Events: bus,
+	}
+	if _, err := p.RunTurn(context.Background()); err != nil {
+		t.Fatalf("RunTurn() error = %v, want nil (recovered turn)", err)
+	}
+	e, ok := spoke.Load().(events.SpeakingStarted)
+	if !ok || e.Text != brain.RecoveryReply {
+		t.Fatalf("SpeakingStarted = %+v, want spoken recovery reply", e)
+	}
+}
+
+func TestRunTurnRecoveredBrainStreamCompletesDegraded(t *testing.T) {
+	// A brain that already streamed its own recovery line reports Recovered:
+	// the pipeline keeps the streamed text as the reply instead of stacking a
+	// second recovery message on top, and the failure still reaches activity.
+	bus := events.NewBus()
+	var ready atomic.Value
+	events.Subscribe(bus, func(e events.ResponseReady) { ready.Store(e) })
+	var errEvt atomic.Value
+	events.Subscribe(bus, func(e events.Error) { errEvt.Store(e) })
+
+	p := &Pipeline{
+		STT:    &fakeSTT{text: "hello"},
+		Brain:  &fakeBrain{chunks: []string{brain.RecoveryReply}, streamErr: errors.New("boom"), recovered: true},
+		Events: bus,
+	}
+	if _, err := p.RunTurn(context.Background()); err != nil {
+		t.Fatalf("RunTurn() error = %v, want nil (recovered turn)", err)
+	}
+	e, _ := ready.Load().(events.ResponseReady)
+	if !e.Degraded || e.Response != brain.RecoveryReply {
+		t.Fatalf("ResponseReady = %+v, want degraded reply equal to the streamed recovery line", e)
+	}
+	ev, ok := errEvt.Load().(events.Error)
+	if !ok || !strings.Contains(ev.Message, "boom") {
+		t.Fatalf("Error event = %+v, want brain failure detail in activity", ev)
+	}
+}
+
+func TestRunTurnEmitsSingleTerminalMetricsAfterResponse(t *testing.T) {
+	// The state machine owns the single terminal metrics emission, and it must
+	// land after ResponseReady so benchmarks see the final response first.
+	bus := events.NewBus()
+	var mu sync.Mutex
+	var order []string
+	events.Subscribe(bus, func(events.ResponseReady) {
+		mu.Lock()
+		order = append(order, "response")
+		mu.Unlock()
+	})
+	events.Subscribe(bus, func(events.TurnMetrics) {
+		mu.Lock()
+		order = append(order, "metrics")
+		mu.Unlock()
+	})
+
+	p := &Pipeline{
+		STT:    &fakeSTT{text: "hello"},
+		Brain:  &fakeBrain{chunks: []string{"Hi there."}},
+		Events: bus,
+	}
+	if _, err := p.RunTurn(context.Background()); err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 2 || order[0] != "response" || order[1] != "metrics" {
+		t.Fatalf("event order = %v, want exactly [response metrics]", order)
+	}
+}
+
+func TestRunTurnNoSpeechEmitsSingleMetrics(t *testing.T) {
+	bus := events.NewBus()
+	var metricsCount, responseCount atomic.Int32
+	var lastMetrics atomic.Value
+	events.Subscribe(bus, func(e events.TurnMetrics) {
+		metricsCount.Add(1)
+		lastMetrics.Store(e)
+	})
+	events.Subscribe(bus, func(events.ResponseReady) { responseCount.Add(1) })
+
+	p := &Pipeline{STT: &fakeSTT{text: ""}, Brain: &fakeBrain{}, Events: bus}
+	text, err := p.RunTurn(context.Background())
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if text != "" {
+		t.Fatalf("RunTurn() text = %q, want empty (no speech)", text)
+	}
+	if got := metricsCount.Load(); got != 1 {
+		t.Fatalf("TurnMetrics emitted %d times, want exactly 1", got)
+	}
+	if m, ok := lastMetrics.Load().(events.TurnMetrics); !ok || m.Outcome != "timed_out" {
+		t.Fatalf("TurnMetrics.Outcome = %+v, want timed_out on no speech", m)
+	}
+	if got := responseCount.Load(); got != 0 {
+		t.Fatalf("ResponseReady emitted %d times, want 0 on no-speech turn", got)
+	}
+}
+
+func TestRunTurnBrainErrorEmitsSingleMetrics(t *testing.T) {
+	// Regression guard: error paths previously emitted zero terminal metrics.
+	// With the state machine owning emission, every terminal path emits one —
+	// a recovered brain error completes the turn degraded.
+	bus := events.NewBus()
+	var metricsCount atomic.Int32
+	var lastMetrics atomic.Value
+	events.Subscribe(bus, func(e events.TurnMetrics) {
+		metricsCount.Add(1)
+		lastMetrics.Store(e)
+	})
+
+	p := &Pipeline{
+		STT:    &fakeSTT{text: "hello"},
+		Brain:  &fakeBrain{streamErr: errors.New("boom")},
+		Events: bus,
+	}
+	if _, err := p.RunTurn(context.Background()); err != nil {
+		t.Fatalf("RunTurn() error = %v, want nil (recovered turn)", err)
+	}
+	if got := metricsCount.Load(); got != 1 {
+		t.Fatalf("TurnMetrics emitted %d times on brain error, want exactly 1", got)
+	}
+	m, _ := lastMetrics.Load().(events.TurnMetrics)
+	if m.Outcome != "completed" || !m.Degraded {
+		t.Fatalf("TurnMetrics = outcome %q degraded %v, want completed degraded", m.Outcome, m.Degraded)
+	}
+}
+
+type fakeSTT struct {
+	text  string
+	err   error // emit a Failure event instead of a final transcript
+	stall bool  // leave the session open and silent until the context is canceled
+}
+
+type fakeSTTSession struct {
+	events chan stt.Event
+}
+
+func (s *fakeSTTSession) Events() <-chan stt.Event { return s.events }
+func (s *fakeSTTSession) Close() error             { return nil }
+
+func (f *fakeSTT) Start(ctx context.Context) (stt.Session, error) {
+	eventsCh := make(chan stt.Event, 3)
+	eventsCh <- stt.PhaseEvent{Phase: "listening"}
+	switch {
+	case f.stall:
+		// Open but silent: the caller blocks until ctx cancellation.
+		return &fakeSTTSession{events: eventsCh}, nil
+	case f.err != nil:
+		eventsCh <- stt.Failure{Err: f.err}
+	default:
+		eventsCh <- stt.FinalTranscript{Text: f.text}
+	}
+	close(eventsCh)
+	return &fakeSTTSession{events: eventsCh}, nil
+}
+
+func (f *fakeSTT) Available() bool { return true }
+
+type fakeBrain struct {
+	chunks    []string
+	streamErr error
+	recovered bool // report streamErr as an already-recovered failure
+}
+
+func (f *fakeBrain) ThinkStream(ctx context.Context, input string, opts brain.StreamOptions) (*brain.Stream, error) {
+	out := make(chan string, len(f.chunks))
+	done := make(chan brain.StreamResult, 1)
+	go func() {
+		defer close(out)
+		defer close(done)
+		for _, chunk := range f.chunks {
+			select {
+			case <-ctx.Done():
+				done <- brain.StreamResult{Err: ctx.Err()}
+				return
+			case out <- chunk:
+			}
+		}
+		done <- brain.StreamResult{Err: f.streamErr, Recovered: f.recovered}
+	}()
+	return &brain.Stream{Chunks: out, Done: done}, nil
+}
+
+func (f *fakeBrain) ThinkFull(ctx context.Context, input string, _ brain.StreamOptions) (string, error) {
+	if f.streamErr != nil {
+		return "", f.streamErr
+	}
+	if len(f.chunks) == 0 {
+		return "", nil
+	}
+	return f.chunks[0], nil
+}
+
+func (f *fakeBrain) ClearHistory()            {}
+func (f *fakeBrain) History() []brain.Turn    { return nil }
+func (f *fakeBrain) LoadHistory([]brain.Turn) {}
+
+type bargeCancelBrain struct {
+	ctxCanceled chan struct{}
+}
+
+func (b *bargeCancelBrain) ThinkStream(ctx context.Context, input string, opts brain.StreamOptions) (*brain.Stream, error) {
+	out := make(chan string, 1)
+	done := make(chan brain.StreamResult, 1)
+	go func() {
+		defer close(out)
+		defer close(done)
+		out <- "This response starts. It keeps running until barge-in cancels the producer context."
+		<-ctx.Done()
+		close(b.ctxCanceled)
+		done <- brain.StreamResult{Err: ctx.Err()}
+	}()
+	return &brain.Stream{Chunks: out, Done: done}, nil
+}
+
+func (b *bargeCancelBrain) ThinkFull(context.Context, string, brain.StreamOptions) (string, error) {
+	return "", nil
+}
+func (b *bargeCancelBrain) ClearHistory()            {}
+func (b *bargeCancelBrain) History() []brain.Turn    { return nil }
+func (b *bargeCancelBrain) LoadHistory([]brain.Turn) {}
+
+type fakeTTS struct {
+	mu        sync.Mutex
+	delay     time.Duration
+	callTimes []time.Time
+	texts     []string
+}
+
+func (f *fakeTTS) Synthesize(ctx context.Context, text string) (*audio.PCMStream, error) {
+	f.mu.Lock()
+	f.callTimes = append(f.callTimes, time.Now())
+	f.texts = append(f.texts, text)
+	f.mu.Unlock()
+
+	stream := audio.NewPCMStream(ctx)
+	go func() {
+		defer func() {
+			if ctx.Err() != nil {
+				stream.CloseWithError(ctx.Err())
+			}
+		}()
+
+		time.Sleep(f.delay)
+		if ctx.Err() != nil {
+			stream.CloseWithError(ctx.Err())
+			return
+		}
+
+		if err := stream.SetSampleRate(24000); err != nil {
+			stream.CloseWithError(err)
+			return
+		}
+		if err := stream.Write(make([]float32, 4096)); err != nil {
+			stream.CloseWithError(err)
+			return
+		}
+		stream.Close()
+	}()
+
+	return stream, nil
+}
+
+func (f *fakeTTS) Available() bool { return true }
+
+func (f *fakeTTS) ListVoices(locale, gender string) []tts.Voice {
+	return nil
+}
+
+func (f *fakeTTS) CallTimes() []time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make([]time.Time, len(f.callTimes))
+	copy(out, f.callTimes)
+	return out
+}
+
+func (f *fakeTTS) Texts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make([]string, len(f.texts))
+	copy(out, f.texts)
+	return out
+}
+
+type fakePlayer struct {
+	playDuration time.Duration
+	notify       chan struct{}
+	quit         chan struct{}
+	started      chan struct{}
+	playing      atomic.Bool
+
+	mu         sync.Mutex
+	active     *playbackRequest
+	queue      []*playbackRequest
+	finishedAt []time.Time
+	stopCount  int
+}
+
+type playbackRequest struct {
+	ctx     context.Context
+	stop    chan struct{}
+	started chan struct{}
+	done    chan audio.PlaybackResult
+}
+
+func newFakePlayer(playDuration time.Duration) *fakePlayer {
+	p := &fakePlayer{
+		playDuration: playDuration,
+		notify:       make(chan struct{}, 1),
+		quit:         make(chan struct{}),
+		started:      make(chan struct{}, 8),
+	}
+	go p.loop()
+	return p
+}
+
+func (p *fakePlayer) PlayStream(ctx context.Context, stream *audio.PCMStream) (*audio.Playback, error) {
+	if _, err := stream.WaitReady(ctx); err != nil {
+		return nil, err
+	}
+
+	req := &playbackRequest{
+		ctx:     ctx,
+		stop:    make(chan struct{}),
+		started: make(chan struct{}),
+		done:    make(chan audio.PlaybackResult, 1),
+	}
+
+	p.mu.Lock()
+	p.queue = append(p.queue, req)
+	p.mu.Unlock()
+	p.signal()
+
+	return audio.NewPlayback(req.started, req.done), nil
+}
+
+func (p *fakePlayer) Stop() {
+	p.mu.Lock()
+	p.stopCount++
+	active := p.active
+	queued := append([]*playbackRequest(nil), p.queue...)
+	p.queue = nil
+	p.mu.Unlock()
+
+	if active != nil {
+		close(active.stop)
+	}
+	for _, req := range queued {
+		req.done <- audio.PlaybackResult{Interrupted: true}
+		close(req.done)
+	}
+}
+
+func (p *fakePlayer) IsPlaying() bool {
+	return p.playing.Load()
+}
+
+func (p *fakePlayer) Close() error {
+	close(p.quit)
+	return nil
+}
+
+func (p *fakePlayer) FinishedTimes() []time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	out := make([]time.Time, len(p.finishedAt))
+	copy(out, p.finishedAt)
+	return out
+}
+
+func (p *fakePlayer) StopCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.stopCount
+}
+
+func (p *fakePlayer) StartedSignal() <-chan struct{} {
+	return p.started
+}
+
+func (p *fakePlayer) loop() {
+	for {
+		req := p.nextRequest()
+		if req == nil {
+			select {
+			case <-p.quit:
+				return
+			case <-p.notify:
+				continue
+			}
+		}
+
+		p.playing.Store(true)
+		close(req.started)
+		select {
+		case p.started <- struct{}{}:
+		default:
+		}
+
+		timer := time.NewTimer(p.playDuration)
+		result := audio.PlaybackResult{}
+		select {
+		case <-p.quit:
+			timer.Stop()
+			result.Interrupted = true
+		case <-req.ctx.Done():
+			timer.Stop()
+			result.Interrupted = true
+			result.Err = req.ctx.Err()
+		case <-req.stop:
+			timer.Stop()
+			result.Interrupted = true
+		case <-timer.C:
+		}
+
+		p.playing.Store(false)
+
+		p.mu.Lock()
+		if p.active == req {
+			p.active = nil
+		}
+		p.finishedAt = append(p.finishedAt, time.Now())
+		p.mu.Unlock()
+
+		// Publish completion only after the fake's observable state is settled.
+		// RunTurn returns after consuming Done, so notifying first lets callers
+		// race FinishedTimes and intermittently observe one fewer segment.
+		req.done <- result
+		close(req.done)
+	}
+}
+
+func (p *fakePlayer) nextRequest() *playbackRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.active != nil {
+		return p.active
+	}
+	if len(p.queue) == 0 {
+		return nil
+	}
+
+	p.active = p.queue[0]
+	p.queue = p.queue[1:]
+	return p.active
+}
+
+func (p *fakePlayer) signal() {
+	select {
+	case p.notify <- struct{}{}:
+	default:
+	}
+}
+
+type fakeCapture struct {
+	mu         sync.Mutex
+	subs       map[int]chan []float32
+	nextID     int
+	resetCount int
+}
+
+func newFakeCapture() *fakeCapture {
+	return &fakeCapture{
+		subs: make(map[int]chan []float32),
+	}
+}
+
+func (c *fakeCapture) Subscribe(buffer int) (int, <-chan []float32) {
+	if buffer <= 0 {
+		buffer = 1
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	id := c.nextID
+	c.nextID++
+	ch := make(chan []float32, buffer)
+	c.subs[id] = ch
+	return id, ch
+}
+
+func (c *fakeCapture) Unsubscribe(id int) {
+	c.mu.Lock()
+	ch, ok := c.subs[id]
+	if ok {
+		delete(c.subs, id)
+	}
+	c.mu.Unlock()
+
+	if ok {
+		close(ch)
+	}
+}
+
+func (c *fakeCapture) Reset() {
+	c.mu.Lock()
+	c.resetCount++
+	c.mu.Unlock()
+}
+
+func (c *fakeCapture) Publish(samples []float32) {
+	c.mu.Lock()
+	subs := make([]chan []float32, 0, len(c.subs))
+	for _, ch := range c.subs {
+		subs = append(subs, ch)
+	}
+	c.mu.Unlock()
+
+	for _, ch := range subs {
+		select {
+		case ch <- samples:
+		default:
+		}
+	}
+}
+
+func (c *fakeCapture) ResetCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.resetCount
+}
+
+func (c *fakeCapture) subCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.subs)
+}
+
+type fakeVAD struct {
+	mu      sync.Mutex
+	speech  bool
+	cleared int
+}
+
+func (v *fakeVAD) AcceptWaveform(samples []float32) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	v.speech = false
+	for _, sample := range samples {
+		if sample > 0.5 {
+			v.speech = true
+			break
+		}
+	}
+}
+
+func (v *fakeVAD) IsSpeech() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.speech
+}
+
+func (v *fakeVAD) IsSpeechDetected() bool {
+	return false
+}
+
+func (v *fakeVAD) Clear() {
+	v.mu.Lock()
+	v.speech = false
+	v.cleared++
+	v.mu.Unlock()
+}
+
+func (v *fakeVAD) clearedCount() int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.cleared
+}
+
+// TestRunTurnBargeInServicedDuringSynthesis is the blocked-select regression
+// guard: synthesis runs on the ordered worker, so a barge-in arriving while the
+// next sentence is mid-generation must stop playback immediately instead of
+// waiting out the synthesis. Pre-fix the loop ran synth+PlayStream inline and
+// could not service the interrupt until the TTS call finished.
+func TestRunTurnBargeInServicedDuringSynthesis(t *testing.T) {
+	bus := events.NewBus()
+	ttsDelay := 1500 * time.Millisecond
+	ttsProvider := &fakeTTS{delay: ttsDelay}
+	player := newFakePlayer(5 * time.Second) // sentence 1 plays long
+	defer player.Close()
+	capture := newFakeCapture()
+
+	p := &Pipeline{
+		STT:        &fakeSTT{text: "hello"},
+		Brain:      &fakeBrain{chunks: []string{"First sentence. Second sentence."}},
+		TTS:        ttsProvider,
+		Player:     player,
+		Capture:    capture,
+		VAD:        &fakeVAD{},
+		BargeInVAD: &fakeVAD{},
+		Events:     bus,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.RunTurn(context.Background())
+		done <- err
+	}()
+
+	// Sentence 1 starts playing once its synthesis finishes; sentence 2's
+	// synthesis is then in flight on the worker.
+	select {
+	case <-player.StartedSignal():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for playback to start")
+	}
+
+	time.Sleep(bargeInArmDelay + 80*time.Millisecond)
+	for range bargeInMinSpeechChunks {
+		capture.Publish([]float32{0.9, 0.9, 0.9})
+		time.Sleep(60 * time.Millisecond)
+	}
+	bargeAt := time.Now()
+
+	// The second synthesis completes at callTimes[1] + delay; the stop must
+	// land before that instant, proving the interrupt was serviced while the
+	// synthesis was still in flight.
+	var stoppedAt time.Time
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
+		if player.StopCount() > 0 {
+			stoppedAt = time.Now()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if stoppedAt.IsZero() {
+		t.Fatal("player was never stopped after barge-in")
+	}
+
+	calls := ttsProvider.CallTimes()
+	if len(calls) < 2 {
+		t.Fatalf("TTS calls = %d, want 2 (second sentence should be synthesizing)", len(calls))
+	}
+	synthDone := calls[1].Add(ttsDelay)
+	if !stoppedAt.Before(synthDone) {
+		t.Fatalf("Stop() at %v, after synthesis completion %v — barge-in waited out the synthesis", stoppedAt, synthDone)
+	}
+	if got := stoppedAt.Sub(bargeAt); got > time.Second {
+		t.Fatalf("stop latency after barge-in = %v, want well under 1s", got)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunTurn() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("interrupted turn did not finish")
+	}
+}
+
+// TestRunTurnBrainErrorJoinsInterruptWatcher guards the interrupt-watcher
+// lifecycle: streamResponse must join the watcher on every exit path, not only
+// the clean tail. A brain error is an early return — before the deferred join,
+// the watcher's capture subscription could still be live when RunTurn returned
+// and overlap the next turn.
+func TestRunTurnBrainErrorJoinsInterruptWatcher(t *testing.T) {
+	capture := newFakeCapture()
+	player := newFakePlayer(50 * time.Millisecond)
+	defer player.Close()
+
+	p := &Pipeline{
+		STT:        &fakeSTT{text: "hello"},
+		Brain:      &fakeBrain{streamErr: errors.New("boom")},
+		TTS:        &fakeTTS{},
+		Player:     player,
+		Capture:    capture,
+		VAD:        &fakeVAD{},
+		BargeInVAD: &fakeVAD{},
+		Events:     events.NewBus(),
+	}
+
+	if _, err := p.RunTurn(context.Background()); err != nil {
+		t.Fatalf("RunTurn() error = %v, want nil (recovered turn)", err)
+	}
+	if n := capture.subCount(); n != 0 {
+		t.Fatalf("capture subscriptions after error return = %d, want 0 (watcher joined)", n)
+	}
+}
+
+// A StopPlayback landing mid-playback is a barge-in: it must stamp the
+// active turn's metrics (so harness/report see barge_in_s) while an idle
+// stop stays metric-silent (WI-dc9e33 B2).
+func TestStopPlaybackStampsBargeInOnActiveTurn(t *testing.T) {
+	player := newFakePlayer(time.Second)
+	player.playing.Store(true)
+	p := &Pipeline{Player: player}
+
+	m := newTurnMetrics()
+	clear := p.trackMetrics(m)
+	p.StopPlayback()
+	clear()
+	if m.bargeInAt().IsZero() {
+		t.Fatal("mid-playback StopPlayback must stamp the barge-in metric")
+	}
+
+	player.playing.Store(false)
+	m2 := newTurnMetrics()
+	clear2 := p.trackMetrics(m2)
+	p.StopPlayback()
+	clear2()
+	if !m2.bargeInAt().IsZero() {
+		t.Fatal("idle StopPlayback must not fake a barge-in")
+	}
+
+	// No active turn registered: must not panic.
+	p.StopPlayback()
+}
+
+// recoverTurn must not append a second RecoveryReply when the ollama stream
+// layer already recovered out loud into the partial (WI-dc9e33 B1/F1.4).
+func TestRecoverTurnDoesNotDuplicateRecoveryReply(t *testing.T) {
+	bus := events.NewBus()
+	var got []string
+	events.Subscribe(bus, func(e events.ResponseReady) { got = append(got, e.Response) })
+
+	p := &Pipeline{Events: bus}
+	cases := []struct {
+		partial string
+		want    string
+	}{
+		{"", brain.RecoveryReply},
+		{"partial thought", "partial thought\n\n" + brain.RecoveryReply},
+		{"partial thought\n\n" + brain.RecoveryReply, "partial thought\n\n" + brain.RecoveryReply},
+	}
+	for _, tc := range cases {
+		metrics := newTurnMetrics()
+		turn := p.newTurnConductor(metrics)
+		p.recoverTurn(context.Background(), turn, metrics, tc.partial, errors.New("boom"))
+	}
+	if len(got) != len(cases) {
+		t.Fatalf("ResponseReady count = %d, want %d", len(got), len(cases))
+	}
+	for i, tc := range cases {
+		if got[i] != tc.want {
+			t.Fatalf("case %d: response = %q, want %q", i, got[i], tc.want)
+		}
+		if n := strings.Count(got[i], brain.RecoveryReply); n != 1 {
+			t.Fatalf("case %d: RecoveryReply appears %d times", i, n)
+		}
+	}
+}
+
+// Batching counts segments the listener will actually HEAR, not chunks the
+// segmenter emitted.
+//
+// This was a real defect while laterBatchSegments was 2: batching lived in
+// brain.ChunkSentencesRaw, which cannot see the voice gate, so a reply opening
+// with a suppressed tool line spent its one-sentence budget on silence and the
+// first audible segment was a two-sentence synthesis.
+//
+// D009 has since set laterBatchSegments to 1, which makes batching an identity
+// today. These cases still earn their place: they pin the accounting (audible
+// segments, no unpronounceable residue, nothing dropped at end of stream) that
+// has to hold the moment a faster synthesiser lets batching switch back on.
+func TestVoiceBatchingCountsAudibleSegments(t *testing.T) {
+	tests := []struct {
+		name  string
+		reply string
+		want  []string
+	}{
+		{
+			// The opener is suppressed by toolRegionRE, so the first AUDIBLE
+			// sentence must still go out alone.
+			name:  "suppressed tool opener does not spend the budget",
+			reply: "I called the search tool. Here is what I found. There are three results. That is all.",
+			want:  []string{"Here is what I found.", "There are three results.", "That is all."},
+		},
+		{
+			// "Umm." cleans to a bare "." — unpronounceable, and previously it
+			// both reached TTS and got glued onto the next real sentence.
+			name:  "filler residue is neither spoken nor batched onto real speech",
+			reply: "Umm. Let me think about this. Here is the answer. Done.",
+			want:  []string{"Let me think about this.", "Here is the answer.", "Done."},
+		},
+		{
+			name:  "an ordinary reply is one segment per sentence",
+			reply: "First. Second. Third. Fourth. Fifth.",
+			want:  []string{"First.", "Second.", "Third.", "Fourth.", "Fifth."},
+		},
+		{
+			// A partial batch at end of stream must still be spoken, or the last
+			// sentence of a reply is silently dropped. This matters again the
+			// moment laterBatchSegments goes above 1.
+			name:  "the final sentence is flushed, not dropped",
+			reply: "First. Second. Third. Fourth.",
+			want:  []string{"First.", "Second.", "Third.", "Fourth."},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ttsProvider := &fakeTTS{delay: time.Millisecond}
+			player := newFakePlayer(2 * time.Millisecond)
+			defer player.Close()
+
+			p := &Pipeline{
+				STT:    &fakeSTT{text: "hello"},
+				Brain:  &fakeBrain{chunks: []string{tt.reply}},
+				TTS:    ttsProvider,
+				Player: player,
+				Events: events.NewBus(),
+			}
+
+			if _, err := p.RunTurn(context.Background()); err != nil {
+				t.Fatalf("RunTurn() error = %v", err)
+			}
+
+			got := ttsProvider.Texts()
+			if len(got) != len(tt.want) {
+				t.Fatalf("TTS segments = %q, want %q", got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("segment %d = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}

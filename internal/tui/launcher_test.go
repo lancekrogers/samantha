@@ -9,9 +9,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/persona"
-	"github.com/lancekrogers/samantha/internal/session"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/session"
 )
 
 func TestLauncherDisplaysConfiguredBrainModel(t *testing.T) {

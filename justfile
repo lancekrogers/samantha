@@ -106,7 +106,7 @@ qwen-live:
     out="${SAMANTHA_QWEN_SMOKE_DIR:-$cache/samantha/smoke/qwen}"
     mkdir -p "$out"
     SAMANTHA_QWEN_REAL_MODEL=1 SAMANTHA_QWEN_SMOKE_DIR="$out" \
-        go test -tags=integration -count=1 -timeout 30m -v ./internal/tts \
+        go test -tags=integration -count=1 -timeout 30m -v ./pkg/voiceagent/tts \
         -run '^TestLiveManagedQwenVoiceMatrix$'
     echo "Qwen smoke WAVs: $out"
 

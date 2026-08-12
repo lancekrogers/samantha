@@ -11,9 +11,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/lancekrogers/samantha/internal/audio"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 	"github.com/lancekrogers/samantha/internal/speaker"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
 )
 
 const speakerCaptureQueue = 1024

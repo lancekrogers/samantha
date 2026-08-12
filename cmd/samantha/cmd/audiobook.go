@@ -13,8 +13,8 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/audiobook"
 	"github.com/lancekrogers/samantha/internal/calibre"
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/render"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 // configLoader supplies the loaded samantha config. Commands take it injected

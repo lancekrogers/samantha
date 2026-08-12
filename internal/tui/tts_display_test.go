@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lancekrogers/samantha/internal/config"
-	"github.com/lancekrogers/samantha/internal/tts"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/tts"
 )
 
 func TestTTSDisplayDefaultsToManagedKokoro(t *testing.T) {

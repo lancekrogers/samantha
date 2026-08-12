@@ -13,8 +13,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/lancekrogers/samantha/internal/calibre"
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/render"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 func runAudiobook(t *testing.T, run renderRunner, load configLoader, args ...string) (string, error) {

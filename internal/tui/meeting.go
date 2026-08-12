@@ -15,8 +15,8 @@ import (
 	"github.com/lancekrogers/samantha/internal/meeting"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 	"github.com/lancekrogers/samantha/internal/speaker"
-	"github.com/lancekrogers/samantha/internal/stt"
 	"github.com/lancekrogers/samantha/internal/tui/anim"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/stt"
 )
 
 const (

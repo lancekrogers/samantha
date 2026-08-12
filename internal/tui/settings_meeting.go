@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/meeting"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 // Meeting settings row indices — keep in lockstep with meetingItems().
