@@ -107,7 +107,7 @@ func TestMeetingPhaseAndLevelUpdateMode(t *testing.T) {
 func TestMeetingNoteAndBookmarkPersist(t *testing.T) {
 	dir := t.TempDir()
 	bundle := filepath.Join(dir, "m.meeting")
-	w, err := meetinglog.CreateBundle(bundle, "Notes test", "fake")
+	w, err := meetinglog.CreateBundle(bundle, "Notes test", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +378,7 @@ func TestSendMeetingDeliversWhenCapacityTight(t *testing.T) {
 func TestStopMeetingRuntimeSurfacesCloseErrorAndIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	bundle := filepath.Join(dir, "close.meeting")
-	w, err := meetinglog.CreateBundle(bundle, "Close test", "fake")
+	w, err := meetinglog.CreateBundle(bundle, "Close test", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +414,7 @@ func TestStopMeetingRuntimeSurfacesCloseErrorAndIsIdempotent(t *testing.T) {
 
 func TestMeetingDoneJoinsCloseErrorOntoLauncherBanner(t *testing.T) {
 	dir := t.TempDir()
-	w, err := meetinglog.CreateBundle(filepath.Join(dir, "done.meeting"), "Done", "fake")
+	w, err := meetinglog.CreateBundle(filepath.Join(dir, "done.meeting"), "Done", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +440,7 @@ func TestMeetingDoneJoinsCloseErrorOntoLauncherBanner(t *testing.T) {
 }
 
 func TestMeetingDoneShowsCompletedSpeakerAnalysis(t *testing.T) {
-	w, err := meetinglog.CreateBundle(filepath.Join(t.TempDir(), "done.meeting"), "Done", "fake")
+	w, err := meetinglog.CreateBundle(filepath.Join(t.TempDir(), "done.meeting"), "Done", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,7 +487,7 @@ func TestMeetingDoneShowsCompletedSpeakerAnalysis(t *testing.T) {
 
 func TestMeetingUISinkOmitsStopPhraseFromLog(t *testing.T) {
 	dir := t.TempDir()
-	w, err := meetinglog.CreateBundle(filepath.Join(dir, "stop.meeting"), "Stop test", "fake")
+	w, err := meetinglog.CreateBundle(filepath.Join(dir, "stop.meeting"), "Stop test", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}

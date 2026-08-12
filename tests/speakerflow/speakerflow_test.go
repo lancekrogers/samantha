@@ -160,7 +160,7 @@ func TestMeetingFixtureDiarizationPipeline(t *testing.T) {
 
 	dir := t.TempDir()
 	bundlePath := filepath.Join(dir, "native-meeting.meeting")
-	writer, err := meetinglog.CreateBundle(bundlePath, "Native speaker integration", "fixture")
+	writer, err := meetinglog.CreateBundle(bundlePath, "Native speaker integration", "fixture", "")
 	if err != nil {
 		t.Fatal(err)
 	}

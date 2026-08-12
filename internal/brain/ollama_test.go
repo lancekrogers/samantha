@@ -444,11 +444,56 @@ func TestChatRequestCarriesContextPolicy(t *testing.T) {
 	if req.KeepAlive == nil || req.KeepAlive.Duration != 10*time.Minute {
 		t.Fatalf("KeepAlive = %v, want 10m", req.KeepAlive)
 	}
+	// Voice default: thinking off so qwen3-style models emit speakable content.
+	if req.Think == nil || req.Think.Value != false {
+		t.Fatalf("Think = %#v, want false (default ollama_think)", req.Think)
+	}
 
 	// num_ctx 0 defers to the server default: no Options at all.
 	o = &OllamaBrain{model: "m", cfg: &config.Config{}}
 	if req := o.newChatRequest(nil, nil); req.Options != nil {
 		t.Fatalf("Options = %v, want nil when ollama_num_ctx is 0", req.Options)
+	}
+}
+
+// TestChatRequestThinkPolicy is the regression for empty-content turns on
+// thinking models (qwen3.x): voice defaults think=false so Ollama returns
+// message.content instead of only message.thinking, which previously became
+// the "lost my train of thought" fallback.
+func TestChatRequestThinkPolicy(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  string
+		want any
+	}{
+		{"default empty", "", false},
+		{"false", "false", false},
+		{"off", "off", false},
+		{"true", "true", true},
+		{"level low", "low", "low"},
+		{"level high", "HIGH", "high"},
+		{"invalid falls back off", "banana", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			o := &OllamaBrain{model: "m", cfg: &config.Config{OllamaThink: tt.cfg}}
+			req := o.newChatRequest(nil, nil)
+			if req.Think == nil {
+				t.Fatal("Think is nil, want a value so Ollama does not use model default thinking")
+			}
+			if got := req.Think.Value; got != tt.want {
+				t.Fatalf("Think.Value = %#v (%T), want %#v", got, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOllamaThinkValue(t *testing.T) {
+	if got := ollamaThinkValue("medium"); got == nil || got.Value != "medium" {
+		t.Fatalf("medium = %#v", got)
+	}
+	if got := ollamaThinkValue("FALSE"); got == nil || got.Value != false {
+		t.Fatalf("FALSE = %#v", got)
 	}
 }
 

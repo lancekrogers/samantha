@@ -16,7 +16,7 @@ import (
 
 func TestDemoMeetingFinalizerUsesProductionResultsContract(t *testing.T) {
 	bundle := filepath.Join(t.TempDir(), "demo.meeting")
-	w, err := meetinglog.CreateBundle(bundle, "Demo", "fake")
+	w, err := meetinglog.CreateBundle(bundle, "Demo", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestDemoMeetingFinalizerUsesProductionResultsContract(t *testing.T) {
 }
 
 func TestMeetingResultsFallsBackToPlainTranscript(t *testing.T) {
-	w, err := meetinglog.CreateBundle(filepath.Join(t.TempDir(), "plain.meeting"), "Plain", "fake")
+	w, err := meetinglog.CreateBundle(filepath.Join(t.TempDir(), "plain.meeting"), "Plain", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}
