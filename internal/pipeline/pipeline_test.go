@@ -78,6 +78,36 @@ func TestRunTurnOverlapsSynthesisWithPlayback(t *testing.T) {
 	}
 }
 
+func TestRunTurnFillerOnlyStreamSpeaksRecoveryInstead(t *testing.T) {
+	bus := events.NewBus()
+	brainProvider := &fakeBrain{chunks: []string{"Hmm.", " Hmm, I lost my train of thought for a second. What were you saying?"}}
+	ttsProvider := &fakeTTS{}
+	player := newFakePlayer(time.Millisecond)
+	defer player.Close()
+
+	var response events.ResponseReady
+	events.Subscribe(bus, func(e events.ResponseReady) { response = e })
+	p := &Pipeline{
+		STT:    &fakeSTT{text: "hello"},
+		Brain:  brainProvider,
+		TTS:    ttsProvider,
+		Player: player,
+		Events: bus,
+	}
+
+	if _, err := p.RunTurn(context.Background()); err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	calls := ttsProvider.Texts()
+	spoken := strings.Join(calls, " ")
+	if spoken != "Hmm, I lost my train of thought for a second. What were you saying?" {
+		t.Fatalf("TTS calls = %q, want only the recovery reply", calls)
+	}
+	if response.Response != spoken {
+		t.Fatalf("ResponseReady = %q, want %q", response.Response, spoken)
+	}
+}
+
 func TestRunTurnDrainsFullPlaybackQueue(t *testing.T) {
 	bus := events.NewBus()
 	sttProvider := &fakeSTT{text: "hello"}

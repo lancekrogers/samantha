@@ -958,9 +958,11 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 			// one loses the boundary that closes a tool block or a fence.
 			voiceText, stripped := gate.filter(sentence)
 
-			// The transcript keeps the reply; only the voice channel is
-			// filtered (WI-dc9e33 B4).
-			if display := brain.CleanForVoice(sentence); display != "" {
+			// Filler-only chunks are provisional: providers replace a turn that
+			// ends there with the recovery reply. Keep them out of both transcript
+			// and TTS so the finalizer's replacement is the only visible/audible
+			// response. A filler followed by content in the same sentence survives.
+			if display := brain.CleanForVoice(sentence); brain.HasSpeakableContent(display) {
 				if fullResponse.Len() > 0 {
 					fullResponse.WriteByte(' ')
 				}
@@ -973,6 +975,9 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 
 			p.recordStrips(stripped, metrics)
 			speakable := brain.CleanForVoice(voiceText)
+			if !brain.HasSpeakableContent(speakable) {
+				continue
+			}
 			// Not just != "": stripping a filler from "Umm." leaves a bare ".",
 			// which is non-empty, unpronounceable, and — now that segments are
 			// batched — would be glued onto the front of a real sentence inside

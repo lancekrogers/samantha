@@ -753,6 +753,47 @@ func TestDispatcherInterruptCancelsInFlightTurn(t *testing.T) {
 	}
 }
 
+func TestDispatcherAppliesPersonaOnlyAfterInflightTurn(t *testing.T) {
+	runner := &scriptedRunner{block: true, runs: make(chan struct{}, 1)}
+	d := NewDispatcher(runner, events.NewBus(), nil, nil)
+	go d.Run(t.Context())
+
+	if err := d.SubmitText("old persona turn"); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.runs
+	applied := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := d.SetPersona(t.Context(), "pirate", func(id string) (PersonaAck, error) {
+			close(applied)
+			return PersonaAck{ID: id}, nil
+		})
+		done <- err
+	}()
+
+	select {
+	case <-applied:
+		t.Fatal("persona changed while the previous turn was still in flight")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	d.Interrupt()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("SetPersona() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("persona switch did not run after the turn completed")
+	}
+	select {
+	case <-applied:
+	default:
+		t.Fatal("persona callback was not applied before SetPersona returned")
+	}
+}
+
 func TestDispatcherClearEmitsEvent(t *testing.T) {
 	bus := events.NewBus()
 	cleared := make(chan struct{}, 1)
@@ -1555,7 +1596,7 @@ func TestSetPersonaDisabledReportsClearly(t *testing.T) {
 	s := &Server{}
 	conn := &streamConn{out: make(chan []byte, 4)}
 
-	s.handleSetPersona(conn, "pirate")
+	s.handleSetPersona(context.Background(), conn, "pirate")
 
 	select {
 	case raw := <-conn.out:
@@ -1576,7 +1617,7 @@ func TestSetPersonaRejectsEmptyName(t *testing.T) {
 	}}}
 	conn := &streamConn{out: make(chan []byte, 4)}
 
-	s.handleSetPersona(conn, "   ")
+	s.handleSetPersona(context.Background(), conn, "   ")
 
 	select {
 	case raw := <-conn.out:
@@ -1591,12 +1632,14 @@ func TestSetPersonaRejectsEmptyName(t *testing.T) {
 // A resolver failure (unknown persona) must reach the client verbatim, since
 // the resolver's message names the personas that do exist.
 func TestSetPersonaSurfacesResolverError(t *testing.T) {
-	s := &Server{opts: Options{SetPersona: func(string) (PersonaAck, error) {
+	d := NewDispatcher(&scriptedRunner{}, events.NewBus(), nil, nil)
+	go d.Run(t.Context())
+	s := &Server{dispatcher: d, opts: Options{SetPersona: func(string) (PersonaAck, error) {
 		return PersonaAck{}, errors.New(`persona "ghost" not found (available: alpha, beta)`)
 	}}}
 	conn := &streamConn{out: make(chan []byte, 4)}
 
-	s.handleSetPersona(conn, "ghost")
+	s.handleSetPersona(context.Background(), conn, "ghost")
 
 	select {
 	case raw := <-conn.out:
@@ -1612,12 +1655,14 @@ func TestSetPersonaSurfacesResolverError(t *testing.T) {
 // its identity for its whole life, so an ack implying the in-flight turn changed
 // would be a lie the client acts on.
 func TestSetPersonaAckSaysItAppliesToTheNextTurn(t *testing.T) {
-	s := &Server{opts: Options{SetPersona: func(id string) (PersonaAck, error) {
+	d := NewDispatcher(&scriptedRunner{}, events.NewBus(), nil, nil)
+	go d.Run(t.Context())
+	s := &Server{dispatcher: d, opts: Options{SetPersona: func(id string) (PersonaAck, error) {
 		return PersonaAck{ID: id, DisplayName: "Pirate", PromptHash: "abc123"}, nil
 	}}}
 	conn := &streamConn{out: make(chan []byte, 4)}
 
-	s.handleSetPersona(conn, "pirate")
+	s.handleSetPersona(context.Background(), conn, "pirate")
 
 	select {
 	case raw := <-conn.out:

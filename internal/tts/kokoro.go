@@ -183,7 +183,10 @@ func (k *KokoroTTS) SynthesizeRequest(ctx context.Context, req SynthesisRequest)
 		// emoji is the realistic case. That is "nothing to say", not a failure,
 		// so close the stream with no frames instead of handing "" to sherpa.
 		if strings.TrimSpace(preparedText) == "" {
-			stream.SetSampleRate(k.sampleRate)
+			if err := stream.SetSampleRate(k.sampleRate); err != nil {
+				stream.CloseWithError(err)
+				return
+			}
 			stream.Close()
 			return
 		}
