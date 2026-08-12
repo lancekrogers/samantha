@@ -288,7 +288,9 @@ the turn is reported as `completed (degraded)` rather than dropped silently.
 For Ollama, Activity records per-request `prefill N tok · gen M tok`. Prefill
 tracks the size of your new turn, not the whole transcript, and is bounded by
 `ollama_num_ctx` (default `8192`); `ollama_keep_alive` (default `10m`) keeps the
-model resident between turns.
+model resident between turns; `ollama_think` (default `false`) disables
+chain-of-thought on thinking models so voice turns get speakable `content`
+instead of empty replies after a private think block.
 
 ### Batch narration (audiobooks)
 
@@ -596,6 +598,7 @@ Prompt bodies stay in `prompts/` (see `samantha prompts`).
 | `ollama_host` | `http://localhost:11434` | `OLLAMA_HOST` | Ollama server URL |
 | `ollama_num_ctx` | `8192` | `OLLAMA_NUM_CTX` | Context window requested on every chat call. `0` uses the server model default, which silently truncates long prompts from the top (system prompt first). |
 | `ollama_keep_alive` | `10m` | `OLLAMA_KEEP_ALIVE` | How long Ollama keeps the model resident between turns (Go duration; empty = server default). |
+| `ollama_think` | `false` | `OLLAMA_THINK` | Ollama thinking/reasoning for models that support it (qwen3.x, …). Voice defaults off so the model returns speakable content; empty content was previously replaced with the “lost my train of thought” fallback. Set `true` or `low`/`medium`/`high`/`max` to re-enable. |
 | `claude_max_session_tokens` | `0` | `CLAUDE_MAX_SESSION_TOKENS` | Opt-in fuse: caps the prompt the `claude` CLI replays on `--resume`. Past it the brain starts a fresh CLI session from recent history. `0` (default) trusts the CLI session and resumes forever — recommended for interactive use; set a cap for unattended/serve setups. |
 | `claude_session_warn_tokens` | `60000` | `CLAUDE_SESSION_WARN_TOKENS` | Replayed-prompt size at which a visible warning appears (log + activity feed), once per CLI session. Nothing is dropped. `0` disables the warning. |
 

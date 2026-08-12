@@ -18,7 +18,7 @@ import (
 func finishedMeeting(t *testing.T, dir, desc string) meetinglog.Summary {
 	t.Helper()
 	bundle := filepath.Join(dir, "session.meeting")
-	w, err := meetinglog.CreateBundle(bundle, desc, "fake")
+	w, err := meetinglog.CreateBundle(bundle, desc, "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}

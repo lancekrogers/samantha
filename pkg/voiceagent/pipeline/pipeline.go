@@ -109,8 +109,10 @@ type Pipeline struct {
 	Events            *events.Bus
 	VoiceToolsEnabled bool
 	// backchannel is nil unless config.BackchannelEnabled; see backchannel.go.
-	backchannel *backchannel
-	OnTurn      func() // called after each completed turn for session auto-save
+	backchannel       *backchannel
+	backchannelMu     sync.Mutex
+	backchannelCancel context.CancelFunc
+	OnTurn            func() // called after each completed turn for session auto-save
 
 	// CompactPrompt is the resolved kind=compact instruction for /compact's
 	// summarize turn. Empty disables compaction with a clear error.
@@ -825,6 +827,7 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 	modelFinished := false
 
 	var audioStarted atomic.Bool
+	var realAudioQueued atomic.Bool
 	stalled := make(chan struct{})
 	watchdogArmed := false
 
@@ -878,7 +881,7 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 	}
 	go func() {
 		for sentence := range synthQueue {
-			if !p.synthesizeSegment(streamCtx, loopDone, sentence, &audioStarted, playbackEvents, &stickFallback) {
+			if !p.synthesizeSegment(streamCtx, loopDone, sentence, &audioStarted, playbackEvents, &stickFallback, &realAudioQueued) {
 				// No playback was enqueued: release the pending slot so the
 				// loop's accounting and the intake gate stay correct.
 				sendPlaybackEvent(loopDone, playbackEvents, playbackEvent{kind: playbackNotEnqueued, sentence: sentence})
@@ -975,9 +978,11 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 			// one loses the boundary that closes a tool block or a fence.
 			voiceText, stripped := gate.filter(sentence)
 
-			// The transcript keeps the reply; only the voice channel is
-			// filtered (WI-dc9e33 B4).
-			if display := brain.CleanForVoice(sentence); display != "" {
+			// Filler-only chunks are provisional: providers replace a turn that
+			// ends there with the recovery reply. Keep them out of both transcript
+			// and TTS so the finalizer's replacement is the only visible/audible
+			// response. A filler followed by content in the same sentence survives.
+			if display := brain.CleanForVoice(sentence); brain.HasSpeakableContent(display) {
 				if fullResponse.Len() > 0 {
 					fullResponse.WriteByte(' ')
 				}
@@ -990,6 +995,9 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 
 			p.recordStrips(stripped, metrics)
 			speakable := brain.CleanForVoice(voiceText)
+			if !brain.HasSpeakableContent(speakable) {
+				continue
+			}
 			// Not just != "": stripping a filler from "Umm." leaves a bare ".",
 			// which is non-empty, unpronounceable, and — now that segments are
 			// batched — would be glued onto the front of a real sentence inside
@@ -1084,7 +1092,7 @@ func discardPCMStream(stream *audio.PCMStream) {
 // stickFallback, when non-nil, is turn-scoped sticky Kokoro fallback: after the
 // first successful primary→fallback switch, later sentences skip the primary so
 // one reply cannot alternate persona voice and Kokoro.
-func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct{}, sentence string, audioStarted *atomic.Bool, out chan<- playbackEvent, stickFallback *bool) bool {
+func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct{}, sentence string, audioStarted *atomic.Bool, out chan<- playbackEvent, stickFallback *bool, realAudioQueued ...*atomic.Bool) bool {
 	if ctx.Err() != nil || p.OutputMuted() {
 		return false // canceled while queued: drain without synthesizing
 	}
@@ -1106,6 +1114,13 @@ func (p *Pipeline) synthesizeSegment(ctx context.Context, loopDone <-chan struct
 		return false
 	}
 
+	firstRealAudio := true
+	if len(realAudioQueued) > 0 && realAudioQueued[0] != nil {
+		firstRealAudio = realAudioQueued[0].CompareAndSwap(false, true)
+	}
+	if firstRealAudio {
+		p.stopBackchannel()
+	}
 	playback, err := p.Player.PlayStream(ctx, stream)
 	if err != nil {
 		if !usedFallback {
@@ -1235,8 +1250,8 @@ func (p *Pipeline) applyPlaybackEvent(event playbackEvent, metrics *turnMetrics,
 		armAt.CompareAndSwap(0, time.Now().Add(bargeInArmDelay).UnixNano())
 		if metrics.firstAudioReady.IsZero() {
 			metrics.firstAudioReady = time.Now()
-			if p.backchannel != nil {
-				p.backchannel.observe(metrics.elapsed(metrics.firstAudioReady))
+			if p.backchannel != nil && !metrics.sttFinal.IsZero() {
+				p.backchannel.observe(metrics.firstAudioReady.Sub(metrics.sttFinal))
 			}
 		}
 		if metrics.playbackStart.IsZero() {

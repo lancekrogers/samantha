@@ -2,6 +2,9 @@ package voiceagent
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +13,7 @@ import (
 	"github.com/lancekrogers/samantha/pkg/voiceagent/brain"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/events"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/stt"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/tts"
 )
 
@@ -192,6 +196,17 @@ func (s *stubPlayer) Stop()           {}
 func (s *stubPlayer) IsPlaying() bool { return false }
 func (s *stubPlayer) Close() error    { return nil }
 
+type stubCapture struct{}
+
+func (*stubCapture) Subscribe(int) (int, <-chan []float32) { return 0, make(chan []float32) }
+func (*stubCapture) Unsubscribe(int)                       {}
+func (*stubCapture) Reset()                                {}
+
+type stubSTT struct{}
+
+func (*stubSTT) Start(context.Context) (stt.Session, error) { return nil, nil }
+func (*stubSTT) Available() bool                            { return true }
+
 // --- event stream ----------------------------------------------------------
 
 // The bus is synchronous: its handlers run inline on the pipeline's goroutine.
@@ -351,21 +366,62 @@ func TestOptionsPromptsDirIsNotIgnored(t *testing.T) {
 	}
 }
 
-func TestEnvFallsBackToTheHostAndCanBeOverridden(t *testing.T) {
-	host := brain.EnvironmentContextFrom("/work", brain.Env{})
-	if !strings.Contains(host, "Working directory: /work") {
-		t.Fatalf("host grounding block looks wrong:\n%s", host)
-	}
+func TestOptionsEnvReachesBrainConstructedByNew(t *testing.T) {
+	var systemPrompt string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			_, _ = io.WriteString(w, `{"models":[{"name":"test-model"}]}`)
+		case "/api/chat":
+			body, _ := io.ReadAll(r.Body)
+			systemPrompt = string(body)
+			_, _ = io.WriteString(w, `{"model":"test-model","message":{"role":"assistant","content":"ok"},"done":true}`+"\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
 
-	custom := brain.EnvironmentContextFrom("/work", brain.Env{
-		User: "svc-account", Hostname: "prod-1", OS: "linux/amd64",
+	cfg := &config.Config{
+		AgentName:                 "Test",
+		BrainProvider:             "ollama",
+		OllamaModel:               "test-model",
+		OllamaHost:                srv.URL,
+		EnvironmentContextEnabled: true,
+	}
+	agent, cleanup, err := New(context.Background(), Options{
+		Config: cfg, Events: events.NewBus(), TextOnly: true, Silent: true,
+		Env: brain.Env{User: "svc-account", Hostname: "prod-1", OS: "linux/amd64"},
 	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer cleanup()
+	if err := agent.SendText(context.Background(), "hello"); err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
 	for _, want := range []string{"User: svc-account", "Hostname: prod-1", "OS: linux/amd64"} {
-		if !strings.Contains(custom, want) {
-			t.Errorf("injected Env did not reach the grounding block: want %q in\n%s", want, custom)
+		if !strings.Contains(systemPrompt, want) {
+			t.Errorf("Options.Env did not reach New's brain: want %q in request %s", want, systemPrompt)
 		}
 	}
-	if strings.Contains(custom, "darwin") || strings.Contains(custom, "linux/arm64") {
-		t.Error("injected Env still leaked host values")
+	if cfg.RuntimeEnvUser != "" || cfg.RuntimeEnvHostname != "" || cfg.RuntimeEnvOS != "" {
+		t.Fatal("New mutated the caller's config with runtime environment values")
+	}
+}
+
+func TestOptionsCaptureIsInstalledWithoutOpeningLocalDevice(t *testing.T) {
+	capture := &stubCapture{}
+	agent, cleanup, err := New(context.Background(), Options{
+		Config: &config.Config{AgentName: "Test", VoiceFrontendEnabled: true},
+		Events: events.NewBus(), Brain: &stubBrain{}, Silent: true,
+		Capture: capture, STT: &stubSTT{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer cleanup()
+	if agent.Capture != capture {
+		t.Fatal("Options.Capture was ignored")
 	}
 }

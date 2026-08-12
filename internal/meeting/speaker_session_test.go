@@ -54,7 +54,7 @@ func (a *recordingSpeakerAnalyzer) Finalize(_ context.Context, samples []float32
 func TestSpeakerSessionCollectsFinalizesAndPersists(t *testing.T) {
 	dir := t.TempDir()
 	bundlePath := filepath.Join(dir, "planning.meeting")
-	writer, err := meetinglog.CreateBundle(bundlePath, "Planning", "fake")
+	writer, err := meetinglog.CreateBundle(bundlePath, "Planning", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestAnalyzeRecordingEnabledWithoutPCMIsVisibleError(t *testing.T) {
 // transient working file) but no audio is retained in the bundle afterward.
 func TestSpeakerSessionDiscardsAudioWhenNotRecording(t *testing.T) {
 	bundlePath := filepath.Join(t.TempDir(), "planning.meeting")
-	writer, err := meetinglog.CreateBundle(bundlePath, "Planning", "fake")
+	writer, err := meetinglog.CreateBundle(bundlePath, "Planning", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}

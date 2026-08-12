@@ -298,7 +298,7 @@ func TestBundleLayoutMatchesDesktop(t *testing.T) {
 
 	// The desktop reference bundle for the same inputs.
 	desktop := filepath.Join(t.TempDir(), "desktop.meeting")
-	writer, err := meetinglog.CreateBundle(desktop, "Standup", "remote")
+	writer, err := meetinglog.CreateBundle(desktop, "Standup", "remote", "")
 	if err != nil {
 		t.Fatalf("CreateBundle() error = %v", err)
 	}

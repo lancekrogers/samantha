@@ -27,6 +27,12 @@ const sentencesPerChunk = 1
 // this removes, so it gates first and cleans after.
 func CleanForVoice(s string) string { return cleanForVoice(s) }
 
+// HasSpeakableContent reports whether cleaned voice text contains more than a
+// standalone voiced filler. Streaming consumers use the same predicate as the
+// provider finalizer so a filler-only reply cannot be spoken on one path while
+// being replaced by the recovery line on another.
+func HasSpeakableContent(s string) bool { return hasSpeakableContent(s) }
+
 // ChunkSentences reads text chunks from input and emits one voice-cleaned
 // sentence at a time for TTS.
 func ChunkSentences(input <-chan string) <-chan string {

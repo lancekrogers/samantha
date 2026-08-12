@@ -88,7 +88,7 @@ func RecordDebugSynthesis(provider, original, prepared string) {
 }
 
 type debugAudioEvent struct {
-	callback   []byte
+	callback   *[]byte
 	source     []float32
 	sampleRate int
 	elapsed    time.Duration
@@ -164,7 +164,10 @@ func newPlayerDebugRecorder(root, deviceName string, requestedRate, deviceRate, 
 		started: time.Now(),
 		events:  make(chan debugAudioEvent, 512),
 	}
-	r.pool.New = func() any { return make([]byte, 0, 4096) }
+	r.pool.New = func() any {
+		buf := make([]byte, 0, 4096)
+		return &buf
+	}
 	r.wg.Add(1)
 	go r.run(deviceRate, deviceChannels)
 	return r, nil
@@ -190,13 +193,13 @@ func (r *playerDebugRecorder) captureCallback(output []byte, requested, written 
 	if r == nil {
 		return
 	}
-	pooled := r.pool.Get().([]byte)
-	if cap(pooled) < len(output) {
-		pooled = make([]byte, len(output))
+	pooled := r.pool.Get().(*[]byte)
+	if cap(*pooled) < len(output) {
+		*pooled = make([]byte, len(output))
 	} else {
-		pooled = pooled[:len(output)]
+		*pooled = (*pooled)[:len(output)]
 	}
-	copy(pooled, output)
+	copy(*pooled, output)
 	event := debugAudioEvent{
 		callback:  pooled,
 		elapsed:   time.Since(r.started),
@@ -205,7 +208,8 @@ func (r *playerDebugRecorder) captureCallback(output []byte, requested, written 
 		sequence:  r.sequence.Add(1),
 	}
 	if !r.enqueue(event) {
-		r.pool.Put(pooled[:0])
+		*pooled = (*pooled)[:0]
+		r.pool.Put(pooled)
 	}
 }
 
@@ -270,9 +274,9 @@ func (r *playerDebugRecorder) run(deviceRate, deviceChannels int) {
 			path := filepath.Join(r.dir, fmt.Sprintf("source-%04d-%dhz.wav", sourceIndex, event.sampleRate))
 			_ = WriteWAVFloat32(path, event.sampleRate, event.source)
 			_ = os.Chmod(path, 0o600)
-		case len(event.callback) > 0:
+		case event.callback != nil && len(*event.callback) > 0:
 			if wavErr == nil {
-				_ = wav.Write(event.callback)
+				_ = wav.Write(*event.callback)
 			}
 			if callbackWriter != nil {
 				meta := debugCallbackMetadata{
@@ -285,7 +289,8 @@ func (r *playerDebugRecorder) run(deviceRate, deviceChannels int) {
 				encoded, _ := json.Marshal(meta)
 				_, _ = callbackWriter.Write(append(encoded, '\n'))
 			}
-			r.pool.Put(event.callback[:0])
+			*event.callback = (*event.callback)[:0]
+			r.pool.Put(event.callback)
 		}
 	}
 	if wavErr == nil {

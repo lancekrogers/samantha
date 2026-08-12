@@ -213,7 +213,8 @@ func writeMeetingError(w http.ResponseWriter, err error) {
 	case errors.Is(err, remote.ErrMeetingActive), errors.Is(err, remote.ErrProcessing),
 		errors.Is(err, remote.ErrNotRecording), errors.Is(err, remote.ErrNotRoutable):
 		writeMeetingProblem(w, http.StatusConflict, err)
-	case errors.Is(err, remote.ErrBadSegment), errors.Is(err, remote.ErrBadControl):
+	case errors.Is(err, remote.ErrBadSegment), errors.Is(err, remote.ErrBadControl),
+		errors.Is(err, remote.ErrBadStart):
 		writeMeetingProblem(w, http.StatusBadRequest, err)
 	case errors.Is(err, meeting.ErrImportMeetingUnsupported):
 		// 412: the phone's request was fine; the Mac's camp predates CI0009.

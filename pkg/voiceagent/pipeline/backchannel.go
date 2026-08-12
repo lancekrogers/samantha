@@ -23,8 +23,8 @@ import (
 // agent starting to speak has a p50 of 2385 ms, three times the threshold at
 // which this would have been cancelled as masking a wait that no longer happens.
 
-// backchannelThreshold is the rolling p50 of FirstAudioReadyElapsed above which
-// a filler is worth playing.
+// backchannelThreshold is the rolling p50 from final transcript to first audio
+// above which a filler is worth playing.
 //
 // Below this the turn is fast enough that a filler would arrive on top of the
 // real answer. **That is the failure mode that makes this feel scripted**, and it
@@ -168,9 +168,9 @@ func (b *backchannel) pick() (backchannelClip, bool) {
 
 // play sends a filler through the normal Player path.
 //
-// Going through Player rather than a side channel is what makes barge-in and real
-// first audio cut it **for free**: both already call Player.Stop(), so no special
-// cancellation handling is needed here and none can be forgotten later.
+// The filler gets its own cancelable context. The first real segment cancels it
+// and stops Player immediately before enqueueing the answer, so a slow or queued
+// filler can never add its duration to response latency.
 func (p *Pipeline) playBackchannel(ctx context.Context) {
 	if p.backchannel == nil || p.Player == nil || !p.backchannel.shouldPlay() {
 		return
@@ -180,7 +180,15 @@ func (p *Pipeline) playBackchannel(ctx context.Context) {
 		return
 	}
 
-	stream := audio.NewPCMStream(ctx)
+	fillerCtx, cancel := context.WithCancel(ctx)
+	p.backchannelMu.Lock()
+	if p.backchannelCancel != nil {
+		p.backchannelCancel()
+	}
+	p.backchannelCancel = cancel
+	p.backchannelMu.Unlock()
+
+	stream := audio.NewPCMStream(fillerCtx)
 	if err := stream.SetSampleRate(clip.rate); err != nil {
 		return
 	}
@@ -191,10 +199,22 @@ func (p *Pipeline) playBackchannel(ctx context.Context) {
 
 	p.emit(events.BackchannelStarted{Phrase: clip.phrase})
 	go func() {
-		// Fire and forget: the real reply will Stop() this the moment it is
-		// ready, and a blocked filler must never delay the turn it is covering.
-		_, _ = p.Player.PlayStream(ctx, stream)
+		_, _ = p.Player.PlayStream(fillerCtx, stream)
 	}()
+}
+
+func (p *Pipeline) stopBackchannel() {
+	p.backchannelMu.Lock()
+	cancel := p.backchannelCancel
+	p.backchannelCancel = nil
+	p.backchannelMu.Unlock()
+	if cancel == nil {
+		return
+	}
+	cancel()
+	if p.Player != nil {
+		p.Player.Stop()
+	}
 }
 
 // EnableBackchannel synthesizes the filler pool and turns the feature on.

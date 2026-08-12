@@ -15,7 +15,7 @@ import (
 
 func TestWriterLifecycle(t *testing.T) {
 	bundle := filepath.Join(t.TempDir(), "standup-20260710-093000.meeting")
-	w, err := CreateBundle(bundle, "Standup", "sherpa (offline)")
+	w, err := CreateBundle(bundle, "Standup", "sherpa (offline)", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestWriterLifecycle(t *testing.T) {
 
 func TestCreateBundleGroupsMeetingArtifacts(t *testing.T) {
 	bundle := filepath.Join(t.TempDir(), "standup-20260722-090000.meeting")
-	w, err := CreateBundle(bundle, "Standup", "fake")
+	w, err := CreateBundle(bundle, "Standup", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestCreateBundleGroupsMeetingArtifacts(t *testing.T) {
 			t.Fatalf("%s mode = %04o", path, info.Mode().Perm())
 		}
 	}
-	if _, err := CreateBundle(bundle, "collision", "fake"); err == nil {
+	if _, err := CreateBundle(bundle, "collision", "fake", ""); err == nil {
 		t.Fatal("existing bundle must not be reused")
 	}
 }
@@ -154,7 +154,7 @@ func readJSONL(t *testing.T, path string) []Event {
 }
 
 func TestSummaryJSONIncludesDurationSeconds(t *testing.T) {
-	w, err := CreateBundle(filepath.Join(t.TempDir(), "standup.meeting"), "Standup", "fake")
+	w, err := CreateBundle(filepath.Join(t.TempDir(), "standup.meeting"), "Standup", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestCreateBundleRefusesToOverwrite(t *testing.T) {
 	if err := os.WriteFile(sentinel, []byte("existing"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := CreateBundle(bundle, "d", "stt"); err == nil {
+	if _, err := CreateBundle(bundle, "d", "stt", ""); err == nil {
 		t.Fatal("expected O_EXCL collision error")
 	}
 	data, _ := os.ReadFile(sentinel)
@@ -200,7 +200,7 @@ func TestCreateBundleRefusesToOverwrite(t *testing.T) {
 
 func TestCloseIsIdempotent(t *testing.T) {
 	bundle := filepath.Join(t.TempDir(), "once.meeting")
-	w, err := CreateBundle(bundle, "Once", "fake")
+	w, err := CreateBundle(bundle, "Once", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestCreateBundleUsesOwnerOnlyPermissions(t *testing.T) {
 	// Meeting transcripts are private (personal speech / credentials spoken
 	// aloud). CreateBundle must not leave world-readable artifacts.
 	bundle := filepath.Join(t.TempDir(), "private.meeting")
-	w, err := CreateBundle(bundle, "Private", "fake")
+	w, err := CreateBundle(bundle, "Private", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestCreateBundleUsesOwnerOnlyPermissions(t *testing.T) {
 }
 
 func TestWriterReportsFailedUtteranceWithoutCountingIt(t *testing.T) {
-	w, err := CreateBundle(filepath.Join(t.TempDir(), "failed.meeting"), "Failure test", "fake")
+	w, err := CreateBundle(filepath.Join(t.TempDir(), "failed.meeting"), "Failure test", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestWriterReportsFailedUtteranceWithoutCountingIt(t *testing.T) {
 }
 
 func TestAddNoteEmptyIsNoop(t *testing.T) {
-	w, err := CreateBundle(filepath.Join(t.TempDir(), "n.meeting"), "n", "fake")
+	w, err := CreateBundle(filepath.Join(t.TempDir(), "n.meeting"), "n", "fake", "")
 	if err != nil {
 		t.Fatal(err)
 	}

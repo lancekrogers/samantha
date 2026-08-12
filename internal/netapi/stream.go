@@ -442,6 +442,8 @@ func (s *Server) readControls(ctx context.Context, ws *websocket.Conn, conn *str
 			// Drop exclusive claim after finalizing so another client can talk
 			// while TTS plays. releaseMic finalizes again (idempotent).
 			s.hub.releaseMic(conn)
+		case "set_persona":
+			s.handleSetPersona(ctx, conn, msg.Name)
 		default:
 			s.sendError(conn, "unknown control message type: "+msg.Type)
 		}
@@ -492,11 +494,10 @@ func (s *Server) sendAudioOutputAck(conn *streamConn, mode string) {
 
 // handleSetPersona switches the persona used by subsequent turns.
 //
-// It deliberately does not touch the turn in flight: a session binds its
-// identity at start and keeps it for its whole life, so retargeting a live
-// conversation is not possible and the ack must not imply otherwise. The
-// applies_to field says so explicitly rather than leaving the client to guess.
-func (s *Server) handleSetPersona(conn *streamConn, name string) {
+// It deliberately does not touch the turn in flight. The dispatcher applies
+// the runtime swap after that turn, starts a fresh persona-bound session, and
+// only then returns the ack, so applies_to=next_turn is an enforceable contract.
+func (s *Server) handleSetPersona(ctx context.Context, conn *streamConn, name string) {
 	if s.opts.SetPersona == nil {
 		s.sendError(conn, "set_persona is not enabled on this server")
 		return
@@ -506,7 +507,7 @@ func (s *Server) handleSetPersona(conn *streamConn, name string) {
 		s.sendError(conn, "set_persona requires a name")
 		return
 	}
-	ack, err := s.opts.SetPersona(name)
+	ack, err := s.dispatcher.SetPersona(ctx, name, s.opts.SetPersona)
 	if err != nil {
 		s.sendError(conn, err.Error())
 		return

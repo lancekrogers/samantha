@@ -1,6 +1,7 @@
 package brain
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -109,6 +110,25 @@ func TestFillerOnlyReplyFallsBackToRecoveryLine(t *testing.T) {
 					"is a real reply", in, got, cleaned)
 			}
 		})
+	}
+}
+
+func TestFinalizeStreamedTextStreamsFallbackForFillerOnlyReply(t *testing.T) {
+	out := make(chan string, 1)
+	got, err := finalizeStreamedText(context.Background(), out, "Hmm.")
+	if err != nil {
+		t.Fatalf("finalizeStreamedText() error = %v", err)
+	}
+	if got != fallbackResponse {
+		t.Fatalf("finalized = %q, want %q", got, fallbackResponse)
+	}
+	select {
+	case streamed := <-out:
+		if strings.TrimSpace(streamed) != fallbackResponse {
+			t.Fatalf("streamed = %q, want %q", streamed, fallbackResponse)
+		}
+	default:
+		t.Fatal("filler-only finalization did not stream the recovery reply")
 	}
 }
 

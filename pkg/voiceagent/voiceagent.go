@@ -128,6 +128,9 @@ func New(ctx context.Context, opts Options) (*Agent, func(), error) {
 		if opts.PromptsDir != "" {
 			local.PromptsDir = opts.PromptsDir
 		}
+		local.RuntimeEnvUser = opts.Env.User
+		local.RuntimeEnvHostname = opts.Env.Hostname
+		local.RuntimeEnvOS = opts.Env.OS
 		cfg = &local
 	}
 
@@ -191,21 +194,28 @@ func New(ctx context.Context, opts Options) (*Agent, func(), error) {
 	// Capture + VAD + STT (skipped in text mode).
 	if !opts.TextOnly {
 		var frontend *audio.VoiceFrontend
-		if cfg.VoiceFrontendEnabled {
+		if opts.Capture == nil && cfg.VoiceFrontendEnabled {
 			frontend = audio.NewVoiceFrontend()
 			cleanups = append(cleanups, func() { _ = frontend.Close() })
 		}
 
-		capture := audio.NewCaptureWithDevice(cfg.InputDevice)
-		if frontend != nil {
-			capture.SetFrontend(frontend)
+		var localCapture *audio.Capture
+		if opts.Capture != nil {
+			// The host owns injected capture lifetime; New must neither start a
+			// device nor stop the source during cleanup.
+			p.Capture = opts.Capture
+		} else {
+			localCapture = audio.NewCaptureWithDevice(cfg.InputDevice)
+			if frontend != nil {
+				localCapture.SetFrontend(frontend)
+			}
+			if err := localCapture.Start(ctx); err != nil {
+				cleanup()
+				return nil, nil, fmt.Errorf("start capture: %w", err)
+			}
+			cleanups = append(cleanups, localCapture.Stop)
+			p.Capture = localCapture
 		}
-		if err := capture.Start(ctx); err != nil {
-			cleanup()
-			return nil, nil, fmt.Errorf("start capture: %w", err)
-		}
-		cleanups = append(cleanups, capture.Stop)
-		p.Capture = capture
 
 		if !opts.Silent && frontend != nil {
 			if player, ok := p.Player.(*audio.Player); ok {
@@ -254,7 +264,11 @@ func New(ctx context.Context, opts Options) (*Agent, func(), error) {
 		if opts.STT != nil {
 			p.STT = opts.STT
 		} else {
-			sttProvider, sttCleanup, err := stt.NewProvider(cfg, capture, sttVAD)
+			if localCapture == nil {
+				cleanup()
+				return nil, nil, fmt.Errorf("voiceagent: an injected Capture requires an injected STT provider")
+			}
+			sttProvider, sttCleanup, err := stt.NewProvider(cfg, localCapture, sttVAD)
 			if err != nil {
 				cleanup()
 				return nil, nil, fmt.Errorf("init STT: %w", err)

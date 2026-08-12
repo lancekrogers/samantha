@@ -647,14 +647,17 @@ func finalizeStreamedText(ctx context.Context, out chan<- string, raw string) (s
 	if hasSpeakableContent(cleaned) {
 		return cleaned, nil
 	}
-	// Nothing usable: stream the fallback only when no raw text was produced
-	// (tool-only turns). If raw had content that cleaning removed, the TUI
-	// already showed those deltas — still record the fallback in history so
-	// the next turn is not left without an assistant message.
-	if strings.TrimSpace(raw) == "" {
-		if err := sendChunk(ctx, out, fallbackResponse); err != nil {
-			return "", err
-		}
+	// Nothing usable: always stream the fallback. Progressive consumers discard
+	// filler-only chunks with HasSpeakableContent, so this is the single audible
+	// and displayable reply for both empty tool turns and bare hesitations.
+	streamedFallback := fallbackResponse
+	if strings.TrimSpace(raw) != "" {
+		// Preserve a token boundary for sentence segmenters that still hold the
+		// final filler chunk in their buffer.
+		streamedFallback = " " + streamedFallback
+	}
+	if err := sendChunk(ctx, out, streamedFallback); err != nil {
+		return "", err
 	}
 	return fallbackResponse, nil
 }

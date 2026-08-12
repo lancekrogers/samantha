@@ -5,6 +5,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -230,7 +231,7 @@ func runServe(cfg *config.Config) error {
 	serveCfg := *cfg
 	serveCfg.VoiceToolsEnabled = cfg.RemoteToolsEnabled
 
-	p, fanout, ingress, cleanup, err := buildServePipeline(ctx, &serveCfg, bus, serveNoVoice, serveRemoteMic)
+	p, fanout, ingress, liveTTS, cleanup, err := buildServePipeline(ctx, &serveCfg, bus, serveNoVoice, serveRemoteMic)
 	if err != nil {
 		return fmt.Errorf("init serve pipeline: %w", err)
 	}
@@ -316,7 +317,7 @@ func runServe(cfg *config.Config) error {
 	go meetings.RunJanitor(ctx)
 
 	server := netapi.New(netapi.Options{
-		SetPersona:   serveSetPersona(cfg),
+		SetPersona:   serveSetPersona(cfg, p, liveTTS, ref),
 		Bind:         addr,
 		ExtraBinds:   extraBinds,
 		AllowPublic:  serveAllowPublic,
@@ -385,35 +386,70 @@ func runServe(cfg *config.Config) error {
 // no double Close between serve and buildPipeline.
 // serveSetPersona backs the set_persona control message.
 //
-// It validates and resolves the persona, then records it as the one subsequent
-// turns should use. It deliberately does not persist: a remote client switching
-// persona for a session should not rewrite the host's config.yaml, the same rule
-// --persona follows locally.
-func serveSetPersona(cfg *config.Config) func(string) (netapi.PersonaAck, error) {
-	return func(id string) (netapi.PersonaAck, error) {
-		binding, err := persona.ResolveBinding(cfg, id)
-		if err != nil {
-			return netapi.PersonaAck{}, err
-		}
-		// Apply to the live config so the next session binds to it. The turn in
-		// flight keeps the identity it started with — that is the invariant, not
-		// a limitation to work around.
-		persona.Apply(cfg, mustProfile(binding.PersonaID))
-		return netapi.PersonaAck{
-			ID:          binding.PersonaID,
-			DisplayName: binding.DisplayName,
-			PromptHash:  binding.PromptRef,
-		}, nil
-	}
+// It validates and resolves the persona, then constructs the complete runtime
+// the next turn will use. It deliberately does not persist: a remote client
+// switching persona for a session should not rewrite the host's config.yaml,
+// the same rule --persona follows locally.
+type servePersonaSwitcher struct {
+	cfg      *config.Config
+	pipeline *pipeline.Pipeline
+	tts      *voiceagent.LiveTTSManager
+	sessions *sessionRef
+
+	newBrain func(*config.Config) (brain.Provider, error)
+	newTTS   func(*config.Config) (*voiceagent.TTSSet, error)
 }
 
-// mustProfile loads a profile that ResolveBinding already validated.
-func mustProfile(id string) *persona.Profile {
-	p, err := persona.Load(id)
-	if err != nil {
-		return nil // Apply is a no-op on nil; the binding above already succeeded.
+func serveSetPersona(cfg *config.Config, p *pipeline.Pipeline, liveTTS *voiceagent.LiveTTSManager, ref *sessionRef) func(string) (netapi.PersonaAck, error) {
+	switcher := &servePersonaSwitcher{
+		cfg: cfg, pipeline: p, tts: liveTTS, sessions: ref,
+		newBrain: brain.NewProvider,
+		newTTS:   voiceagent.NewTTSSet,
 	}
-	return p
+	return switcher.apply
+}
+
+// apply replaces the complete persona-bound runtime. The dispatcher invokes
+// it only after the current turn has finished, so the acknowledged next turn
+// uses the new brain prompt/model and TTS voice as one atomic transition.
+func (s *servePersonaSwitcher) apply(id string) (netapi.PersonaAck, error) {
+	binding, err := persona.ResolveBinding(s.cfg, id)
+	if err != nil {
+		return netapi.PersonaAck{}, err
+	}
+	nextCfg := binding.Config()
+	nextBrain, err := s.newBrain(nextCfg)
+	if err != nil {
+		return netapi.PersonaAck{}, fmt.Errorf("init persona brain: %w", err)
+	}
+	nextTTS, err := s.newTTS(nextCfg)
+	if err != nil {
+		return netapi.PersonaAck{}, fmt.Errorf("init persona TTS: %w", err)
+	}
+
+	// Save the completed old conversation before starting a fresh identity.
+	// A persona is session-bound; carrying its history into the new brain would
+	// make the switch work technically while violating that contract.
+	if err := s.sessions.save(s.pipeline.Brain.History()); err != nil {
+		nextTTS.Close()
+		return netapi.PersonaAck{}, fmt.Errorf("save previous persona session: %w", err)
+	}
+	if !s.tts.Install(s.pipeline, nextTTS) {
+		nextTTS.Close()
+		return netapi.PersonaAck{}, errors.New("serve runtime is shutting down")
+	}
+
+	s.pipeline.Brain = nextBrain
+	*s.cfg = *nextCfg
+	s.sessions.swap(session.New(nextCfg.BrainProvider, serveModelName(nextCfg)))
+	if warmer, ok := nextBrain.(brain.Warmer); ok {
+		go warmer.Warmup(context.Background())
+	}
+	return netapi.PersonaAck{
+		ID:          binding.PersonaID,
+		DisplayName: binding.DisplayName,
+		PromptHash:  binding.PromptRef,
+	}, nil
 }
 
 // buildServePipeline builds serve's pipeline through voiceagent.Options.
@@ -424,20 +460,19 @@ func mustProfile(id string) *persona.Profile {
 // capture device. If Options cannot express that, the surface is wrong — so the
 // swaps are passed IN rather than assigned onto the pipeline afterwards.
 //
-// One gap remains and is deliberate: serve builds its providers first because
-// they are what it swaps, which means their cleanups live here rather than in
-// the library's stack. Ordering is preserved by seeding the library's cleanup
-// first, so it runs last.
-func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, muteHost, remoteMic bool) (*pipeline.Pipeline, *netapi.AudioFanout, *audio.Ingress, func(), error) {
+// Serve builds its override providers first, so their cleanup stays here. The
+// live manager owns later persona TTS replacements, while the initial set is
+// retained until shutdown as required for any already-started utterance.
+func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, muteHost, remoteMic bool) (*pipeline.Pipeline, *netapi.AudioFanout, *audio.Ingress, *voiceagent.LiveTTSManager, func(), error) {
 	var cleanups []func()
 	cleanup := func() {
 		for i := len(cleanups) - 1; i >= 0; i-- {
 			cleanups[i]()
 		}
 	}
-	fail := func(err error) (*pipeline.Pipeline, *netapi.AudioFanout, *audio.Ingress, func(), error) {
+	fail := func(err error) (*pipeline.Pipeline, *netapi.AudioFanout, *audio.Ingress, *voiceagent.LiveTTSManager, func(), error) {
 		cleanup()
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
 	ttsSet, err := voiceagent.NewTTSSet(cfg)
@@ -445,6 +480,8 @@ func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus
 		return fail(fmt.Errorf("init TTS: %w", err))
 	}
 	cleanups = append(cleanups, ttsSet.Close)
+	liveTTS := &voiceagent.LiveTTSManager{}
+	cleanups = append(cleanups, liveTTS.Close)
 	if ttsSet.FallbackWarning != nil {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", ttsSet.FallbackWarning)
 	}
@@ -506,7 +543,7 @@ func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus
 	// must still hold across the two stacks.
 	cleanups = append([]func(){baseCleanup}, cleanups...)
 
-	return agent.Pipeline, fanout, ingress, cleanup, nil
+	return agent.Pipeline, fanout, ingress, liveTTS, cleanup, nil
 }
 
 func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config) {

@@ -93,6 +93,12 @@ type Config struct {
 	// OllamaKeepAlive keeps the model resident between voice turns
 	// (Go duration string; empty = server default).
 	OllamaKeepAlive string `mapstructure:"ollama_keep_alive"`
+	// OllamaThink controls Ollama chat thinking/reasoning for models that
+	// support it (qwen3.x, etc.). Voice defaults to "false": thinking models
+	// otherwise often fill message.thinking and leave message.content empty,
+	// which Samantha surfaces as the "lost my train of thought" fallback.
+	// Values: false|off|0, true|on|1, or low|medium|high|max.
+	OllamaThink string `mapstructure:"ollama_think"`
 	// ClaudeMaxSessionTokens caps the prompt the claude CLI replays on --resume.
 	// Past it the brain starts a fresh CLI session from recent history instead of
 	// resuming. 0 (the default) disables the cap and trusts the CLI session:
@@ -127,6 +133,12 @@ type Config struct {
 
 	// Agent
 	AgentName string `mapstructure:"agent_name"`
+	// RuntimeEnv* is an embedder-only grounding override. These values are not
+	// loaded from or persisted to Samantha config; voiceagent.Options.Env writes
+	// them onto its private config copy before constructing the brain.
+	RuntimeEnvUser     string `mapstructure:"-"`
+	RuntimeEnvHostname string `mapstructure:"-"`
+	RuntimeEnvOS       string `mapstructure:"-"`
 
 	// ActivePersona is the persona profile id under personas/<id>/.
 	// On Load it drives agent_name, persona prompt name, and tts_voice overlays.
@@ -320,6 +332,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ollama_host", "http://localhost:11434")
 	v.SetDefault("ollama_num_ctx", 8192)
 	v.SetDefault("ollama_keep_alive", "10m")
+	// Disable chain-of-thought on voice turns: thinking models (qwen3.x) often
+	// return empty content after a long think block, which becomes the canned
+	// "lost my train of thought" reply. Set ollama_think=true or a level to re-enable.
+	v.SetDefault("ollama_think", "false")
 	// The CLI session is trusted by default (no silent drops); the fuse is
 	// opt-in for unattended/serve setups.
 	v.SetDefault("claude_max_session_tokens", 0)
@@ -479,6 +495,7 @@ func loadLocked() (*Config, error) {
 		"ollama_host":                 "OLLAMA_HOST",
 		"ollama_num_ctx":              "OLLAMA_NUM_CTX",
 		"ollama_keep_alive":           "OLLAMA_KEEP_ALIVE",
+		"ollama_think":                "OLLAMA_THINK",
 		"claude_max_session_tokens":   "CLAUDE_MAX_SESSION_TOKENS",
 		"claude_session_warn_tokens":  "CLAUDE_SESSION_WARN_TOKENS",
 		"voice_tools_enabled":         "VOICE_TOOLS_ENABLED",

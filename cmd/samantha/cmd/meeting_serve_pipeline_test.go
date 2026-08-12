@@ -74,7 +74,7 @@ func (f *fakeReplaySource) advance(d time.Duration) {
 
 func testBundleWriter(t *testing.T) *meetinglog.Writer {
 	t.Helper()
-	writer, err := meetinglog.CreateBundle(filepath.Join(t.TempDir(), "replay.meeting"), "Replay", "fake")
+	writer, err := meetinglog.CreateBundle(filepath.Join(t.TempDir(), "replay.meeting"), "Replay", "fake", "")
 	if err != nil {
 		t.Fatalf("CreateBundle() error = %v", err)
 	}

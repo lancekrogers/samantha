@@ -437,6 +437,52 @@ func TestApplyPlaybackEventStartedUpdatesMetrics(t *testing.T) {
 	}
 }
 
+func TestApplyPlaybackEventObservesPostSTTLatency(t *testing.T) {
+	b := &backchannel{clips: []backchannelClip{{phrase: "Mm-hm."}}}
+	p := &Pipeline{Events: events.NewBus(), backchannel: b}
+	metrics := newTurnMetrics()
+	// A long listen must not poison the gate: only the fast post-transcript
+	// think+synthesis interval is relevant to whether a filler is worthwhile.
+	metrics.start = time.Now().Add(-10 * time.Second)
+	metrics.sttFinal = time.Now().Add(-100 * time.Millisecond)
+	var armAt atomic.Int64
+
+	p.applyPlaybackEvent(playbackEvent{kind: playbackStarted, sentence: "hi"}, metrics, &armAt)
+	if len(b.recent) != 1 || b.recent[0] >= backchannelThreshold {
+		t.Fatalf("observed latency = %v, want post-STT interval below %v", b.recent, backchannelThreshold)
+	}
+	if b.shouldPlay() {
+		t.Fatal("long listen + fast brain opened the backchannel gate")
+	}
+}
+
+func TestFirstRealSegmentStopsBackchannelBeforePlayback(t *testing.T) {
+	player := newFakePlayer(15 * time.Millisecond)
+	defer player.Close()
+	p := &Pipeline{TTS: &fakeTTS{}, Player: player, Events: events.NewBus()}
+	p.backchannelMu.Lock()
+	p.backchannelCancel = func() {}
+	p.backchannelMu.Unlock()
+	var audioStarted, realAudioQueued atomic.Bool
+	out := make(chan playbackEvent, 4)
+
+	if !p.synthesizeSegment(context.Background(), make(chan struct{}), "hello", &audioStarted, out, nil, &realAudioQueued) {
+		t.Fatal("synthesizeSegment returned false")
+	}
+	if player.StopCount() != 1 {
+		t.Fatalf("Stop count = %d, want 1 before first real playback", player.StopCount())
+	}
+	_ = drainPlaybackKinds(t, out, 2)
+
+	if !p.synthesizeSegment(context.Background(), make(chan struct{}), "again", &audioStarted, out, nil, &realAudioQueued) {
+		t.Fatal("second synthesizeSegment returned false")
+	}
+	if player.StopCount() != 1 {
+		t.Fatalf("Stop count = %d after second segment, want no repeated queue flush", player.StopCount())
+	}
+	_ = drainPlaybackKinds(t, out, 2)
+}
+
 func TestApplyPlaybackEventFinishedUpdatesMetrics(t *testing.T) {
 	bus := events.NewBus()
 	var complete events.SpeakingComplete

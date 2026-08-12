@@ -402,8 +402,10 @@ func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOp
 // newChatRequest builds a streaming chat request carrying the session's
 // context policy: an explicit num_ctx so the server never silently truncates
 // at its own default (top truncation eats the system prompt — and the
-// persona — first), and keep_alive so the model stays resident between voice
-// turns (a reload is a multi-second mid-conversation stall).
+// persona — first), keep_alive so the model stays resident between voice
+// turns (a reload is a multi-second mid-conversation stall), and think so
+// reasoning models emit speakable content instead of empty replies after a
+// private chain-of-thought.
 func (o *OllamaBrain) newChatRequest(messages []api.Message, tools api.Tools) *api.ChatRequest {
 	stream := true
 	req := &api.ChatRequest{
@@ -412,11 +414,32 @@ func (o *OllamaBrain) newChatRequest(messages []api.Message, tools api.Tools) *a
 		Tools:     tools,
 		Stream:    &stream,
 		KeepAlive: o.keepAlive,
+		Think:     ollamaThinkValue(o.cfg.OllamaThink),
 	}
 	if o.cfg.OllamaNumCtx > 0 {
 		req.Options = map[string]any{"num_ctx": o.cfg.OllamaNumCtx}
 	}
 	return req
+}
+
+// ollamaThinkValue maps config ollama_think onto the Ollama API Think field.
+// Voice defaults to false: thinking models (qwen3.x) often fill
+// message.thinking and leave message.content empty, which the harness turns
+// into the "lost my train of thought" fallback. Unknown values fall back to
+// false so a typo never re-enables thinking by accident.
+func ollamaThinkValue(raw string) *api.ThinkValue {
+	s := strings.TrimSpace(strings.ToLower(raw))
+	switch s {
+	case "", "false", "off", "0", "no":
+		return &api.ThinkValue{Value: false}
+	case "true", "on", "1", "yes":
+		return &api.ThinkValue{Value: true}
+	case "low", "medium", "high", "max":
+		return &api.ThinkValue{Value: s}
+	default:
+		fmt.Fprintf(os.Stderr, "samantha: invalid ollama_think %q; using false (speakable content only)\n", raw)
+		return &api.ThinkValue{Value: false}
+	}
 }
 
 // chat issues a chat request, retrying once without tools if the model reports
@@ -443,10 +466,15 @@ func modelRejectedTools(err error) bool {
 // block or disrupt startup.
 func (o *OllamaBrain) Warmup(ctx context.Context) {
 	stream := false
+	think := "false"
+	if o.cfg != nil {
+		think = o.cfg.OllamaThink
+	}
 	req := &api.ChatRequest{
 		Model:    o.model,
 		Messages: []api.Message{{Role: "user", Content: "hi"}},
 		Stream:   &stream,
+		Think:    ollamaThinkValue(think),
 		Options:  map[string]any{"num_predict": 1},
 	}
 	_ = o.client.Chat(ctx, req, func(api.ChatResponse) error { return nil })

@@ -102,7 +102,11 @@ func AssembleSystemPrompt(in SystemPromptInput) string {
 			b.WriteString(in.Persona)
 		case ElemEnvironment:
 			b.WriteString("\n")
-			b.WriteString(EnvironmentContext(in.WorkDir))
+			env := Env{}
+			if in.Cfg != nil {
+				env = Env{User: in.Cfg.RuntimeEnvUser, Hostname: in.Cfg.RuntimeEnvHostname, OS: in.Cfg.RuntimeEnvOS}
+			}
+			b.WriteString(EnvironmentContextFrom(in.WorkDir, env))
 		case ElemSkills:
 			if sc := SkillContext(in.Skills); sc != "" {
 				b.WriteString(sc)

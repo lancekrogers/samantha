@@ -35,13 +35,21 @@ const (
 	opClear
 	opResume
 	opVoice
+	opPersona
 )
 
+type personaResult struct {
+	ack PersonaAck
+	err error
+}
+
 type dispatchOp struct {
-	kind opKind
-	text string
-	id   string
-	done chan error // non-nil for ops whose caller waits on the result
+	kind        opKind
+	text        string
+	id          string
+	done        chan error // non-nil for ops whose caller waits on the result
+	setPersona  func(id string) (PersonaAck, error)
+	personaDone chan personaResult
 	// waitCtx is the caller's context for waitable ops (resume). If it is
 	// already canceled when the op reaches apply, the work is skipped so a
 	// timed-out client cannot still mutate session state later.
@@ -140,6 +148,14 @@ func (d *Dispatcher) apply(ctx context.Context, op dispatchOp) {
 		if op.done != nil {
 			op.done <- err
 		}
+
+	case opPersona:
+		if op.waitCtx != nil && op.waitCtx.Err() != nil {
+			op.personaDone <- personaResult{err: op.waitCtx.Err()}
+			return
+		}
+		ack, err := op.setPersona(op.id)
+		op.personaDone <- personaResult{ack: ack, err: err}
 	}
 }
 
@@ -188,6 +204,26 @@ func (d *Dispatcher) ResumeSession(ctx context.Context, id string) error {
 		return err
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// SetPersona serializes a live runtime switch behind any in-flight turn and
+// waits until it has actually been applied. A client cannot receive a success
+// ack and enqueue its next turn ahead of the persona change.
+func (d *Dispatcher) SetPersona(ctx context.Context, id string, apply func(string) (PersonaAck, error)) (PersonaAck, error) {
+	if apply == nil {
+		return PersonaAck{}, errors.New("set_persona is not enabled")
+	}
+	done := make(chan personaResult, 1)
+	op := dispatchOp{kind: opPersona, id: id, setPersona: apply, personaDone: done, waitCtx: ctx}
+	if err := d.enqueue(op); err != nil {
+		return PersonaAck{}, err
+	}
+	select {
+	case result := <-done:
+		return result.ack, result.err
+	case <-ctx.Done():
+		return PersonaAck{}, ctx.Err()
 	}
 }
 
