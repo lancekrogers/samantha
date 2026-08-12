@@ -6,8 +6,22 @@ prompt:
   kind: turn
   system_prompt: |-
     Respond as {agent_name}. 2-3 sentences max, natural speech, NO markdown, NO formatting, NO code blocks, NO bullet points. Just talk naturally.
+    Make your first sentence a short one — a dozen words at most — then say the rest however it needs to be said.
 
 metadata:
   id: samantha-turn
-  version: 1
-  description: Per-turn response instruction appended to each user message on the Claude and Grok paths.
+  version: 2
+  description: |-
+    Per-turn response instruction. Reaches every provider through the shared
+    prompt policy (brain.SystemPromptPolicy): ollama rebuilds its system prompt
+    per turn so it rides there, while Claude and Grok append it to the user
+    message. Placement is provider mechanics; presence is policy.
+
+    The short-first-sentence line is a latency instruction, not a style one.
+    First audio waits for the first COMPLETE sentence to finish synthesizing —
+    the streamer never splits mid-sentence, synthesis is one blocking call, and
+    the player buffers a whole segment (the underrun fix). Kokoro synthesizes at
+    about 1.32x realtime, so every second of opening speech costs roughly 0.76 s
+    before the user hears anything. Shortening only the opening buys that back
+    without clipping the reply, which is why the second half of the line
+    explicitly frees the rest.

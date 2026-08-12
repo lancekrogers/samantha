@@ -25,14 +25,39 @@ func TestDefaultPersonaGolden(t *testing.T) {
 	}
 }
 
-// TestDefaultTurnGolden pins the embedded per-turn instruction to the exact
-// literal the Claude and Grok paths appended before the loader wiring.
+// TestDefaultTurnGolden pins the embedded per-turn instruction against
+// accidental drift.
+//
+// The migration-safety contract is unchanged and still checked: the instruction
+// must still OPEN with the exact literal the Claude and Grok paths appended
+// before the loader wiring. What may follow it is a short, explicitly enumerated
+// set of deliberate additions — so an accidental edit still fails, while an
+// intentional one has to be declared here and justified in turn.yaml's metadata.
 func TestDefaultTurnGolden(t *testing.T) {
 	got := resolveDefault(t, prompts.KindTurn, "Samantha")
 
-	const want = "Respond as Samantha. 2-3 sentences max, natural speech, NO markdown, NO formatting, NO code blocks, NO bullet points. Just talk naturally."
+	const original = "Respond as Samantha. 2-3 sentences max, natural speech, NO markdown, NO formatting, NO code blocks, NO bullet points. Just talk naturally."
+	if !strings.HasPrefix(got, original) {
+		t.Fatalf("assembled turn instruction no longer opens with the original literal, "+
+			"diverging at byte %d:\ngot:  %q\nwant prefix: %q", firstDiff(got, original), got, original)
+	}
+
+	// Every deliberate addition, newest last. Adding a line here is the point at
+	// which someone has to justify changing what every provider is told.
+	additions := []string{
+		// R-L3: first audio waits for the first COMPLETE sentence to synthesize,
+		// and Kokoro runs at ~1.32x realtime, so a shorter opening reaches the
+		// listener sooner. The second clause frees the rest of the reply on
+		// purpose — the failure mode of this instruction is a curt agent.
+		"Make your first sentence a short one — a dozen words at most — then say the rest however it needs to be said.",
+	}
+	want := original
+	for _, add := range additions {
+		want += "\n" + add
+	}
 	if got != want {
-		t.Errorf("assembled turn instruction diverges from the original literal at byte %d:\ngot:  %q\nwant: %q", firstDiff(got, want), got, want)
+		t.Errorf("assembled turn instruction has an undeclared change at byte %d:\ngot:  %q\nwant: %q",
+			firstDiff(got, want), got, want)
 	}
 }
 
