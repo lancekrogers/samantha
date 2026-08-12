@@ -44,13 +44,12 @@ func TestDefaultTurnGolden(t *testing.T) {
 
 	// Every deliberate addition, newest last. Adding a line here is the point at
 	// which someone has to justify changing what every provider is told.
-	additions := []string{
-		// R-L3: first audio waits for the first COMPLETE sentence to synthesize,
-		// and Kokoro runs at ~1.32x realtime, so a shorter opening reaches the
-		// listener sooner. The second clause frees the rest of the reply on
-		// purpose — the failure mode of this instruction is a curt agent.
-		"Get to the point in your first sentence, then say the rest however it needs to be said.",
-	}
+	//
+	// Empty on purpose. R-L3's short-opening instruction lived here and was
+	// removed by D012 after measuring: it showed no benefit on either model
+	// tested and moved the wrong way on the one actually in use. The list stays
+	// so the next addition has somewhere to be declared.
+	var additions []string
 	want := original
 	for _, add := range additions {
 		want += "\n" + add
