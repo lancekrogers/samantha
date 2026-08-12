@@ -326,3 +326,46 @@ func textAgent(t *testing.T) (*Agent, func()) {
 	}
 	return agent, cleanup
 }
+
+// A field that is accepted and then ignored is worse than an absent one. These
+// pin that the two stage-2 options actually reach the thing they configure.
+func TestOptionsPromptsDirIsNotIgnored(t *testing.T) {
+	cfg := &config.Config{AgentName: "Test"}
+	_, cleanup, err := New(context.Background(), Options{
+		Config:     cfg,
+		Events:     events.NewBus(),
+		Brain:      &stubBrain{},
+		TextOnly:   true,
+		Silent:     true,
+		PromptsDir: "/tmp/some-embedder-prompts",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer cleanup()
+
+	// The caller's config must not be rewritten underneath it: a host reusing
+	// one *Config across agents would otherwise find it mutated.
+	if cfg.PromptsDir != "" {
+		t.Errorf("New mutated the caller's Config.PromptsDir to %q", cfg.PromptsDir)
+	}
+}
+
+func TestEnvFallsBackToTheHostAndCanBeOverridden(t *testing.T) {
+	host := brain.EnvironmentContextFrom("/work", brain.Env{})
+	if !strings.Contains(host, "Working directory: /work") {
+		t.Fatalf("host grounding block looks wrong:\n%s", host)
+	}
+
+	custom := brain.EnvironmentContextFrom("/work", brain.Env{
+		User: "svc-account", Hostname: "prod-1", OS: "linux/amd64",
+	})
+	for _, want := range []string{"User: svc-account", "Hostname: prod-1", "OS: linux/amd64"} {
+		if !strings.Contains(custom, want) {
+			t.Errorf("injected Env did not reach the grounding block: want %q in\n%s", want, custom)
+		}
+	}
+	if strings.Contains(custom, "darwin") || strings.Contains(custom, "linux/arm64") {
+		t.Error("injected Env still leaked host values")
+	}
+}

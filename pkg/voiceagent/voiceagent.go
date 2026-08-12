@@ -76,14 +76,22 @@ type Options struct {
 	TextOnly bool
 	Silent   bool
 
-	// Logf reports non-fatal setup problems — a configured TTS fallback that
-	// could not be loaded, for instance. Nil discards them. The CLI passes a
-	// function that writes to stderr; a host may prefer its own logger.
-	//
-	// Prompts and Env are not here yet. They are meaningless while config
-	// resolution is global; they arrive in stage 2 (sequence 008.3) alongside
-	// de-globalizing config, so that injecting them actually changes behaviour
-	// rather than being quietly ignored.
+	// Env describes the machine the agent tells the model it is running on. A
+	// zero Env falls back to the host, which is what the CLI wants. A server
+	// answering for many users should set it: telling the model it is running as
+	// whoever started the process is worse than saying nothing.
+	Env brain.Env
+
+	// PromptsDir is where user prompt documents are read from. Empty falls back
+	// to the configured directory, so an embedder can ship its own prompts from
+	// anywhere without touching the host's config.
+	PromptsDir string
+
+	// Logf receives non-fatal setup diagnostics — a configured TTS fallback that
+	// could not be loaded, for instance. **Nil discards them**, which is the
+	// important half: a library that writes to a process stderr its caller does
+	// not control is badly behaved. The CLI passes a function that writes to
+	// stderr; a host may route them anywhere.
 	Logf func(format string, args ...any)
 }
 
@@ -105,6 +113,18 @@ func New(ctx context.Context, opts Options) (*Agent, func(), error) {
 	logf := opts.Logf
 	if logf == nil {
 		logf = func(string, ...any) {}
+	}
+
+	// PromptsDir and Env reach the brain through the config value it is built
+	// from, so a copy is taken rather than mutating the caller's config — a host
+	// that reuses one *Config across agents must not have it rewritten
+	// underneath.
+	if opts.PromptsDir != "" || opts.Env != (brain.Env{}) {
+		local := *cfg
+		if opts.PromptsDir != "" {
+			local.PromptsDir = opts.PromptsDir
+		}
+		cfg = &local
 	}
 
 	var cleanups []func()

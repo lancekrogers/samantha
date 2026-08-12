@@ -79,17 +79,50 @@ func resolvePrompt(cfg *config.Config, kind prompts.Kind, name string) (string, 
 }
 
 // EnvironmentContext returns system context for grounding the model.
+// Env describes the machine the agent is running on, for the grounding block in
+// the system prompt.
+//
+// A zero Env falls back to the host: USER, os.Hostname() and the compiled GOOS
+// and GOARCH. That keeps the CLI's behaviour identical while letting an embedder
+// state its own environment — a server answering for many users has no business
+// telling the model it is running as whoever started the process.
+type Env struct {
+	User     string
+	Hostname string
+	OS       string // e.g. "darwin/arm64"
+}
+
+// resolve fills empty fields from the host.
+func (e Env) resolve() Env {
+	if e.User == "" {
+		e.User = os.Getenv("USER")
+	}
+	if e.Hostname == "" {
+		e.Hostname, _ = os.Hostname()
+	}
+	if e.OS == "" {
+		e.OS = runtime.GOOS + "/" + runtime.GOARCH
+	}
+	return e
+}
+
+// EnvironmentContext renders the grounding block from the host environment.
 func EnvironmentContext(workDir string) string {
-	user := os.Getenv("USER")
-	hostname, _ := os.Hostname()
+	return EnvironmentContextFrom(workDir, Env{})
+}
+
+// EnvironmentContextFrom renders the grounding block from an explicit Env, with
+// empty fields falling back to the host.
+func EnvironmentContextFrom(workDir string, env Env) string {
+	env = env.resolve()
 	return fmt.Sprintf(`
 Environment:
 - User: %s
 - Working directory: %s
 - Hostname: %s
-- OS: %s/%s
+- OS: %s
 - You have tools available: list_files, read_file, write_file, run_command, web_search, fetch_url
-- All file paths are relative to the working directory unless absolute`, user, workDir, hostname, runtime.GOOS, runtime.GOARCH)
+- All file paths are relative to the working directory unless absolute`, env.User, workDir, env.Hostname, env.OS)
 }
 
 // SkillContext renders the progressive-disclosure skills menu for the Ollama
