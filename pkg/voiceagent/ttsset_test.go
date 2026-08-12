@@ -1,6 +1,4 @@
-//go:build !integration
-
-package cmd
+package voiceagent
 
 import (
 	"os"
@@ -38,11 +36,11 @@ func TestNewTTSProviderSetConversationFallback(t *testing.T) {
 		QwenTTSBinary:       bin,
 		QwenTTSModel:        modelDir,
 	}
-	set, err := newTTSProviderSet(cfg)
+	set, err := NewTTSSet(cfg)
 	if err != nil {
 		// Kokoro may also fail if models missing — primary must still construct for CLI path.
 		// If primary fails, that's a different bug.
-		t.Fatalf("newTTSProviderSet: %v", err)
+		t.Fatalf("NewTTSSet: %v", err)
 	}
 	defer set.Close()
 	if set.Primary == nil {
@@ -65,7 +63,7 @@ func TestNewTTSProviderSetNoFallbackWhenPrimaryIsKokoro(t *testing.T) {
 		TTSFallbackProvider: "kokoro",
 	}
 	// Construction may fail without Kokoro models — only assert policy when it succeeds.
-	set, err := newTTSProviderSet(cfg)
+	set, err := NewTTSSet(cfg)
 	if err != nil {
 		t.Skipf("kokoro not installable in this environment: %v", err)
 	}

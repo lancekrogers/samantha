@@ -19,6 +19,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/transcript"
 	appTUI "github.com/lancekrogers/samantha/internal/tui"
 	"github.com/lancekrogers/samantha/internal/ui"
+	"github.com/lancekrogers/samantha/pkg/voiceagent"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/brain"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
@@ -26,7 +27,6 @@ import (
 	"github.com/lancekrogers/samantha/pkg/voiceagent/pipeline"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/prompts"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/session"
-	"github.com/lancekrogers/samantha/pkg/voiceagent/stt"
 )
 
 var (
@@ -236,7 +236,7 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 		if liveDetail != "" {
 			bus.Emit(events.Info{Message: liveDetail})
 		}
-		liveTTS := &liveTTSManager{}
+		liveTTS := &voiceagent.LiveTTSManager{}
 
 		// Session-local rename table: UI bubbles + model prompt attribution.
 		speakerNames := speaker.NewNameMap()
@@ -307,11 +307,11 @@ func conversationRuntimeBuilder(resumeSession *session.Session) appTUI.RuntimeBu
 				if err := config.EnsureRuntimeAssets(reloadCtx, sessionCfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
 					return fmt.Errorf("ensure TTS assets: %w", err)
 				}
-				set, err := newTTSProviderSet(sessionCfg)
+				set, err := voiceagent.NewTTSSet(sessionCfg)
 				if err != nil {
 					return fmt.Errorf("init TTS: %w", err)
 				}
-				if reloadCtx.Err() != nil || !liveTTS.install(p, set) {
+				if reloadCtx.Err() != nil || !liveTTS.Install(p, set) {
 					set.Close()
 					if err := reloadCtx.Err(); err != nil {
 						return err
@@ -440,104 +440,22 @@ func startPipeline(cfg *config.Config, resumeSession *session.Session) error {
 	return err
 }
 
+// buildPipeline constructs the interactive pipeline through the library, so the
+// CLI exercises exactly the surface an embedder gets. If something the CLI needs
+// cannot be expressed as voiceagent.Options, that is the library's problem to
+// fix, not the CLI's to work around.
 func buildPipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, text, silent bool) (*pipeline.Pipeline, func(), error) {
-	var cleanups []func()
-	cleanup := func() {
-		for i := len(cleanups) - 1; i >= 0; i-- {
-			cleanups[i]()
-		}
-	}
-
-	p := &pipeline.Pipeline{
-		Events:            bus,
-		VoiceToolsEnabled: cfg.VoiceToolsEnabled,
-	}
-
-	// Brain — select provider based on config.
-	b, err := brain.NewProvider(cfg)
+	agent, cleanup, err := voiceagent.New(ctx, voiceagent.Options{
+		Config:   cfg,
+		Events:   bus,
+		TextOnly: text,
+		Silent:   silent,
+		Logf:     func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) },
+	})
 	if err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("init brain: %w", err)
+		return nil, nil, err
 	}
-	p.Brain = b
-
-	// TTS + Player (skip in no-voice mode).
-	if !silent {
-		player := audio.NewPlayerWithDevice(cfg.OutputDevice)
-		cleanups = append(cleanups, func() { _ = player.Close() })
-		p.Player = player
-
-		ttsSet, err := newTTSProviderSet(cfg)
-		if err != nil {
-			cleanup()
-			return nil, nil, fmt.Errorf("init TTS: %w", err)
-		}
-		cleanups = append(cleanups, ttsSet.Close)
-		p.ReplaceTTS(ttsSet.Primary, ttsSet.Fallback)
-		if ttsSet.FallbackWarning != nil {
-			fmt.Fprintf(os.Stderr, "warning: %v\n", ttsSet.FallbackWarning)
-		}
-	}
-
-	// Audio capture + VAD + STT (skip in text mode).
-	if !text {
-		var frontend *audio.VoiceFrontend
-		if cfg.VoiceFrontendEnabled {
-			frontend = audio.NewVoiceFrontend()
-			cleanups = append(cleanups, func() { _ = frontend.Close() })
-		}
-
-		capture := audio.NewCaptureWithDevice(cfg.InputDevice)
-		if frontend != nil {
-			capture.SetFrontend(frontend)
-		}
-		if err := capture.Start(ctx); err != nil {
-			cleanup()
-			return nil, nil, fmt.Errorf("start capture: %w", err)
-		}
-		cleanups = append(cleanups, capture.Stop)
-		p.Capture = capture
-
-		if !silent && frontend != nil {
-			if player, ok := p.Player.(*audio.Player); ok {
-				player.SetFrontend(frontend)
-			}
-		}
-
-		var vad *audio.VAD
-		if cfg.VADEnabled {
-			vad, err = audio.NewVAD(cfg)
-			if err != nil {
-				cleanup()
-				return nil, nil, fmt.Errorf("init VAD: %w", err)
-			}
-			cleanups = append(cleanups, vad.Delete)
-			p.VAD = vad
-
-			// Barge-in stays nil (watchBargeIn no-ops) unless explicitly enabled.
-			if !silent && cfg.BargeInEnabled {
-				bargeInVAD, err := audio.NewBargeInVAD(cfg)
-				if err != nil {
-					cleanup()
-					return nil, nil, fmt.Errorf("init barge-in VAD: %w", err)
-				}
-				cleanups = append(cleanups, bargeInVAD.Delete)
-				p.BargeInVAD = bargeInVAD
-			}
-		}
-
-		sttProvider, sttCleanup, err := stt.NewProvider(cfg, capture, vad)
-		if err != nil {
-			cleanup()
-			return nil, nil, fmt.Errorf("init STT: %w", err)
-		}
-		if sttCleanup != nil {
-			cleanups = append(cleanups, sttCleanup)
-		}
-		p.STT = sttProvider
-	}
-
-	return p, cleanup, nil
+	return agent.Pipeline, cleanup, nil
 }
 
 var lastProgressPct int

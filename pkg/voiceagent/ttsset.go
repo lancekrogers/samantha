@@ -1,6 +1,4 @@
-//go:build !integration
-
-package cmd
+package voiceagent
 
 import (
 	"fmt"
@@ -12,23 +10,23 @@ import (
 	"github.com/lancekrogers/samantha/pkg/voiceagent/tts"
 )
 
-// ttsProviderSet is the selected provider plus its explicitly configured
+// TTSSet is the selected provider plus its explicitly configured
 // conversational fallback. Preview/test/batch paths intentionally continue to
 // use tts.NewProvider directly so they prove the selected voice instead of
 // silently producing a different one.
-type ttsProviderSet struct {
+type TTSSet struct {
 	Primary         tts.Provider
 	Fallback        tts.Provider
 	FallbackWarning error
 	cleanups        []func()
 }
 
-func newTTSProviderSet(cfg *config.Config) (*ttsProviderSet, error) {
+func NewTTSSet(cfg *config.Config) (*TTSSet, error) {
 	primary, primaryCleanup, err := tts.NewProvider(cfg)
 	if err != nil {
 		return nil, err
 	}
-	set := &ttsProviderSet{Primary: primary}
+	set := &TTSSet{Primary: primary}
 	if primaryCleanup != nil {
 		set.cleanups = append(set.cleanups, primaryCleanup)
 	}
@@ -50,7 +48,7 @@ func newTTSProviderSet(cfg *config.Config) (*ttsProviderSet, error) {
 	return set, nil
 }
 
-func (s *ttsProviderSet) Close() {
+func (s *TTSSet) Close() {
 	if s == nil {
 		return
 	}
@@ -60,17 +58,17 @@ func (s *ttsProviderSet) Close() {
 	s.cleanups = nil
 }
 
-// liveTTSManager keeps replacement providers alive until conversation
+// LiveTTSManager keeps replacement providers alive until conversation
 // shutdown. An utterance already handed to the old provider can therefore
 // finish safely while subsequent utterances atomically use the new Settings
 // selection.
-type liveTTSManager struct {
+type LiveTTSManager struct {
 	mu     sync.Mutex
 	closed bool
-	sets   []*ttsProviderSet
+	sets   []*TTSSet
 }
 
-func (m *liveTTSManager) install(p *pipeline.Pipeline, set *ttsProviderSet) bool {
+func (m *LiveTTSManager) Install(p *pipeline.Pipeline, set *TTSSet) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
@@ -81,7 +79,7 @@ func (m *liveTTSManager) install(p *pipeline.Pipeline, set *ttsProviderSet) bool
 	return true
 }
 
-func (m *liveTTSManager) Close() {
+func (m *LiveTTSManager) Close() {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()

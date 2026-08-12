@@ -20,6 +20,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/netapi"
 	"github.com/lancekrogers/samantha/internal/persona"
 	"github.com/lancekrogers/samantha/internal/ui"
+	"github.com/lancekrogers/samantha/pkg/voiceagent"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/brain"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
@@ -415,15 +416,20 @@ func mustProfile(id string) *persona.Profile {
 	return p
 }
 
+// buildServePipeline builds serve's pipeline through voiceagent.Options.
+//
+// This is the surface test for the library. Serve is the awkward consumer: it
+// wants the brain but not the host microphone, TTS but a fanout instead of a
+// speaker, and on remote-mic it feeds STT from a network ingress rather than a
+// capture device. If Options cannot express that, the surface is wrong — so the
+// swaps are passed IN rather than assigned onto the pipeline afterwards.
+//
+// One gap remains and is deliberate: serve builds its providers first because
+// they are what it swaps, which means their cleanups live here rather than in
+// the library's stack. Ordering is preserved by seeding the library's cleanup
+// first, so it runs last.
 func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, muteHost, remoteMic bool) (*pipeline.Pipeline, *netapi.AudioFanout, *audio.Ingress, func(), error) {
-	// Brain only first (text=true, silent=true): no host mic, no default TTS/player.
-	p, baseCleanup, err := buildPipeline(ctx, cfg, bus, true, true)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-
 	var cleanups []func()
-	cleanups = append(cleanups, baseCleanup)
 	cleanup := func() {
 		for i := len(cleanups) - 1; i >= 0; i-- {
 			cleanups[i]()
@@ -434,12 +440,11 @@ func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus
 		return nil, nil, nil, nil, err
 	}
 
-	ttsSet, err := newTTSProviderSet(cfg)
+	ttsSet, err := voiceagent.NewTTSSet(cfg)
 	if err != nil {
 		return fail(fmt.Errorf("init TTS: %w", err))
 	}
 	cleanups = append(cleanups, ttsSet.Close)
-	p.ReplaceTTS(ttsSet.Primary, ttsSet.Fallback)
 	if ttsSet.FallbackWarning != nil {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", ttsSet.FallbackWarning)
 	}
@@ -451,7 +456,17 @@ func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus
 	// Fanout owns local so Close is exactly once via cleanup.
 	fanout := netapi.NewOwnedAudioFanout(local)
 	cleanups = append(cleanups, func() { _ = fanout.Close() })
-	p.Player = fanout
+
+	opts := voiceagent.Options{
+		Config:      cfg,
+		Events:      bus,
+		TextOnly:    true, // no host mic
+		Silent:      false,
+		TTS:         ttsSet.Primary,
+		TTSFallback: ttsSet.Fallback,
+		Player:      fanout,
+		Logf:        func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) },
+	}
 
 	var ingress *audio.Ingress
 	if remoteMic {
@@ -477,12 +492,21 @@ func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus
 		if sttCleanup != nil {
 			cleanups = append(cleanups, sttCleanup)
 		}
-		p.STT = sttProvider
-		p.VAD = vad
+		opts.STT = sttProvider
+		opts.VAD = vad
 		// Capture stays nil: barge-in on host mic is not used in serve mode.
 	}
 
-	return p, fanout, ingress, cleanup, nil
+	agent, baseCleanup, err := voiceagent.New(ctx, opts)
+	if err != nil {
+		return fail(err)
+	}
+	// Seeded at the FRONT so it runs LAST: the library's resources were acquired
+	// before serve's overrides in dependency terms, and reverse-order teardown
+	// must still hold across the two stacks.
+	cleanups = append([]func(){baseCleanup}, cleanups...)
+
+	return agent.Pipeline, fanout, ingress, cleanup, nil
 }
 
 func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config) {
