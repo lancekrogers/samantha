@@ -63,12 +63,16 @@ type Options struct {
 	TTSFallback tts.Provider
 	Player      audio.Engine
 
-	// VAD replaces the config-built voice detector. It is typed concretely
-	// because pipeline's voiceDetector interface is still unexported — an
-	// embedder cannot name it today. Exporting the front-end interfaces is
-	// sequence 008.4's job; until then this field is honest about what it
-	// accepts rather than pretending to be pluggable.
-	VAD *audio.VAD
+	// VAD replaces the config-built voice detector. Any implementation of
+	// pipeline.VoiceDetector works — a host feeding audio from a browser or a
+	// phone supplies its own, which is the extension point serve's Ingress
+	// already proves is needed.
+	VAD pipeline.VoiceDetector
+
+	// Capture replaces the local microphone. Same reasoning: serve substitutes a
+	// network ingress for a capture device, so the seam is demonstrated, not
+	// speculative.
+	Capture pipeline.CaptureMonitor
 
 	// TextOnly skips capture, VAD and STT: the agent reads text turns instead of
 	// listening. Silent skips TTS and playback: it thinks and writes but does not
@@ -203,25 +207,31 @@ func New(ctx context.Context, opts Options) (*Agent, func(), error) {
 			}
 		}
 
-		var vad *audio.VAD
+		// sttVAD is the CONCRETE detector, because stt.NewProvider still takes
+		// *audio.VAD. An injected VoiceDetector satisfies the pipeline but cannot
+		// be handed to the STT factory, so a caller injecting one is expected to
+		// inject an STT provider too — which is exactly what serve does.
+		var sttVAD *audio.VAD
 		switch {
 		case opts.VAD != nil:
 			// Caller owns the lifetime of an injected detector, so it is not
 			// added to cleanups — deleting a VAD the host still holds would be
 			// a use-after-free waiting to happen.
-			vad = opts.VAD
-			p.VAD = vad
+			p.VAD = opts.VAD
+			if concrete, ok := opts.VAD.(*audio.VAD); ok {
+				sttVAD = concrete
+			}
 		case cfg.VADEnabled:
-			var err error
-			vad, err = audio.NewVAD(cfg)
+			built, err := audio.NewVAD(cfg)
 			if err != nil {
 				cleanup()
 				return nil, nil, fmt.Errorf("init VAD: %w", err)
 			}
-			cleanups = append(cleanups, vad.Delete)
-			p.VAD = vad
+			cleanups = append(cleanups, built.Delete)
+			p.VAD = built
+			sttVAD = built
 		}
-		if vad != nil {
+		if p.VAD != nil {
 
 			// Barge-in stays nil (watchBargeIn no-ops) unless explicitly enabled.
 			if !opts.Silent && cfg.BargeInEnabled {
@@ -238,7 +248,7 @@ func New(ctx context.Context, opts Options) (*Agent, func(), error) {
 		if opts.STT != nil {
 			p.STT = opts.STT
 		} else {
-			sttProvider, sttCleanup, err := stt.NewProvider(cfg, capture, vad)
+			sttProvider, sttCleanup, err := stt.NewProvider(cfg, capture, sttVAD)
 			if err != nil {
 				cleanup()
 				return nil, nil, fmt.Errorf("init STT: %w", err)

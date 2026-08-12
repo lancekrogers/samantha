@@ -68,13 +68,24 @@ func hasPronounceableContent(s string) bool {
 // stuck on "thinking" forever while listening never resumes.
 const defaultBrainTurnTimeout = 3 * time.Minute
 
-type captureMonitor interface {
+// CaptureMonitor is an audio source the pipeline listens to.
+//
+// Exported because serve already proves the extension point: its Ingress
+// substitutes a remote audio stream for the local microphone. An embedder
+// wanting audio from a browser, a phone or a file needs exactly this and nothing
+// more — three methods, which is why promoting it is cheap.
+type CaptureMonitor interface {
 	Subscribe(buffer int) (int, <-chan []float32)
 	Unsubscribe(id int)
 	Reset()
 }
 
-type voiceDetector interface {
+// VoiceDetector decides when the user is speaking.
+//
+// Four methods, and each has a caller: AcceptWaveform feeds it, IsSpeech gates
+// the current frame, IsSpeechDetected reports the latched utterance state that
+// endpointing depends on, and Clear resets between turns.
+type VoiceDetector interface {
 	AcceptWaveform(samples []float32)
 	IsSpeech() bool
 	IsSpeechDetected() bool
@@ -92,9 +103,9 @@ type Pipeline struct {
 	TTSFallback       tts.Provider
 	ttsMu             sync.RWMutex
 	Player            audio.Engine
-	Capture           captureMonitor
-	VAD               voiceDetector
-	BargeInVAD        voiceDetector
+	Capture           CaptureMonitor
+	VAD               VoiceDetector
+	BargeInVAD        VoiceDetector
 	Events            *events.Bus
 	VoiceToolsEnabled bool
 	OnTurn            func() // called after each completed turn for session auto-save

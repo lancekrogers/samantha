@@ -60,8 +60,8 @@ type playbackState interface {
 // subscription and VAD lifecycle; its thresholds are explicit fields so tests
 // can drive the arm delay and speech threshold deterministically.
 type interruptController struct {
-	capture    captureMonitor
-	vad        voiceDetector
+	capture    CaptureMonitor
+	vad        VoiceDetector
 	playback   playbackState
 	armDelay   time.Duration
 	tailGuard  time.Duration

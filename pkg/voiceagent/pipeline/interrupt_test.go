@@ -17,7 +17,7 @@ func (a *alwaysPlaying) IsPlaying() bool { return a.playing.Load() }
 // newTestController wires a controller with small thresholds and an injected
 // capture/vad/playback for deterministic tests. tailGuard is zero so pause
 // chunks are processed immediately; tail-guard tests set it explicitly.
-func newTestController(capture captureMonitor, vad voiceDetector, playback playbackState, minSpeech int) *interruptController {
+func newTestController(capture CaptureMonitor, vad VoiceDetector, playback playbackState, minSpeech int) *interruptController {
 	return &interruptController{
 		capture:    capture,
 		vad:        vad,
