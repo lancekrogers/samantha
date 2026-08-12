@@ -181,10 +181,6 @@ func startNativeQwenSession(ctx context.Context, workerBin, modelDir, tier strin
 	}
 }
 
-func withNativeLibPath(env []string, libDir string) []string {
-	return withNativeWorkerEnv(env, libDir, "")
-}
-
 // withNativeWorkerEnv sets DYLD/LD library paths and optional QWEN3_TTS_TIER.
 // Parent QWEN3_TTS_TIER / QWEN3_TTS_MODEL are stripped so the host config wins
 // and ambient shell env cannot override a fail-closed product tier.
