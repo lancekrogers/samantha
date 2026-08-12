@@ -841,3 +841,17 @@ func homeDir() string {
 	}
 	return home
 }
+
+// PromptsDirFrom resolves the user prompt-documents directory for an
+// already-loaded Config without consulting mutable global viper state.
+//
+// Same contract as ModelsDirFrom, and the same reason: a library consumer holds
+// its own *Config and must not have its paths silently answered by whatever the
+// process last loaded. Falls back to the global lookup when the value is unset,
+// so the CLI's precedence is unchanged.
+func PromptsDirFrom(cfg *Config) string {
+	if cfg != nil && strings.TrimSpace(cfg.PromptsDir) != "" {
+		return strings.TrimSpace(cfg.PromptsDir)
+	}
+	return PromptsDir()
+}

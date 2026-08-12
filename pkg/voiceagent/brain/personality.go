@@ -64,7 +64,7 @@ func resolvePrompt(cfg *config.Config, kind prompts.Kind, name string) (string, 
 		agentName = cfg.AgentName
 	}
 	if userDir == "" {
-		userDir = config.PromptsDir()
+		userDir = config.PromptsDirFrom(cfg)
 	}
 	doc, err := prompts.Resolver{UserDir: userDir}.Resolve(kind, name)
 	if err != nil {

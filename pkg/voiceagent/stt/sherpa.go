@@ -40,7 +40,7 @@ func (s *sherpaSession) Close() error {
 
 // NewSherpaOfflineSTT creates a new sherpa-onnx whisper STT provider.
 func NewSherpaOfflineSTT(cfg *config.Config, capture audioSource, vad *audio.VAD) (*SherpaOfflineSTT, error) {
-	modelsDir := config.ModelsDir()
+	modelsDir := config.ModelsDirFrom(cfg)
 	model, err := config.SherpaOfflineWhisperModel(cfg.WhisperModel)
 	if err != nil {
 		return nil, err

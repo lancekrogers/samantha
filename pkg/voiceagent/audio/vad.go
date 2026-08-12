@@ -48,7 +48,7 @@ func NewBargeInVAD(cfg *config.Config) (*VAD, error) {
 }
 
 func newVAD(cfg *config.Config, threshold, minSpeech float32) (*VAD, error) {
-	modelPath := filepath.Join(config.ModelsDir(), "silero_vad.onnx")
+	modelPath := filepath.Join(config.ModelsDirFrom(cfg), "silero_vad.onnx")
 
 	sileroConfig := sherpa.SileroVadModelConfig{
 		Model:              modelPath,

@@ -35,7 +35,7 @@ func NewWhisperCPPSTT(cfg *config.Config, capture audioSource, vad *audio.VAD) (
 		if err != nil {
 			return nil, err
 		}
-		modelPath = asset.ModelPath(config.ModelsDir())
+		modelPath = asset.ModelPath(config.ModelsDirFrom(cfg))
 	}
 	if _, err := os.Stat(modelPath); err != nil {
 		return nil, fmt.Errorf("whisper.cpp model not found at %s", modelPath)

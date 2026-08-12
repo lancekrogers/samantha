@@ -30,7 +30,7 @@ func NewSherpaStreamingSTT(cfg *config.Config, capture audioSource, vad *audio.V
 		return nil, err
 	}
 
-	modelDir := asset.ModelDir(config.ModelsDir())
+	modelDir := asset.ModelDir(config.ModelsDirFrom(cfg))
 	threads := min(runtime.NumCPU(), 4)
 
 	recognizerConfig := sherpa.OnlineRecognizerConfig{

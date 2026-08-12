@@ -76,7 +76,7 @@ func NewKokoroTTS(cfg *config.Config) (*KokoroTTS, error) {
 		alt := filepath.Join(modelsDir, fmt.Sprintf("lexicon-%s.txt", lang))
 		if _, err := os.Stat(alt); err == nil {
 			lexicon = alt
-		} else if root := config.ModelsDir(); root != modelsDir {
+		} else if root := config.ModelsDirFrom(cfg); root != modelsDir {
 			if _, err := os.Stat(filepath.Join(root, fmt.Sprintf("lexicon-%s.txt", lang))); err == nil {
 				lexicon = filepath.Join(root, fmt.Sprintf("lexicon-%s.txt", lang))
 			}
