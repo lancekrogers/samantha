@@ -72,7 +72,9 @@ func (m meetingRouteModel) Update(msg tea.Msg) (meetingRouteModel, tea.Cmd) {
 			if m.cursor < m.listLen()-1 {
 				m.cursor++
 			}
-		case "esc", "q", "0":
+		// Ctrl+C skips like esc instead of falling through to app quit: the
+		// picker must never silently discard notes (WI-162bbb).
+		case "esc", "q", "0", "ctrl+c":
 			return m, func() tea.Msg {
 				return meetingRouteResultMsg{
 					Banner: meeting.BannerLine(meeting.Receipt{Outcome: meeting.OutcomeSkipped}),

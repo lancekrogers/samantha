@@ -40,6 +40,7 @@ func run(cfg *config.Config, build RuntimeBuilder, meeting MeetingBuilder, start
 	app := NewApp(cfg)
 	app.builder = build
 	app.meetingBuilder = meeting
+	app.meetingSweep = sweepMeetingRoutesCmd(cfg)
 	app.startInConversation = startInConversation
 	app.runCtx = ctx
 	app.wg = &sync.WaitGroup{}

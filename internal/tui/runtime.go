@@ -73,7 +73,11 @@ type MeetingRuntime struct {
 	Description string
 	Path        string
 	StopPhrases map[string]bool
-	Cleanup     func()
+	// ReleaseCapture tears down mic/STT/live-label resources at capture stop,
+	// while background diarization still owns the analyzer. Cleanup releases
+	// the rest (the analyzer) once diarization is done. Both idempotent.
+	ReleaseCapture func()
+	Cleanup        func()
 }
 
 // MeetingBuilder constructs meeting resources when the user starts recording

@@ -3,11 +3,13 @@ package tui
 import (
 	"context"
 	"fmt"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/lancekrogers/samantha/internal/meeting"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 // stopMeetingRuntime cancels the listen loop, writes the bundle trailer, and
@@ -15,32 +17,123 @@ import (
 // surface a silent trailer/session_end write problem (files may already hold
 // synced events). Idempotent when no runtime is active.
 func (a *App) stopMeetingRuntime() error {
-	_, err := a.stopMeetingRuntimeWithSummary()
+	rt, _, err := a.finishMeetingCapture()
+	if rt != nil && rt.Cleanup != nil {
+		rt.Cleanup()
+	}
 	return err
 }
 
-// stopMeetingRuntimeWithSummary is stopMeetingRuntime that also returns the Close Summary.
-func (a *App) stopMeetingRuntimeWithSummary() (meetinglog.Summary, error) {
-	if a.meetingRT == nil {
-		return meetinglog.Summary{}, nil
+// finishMeetingCapture ends capture: cancels the listen loop, writes the
+// bundle trailer / session_end, and releases mic/STT resources. The returned
+// runtime still owns the speaker analyzer so background diarization can run;
+// callers must ensure rt.Cleanup runs, directly or after diarize.
+func (a *App) finishMeetingCapture() (*MeetingRuntime, meetinglog.Summary, error) {
+	rt := a.meetingRT
+	if rt == nil {
+		return nil, meetinglog.Summary{}, nil
 	}
 	if a.meeting.opts.Cancel != nil {
 		a.meeting.opts.Cancel()
 	}
 	var summary meetinglog.Summary
 	var closeErr error
-	if a.meetingRT.Writer != nil {
-		s, err := a.meetingRT.Writer.Close()
+	if rt.Writer != nil {
+		s, err := rt.Writer.Close()
 		summary = s
 		if err != nil {
 			closeErr = fmt.Errorf("close meeting log: %w", err)
 		}
 	}
-	if a.meetingRT.Cleanup != nil {
-		a.meetingRT.Cleanup()
+	if rt.ReleaseCapture != nil {
+		rt.ReleaseCapture()
 	}
 	a.meetingRT = nil
-	return summary, closeErr
+	return rt, summary, closeErr
+}
+
+// meetingAnalysisDoneMsg delivers background diarization completion.
+type meetingAnalysisDoneMsg struct {
+	result meeting.AnalysisResult
+	err    error
+}
+
+// runBackgroundDiarize finalizes speaker analysis off the UI thread, then
+// releases the analyzer. The bundle writer is already closed; the analysis
+// appends reopen the bundle files (additive enrichment). Tied to the app
+// context: quitting cancels enrichment, never the saved transcript (R4).
+func runBackgroundDiarize(ctx context.Context, rt *MeetingRuntime) tea.Cmd {
+	finalize, cleanup := rt.FinalizeSpeakers, rt.Cleanup
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return func() tea.Msg {
+		actx, cancel := context.WithTimeout(ctx, 2*time.Hour)
+		defer cancel()
+		result, err := finalize(actx)
+		if cleanup != nil {
+			cleanup()
+		}
+		return meetingAnalysisDoneMsg{result: result, err: err}
+	}
+}
+
+// analysisFailure reports whether a diarization outcome needs an error
+// surface, with its human detail.
+func analysisFailure(result meeting.AnalysisResult, err error) (bool, string) {
+	if result.Status == meeting.AnalysisComplete && err == nil {
+		return false, ""
+	}
+	if result.Error != "" {
+		return true, result.Error
+	}
+	if err != nil {
+		return true, err.Error()
+	}
+	return true, string(result.Status)
+}
+
+// meetingSweepDoneMsg reports startup retries of undelivered route plans.
+type meetingSweepDoneMsg struct{ results []meeting.SweepResult }
+
+// sweepMeetingRoutesCmd retries route plans left undelivered by a previous
+// session (quit, crash, or failure between capture end and route completion).
+func sweepMeetingRoutesCmd(cfg *config.Config) tea.Cmd {
+	if cfg == nil {
+		return nil
+	}
+	routeCfg := meeting.FromConfig(cfg)
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		router := meeting.NewDefaultRouter(routeCfg)
+		return meetingSweepDoneMsg{results: meeting.SweepPendingRoutes(ctx, router, config.MeetingsDir())}
+	}
+}
+
+// sweepBanner condenses sweep results into one launcher line.
+func sweepBanner(results []meeting.SweepResult) (string, bool) {
+	var delivered, failed int
+	detail := ""
+	for _, r := range results {
+		if r.Err != nil {
+			failed++
+			detail = r.Err.Error()
+			continue
+		}
+		delivered++
+		detail = meeting.BannerLine(r.Receipt)
+	}
+	switch {
+	case delivered == 0 && failed == 0:
+		return "", false
+	case failed > 0:
+		return fmt.Sprintf("Meeting route retry: %d delivered, %d failed (%s)", delivered, failed, detail), true
+	case delivered == 1:
+		return "Recovered pending meeting route — " + detail, false
+	default:
+		return fmt.Sprintf("Recovered %d pending meeting routes", delivered), false
+	}
 }
 
 // beginMeetingRoute opens the post-meeting picker (ask), auto-routes, or no-ops (off).
@@ -72,18 +165,7 @@ func (a *App) beginMeetingRoute(summary meetinglog.Summary) tea.Cmd {
 		if plan.Dest.ID == "" {
 			break
 		}
-		rcfg := meeting.WithDestination(routeCfg, plan.Dest)
-		dest := plan.Dest
-		body := rcfg.Body
-		return func() tea.Msg {
-			note, err := meeting.Render(summary, body)
-			if err != nil {
-				return meetingRouteResultMsg{Banner: "Meeting route failed (notes kept local): " + err.Error(), IsErr: true}
-			}
-			router := meeting.NewDefaultRouter(rcfg)
-			receipt, err := router.RouteMeeting(context.Background(), note, dest)
-			return meetingRouteResultMsg{Banner: meeting.BannerLine(receipt), IsErr: err != nil}
-		}
+		return destRouteCmd(summary, routeCfg, plan.Dest)
 	case routePlanAsk:
 		return a.openMeetingRoutePicker(summary, routeCfg)
 	}
@@ -96,6 +178,27 @@ func (a *App) beginMeetingRoute(summary meetinglog.Summary) tea.Cmd {
 		return a.autoRouteMeeting(summary, routeCfg)
 	default: // ask
 		return a.openMeetingRoutePicker(summary, routeCfg)
+	}
+}
+
+// destRouteCmd renders and routes to a start-plan destination. The router
+// appends durable routed / route_failed provenance to the bundle; a render
+// failure appends route_failed here so sweep retries stay bounded.
+func destRouteCmd(summary meetinglog.Summary, routeCfg meeting.Config, dest meeting.Destination) tea.Cmd {
+	rcfg := meeting.WithDestination(routeCfg, dest)
+	body := rcfg.Body
+	return func() tea.Msg {
+		note, err := meeting.Render(summary, body)
+		if err != nil {
+			_ = meeting.AppendRouteFailedEvent(summary.JSONLFile, meeting.Receipt{
+				DestinationID: dest.ID, Type: dest.Type,
+				Outcome: meeting.OutcomeFailed, Detail: err.Error(),
+			})
+			return meetingRouteResultMsg{Banner: "Meeting route failed (notes kept local): " + err.Error(), IsErr: true}
+		}
+		router := meeting.NewDefaultRouter(rcfg)
+		receipt, err := router.RouteMeeting(context.Background(), note, dest)
+		return meetingRouteResultMsg{Banner: meeting.BannerLine(receipt), IsErr: err != nil}
 	}
 }
 
