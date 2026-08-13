@@ -47,13 +47,15 @@ func (r *Router) RouteMeeting(ctx context.Context, note RenderedNote, dest Desti
 	dest = NormalizeDestination(dest)
 	sink, err := r.sinkFor(dest)
 	if err != nil {
-		return Receipt{
+		receipt := Receipt{
 			DestinationID: dest.ID,
 			Type:          dest.Type,
 			Outcome:       OutcomeFailed,
 			Detail:        err.Error(),
 			At:            r.now(),
-		}, err
+		}
+		_ = AppendRouteFailedEvent(note.SourceJSONL, receipt)
+		return receipt, err
 	}
 	receipt, err := sink.Route(ctx, note)
 	if receipt.At.IsZero() {
@@ -72,6 +74,7 @@ func (r *Router) RouteMeeting(ctx context.Context, note RenderedNote, dest Desti
 		if receipt.Detail == "" {
 			receipt.Detail = err.Error()
 		}
+		_ = AppendRouteFailedEvent(note.SourceJSONL, receipt)
 		return receipt, err
 	}
 	if receipt.Outcome == "" {
@@ -87,12 +90,14 @@ func (r *Router) RouteByID(ctx context.Context, note RenderedNote, destID string
 	cfg := r.Cfg.Normalize()
 	dest, ok := cfg.DestinationByID(destID)
 	if !ok {
-		return Receipt{
+		receipt := Receipt{
 			DestinationID: destID,
 			Outcome:       OutcomeFailed,
 			Detail:        fmt.Sprintf("unknown destination %q", destID),
 			At:            r.now(),
-		}, fmt.Errorf("meeting: unknown destination %q", destID)
+		}
+		_ = AppendRouteFailedEvent(note.SourceJSONL, receipt)
+		return receipt, fmt.Errorf("meeting: unknown destination %q", destID)
 	}
 	return r.RouteMeeting(ctx, note, dest)
 }

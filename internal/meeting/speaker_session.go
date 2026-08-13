@@ -105,6 +105,11 @@ func NewSpeakerSession(capture captureSubscriber, analyzer SpeakerAnalyzer, writ
 	return s, nil
 }
 
+// StopCapture releases the PCM subscription without closing the analyzer, so
+// mic/STT teardown can run at capture stop while background diarization still
+// owns the native engine. Idempotent; Finalize and Close also call it.
+func (s *SpeakerSession) StopCapture() { s.stopCapture() }
+
 // stopCapture unsubscribes, joins the writer goroutine, and closes the streamed
 // WAV so its size fields are finalized before any re-read. Idempotent.
 func (s *SpeakerSession) stopCapture() {
