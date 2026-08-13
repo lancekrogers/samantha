@@ -180,6 +180,21 @@ func TestMeetingReadyPersistsDestPlan(t *testing.T) {
 	}
 }
 
+// The demo finalizer must land on the runtime: background diarize runs off
+// rt.FinalizeSpeakers, so a MeetingOpts-only assignment would never execute.
+func TestMeetingReadyWiresDemoFinalizerOntoRuntime(t *testing.T) {
+	t.Setenv(demoMeetingSpeakersEnv, "1")
+	w := recordedBundleWriter(t)
+	t.Cleanup(func() { _, _ = w.Close() })
+	runCtx, cancel := context.WithCancel(context.Background())
+	cancel() // listen loop must exit before touching the nil capture/provider
+	app := App{cfg: &config.Config{}, runCtx: runCtx, meeting: newEmbeddedMeeting()}
+	model, _ := app.Update(meetingReadyMsg{rt: &MeetingRuntime{Writer: w}})
+	if got := model.(App); got.meetingRT.FinalizeSpeakers == nil {
+		t.Fatal("demo finalizer missing from runtime; background diarize would never run")
+	}
+}
+
 // Ctrl+C on the results screen continues to routing instead of quitting the
 // app — the exact key sequence that lost the field incident's route.
 func TestResultsCtrlCContinuesInsteadOfQuit(t *testing.T) {

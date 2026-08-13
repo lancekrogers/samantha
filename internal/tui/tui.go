@@ -397,6 +397,9 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		speakerStatus, speakerError := msg.rt.SpeakerStatus, msg.rt.SpeakerError
 		if demoMeetingSpeakersEnabled() && finalizeSpeakers == nil {
 			finalizeSpeakers = demoMeetingSpeakerFinalizer(msg.rt.Writer, msg.rt.Path)
+			// Background diarize runs off the runtime, not MeetingOpts — the
+			// demo finalizer must land on the runtime to run at all.
+			msg.rt.FinalizeSpeakers = finalizeSpeakers
 			speakerStatus = meeting.AnalysisQueued
 			speakerError = "scripted multi-speaker fixture"
 		}
