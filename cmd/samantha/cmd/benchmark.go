@@ -17,10 +17,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lancekrogers/samantha/internal/audio"
-	"github.com/lancekrogers/samantha/internal/config"
-	"github.com/lancekrogers/samantha/internal/events"
-	"github.com/lancekrogers/samantha/internal/stt"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/events"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/stt"
 )
 
 var (
@@ -315,7 +315,7 @@ func runSingleFullTurnBenchmark(ctx context.Context, cfg *config.Config, provide
 
 	p.STT = sttProvider
 	p.VAD = vad
-	// Capture stays nil deliberately. FixtureSource is not a captureMonitor,
+	// Capture stays nil deliberately. FixtureSource is not a pipeline.CaptureMonitor,
 	// and transcribeTurn calls Capture.Reset() before every listen — a fixture
 	// wired there would rewind the WAV and replay the same audio forever.
 	// Barge-in is therefore not measured in this mode.

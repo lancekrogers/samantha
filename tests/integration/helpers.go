@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )

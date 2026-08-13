@@ -10,8 +10,8 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/meeting"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 // meetingOptions carries the resolved `meeting record` invocation.

@@ -12,7 +12,7 @@ import (
 	ansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/lancekrogers/samantha/internal/calibre"
-	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 // Focus regions inside the pick-book screen.

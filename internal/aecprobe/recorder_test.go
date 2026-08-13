@@ -3,7 +3,7 @@ package aecprobe
 import (
 	"testing"
 
-	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
 )
 
 // The decorator sits between the player and the real front-end on the live

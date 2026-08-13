@@ -18,15 +18,15 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lancekrogers/samantha/internal/audio"
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/narrate"
-	managedqwen "github.com/lancekrogers/samantha/internal/qwen"
 	"github.com/lancekrogers/samantha/internal/render"
 	"github.com/lancekrogers/samantha/internal/render/encoder"
 	"github.com/lancekrogers/samantha/internal/render/epub"
 	"github.com/lancekrogers/samantha/internal/render/extractors"
-	"github.com/lancekrogers/samantha/internal/tts"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
+	managedqwen "github.com/lancekrogers/samantha/pkg/voiceagent/qwen"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/tts"
 )
 
 // runRenderText is the real batch render runner: it constructs the TTS provider

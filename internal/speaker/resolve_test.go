@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
 )
 
 func liveTestConfig() Config {

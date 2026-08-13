@@ -3,8 +3,8 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/persona"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/brain"
 	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
@@ -13,8 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lancekrogers/samantha/internal/config"
-	"github.com/lancekrogers/samantha/internal/prompts"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/prompts"
 )
 
 var (

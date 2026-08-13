@@ -15,8 +15,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/render"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 func chapteredManifest() render.RenderManifest {

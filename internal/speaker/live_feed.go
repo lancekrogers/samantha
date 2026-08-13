@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
 )
 
 // CaptureSource is the mic fan-out used by live speaker feeding.

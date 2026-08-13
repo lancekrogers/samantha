@@ -8,12 +8,12 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/lancekrogers/samantha/internal/audio"
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/discovery"
 	"github.com/lancekrogers/samantha/internal/meeting"
-	managedqwen "github.com/lancekrogers/samantha/internal/qwen"
-	"github.com/lancekrogers/samantha/internal/tts"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
+	managedqwen "github.com/lancekrogers/samantha/pkg/voiceagent/qwen"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/tts"
 )
 
 type settingsSection int

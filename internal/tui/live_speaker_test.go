@@ -3,8 +3,8 @@ package tui
 import (
 	"testing"
 
-	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/speaker"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/events"
 )
 
 type tuiLiveSpeakerFake struct {

@@ -13,7 +13,7 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/meeting/ideas"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
-	"github.com/lancekrogers/samantha/internal/stt"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/stt"
 )
 
 // scriptedSession replays one session's worth of STT events.

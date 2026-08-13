@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 
-	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/events"
 )
 
 // ansiCSI matches lipgloss/termenv SGR sequences so assertions can treat

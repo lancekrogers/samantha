@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/lancekrogers/samantha/internal/brain"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/brain"
 )
 
 type fakeBatch struct {

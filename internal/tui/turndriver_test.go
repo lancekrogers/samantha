@@ -10,7 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/events"
 )
 
 // fakeTurnRunner scripts RunTurn results in order; a blockNext entry parks

@@ -759,14 +759,14 @@ go test ./...                  # Plain Go test fallback
 
 Integration tests expect `bin/linux/samantha` to exist. The build dashboard creates it for the integration workflow.
 
-Playback crackle (Studio Display mono-client class) is guarded by `internal/audio`
+Playback crackle (Studio Display mono-client class) is guarded by `pkg/voiceagent/audio`
 layout + crackle tests in normal `go test -race ./...`. After any change under
-`internal/audio`, also run `just test audio-hardware` on an affected machine and
+`pkg/voiceagent/audio`, also run `just test audio-hardware` on an affected machine and
 confirm `--debug-audio` metadata reports `channels: 2` (not mono).
 
 #### Voice smoke tests (opt-in, require local models)
 
-The STT provider loops (`internal/stt`) are covered by deterministic unit tests
+The STT provider loops (`pkg/voiceagent/stt`) are covered by deterministic unit tests
 that use fakes, so they run without model files. Real end-to-end voice behavior
 depends on local STT/VAD/TTS models and is therefore opt-in. When the models are
 installed (`samantha models ensure`, once available), run the smoke plan:
@@ -780,7 +780,7 @@ installed (`samantha models ensure`, once available), run the smoke plan:
 
 ```bash
 # Deterministic, no models needed:
-go test ./internal/stt ./internal/endpoint ./internal/audio
+go test ./pkg/voiceagent/stt ./pkg/voiceagent/endpoint ./pkg/voiceagent/audio
 
 # Pipeline flow with stubbed stages (no models, no network):
 go test -tags integration ./tests/voiceflow      # turn state machine + barge-in

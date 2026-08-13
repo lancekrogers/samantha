@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/lancekrogers/samantha/internal/brain"
-	"github.com/lancekrogers/samantha/internal/prompts"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/brain"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/prompts"
 )
 
 // PrepareOptions controls narrate prepare.

@@ -7,10 +7,10 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/lancekrogers/samantha/internal/brain"
 	"github.com/lancekrogers/samantha/internal/persona"
-	managedqwen "github.com/lancekrogers/samantha/internal/qwen"
-	"github.com/lancekrogers/samantha/internal/tts"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/brain"
+	managedqwen "github.com/lancekrogers/samantha/pkg/voiceagent/qwen"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/tts"
 )
 
 const (

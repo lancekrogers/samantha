@@ -10,10 +10,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/discovery"
 	"github.com/lancekrogers/samantha/internal/meeting"
-	"github.com/lancekrogers/samantha/internal/session"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/session"
 )
 
 type screen int

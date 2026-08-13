@@ -13,7 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/events"
 )
 
 // queueCapacity bounds the writer queue. Bus handlers run synchronously on

@@ -15,14 +15,14 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
-	"github.com/lancekrogers/samantha/internal/audio"
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/listen"
 	"github.com/lancekrogers/samantha/internal/meeting"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 	"github.com/lancekrogers/samantha/internal/speaker"
-	"github.com/lancekrogers/samantha/internal/stt"
 	appTUI "github.com/lancekrogers/samantha/internal/tui"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/stt"
 )
 
 // runMeetingRecord wires the STT-only chain into listen.Loop with the file

@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/lancekrogers/samantha/internal/config"
-	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/events"
 )
 
 type testClipboard struct {

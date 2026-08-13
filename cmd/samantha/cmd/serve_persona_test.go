@@ -6,12 +6,13 @@ import (
 	"context"
 	"testing"
 
-	"github.com/lancekrogers/samantha/internal/brain"
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/netapi"
 	"github.com/lancekrogers/samantha/internal/persona"
-	"github.com/lancekrogers/samantha/internal/pipeline"
-	"github.com/lancekrogers/samantha/internal/session"
+	"github.com/lancekrogers/samantha/pkg/voiceagent"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/brain"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/pipeline"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/session"
 )
 
 type servePersonaTestBrain struct {
@@ -58,7 +59,7 @@ func TestServePersonaSwitcherReplacesBrainTTSAndSession(t *testing.T) {
 	oldBrain := &servePersonaTestBrain{history: []brain.Turn{{Role: "user", Content: "old turn"}}}
 	newBrain := &servePersonaTestBrain{}
 	p := &pipeline.Pipeline{Brain: oldBrain}
-	manager := &liveTTSManager{}
+	manager := &voiceagent.LiveTTSManager{}
 	t.Cleanup(manager.Close)
 	ref := &sessionRef{sess: session.New(cfg.BrainProvider, cfg.OllamaModel)}
 	oldSessionID := ref.sess.ID
@@ -70,9 +71,9 @@ func TestServePersonaSwitcherReplacesBrainTTSAndSession(t *testing.T) {
 			brainCfg = *got
 			return newBrain, nil
 		},
-		newTTS: func(got *config.Config) (*ttsProviderSet, error) {
+		newTTS: func(got *config.Config) (*voiceagent.TTSSet, error) {
 			ttsCfg = *got
-			return &ttsProviderSet{}, nil
+			return &voiceagent.TTSSet{}, nil
 		},
 	}
 

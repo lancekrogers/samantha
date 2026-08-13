@@ -13,11 +13,11 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	ansi "github.com/charmbracelet/x/ansi"
 
-	"github.com/lancekrogers/samantha/internal/brain"
-	"github.com/lancekrogers/samantha/internal/config"
-	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/speaker"
 	"github.com/lancekrogers/samantha/internal/tui/anim"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/brain"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/events"
 )
 
 const conversationInputHeight = 3

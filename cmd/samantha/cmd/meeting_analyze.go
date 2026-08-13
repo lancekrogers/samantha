@@ -10,10 +10,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lancekrogers/samantha/internal/audio"
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/meeting"
 	"github.com/lancekrogers/samantha/internal/speaker"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 // newMeetingAnalyzeCmd runs offline speaker diarization on a WAV file.

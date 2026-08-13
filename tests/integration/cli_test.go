@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 func TestCLI_Help(t *testing.T) {

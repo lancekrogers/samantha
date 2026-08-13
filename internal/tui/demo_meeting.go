@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/lancekrogers/samantha/internal/listen"
-	"github.com/lancekrogers/samantha/internal/stt"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/stt"
 )
 
 // demoMeetingEnv scripts mic phases/levels for VHS without hardware.

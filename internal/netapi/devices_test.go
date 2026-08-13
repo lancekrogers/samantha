@@ -14,7 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/events"
 )
 
 func TestDeviceTokenPairListDelete(t *testing.T) {

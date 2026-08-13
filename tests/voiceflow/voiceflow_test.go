@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lancekrogers/samantha/internal/audio"
-	"github.com/lancekrogers/samantha/internal/brain"
-	"github.com/lancekrogers/samantha/internal/events"
-	"github.com/lancekrogers/samantha/internal/pipeline"
-	"github.com/lancekrogers/samantha/internal/stt"
-	"github.com/lancekrogers/samantha/internal/tts"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/brain"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/events"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/pipeline"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/stt"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/tts"
 )
 
 // testBargeInArmDelay mirrors the pipeline's unexported bargeInArmDelay: barge-in

@@ -8,7 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	ansi "github.com/charmbracelet/x/ansi"
 
-	"github.com/lancekrogers/samantha/internal/session"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/session"
 )
 
 type sessionsModel struct {

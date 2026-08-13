@@ -11,7 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/lancekrogers/samantha/internal/calibre"
-	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 func TestLibraryBrowseFoldsResults(t *testing.T) {

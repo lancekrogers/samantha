@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lancekrogers/samantha/internal/audio"
-	"github.com/lancekrogers/samantha/internal/events"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 	"github.com/lancekrogers/samantha/internal/meeting/remote"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/events"
 )
 
 // Options configures a Server. All fields except AllowPublic are required.

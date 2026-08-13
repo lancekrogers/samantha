@@ -15,7 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
 )
 
 // ErrNotEnrolled is returned when a named profile does not exist.

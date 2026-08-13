@@ -10,7 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
 )
 
 // Audio format constants for the WebSocket wire protocol. PCM s16le mono is

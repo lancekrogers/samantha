@@ -12,9 +12,9 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/meeting"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 // maybeRouteAfterRecord applies post-meeting routing for the CLI record path.

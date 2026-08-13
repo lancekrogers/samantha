@@ -1,6 +1,6 @@
 package meeting
 
-import "github.com/lancekrogers/samantha/internal/config"
+import "github.com/lancekrogers/samantha/pkg/voiceagent/config"
 
 // FromConfig maps config.Meeting into a routing Config.
 func FromConfig(cfg *config.Config) Config {

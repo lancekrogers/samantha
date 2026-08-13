@@ -8,10 +8,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	ansi "github.com/charmbracelet/x/ansi"
 
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/discovery"
 	"github.com/lancekrogers/samantha/internal/persona"
-	"github.com/lancekrogers/samantha/internal/session"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/session"
 )
 
 type launcherAction int

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lancekrogers/samantha/internal/prompts"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/prompts"
 )
 
 // Error cases first.

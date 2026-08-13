@@ -9,9 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/meeting"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 // finishedMeeting builds a closed meeting bundle under dir for routing tests.

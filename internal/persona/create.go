@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 var nonSlugRunes = regexp.MustCompile(`[^a-z0-9]+`)

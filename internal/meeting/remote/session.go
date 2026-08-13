@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lancekrogers/samantha/internal/audio"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
 )
 
 // Session is one remote-driven meeting: a bundle writer, the segment store

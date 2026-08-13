@@ -1,6 +1,6 @@
 package speaker
 
-import "github.com/lancekrogers/samantha/internal/config"
+import "github.com/lancekrogers/samantha/pkg/voiceagent/config"
 
 // FromAppConfig maps config.Speaker into speaker.Config.
 // Kept here for a single mapping site; config mirrors fields to avoid

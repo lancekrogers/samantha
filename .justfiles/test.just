@@ -61,19 +61,19 @@ speakerflow:
 # underrun/impulse metrics. Also covered by CI: go test -race ./...
 [no-cd]
 audio-crackle:
-    go test -race ./internal/audio/ -count=1 -run 'Crackle|Expand|Choose|Pick|StudioDisplay|CallbackExpand|MultiChannelExpand|Whole|Chunk|FinalizeSegmentThen|Early|Pump|Analyze|Layout|DebugMetadataRecords'
+    go test -race ./pkg/voiceagent/audio/ -count=1 -run 'Crackle|Expand|Choose|Pick|StudioDisplay|CallbackExpand|MultiChannelExpand|Whole|Chunk|FinalizeSegmentThen|Early|Pump|Analyze|Layout|DebugMetadataRecords'
 
 # Live Kokoro regression: real model, real WAV sample counts for contractions.
 # Requires Kokoro assets under models_dir (config.yaml / MODELS_DIR). Skips if missing.
 # Pins: U+0329 token alias, no text mangling of wasn't/isn't/don't, full audio vs stock tokens.
 [no-cd]
 kokoro-contractions:
-    go test -tags=integration ./internal/tts/ -count=1 -run 'LiveKokoro' -timeout 5m -v
+    go test -tags=integration ./pkg/voiceagent/tts/ -count=1 -run 'LiveKokoro' -timeout 5m -v
 
 # Opt-in hardware playback on the real default device (Studio Display, etc.).
-# Requires speakers; plays a short tone. Use after any internal/audio change.
+# Requires speakers; plays a short tone. Use after any pkg/voiceagent/audio change.
 [no-cd]
 audio-hardware:
     #!/usr/bin/env bash
     set -euo pipefail
-    SAMANTHA_HARDWARE_AUDIO=1 go test -race ./internal/audio/ -count=1 -run 'Hardware' -v -timeout 60s
+    SAMANTHA_HARDWARE_AUDIO=1 go test -race ./pkg/voiceagent/audio/ -count=1 -run 'Hardware' -v -timeout 60s

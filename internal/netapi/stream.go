@@ -13,8 +13,8 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/lancekrogers/samantha/internal/audio"
-	"github.com/lancekrogers/samantha/internal/events"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/events"
 )
 
 // connQueueDepth bounds each connection's outbound *event* queue. Bus.Emit runs

@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 func init() {

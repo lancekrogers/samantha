@@ -18,16 +18,17 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lancekrogers/samantha/internal/audio"
-	"github.com/lancekrogers/samantha/internal/brain"
-	"github.com/lancekrogers/samantha/internal/config"
-	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/netapi"
 	"github.com/lancekrogers/samantha/internal/persona"
-	"github.com/lancekrogers/samantha/internal/pipeline"
-	"github.com/lancekrogers/samantha/internal/session"
-	"github.com/lancekrogers/samantha/internal/stt"
 	"github.com/lancekrogers/samantha/internal/ui"
+	"github.com/lancekrogers/samantha/pkg/voiceagent"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/brain"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/events"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/pipeline"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/session"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/stt"
 )
 
 const defaultServePort = 7262 // "SAMA"
@@ -392,18 +393,18 @@ func runServe(cfg *config.Config) error {
 type servePersonaSwitcher struct {
 	cfg      *config.Config
 	pipeline *pipeline.Pipeline
-	tts      *liveTTSManager
+	tts      *voiceagent.LiveTTSManager
 	sessions *sessionRef
 
 	newBrain func(*config.Config) (brain.Provider, error)
-	newTTS   func(*config.Config) (*ttsProviderSet, error)
+	newTTS   func(*config.Config) (*voiceagent.TTSSet, error)
 }
 
-func serveSetPersona(cfg *config.Config, p *pipeline.Pipeline, liveTTS *liveTTSManager, ref *sessionRef) func(string) (netapi.PersonaAck, error) {
+func serveSetPersona(cfg *config.Config, p *pipeline.Pipeline, liveTTS *voiceagent.LiveTTSManager, ref *sessionRef) func(string) (netapi.PersonaAck, error) {
 	switcher := &servePersonaSwitcher{
 		cfg: cfg, pipeline: p, tts: liveTTS, sessions: ref,
 		newBrain: brain.NewProvider,
-		newTTS:   newTTSProviderSet,
+		newTTS:   voiceagent.NewTTSSet,
 	}
 	return switcher.apply
 }
@@ -433,7 +434,7 @@ func (s *servePersonaSwitcher) apply(id string) (netapi.PersonaAck, error) {
 		nextTTS.Close()
 		return netapi.PersonaAck{}, fmt.Errorf("save previous persona session: %w", err)
 	}
-	if !s.tts.install(s.pipeline, nextTTS) {
+	if !s.tts.Install(s.pipeline, nextTTS) {
 		nextTTS.Close()
 		return netapi.PersonaAck{}, errors.New("serve runtime is shutting down")
 	}
@@ -451,35 +452,36 @@ func (s *servePersonaSwitcher) apply(id string) (netapi.PersonaAck, error) {
 	}, nil
 }
 
-func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, muteHost, remoteMic bool) (*pipeline.Pipeline, *netapi.AudioFanout, *audio.Ingress, *liveTTSManager, func(), error) {
-	// Brain only first (text=true, silent=true): no host mic, no default TTS/player.
-	p, baseCleanup, err := buildPipeline(ctx, cfg, bus, true, true)
-	if err != nil {
-		return nil, nil, nil, nil, nil, err
-	}
-
+// buildServePipeline builds serve's pipeline through voiceagent.Options.
+//
+// This is the surface test for the library. Serve is the awkward consumer: it
+// wants the brain but not the host microphone, TTS but a fanout instead of a
+// speaker, and on remote-mic it feeds STT from a network ingress rather than a
+// capture device. If Options cannot express that, the surface is wrong — so the
+// swaps are passed IN rather than assigned onto the pipeline afterwards.
+//
+// Serve builds its override providers first, so their cleanup stays here. The
+// live manager owns later persona TTS replacements, while the initial set is
+// retained until shutdown as required for any already-started utterance.
+func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, muteHost, remoteMic bool) (*pipeline.Pipeline, *netapi.AudioFanout, *audio.Ingress, *voiceagent.LiveTTSManager, func(), error) {
 	var cleanups []func()
-	cleanups = append(cleanups, baseCleanup)
 	cleanup := func() {
 		for i := len(cleanups) - 1; i >= 0; i-- {
 			cleanups[i]()
 		}
 	}
-	fail := func(err error) (*pipeline.Pipeline, *netapi.AudioFanout, *audio.Ingress, *liveTTSManager, func(), error) {
+	fail := func(err error) (*pipeline.Pipeline, *netapi.AudioFanout, *audio.Ingress, *voiceagent.LiveTTSManager, func(), error) {
 		cleanup()
 		return nil, nil, nil, nil, nil, err
 	}
 
-	liveTTS := &liveTTSManager{}
-	cleanups = append(cleanups, liveTTS.Close)
-	ttsSet, err := newTTSProviderSet(cfg)
+	ttsSet, err := voiceagent.NewTTSSet(cfg)
 	if err != nil {
 		return fail(fmt.Errorf("init TTS: %w", err))
 	}
-	if !liveTTS.install(p, ttsSet) {
-		ttsSet.Close()
-		return fail(errors.New("install initial TTS: runtime is shutting down"))
-	}
+	cleanups = append(cleanups, ttsSet.Close)
+	liveTTS := &voiceagent.LiveTTSManager{}
+	cleanups = append(cleanups, liveTTS.Close)
 	if ttsSet.FallbackWarning != nil {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", ttsSet.FallbackWarning)
 	}
@@ -491,7 +493,17 @@ func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus
 	// Fanout owns local so Close is exactly once via cleanup.
 	fanout := netapi.NewOwnedAudioFanout(local)
 	cleanups = append(cleanups, func() { _ = fanout.Close() })
-	p.Player = fanout
+
+	opts := voiceagent.Options{
+		Config:      cfg,
+		Events:      bus,
+		TextOnly:    true, // no host mic
+		Silent:      false,
+		TTS:         ttsSet.Primary,
+		TTSFallback: ttsSet.Fallback,
+		Player:      fanout,
+		Logf:        func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) },
+	}
 
 	var ingress *audio.Ingress
 	if remoteMic {
@@ -517,12 +529,21 @@ func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus
 		if sttCleanup != nil {
 			cleanups = append(cleanups, sttCleanup)
 		}
-		p.STT = sttProvider
-		p.VAD = vad
+		opts.STT = sttProvider
+		opts.VAD = vad
 		// Capture stays nil: barge-in on host mic is not used in serve mode.
 	}
 
-	return p, fanout, ingress, liveTTS, cleanup, nil
+	agent, baseCleanup, err := voiceagent.New(ctx, opts)
+	if err != nil {
+		return fail(err)
+	}
+	// Seeded at the FRONT so it runs LAST: the library's resources were acquired
+	// before serve's overrides in dependency terms, and reverse-order teardown
+	// must still hold across the two stacks.
+	cleanups = append([]func(){baseCleanup}, cleanups...)
+
+	return agent.Pipeline, fanout, ingress, liveTTS, cleanup, nil
 }
 
 func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config) {

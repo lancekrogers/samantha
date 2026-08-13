@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/lancekrogers/samantha/internal/audio"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
 )
 
 // AnalyzeBundleAudio diarizes a finished bundle's audio file and persists the

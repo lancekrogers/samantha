@@ -8,15 +8,15 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/lancekrogers/samantha/internal/brain"
-	"github.com/lancekrogers/samantha/internal/config"
-	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/listen"
 	"github.com/lancekrogers/samantha/internal/meeting"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
-	"github.com/lancekrogers/samantha/internal/pipeline"
 	"github.com/lancekrogers/samantha/internal/speaker"
-	"github.com/lancekrogers/samantha/internal/stt"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/brain"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/events"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/pipeline"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/stt"
 )
 
 // ConversationRuntime is a live pipeline prepared for the conversation

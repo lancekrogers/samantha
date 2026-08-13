@@ -3,7 +3,7 @@ package aecprobe
 import (
 	"math"
 
-	"github.com/lancekrogers/samantha/internal/audio"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/audio"
 )
 
 // MeasureDelay finds the lag, in samples, that best aligns want inside got.

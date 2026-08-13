@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
 // newSpeakerSettings builds a Speakers-section model with a recording saveConfig.
