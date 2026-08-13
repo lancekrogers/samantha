@@ -50,8 +50,10 @@ func run(hermetic bool) error {
 		opts.Config = &config.Config{AgentName: "Embed"}
 		opts.Brain = &echoBrain{}
 		opts.TTS = &silentTTS{}
-		opts.Env = brain.Env{User: "embedder", Hostname: "hermetic", OS: "test/arch"}
-		opts.PromptsDir = "/nonexistent-on-purpose"
+		// Env and PromptsDir stay unset: they only feed a brain New builds from
+		// Config, and New rejects them alongside an injected Brain rather than
+		// ignore them. With every provider injected, nothing here can reach a
+		// home directory — that guarantee is now structural, not stated.
 	} else {
 		cfg, err := config.Load()
 		if err != nil {
