@@ -450,12 +450,12 @@ Meeting speaker analysis has two layers (both **on by default**):
    up; brief empty gaps hold the last good label for a few seconds. A footer
    line marks these as **provisional**.
 2. **Offline diarization on stop** (**Settings → Meeting → Speaker
-   diarization**) — the review-screen source of truth. From the launcher,
-   stopping opens review immediately (the REC timer freezes at stop) and
-   diarization continues **in the background**; the attributed `speaker-1…N`
-   turns fold into the review when it finishes, or a status line reports the
-   failure. The standalone `samantha meeting record` TUI keeps the
-   synchronous **Stopping → Diarizing** flow before review.
+   diarization**) — the review-screen source of truth. Stopping opens review
+   immediately (the REC timer freezes at stop) and diarization continues **in
+   the background** — in the launcher and in the standalone
+   `samantha meeting record` TUI alike; the attributed `speaker-1…N` turns
+   fold into the review when it finishes, or a status line reports the
+   failure.
 
 Live labels and offline results may disagree; that is expected. The live
 scrollback is left as-shown; review uses the offline timeline. The first
@@ -472,14 +472,14 @@ and on live chat/meeting rows (shared palette). Continue from the review
 screen to the configured routing flow. Turn either layer off in Settings if
 you do not want it.
 
-In the standalone recorder's **Diarizing** phase, **Ctrl+C** again abandons
-speaker analysis and opens the review screen with the transcript intact
-(analysis status cancelled). Native model work may still finish in the
-background after abandon; the TUI does not wait on it. In the launcher flow,
-quitting Samantha cancels background diarization — the saved transcript is
-never affected, only the enrichment. Re-running diarization on a past meeting
-needs retained audio (`speaker.meeting.record_audio` / **Record audio for
-analysis**); without it the working PCM is discarded after Finalize.
+Background diarization never holds the transcript hostage: in the launcher,
+quitting Samantha cancels the enrichment only; in the CLI, leaving review
+while analysis is still running prints `Diarizing speakers…` and a further
+**Ctrl+C** skips the labels (the transcript and any delivered route are
+already on disk). `--json` waits for the labels so the summary keeps its
+speaker fields — Ctrl+C skips there too. Re-running diarization on a past
+meeting needs retained audio (`speaker.meeting.record_audio` / **Record audio
+for analysis**); without it the working PCM is discarded after Finalize.
 
 A campaign/file destination chosen at meeting start is **durable**: the plan
 is written into the bundle and the route fires as soon as capture stops —

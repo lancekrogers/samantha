@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -27,17 +26,16 @@ const (
 
 // MeetingOpts configures the interactive meeting recorder TUI.
 type MeetingOpts struct {
-	Ctx              context.Context
-	Cancel           context.CancelFunc
-	Capture          listen.Resetter
-	Provider         stt.Provider
-	Writer           *meetinglog.Writer
-	Description      string
-	Path             string // .meeting bundle path
-	StopPhrases      map[string]bool
-	SpeakerStatus    meeting.AnalysisStatus
-	SpeakerError     string
-	FinalizeSpeakers func(context.Context) (meeting.AnalysisResult, error)
+	Ctx           context.Context
+	Cancel        context.CancelFunc
+	Capture       listen.Resetter
+	Provider      stt.Provider
+	Writer        *meetinglog.Writer
+	Description   string
+	Path          string // .meeting bundle path
+	StopPhrases   map[string]bool
+	SpeakerStatus meeting.AnalysisStatus
+	SpeakerError  string
 	// LiveSpeaker is optional; when set, provisional labels attach to live rows.
 	LiveSpeaker LiveSpeakerController
 	// Embedded is true when running inside the main Samantha App launcher
@@ -50,10 +48,7 @@ type meetingLevelMsg float64
 type meetingPartialMsg string
 type meetingUtteranceMsg listen.Utterance
 type meetingErrorMsg struct{ err error }
-type meetingLoopDoneMsg struct {
-	err      error
-	analysis meeting.AnalysisResult
-}
+type meetingLoopDoneMsg struct{ err error }
 type meetingTickMsg time.Time
 type meetingNoteErrMsg struct{ err error }
 
@@ -98,12 +93,9 @@ type meetingModel struct {
 	reducedMotion bool
 	voiceTicking  bool
 
-	started      time.Time
-	stoppedAt    time.Time // zero while still recording; freezes elapsed when set
-	sessionPhase meetingSessionPhase
-	// analysisCancel aborts FinalizeSpeakers when the user abandons mid-diarize.
-	// Set by the listen-loop goroutine; cleared when the loop finishes.
-	analysisCancel context.CancelFunc
+	started        time.Time
+	stoppedAt      time.Time // zero while still recording; freezes elapsed when set
+	sessionPhase   meetingSessionPhase
 	liveSpeaker    LiveSpeakerController
 	liveStats      speaker.LiveStats
 	liveStatsKnown bool
@@ -118,10 +110,11 @@ type meetingModel struct {
 	quitting        bool
 	loopDone        bool
 	loopErr         error
-	analysis        meeting.AnalysisResult
 }
 
 // RunMeeting launches a standalone Bubble Tea meeting recorder (CLI path).
+// It returns when capture stops; closing the bundle, review, diarization, and
+// routing are the caller's post-capture pipeline (see runMeetingRecord).
 func RunMeeting(opts MeetingOpts) error {
 	if opts.Ctx == nil {
 		opts.Ctx = context.Background()
@@ -141,9 +134,6 @@ func RunMeeting(opts MeetingOpts) error {
 	// CLI path never calls beginRecording; wire live labels the same way so
 	// samantha meeting record gets provisional speaker-N (not only launcher).
 	m.liveSpeaker = opts.LiveSpeaker
-	// The recording context is canceled to stop capture. Keep Bubble Tea alive
-	// until the loop has finalized post-capture speaker analysis and delivered
-	// its terminal status; meetingLoopDoneMsg then exits the program normally.
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	final, err := p.Run()
 	if err != nil {
@@ -152,19 +142,35 @@ func RunMeeting(opts MeetingOpts) error {
 	if fm, ok := final.(meetingModel); ok && fm.loopErr != nil {
 		return fm.loopErr
 	}
-	if opts.Writer != nil {
-		summary, closeErr := opts.Writer.Close()
-		if closeErr != nil {
-			return closeErr
-		}
-		results := newMeetingResults(summary)
-		results.standalone = true
-		resultsProgram := tea.NewProgram(standaloneMeetingResults{meetingResultsModel: results}, tea.WithAltScreen())
-		if _, err := resultsProgram.Run(); err != nil {
-			return err
-		}
-	}
 	return nil
+}
+
+// MeetingAnalysisOutcome is a background diarization completion delivered to
+// the standalone review screen and the CLI summary.
+type MeetingAnalysisOutcome struct {
+	Result meeting.AnalysisResult
+	Err    error
+}
+
+// RunMeetingResults shows the standalone post-meeting review. A non-nil
+// analysis channel marks speaker labels as updating in the background and
+// folds the outcome into the view when it arrives before the user leaves.
+func RunMeetingResults(summary meetinglog.Summary, analysis <-chan MeetingAnalysisOutcome) error {
+	forceTUIColorProfile()
+	results := newMeetingResults(summary)
+	results.standalone = true
+	results.analysisBusy = analysis != nil
+	p := tea.NewProgram(standaloneMeetingResults{meetingResultsModel: results}, tea.WithAltScreen())
+	if analysis != nil {
+		go func() {
+			if outcome, ok := <-analysis; ok {
+				// Send after quit is a no-op; the CLI summary still reports.
+				p.Send(meetingAnalysisDoneMsg{result: outcome.Result, err: outcome.Err})
+			}
+		}()
+	}
+	_, err := p.Run()
+	return err
 }
 
 func newEmbeddedMeeting() meetingModel {
@@ -203,7 +209,6 @@ func (m *meetingModel) beginRecording(opts MeetingOpts) tea.Cmd {
 	m.quitting = false
 	m.loopDone = false
 	m.loopErr = nil
-	m.analysis = meeting.AnalysisResult{}
 	m.partial = ""
 	m.stoppedAt = time.Time{}
 	m.sessionPhase = meetingSessionRecording
@@ -248,12 +253,6 @@ func meetingTickCmd() tea.Cmd {
 	return tea.Tick(meetingTickInterval, func(t time.Time) tea.Msg { return meetingTickMsg(t) })
 }
 
-// meetingAnalysisCancelMsg registers the cancel func for mid-diarize abandon.
-type meetingAnalysisCancelMsg struct{ cancel context.CancelFunc }
-
-// meetingAnalysisCancelClearMsg drops the cancel handle after Finalize returns.
-type meetingAnalysisCancelClearMsg struct{}
-
 func (m *meetingModel) startLoop() tea.Cmd {
 	ch := make(chan tea.Msg, 256)
 	opts := m.opts
@@ -275,88 +274,14 @@ func (m *meetingModel) startLoop() tea.Cmd {
 			capture, provider = demoMeetingDeps()
 		}
 		err := listen.LoopWithHooks(opts.Ctx, capture, provider, sink, hooks)
-		var analysis meeting.AnalysisResult
-		// Embedded stop must return control immediately: diarization runs as a
-		// background job owned by the App after meetingDoneMsg (WI-162bbb R1).
-		// The standalone CLI recorder keeps the synchronous, cancellable path.
-		if opts.FinalizeSpeakers != nil && !opts.Embedded {
-			analysis = runMeetingFinalize(ch, opts.FinalizeSpeakers)
-		}
+		// Stop returns control immediately: diarization runs as a background
+		// job — the App owns it after meetingDoneMsg, the CLI recorder after
+		// RunMeeting returns (WI-162bbb R1).
 		// Loop completion must not be dropped: UI uses it to exit cleanly.
-		sendMeeting(ch, meetingLoopDoneMsg{err: err, analysis: analysis})
+		sendMeeting(ch, meetingLoopDoneMsg{err: err})
 	}()
 
 	return tea.Batch(waitMeetingCh(ch), demoMeetingSpeakerStatusCmds())
-}
-
-// runMeetingFinalize runs offline speaker analysis without blocking UI abandon.
-// Native sherpa Process is not interruptible mid-call; we still cancel the
-// context and open results immediately when the user abandons, while a
-// background Finalize may finish later (artifacts optional).
-func runMeetingFinalize(ch chan<- tea.Msg, finalize func(context.Context) (meeting.AnalysisResult, error)) meeting.AnalysisResult {
-	sendMeeting(ch, meetingSpeakerStatusMsg{status: meeting.AnalysisRunning, detail: "diarizing captured audio…"})
-	analysisCtx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
-	sendMeeting(ch, meetingAnalysisCancelMsg{cancel: cancel})
-
-	type finalizeResult struct {
-		analysis meeting.AnalysisResult
-		err      error
-	}
-	done := make(chan finalizeResult, 1)
-	go func() {
-		a, e := finalize(analysisCtx)
-		done <- finalizeResult{analysis: a, err: e}
-	}()
-
-	var analysis meeting.AnalysisResult
-	var analysisErr error
-	abandoned := false
-	select {
-	case r := <-done:
-		analysis, analysisErr = r.analysis, r.err
-	case <-analysisCtx.Done():
-		// Abandon: do not wait for multi-minute native Process.
-		abandoned = true
-		analysis = meeting.AnalysisResult{
-			Status: meeting.AnalysisError,
-			Error:  "speaker analysis cancelled",
-		}
-		analysisErr = analysisCtx.Err()
-		go func() { <-done }() // drain when native work eventually returns
-	}
-	cancel()
-	sendMeeting(ch, meetingAnalysisCancelClearMsg{})
-	// Normalize before/without relying on analysisCtx after cancel() — cancel
-	// always sets ctx.Err() even when Finalize already completed successfully.
-	analysis = normalizeMeetingAnalysisResult(analysis, analysisErr, abandoned)
-	sendMeeting(ch, meetingSpeakerStatusMsg{status: analysis.Status, detail: meetingAnalysisDetail(analysis)})
-	return analysis
-}
-
-// normalizeMeetingAnalysisResult maps cancel/errors into a stable UI result.
-// SpeakerSession often returns (result, nil) with Error filled in — check the
-// Go error and result text, not only analysisErr != nil.
-func normalizeMeetingAnalysisResult(analysis meeting.AnalysisResult, analysisErr error, abandoned bool) meeting.AnalysisResult {
-	if analysisErr != nil && analysis.Error == "" {
-		analysis.Error = analysisErr.Error()
-	}
-	cancelled := abandoned ||
-		errors.Is(analysisErr, context.Canceled) ||
-		strings.Contains(strings.ToLower(analysis.Error), "cancel")
-	if cancelled {
-		analysis.Status = meeting.AnalysisError
-		analysis.Error = "speaker analysis cancelled"
-		return analysis
-	}
-	if analysisErr != nil {
-		if analysis.Status == "" || analysis.Status == meeting.AnalysisRunning || analysis.Status == meeting.AnalysisComplete {
-			analysis.Status = meeting.AnalysisError
-		}
-		if analysis.Error == "" {
-			analysis.Error = analysisErr.Error()
-		}
-	}
-	return analysis
 }
 
 func (m meetingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -424,14 +349,6 @@ func (m meetingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.liveSpeaker.SetEnabled(false)
 		}
 		m.stickyLabel.Clear()
-		return m, nil
-
-	case meetingAnalysisCancelMsg:
-		m.analysisCancel = msg.cancel
-		return m, nil
-
-	case meetingAnalysisCancelClearMsg:
-		m.analysisCancel = nil
 		return m, nil
 
 	case tea.KeyMsg:
@@ -509,14 +426,6 @@ func (m meetingModel) elapsed() time.Duration {
 }
 
 func (m meetingModel) requestStop() (meetingModel, tea.Cmd) {
-	// Second stop (or stop during diarize) abandons offline analysis so the
-	// user is not stuck waiting on multi-minute Finalize.
-	if m.sessionPhase == meetingSessionDiarizing && m.analysisCancel != nil {
-		m.analysisCancel()
-		m.analysisCancel = nil
-		m.status = "Cancelling speaker analysis…"
-		m.statusErr = false
-	}
 	m.markStopping()
 	if m.liveSpeaker != nil {
 		m.liveSpeaker.SetEnabled(false)
@@ -551,8 +460,7 @@ func (m *meetingModel) currentMeetingLiveLabel() string {
 func (m meetingModel) stopResultCmd() tea.Cmd {
 	if m.opts.Embedded {
 		err := m.loopErr
-		analysis := m.analysis
-		return func() tea.Msg { return meetingDoneMsg{Err: err, Analysis: analysis} }
+		return func() tea.Msg { return meetingDoneMsg{Err: err} }
 	}
 	return tea.Quit
 }
@@ -612,10 +520,6 @@ func (m meetingModel) handleListenMsg(msg tea.Msg) (meetingModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case meetingStopRequestedMsg:
 		m.markStopping()
-	case meetingAnalysisCancelMsg:
-		m.analysisCancel = msg.cancel
-	case meetingAnalysisCancelClearMsg:
-		m.analysisCancel = nil
 	case meetingPhaseMsg:
 		// After stop, ignore STT phase flips so "Listening" does not overwrite
 		// Stopping/Diarizing chrome.
@@ -697,7 +601,6 @@ func (m meetingModel) handleListenMsg(msg tea.Msg) (meetingModel, tea.Cmd) {
 	case meetingLoopDoneMsg:
 		m.loopDone = true
 		m.loopErr = msg.err
-		m.analysis = msg.analysis
 		m.voiceMode = anim.ModeIdle
 		m.sessionPhase = meetingSessionDone
 		if m.stoppedAt.IsZero() {

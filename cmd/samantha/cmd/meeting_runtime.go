@@ -69,6 +69,15 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 	if err != nil {
 		return err
 	}
+	// Durable delivery intent: an auto destination known at start is recorded
+	// so the launcher's startup sweep can retry if this process never routes.
+	if dest := cliAutoRouteDest(meeting.FromConfig(&cfgCopy), opts); dest != "" {
+		mode := "auto"
+		if opts.RouteTo != "" {
+			mode = "dest"
+		}
+		_ = writer.WriteRoutePlan(dest, mode)
+	}
 	speakerSession, speakerSetupErr := prepareMeetingSpeakers(ctx, &cfgCopy, capture, writer, bundlePath, progress)
 	if speakerSession != nil {
 		defer speakerSession.Close()
@@ -89,18 +98,17 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 	var loopErr error
 	if useTUI {
 		loopErr = appTUI.RunMeeting(appTUI.MeetingOpts{
-			Ctx:              ctx,
-			Cancel:           cancel,
-			Capture:          capture,
-			Provider:         provider,
-			Writer:           writer,
-			Description:      opts.Description,
-			Path:             bundlePath,
-			StopPhrases:      stopPhraseSet(opts.StopPhrases),
-			SpeakerStatus:    speakerInitialStatus(speakerSession, speakerSetupErr),
-			SpeakerError:     speakerInitialDetail(speakerSession, speakerSetupErr),
-			FinalizeSpeakers: speakerFinalizer(speakerSession),
-			LiveSpeaker:      liveSpeaker,
+			Ctx:           ctx,
+			Cancel:        cancel,
+			Capture:       capture,
+			Provider:      provider,
+			Writer:        writer,
+			Description:   opts.Description,
+			Path:          bundlePath,
+			StopPhrases:   stopPhraseSet(opts.StopPhrases),
+			SpeakerStatus: speakerInitialStatus(speakerSession, speakerSetupErr),
+			SpeakerError:  speakerInitialDetail(speakerSession, speakerSetupErr),
+			LiveSpeaker:   liveSpeaker,
 		})
 	} else {
 		var sinks []listen.Sink
@@ -121,14 +129,40 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 		loopErr = listen.Loop(ctx, capture, provider, sink)
 	}
 
-	var speakerResult meeting.AnalysisResult
-	if speakerSession != nil {
-		analysisCtx, analysisCancel := context.WithTimeout(context.Background(), 2*time.Hour)
-		speakerResult, _ = speakerSession.Finalize(analysisCtx)
-		analysisCancel()
+	// Capture ended: trailer/session_end land now. Diarization and routing run
+	// behind the review instead of gating it (WI-162bbb R1/R2); analysis
+	// events append to the closed bundle.
+	summary, closeErr := writer.Close()
+
+	resultsAnalysis, waitAnalysis, stopAnalysis := startBackgroundDiarize(speakerSession)
+
+	// Auto-chosen destinations (--route, mode=auto default) deliver at capture
+	// end, before review; ask-mode still prompts after review.
+	var routeErr error
+	autoDest := ""
+	routeCfg, cfgErr := config.Load()
+	if cfgErr != nil {
+		routeErr = cfgErr
+	} else {
+		autoDest = cliAutoRouteDest(meeting.FromConfig(routeCfg), opts)
+	}
+	if closeErr == nil && cfgErr == nil && autoDest != "" {
+		routeErr = routeAfterRecordTo(cmd, routeCfg, summary, autoDest, opts.JSON)
 	}
 
-	summary, closeErr := writer.Close()
+	if useTUI && closeErr == nil {
+		if err := appTUI.RunMeetingResults(summary, resultsAnalysis); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "meeting review: %v\n", err)
+		}
+	}
+	if closeErr == nil && cfgErr == nil && autoDest == "" {
+		routeErr = maybeRouteAfterRecord(cmd, routeCfg, summary, opts)
+	}
+
+	speakerResult, speakerRan := awaitDiarize(cmd, waitAnalysis, stopAnalysis)
+	if speakerRan {
+		foldSpeakerOutcome(&summary, speakerResult)
+	}
 
 	var outputErr error
 	if opts.JSON {
@@ -149,19 +183,64 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 			fmt.Fprintf(out, "  Speakers:    %s\n", meetingAnalysisSummary(speakerResult))
 		}
 	}
-
-	// Post-meeting routing is additive; the local meeting bundle remains intact.
-	var routeErr error
-	if closeErr == nil {
-		// Prefer the already-loaded cfg copy over a second Load when possible.
-		routeCfg, loadErr := config.Load()
-		if loadErr != nil {
-			routeErr = loadErr
-		} else {
-			routeErr = maybeRouteAfterRecord(cmd, routeCfg, summary, opts)
-		}
-	}
 	return errors.Join(loopErr, closeErr, outputErr, routeErr)
+}
+
+// startBackgroundDiarize finalizes speaker analysis off the main flow. It
+// returns one outcome channel for the live review fold, one for the summary
+// wait (each buffered so neither reader can starve the other), and a cancel
+// that releases the skip-signal watcher.
+func startBackgroundDiarize(session *meeting.SpeakerSession) (<-chan appTUI.MeetingAnalysisOutcome, <-chan appTUI.MeetingAnalysisOutcome, context.CancelFunc) {
+	if session == nil {
+		return nil, nil, nil
+	}
+	// A fresh signal context makes Ctrl-C skip enrichment cleanly instead of
+	// being swallowed by the recording's already-fired handler.
+	sctx, scancel := signalContext()
+	actx, acancel := context.WithTimeout(sctx, 2*time.Hour)
+	cancel := func() {
+		acancel()
+		scancel()
+	}
+	resultsCh := make(chan appTUI.MeetingAnalysisOutcome, 1)
+	waitCh := make(chan appTUI.MeetingAnalysisOutcome, 1)
+	go func() {
+		result, err := session.Finalize(actx)
+		outcome := appTUI.MeetingAnalysisOutcome{Result: result, Err: err}
+		resultsCh <- outcome
+		close(resultsCh)
+		waitCh <- outcome
+		close(waitCh)
+	}()
+	return resultsCh, waitCh, cancel
+}
+
+// awaitDiarize blocks for background analysis, telling an interactive user
+// how to skip. Ctrl-C cancels enrichment only — the transcript and any
+// delivered route are already on disk.
+func awaitDiarize(cmd *cobra.Command, wait <-chan appTUI.MeetingAnalysisOutcome, cancel context.CancelFunc) (meeting.AnalysisResult, bool) {
+	if wait == nil {
+		return meeting.AnalysisResult{}, false
+	}
+	defer cancel()
+	select {
+	case outcome := <-wait:
+		return outcome.Result, true
+	default:
+	}
+	fmt.Fprintln(cmd.ErrOrStderr(), "Diarizing speakers… (Ctrl+C skips speaker labels; transcript is saved)")
+	outcome := <-wait
+	return outcome.Result, true
+}
+
+// foldSpeakerOutcome mirrors the bundle's post-close analysis into the
+// summary so console/JSON output reports what diarization produced.
+func foldSpeakerOutcome(summary *meetinglog.Summary, result meeting.AnalysisResult) {
+	summary.SpeakerStatus = string(result.Status)
+	summary.SpeakerCount = result.SpeakerCount
+	summary.SpeakerAnalysisFile = result.Artifact
+	summary.AudioFile = result.AudioFile
+	summary.SpeakerError = result.Error
 }
 
 // useMeetingRecordTUI is true for an interactive terminal session that should

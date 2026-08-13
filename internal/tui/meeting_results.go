@@ -48,6 +48,12 @@ type standaloneMeetingResults struct{ meetingResultsModel }
 func (m standaloneMeetingResults) Init() tea.Cmd { return nil }
 
 func (m standaloneMeetingResults) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Background diarization finishing while the user reviews folds the
+	// attributed transcript in, same as the launcher flow.
+	if done, ok := msg.(meetingAnalysisDoneMsg); ok {
+		m.meetingResultsModel.applyAnalysis(done.result, done.err)
+		return m, nil
+	}
 	next, cmd := m.meetingResultsModel.Update(msg)
 	m.meetingResultsModel = next
 	return m, cmd
