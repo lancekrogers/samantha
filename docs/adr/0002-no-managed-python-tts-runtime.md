@@ -46,5 +46,5 @@ forbid Python at inference and forbid expanding that surface.
 ## Evidence
 
 - `internal/qwen`: native Ensure/Inspect; legacy Detect/Quarantine only.
-- `internal/tts.NewQwen3TTS`: managed selection requires native package.
+- `pkg/voiceagent/tts.NewQwen3TTS`: managed selection requires native package.
 - `docs/qwen3-tts-spike.md`: native-only product documentation.

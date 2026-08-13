@@ -22,7 +22,7 @@ import (
 // Live Kokoro regression: real model, real WAV metrics, real skip logs.
 //
 //	just test kokoro-contractions
-//	go test -tags=integration ./internal/tts/ -run LiveKokoro -count=1 -timeout 5m -v
+//	go test -tags=integration ./pkg/voiceagent/tts/ -run LiveKokoro -count=1 -timeout 5m -v
 //
 // Skips when the Kokoro pack is not installed (CI without model cache).
 //

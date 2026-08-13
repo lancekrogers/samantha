@@ -39,7 +39,7 @@ const voiceQueueDepth = 2
 // identical, so nothing showed the difference was an improvement.
 //
 // Batching becomes free above a realtime factor of about 2.3x — roughly 1.8x
-// faster than Kokoro is today. `go test -tags integration ./internal/tts/ -run
+// faster than Kokoro is today. `go test -tags integration ./pkg/voiceagent/tts/ -run
 // TestKokoroRealtimeFactor` is the measurement; phase 009's TTS bake-off should
 // re-run it, and a candidate that clears 2.3x makes this a one-constant change.
 //
@@ -49,11 +49,31 @@ const (
 	laterBatchSegments   = 1
 )
 
+// speakableSegment reports whether a cleaned segment earns a place in the
+// transcript and the synthesis queue. Call this. Neither half below is
+// sufficient alone, and the two reject disjoint kinds of junk:
+//
+//	"Hmm."     speakable=false  pronounceable=true   (a bare hesitation)
+//	"\u200b"  speakable=true   pronounceable=false  (a zero-width space)
+//	"\u0301"  speakable=true   pronounceable=false  (a lone combining accent)
+//
+// So the pair is not redundant in either direction, which is easy to assume
+// from a glance and wrong. TestSpeakableSegmentNeedsBothHalves fails if either
+// half is dropped. Every speech path uses this one predicate: a path that
+// reaches for a half instead is how a filler-only reply got spoken while the
+// recovery line went only to history (PR #223 review).
+func speakableSegment(s string) bool {
+	return brain.HasSpeakableContent(s) && hasPronounceableContent(s)
+}
+
 // hasPronounceableContent reports whether a segment contains anything a
 // synthesiser can say. Punctuation left behind by cleaning — a bare "." from
 // "Umm." — is not speech, and must not reach TTS or be batched onto a real
-// sentence. Letters and digits count; a voiced filler like "Hmm." therefore
-// still qualifies, which is the point of the voiced tier.
+// sentence. It also rejects a segment of nothing but invisible runes, which
+// brain.HasSpeakableContent accepts: it trims spaces, punctuation and symbols,
+// and a combining mark is none of those.
+//
+// Not called directly — speakableSegment is the entry point.
 func hasPronounceableContent(s string) bool {
 	for _, r := range s {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
@@ -982,7 +1002,7 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 			// ends there with the recovery reply. Keep them out of both transcript
 			// and TTS so the finalizer's replacement is the only visible/audible
 			// response. A filler followed by content in the same sentence survives.
-			if display := brain.CleanForVoice(sentence); brain.HasSpeakableContent(display) {
+			if display := brain.CleanForVoice(sentence); speakableSegment(display) {
 				if fullResponse.Len() > 0 {
 					fullResponse.WriteByte(' ')
 				}
@@ -995,14 +1015,11 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 
 			p.recordStrips(stripped, metrics)
 			speakable := brain.CleanForVoice(voiceText)
-			if !brain.HasSpeakableContent(speakable) {
-				continue
-			}
 			// Not just != "": stripping a filler from "Umm." leaves a bare ".",
-			// which is non-empty, unpronounceable, and — now that segments are
+			// which is non-empty, unpronounceable, and — because segments are
 			// batched — would be glued onto the front of a real sentence inside
 			// one synthesis call.
-			if !hasPronounceableContent(speakable) {
+			if !speakableSegment(speakable) {
 				continue
 			}
 

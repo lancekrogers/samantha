@@ -40,7 +40,7 @@ per-sentence synthesis time loses.** Phase 006's work is cheaper than a slower
 model, and an agent that sounds lovely but responds slowly is a worse product.
 
 Kokoro's numbers on the reference machine are **measured, not estimated**
-(`go test -tags integration ./internal/tts/ -run TestKokoroRealtimeFactor`):
+(`go test -tags integration ./pkg/voiceagent/tts/ -run TestKokoroRealtimeFactor`):
 
 ```
 one sentence    synth  901.2 ms   audio 1.185 s   realtime factor 1.32x
