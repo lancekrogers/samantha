@@ -77,6 +77,11 @@ qwen_tts_language: Auto
 qwen_tts_native_url: https://example.invalid/qwen3-tts-native-….tar.gz
 ```
 
+`qwen_tts_model_tier` is passed to the native worker as `QWEN3_TTS_TIER` so multi-tier
+packages load the selected GGUF (fail closed if that tier is missing). Default remains
+`0.6b`. Changing the tier in Settings requires a voice restart / new conversation so the
+warm worker is recreated.
+
 ### Explicit external worker (lab / advanced)
 
 ```yaml

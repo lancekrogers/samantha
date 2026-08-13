@@ -78,7 +78,10 @@ func findNativeInstall(modelsDir, preferredTier string) (nativeInstallPaths, boo
 	return nativeInstallPaths{Root: status.Root, Worker: status.Worker, ModelDir: status.ModelDir}, true
 }
 
-func startNativeQwenSession(ctx context.Context, workerBin, modelDir string, timeout time.Duration) (*nativeQwenSession, error) {
+// startNativeQwenSession launches qwen3-tts-worker against modelDir.
+// tier selects the GGUF when the package is multi-tier (QWEN3_TTS_TIER); empty
+// uses DefaultModelTier so multi-tier packages do not silently pick the wrong size.
+func startNativeQwenSession(ctx context.Context, workerBin, modelDir, tier string, timeout time.Duration) (*nativeQwenSession, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -90,12 +93,13 @@ func startNativeQwenSession(ctx context.Context, workerBin, modelDir string, tim
 	if err != nil {
 		return nil, fmt.Errorf("resolve native model dir: %w", err)
 	}
+	tier = managedqwen.NormalizeModelTier(tier)
 	// Lifetime is owned by the session (Background), not the startup ctx.
 	// CommandContext is required because configureQwenCommand sets Cancel.
 	cmd := exec.CommandContext(context.Background(), workerBin, modelDir)
 	configureQwenCommand(cmd)
 	libDir := filepath.Dir(workerBin)
-	cmd.Env = withNativeLibPath(os.Environ(), libDir)
+	cmd.Env = withNativeWorkerEnv(os.Environ(), libDir, tier)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("native worker stdin: %w", err)
@@ -177,11 +181,19 @@ func startNativeQwenSession(ctx context.Context, workerBin, modelDir string, tim
 	}
 }
 
-func withNativeLibPath(env []string, libDir string) []string {
-	out := make([]string, 0, len(env)+2)
+// withNativeWorkerEnv sets DYLD/LD library paths and optional QWEN3_TTS_TIER.
+// Parent QWEN3_TTS_TIER / QWEN3_TTS_MODEL are stripped so the host config wins
+// and ambient shell env cannot override a fail-closed product tier.
+func withNativeWorkerEnv(env []string, libDir, tier string) []string {
+	out := make([]string, 0, len(env)+4)
 	for _, e := range env {
 		key, _, ok := strings.Cut(e, "=")
-		if ok && (key == "DYLD_LIBRARY_PATH" || key == "LD_LIBRARY_PATH") {
+		if !ok {
+			out = append(out, e)
+			continue
+		}
+		switch key {
+		case "DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH", "QWEN3_TTS_TIER", "QWEN3_TTS_MODEL":
 			continue
 		}
 		out = append(out, e)
@@ -194,6 +206,9 @@ func withNativeLibPath(env []string, libDir string) []string {
 		} else {
 			out = append(out, key+"="+libDir)
 		}
+	}
+	if tier = strings.TrimSpace(tier); tier != "" {
+		out = append(out, "QWEN3_TTS_TIER="+tier)
 	}
 	return out
 }

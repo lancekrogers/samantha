@@ -165,11 +165,11 @@ func (m *settingsModel) selectQwenItem() tea.Cmd {
 		if cur == managedqwen.DefaultModelTier || cur == "0.6b" {
 			next = managedqwen.Tier1_7B
 		}
-		// Fail closed if 1.7B requested but not present.
+		// Fail closed if 1.7B requested but not present in the installed package.
 		if next == managedqwen.Tier1_7B {
 			st := managedqwen.InspectNative(config.ModelsDirFrom(m.cfg), next)
 			if !st.ModelReady {
-				m.message = "1.7B tier is not in the installed package (engine may still block it); keep 0.6b"
+				m.message = "1.7B is not in the installed native package — install a multi-tier release or keep 0.6b"
 				return nil
 			}
 		}
@@ -179,7 +179,8 @@ func (m *settingsModel) selectQwenItem() tea.Cmd {
 		}
 		m.cfg.QwenTTSModelTier = next
 		m.buildQwenItems()
-		m.message = fmt.Sprintf("Qwen model tier set to %s", next)
+		// Worker is started with QWEN3_TTS_TIER; warm process must be recreated.
+		m.message = fmt.Sprintf("Qwen model tier set to %s — restart voice / new conversation to apply", next)
 		return nil
 
 	case qwenOptConsent:

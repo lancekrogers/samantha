@@ -160,7 +160,7 @@ done
 		t.Fatal(err)
 	}
 	modelDir := t.TempDir()
-	session, err := startNativeQwenSession(context.Background(), script, modelDir, 5*time.Second)
+	session, err := startNativeQwenSession(context.Background(), script, modelDir, "0.6b", 5*time.Second)
 	if err != nil {
 		t.Fatalf("startNativeQwenSession: %v", err)
 	}
@@ -215,11 +215,68 @@ func TestNativeQwenSessionRejectsIncompatibleHandshake(t *testing.T) {
 			if err := os.WriteFile(script, []byte(source), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			_, err := startNativeQwenSession(context.Background(), script, t.TempDir(), 5*time.Second)
+			_, err := startNativeQwenSession(context.Background(), script, t.TempDir(), "0.6b", 5*time.Second)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error=%v, want %q rejection", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestWithNativeWorkerEnvSetsTier(t *testing.T) {
+	env := withNativeWorkerEnv([]string{
+		"FOO=bar",
+		"QWEN3_TTS_TIER=bogus",
+		"QWEN3_TTS_MODEL=/should/not/pass",
+		"DYLD_LIBRARY_PATH=/old",
+	}, "/opt/native/bin", "1.7b")
+	got := map[string]string{}
+	for _, e := range env {
+		k, v, ok := strings.Cut(e, "=")
+		if ok {
+			got[k] = v
+		}
+	}
+	if got["FOO"] != "bar" {
+		t.Fatalf("FOO=%q", got["FOO"])
+	}
+	if got["QWEN3_TTS_TIER"] != "1.7b" {
+		t.Fatalf("QWEN3_TTS_TIER=%q, want 1.7b", got["QWEN3_TTS_TIER"])
+	}
+	if _, ok := got["QWEN3_TTS_MODEL"]; ok {
+		t.Fatalf("QWEN3_TTS_MODEL should be stripped, got %q", got["QWEN3_TTS_MODEL"])
+	}
+	if !strings.HasPrefix(got["DYLD_LIBRARY_PATH"], "/opt/native/bin") {
+		t.Fatalf("DYLD_LIBRARY_PATH=%q", got["DYLD_LIBRARY_PATH"])
+	}
+}
+
+func TestStartNativeQwenSessionPassesTierEnv(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "qwen3-tts-worker")
+	// Fail closed unless QWEN3_TTS_TIER=1.7b is set by the host.
+	source := `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${QWEN3_TTS_TIER:-}" != "1.7b" ]]; then
+  echo "missing tier env: ${QWEN3_TTS_TIER:-}" >&2
+  exit 2
+fi
+echo '{"type":"ready","protocol":"qwen3-tts-worker/v1","sample_rate":24000,"pcm_format":"f32le","streaming":false,"presets":["Vivian"]}'
+while IFS= read -r line; do
+  [[ "$line" == *'"shutdown"'* ]] && exit 0
+done
+`
+	if err := os.WriteFile(script, []byte(source), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	session, err := startNativeQwenSession(context.Background(), script, t.TempDir(), "1.7b", 5*time.Second)
+	if err != nil {
+		t.Fatalf("startNativeQwenSession: %v", err)
+	}
+	session.Close()
+
+	_, err = startNativeQwenSession(context.Background(), script, t.TempDir(), "0.6b", 5*time.Second)
+	if err == nil {
+		t.Fatal("expected failure when worker requires 1.7b env")
 	}
 }
 
@@ -244,11 +301,12 @@ done
 	}
 	modelDir := t.TempDir()
 	q, err := NewQwen3TTS(&config.Config{
-		QwenTTSBinary:  script,
-		QwenTTSModel:   modelDir,
-		QwenTTSVoice:   "Vivian",
-		QwenTTSMode:    "customvoice",
-		QwenTTSTimeout: 30,
+		QwenTTSBinary:    script,
+		QwenTTSModel:     modelDir,
+		QwenTTSModelTier: "1.7b",
+		QwenTTSVoice:     "Vivian",
+		QwenTTSMode:      "customvoice",
+		QwenTTSTimeout:   30,
 	})
 	if err != nil {
 		t.Fatalf("NewQwen3TTS: %v", err)
@@ -256,6 +314,9 @@ done
 	defer q.Delete()
 	if !q.native || q.managed {
 		t.Fatalf("native=%v managed=%v", q.native, q.managed)
+	}
+	if q.modelTier != "1.7b" {
+		t.Fatalf("modelTier=%q, want 1.7b", q.modelTier)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

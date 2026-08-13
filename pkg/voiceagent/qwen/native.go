@@ -456,18 +456,24 @@ func requirePathWithinNative(root, target, original string) error {
 	return nil
 }
 
-func normalizeTier(t string) string {
+// NormalizeModelTier canonicalizes tier names for config and worker env
+// (0.6B → 0.6b, 1.7 → 1.7b). Empty input returns DefaultModelTier.
+func NormalizeModelTier(t string) string {
 	t = strings.ToLower(strings.TrimSpace(t))
-	t = strings.ReplaceAll(t, "B", "b")
-	switch t {
-	case "0.6", "0.6b", "600m":
+	if t == "" {
 		return DefaultModelTier
-	case "1.7", "1.7b":
+	}
+	switch t {
+	case "0.6", "0.6b", "600m", "0b6":
+		return DefaultModelTier
+	case "1.7", "1.7b", "1b7":
 		return Tier1_7B
 	default:
 		return t
 	}
 }
+
+func normalizeTier(t string) string { return NormalizeModelTier(t) }
 
 func isExecutable(path string) bool {
 	info, err := os.Stat(path)
