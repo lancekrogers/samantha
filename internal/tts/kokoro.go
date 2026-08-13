@@ -179,6 +179,17 @@ func (k *KokoroTTS) SynthesizeRequest(ctx context.Context, req SynthesisRequest)
 
 		preparedText := textclean.PrepareKokoroText(req.Text)
 		audio.RecordDebugSynthesis(kokoroProviderName, req.Text, preparedText)
+		// Cleaning can empty a non-empty request — a reply of nothing but an
+		// emoji is the realistic case. That is "nothing to say", not a failure,
+		// so close the stream with no frames instead of handing "" to sherpa.
+		if strings.TrimSpace(preparedText) == "" {
+			if err := stream.SetSampleRate(k.sampleRate); err != nil {
+				stream.CloseWithError(err)
+				return
+			}
+			stream.Close()
+			return
+		}
 		audioResult := k.generate(preparedText, sid, speed)
 		if audioResult == nil {
 			stream.CloseWithError(fmt.Errorf("TTS generation returned nil"))

@@ -1,0 +1,10 @@
+{
+  "schema": "samantha.corpus.v1",
+  "description": "Recorded utterance corpus for latency baselines and STT accuracy comparison. Sample rate 16 kHz, mono, 16-bit PCM WAV.",
+  "categories": {
+    "short_command": "Crisp, quickly-ended requests. Establishes the fast-path floor.",
+    "thoughtful_pause": "Longer speech containing genuine mid-sentence pauses. These decide whether a shorter VAD silence window truncates real speech - a corpus without them makes any reduction look safe.",
+    "noisy_room": "Recorded with realistic background noise. Guards against tuning that only holds in a silent room."
+  },
+  "samples": []
+}

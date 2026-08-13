@@ -10,7 +10,12 @@ import (
 // RendererVersion identifies output-affecting renderer behavior (text
 // segmentation, synthesis adaptation, WAV encoding). Bump it when a change
 // should invalidate previously rendered outputs so resume re-renders them.
-const RendererVersion = "1"
+// Bumped to "2" when emoji stripping and year reading moved into the synthesis
+// boundary (textclean.PrepareSpokenText). Those change the audio a segment
+// produces from identical input, so a resume against a manifest rendered by
+// version 1 must re-render rather than skip — otherwise one output file mixes
+// segments that speak an emoji name aloud with segments that do not.
+const RendererVersion = "2"
 
 // SynthIdentity is an optional Synthesizer capability. A synthesizer that can
 // describe its output-affecting identity (e.g. TTS provider and model) lets

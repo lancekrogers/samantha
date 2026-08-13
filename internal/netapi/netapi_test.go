@@ -753,6 +753,47 @@ func TestDispatcherInterruptCancelsInFlightTurn(t *testing.T) {
 	}
 }
 
+func TestDispatcherAppliesPersonaOnlyAfterInflightTurn(t *testing.T) {
+	runner := &scriptedRunner{block: true, runs: make(chan struct{}, 1)}
+	d := NewDispatcher(runner, events.NewBus(), nil, nil)
+	go d.Run(t.Context())
+
+	if err := d.SubmitText("old persona turn"); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.runs
+	applied := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := d.SetPersona(t.Context(), "pirate", func(id string) (PersonaAck, error) {
+			close(applied)
+			return PersonaAck{ID: id}, nil
+		})
+		done <- err
+	}()
+
+	select {
+	case <-applied:
+		t.Fatal("persona changed while the previous turn was still in flight")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	d.Interrupt()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("SetPersona() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("persona switch did not run after the turn completed")
+	}
+	select {
+	case <-applied:
+	default:
+		t.Fatal("persona callback was not applied before SetPersona returned")
+	}
+}
+
 func TestDispatcherClearEmitsEvent(t *testing.T) {
 	bus := events.NewBus()
 	cleared := make(chan struct{}, 1)
@@ -1546,5 +1587,99 @@ func TestSubmitVoiceRequiresVoiceRunner(t *testing.T) {
 	}
 	if err := d.SubmitVoice(); err == nil {
 		t.Fatal("SubmitVoice must fail without voice runner")
+	}
+}
+
+// set_persona must fail cleanly when the server was built without the
+// capability, rather than silently accepting and doing nothing.
+func TestSetPersonaDisabledReportsClearly(t *testing.T) {
+	s := &Server{}
+	conn := &streamConn{out: make(chan []byte, 4)}
+
+	s.handleSetPersona(context.Background(), conn, "pirate")
+
+	select {
+	case raw := <-conn.out:
+		if !strings.Contains(string(raw), "not enabled") {
+			t.Errorf("expected a not-enabled error, got %s", raw)
+		}
+	default:
+		t.Fatal("expected an error envelope")
+	}
+}
+
+// An empty name is a client bug; say so instead of resolving the active persona
+// and reporting success for a request that asked for nothing.
+func TestSetPersonaRejectsEmptyName(t *testing.T) {
+	s := &Server{opts: Options{SetPersona: func(string) (PersonaAck, error) {
+		t.Fatal("resolver must not be called for an empty name")
+		return PersonaAck{}, nil
+	}}}
+	conn := &streamConn{out: make(chan []byte, 4)}
+
+	s.handleSetPersona(context.Background(), conn, "   ")
+
+	select {
+	case raw := <-conn.out:
+		if !strings.Contains(string(raw), "requires a name") {
+			t.Errorf("expected a missing-name error, got %s", raw)
+		}
+	default:
+		t.Fatal("expected an error envelope")
+	}
+}
+
+// A resolver failure (unknown persona) must reach the client verbatim, since
+// the resolver's message names the personas that do exist.
+func TestSetPersonaSurfacesResolverError(t *testing.T) {
+	d := NewDispatcher(&scriptedRunner{}, events.NewBus(), nil, nil)
+	go d.Run(t.Context())
+	s := &Server{dispatcher: d, opts: Options{SetPersona: func(string) (PersonaAck, error) {
+		return PersonaAck{}, errors.New(`persona "ghost" not found (available: alpha, beta)`)
+	}}}
+	conn := &streamConn{out: make(chan []byte, 4)}
+
+	s.handleSetPersona(context.Background(), conn, "ghost")
+
+	select {
+	case raw := <-conn.out:
+		if !strings.Contains(string(raw), "available: alpha, beta") {
+			t.Errorf("resolver error should reach the client, got %s", raw)
+		}
+	default:
+		t.Fatal("expected an error envelope")
+	}
+}
+
+// The ack must state that the change applies to the next turn. A session binds
+// its identity for its whole life, so an ack implying the in-flight turn changed
+// would be a lie the client acts on.
+func TestSetPersonaAckSaysItAppliesToTheNextTurn(t *testing.T) {
+	d := NewDispatcher(&scriptedRunner{}, events.NewBus(), nil, nil)
+	go d.Run(t.Context())
+	s := &Server{dispatcher: d, opts: Options{SetPersona: func(id string) (PersonaAck, error) {
+		return PersonaAck{ID: id, DisplayName: "Pirate", PromptHash: "abc123"}, nil
+	}}}
+	conn := &streamConn{out: make(chan []byte, 4)}
+
+	s.handleSetPersona(context.Background(), conn, "pirate")
+
+	select {
+	case raw := <-conn.out:
+		var got map[string]any
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("ack is not valid JSON: %v", err)
+		}
+		if got["type"] != "set_persona_ack" {
+			t.Errorf("type = %v", got["type"])
+		}
+		if got["applies_to"] != "next_turn" {
+			t.Errorf("applies_to = %v, want next_turn — the in-flight turn keeps its identity", got["applies_to"])
+		}
+		if got["id"] != "pirate" || got["display_name"] != "Pirate" || got["prompt_hash"] != "abc123" {
+			t.Errorf("ack lost detail: %v", got)
+		}
+	default:
+		t.Fatal("expected an ack envelope")
 	}
 }

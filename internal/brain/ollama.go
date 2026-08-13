@@ -12,6 +12,7 @@ import (
 	"github.com/ollama/ollama/api"
 
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/prompts"
 	"github.com/lancekrogers/samantha/internal/skills"
 )
 
@@ -28,11 +29,21 @@ type OllamaBrain struct {
 	history      []api.Message
 	cfg          *config.Config
 	systemPrompt string
-	// fullSystemPrompt is assembled once at construction (persona prompt +
-	// environment + skills catalog) and sent byte-for-byte on every request,
-	// so Ollama's KV prefix cache survives across turns. Per-turn skill
-	// activations are spliced onto the current user message instead.
-	fullSystemPrompt  string
+	// fullSystemPrompt is the assembled prompt (persona + environment + skills
+	// catalog + turn instruction) sent byte-for-byte on every request, so
+	// Ollama's KV prefix cache survives across turns. It is rebuilt only when
+	// the persona document actually changes. Per-turn skill activations are
+	// spliced onto the current user message instead.
+	fullSystemPrompt string
+	// turnInstruction is the per-reply voice instruction. R-P3 brought it to
+	// ollama, which previously received none — so the same persona produced
+	// longer, more markdown-shaped replies here than on Claude or Grok.
+	turnInstruction string
+	// personaReloader re-reads the persona document each turn so an edit lands
+	// on the next reply. The assembled prompt is only rebuilt when the document
+	// actually changed, which keeps the server's prefix cache intact on the
+	// overwhelmingly common no-change path.
+	personaReloader   *promptReloader
 	keepAlive         *api.Duration
 	skills            []skills.Skill
 	skillRouter       *semanticSkillRouter
@@ -109,6 +120,12 @@ func NewOllama(cfg *config.Config) (*OllamaBrain, error) {
 	if err != nil {
 		return nil, err
 	}
+	// R-P3: ollama previously received no turn instruction, so the same persona
+	// produced longer, more markdown-shaped replies here than on Claude/Grok.
+	turn, err := turnInstruction(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	catalog, err := loadSkillsCatalog(context.Background(), cfg, workDir)
 	if err != nil {
@@ -131,12 +148,16 @@ func NewOllama(cfg *config.Config) (*OllamaBrain, error) {
 	}
 
 	return &OllamaBrain{
-		client:            client,
-		model:             cfg.OllamaModel,
-		workDir:           workDir,
-		cfg:               cfg,
-		systemPrompt:      systemPrompt,
-		fullSystemPrompt:  assembleSystemPrompt(systemPrompt, workDir, catalog),
+		client:           client,
+		model:            cfg.OllamaModel,
+		workDir:          workDir,
+		cfg:              cfg,
+		systemPrompt:     systemPrompt,
+		fullSystemPrompt: assembleSystemPrompt(systemPrompt, workDir, catalog, turn, cfg),
+		turnInstruction:  turn,
+		personaReloader: newPromptReloader(prompts.KindPersona, cfg.Persona, systemPrompt, func(hash string) {
+			fmt.Fprintf(os.Stderr, "samantha: persona prompt changed (hash %s)\n", hash)
+		}),
 		keepAlive:         keepAlive,
 		skills:            catalog,
 		skillRouter:       router,
@@ -150,6 +171,12 @@ func NewOllama(cfg *config.Config) (*OllamaBrain, error) {
 // and then checks the configured Samantha skills_dir. .claude/skills is
 // intentionally not scanned — Claude Code owns that path. Missing dirs yield
 // empty contributions, not errors.
+// SkillsCatalogFor exposes the loader the ollama brain uses, so the CLI preview
+// renders the same catalog the model sees rather than a re-derived one.
+func SkillsCatalogFor(ctx context.Context, cfg *config.Config, workDir string) ([]skills.Skill, error) {
+	return loadSkillsCatalog(ctx, cfg, workDir)
+}
+
 func loadSkillsCatalog(ctx context.Context, cfg *config.Config, workDir string) ([]skills.Skill, error) {
 	if cfg == nil || !cfg.SkillsEnabled {
 		return nil, nil
@@ -170,6 +197,7 @@ func loadSkillsCatalog(ctx context.Context, cfg *config.Config, workDir string) 
 // Implements an agent loop: if the model returns tool calls, executes them
 // and re-requests until the model produces a text response.
 func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts StreamOptions) (*Stream, error) {
+	o.refreshSystemPrompt(opts.OnPromptWarn)
 	skillCtx := o.routeSkillContext(ctx, input, opts.OnToolStart, opts.OnToolEnd)
 	o.history = append(o.history, api.Message{Role: "user", Content: encodeOllamaUser(opts.Speaker, input)})
 	o.ensureContextBudget(skillCtx)
@@ -362,10 +390,7 @@ func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOp
 		}
 
 		// Text response. Clean first, then fall back, so the fallback is spoken verbatim.
-		text := cleanForVoice(response.Content)
-		if text == "" {
-			text = fallbackResponse
-		}
+		text := spokenOrFallback(cleanForVoice(response.Content))
 		o.history = append(o.history, api.Message{Role: "assistant", Content: text})
 		o.trimHistory()
 		return text, nil
@@ -501,15 +526,39 @@ func (o *OllamaBrain) LoadHistory(turns []Turn) {
 	}
 }
 
+// refreshSystemPrompt re-resolves the persona document and rebuilds the
+// assembled system prompt only if it changed.
+//
+// The rebuild is conditional for a concrete reason: buildMessages sends
+// fullSystemPrompt as the leading message, and ollama caches the prefix of a
+// conversation server-side. Emitting a different system prompt invalidates that
+// cache and re-processes the whole transcript. So an unchanged persona keeps the
+// exact same string, and a genuinely edited one pays the invalidation once —
+// which is correct, because the user did change what the model should see.
+func (o *OllamaBrain) refreshSystemPrompt(onWarn func(message string)) {
+	persona, changed, err := o.personaReloader.resolve(o.cfg)
+	if err != nil && onWarn != nil {
+		onWarn(err.Error())
+	}
+	if !changed {
+		return
+	}
+	o.systemPrompt = persona
+	o.fullSystemPrompt = assembleSystemPrompt(persona, o.workDir, o.skills, o.turnInstruction, o.cfg)
+}
+
 // assembleSystemPrompt builds the session-stable system prompt: persona
 // prompt, environment grounding, and the Tier-1 skills catalog. It runs once
 // per brain — the result must stay byte-identical across a session's requests.
-func assembleSystemPrompt(personaPrompt, workDir string, catalog []skills.Skill) string {
-	full := personaPrompt + "\n" + EnvironmentContext(workDir)
-	if sc := SkillContext(catalog); sc != "" {
-		full += sc
-	}
-	return full
+func assembleSystemPrompt(personaPrompt, workDir string, catalog []skills.Skill, turn string, cfg *config.Config) string {
+	return AssembleSystemPrompt(SystemPromptInput{
+		Provider: providerOllama,
+		Persona:  personaPrompt,
+		WorkDir:  workDir,
+		Skills:   catalog,
+		Turn:     turn,
+		Cfg:      cfg,
+	})
 }
 
 // buildMessages assembles one chat request: the frozen system prompt, the

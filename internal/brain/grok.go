@@ -9,6 +9,7 @@ import (
 	"github.com/lancekrogers/grok-go-sdk/pkg/grok"
 
 	"github.com/lancekrogers/samantha/internal/config"
+	"github.com/lancekrogers/samantha/internal/prompts"
 )
 
 // grokRunner is the slice of the grok client the brain needs: streaming for
@@ -27,6 +28,8 @@ type GrokBrain struct {
 	cfg             *config.Config
 	systemPrompt    string
 	turnInstruction string
+	personaReloader *promptReloader
+	turnReloader    *promptReloader
 	history         []Turn
 	// speakerNames resolves stable speaker ids for flatten prompts (optional).
 	speakerNames SpeakerNames
@@ -56,12 +59,18 @@ func NewGrok(cfg *config.Config) (*GrokBrain, error) {
 		return nil, err
 	}
 
-	return &GrokBrain{
+	g := &GrokBrain{
 		client:          client,
 		cfg:             cfg,
 		systemPrompt:    systemPrompt,
 		turnInstruction: turn,
-	}, nil
+		personaReloader: newPromptReloader(prompts.KindPersona, cfg.Persona, systemPrompt, func(hash string) {
+			fmt.Fprintf(os.Stderr, "samantha: persona prompt changed (hash %s)\n", hash)
+		}),
+		turnReloader: newPromptReloader(prompts.KindTurn, cfg.TurnPrompt, turn, nil),
+	}
+	g.systemPrompt = g.assembleSystem(systemPrompt)
+	return g, nil
 }
 
 // Available returns true if the grok CLI can be located.
@@ -73,7 +82,34 @@ func (g *GrokBrain) Available() bool {
 // ThinkStream sends input to Grok and returns a channel of streaming text chunks.
 // Only spoken "text" events are forwarded; "thought" (reasoning) events are
 // dropped so Samantha never voices her chain of thought.
+// assembleSystem builds Grok's system prompt through the shared policy, so it
+// receives the same machine grounding every other provider does.
+func (g *GrokBrain) assembleSystem(persona string) string {
+	workDir, _ := os.Getwd()
+	return AssembleSystemPrompt(SystemPromptInput{
+		Provider: providerGrok,
+		Persona:  persona,
+		WorkDir:  workDir,
+		Cfg:      g.cfg,
+	})
+}
+
+// refreshPrompts re-resolves the bound persona and turn documents each turn.
+func (g *GrokBrain) refreshPrompts(onWarn func(string)) {
+	if persona, _, err := g.personaReloader.resolve(g.cfg); err == nil {
+		g.systemPrompt = g.assembleSystem(persona)
+	} else if onWarn != nil {
+		onWarn(err.Error())
+	}
+	if turn, _, err := g.turnReloader.resolve(g.cfg); err == nil {
+		g.turnInstruction = turn
+	} else if onWarn != nil {
+		onWarn(err.Error())
+	}
+}
+
 func (g *GrokBrain) ThinkStream(ctx context.Context, input string, streamOpts StreamOptions) (*Stream, error) {
+	g.refreshPrompts(streamOpts.OnPromptWarn)
 	g.history = append(g.history, Turn{Role: "user", Content: input, Speaker: streamOpts.Speaker})
 
 	out := make(chan string, 8)
@@ -211,11 +247,7 @@ func (g *GrokBrain) thinkFullAttempt(ctx context.Context, streamOpts StreamOptio
 	}
 
 	// Clean first, then fall back, so the fallback is spoken verbatim.
-	response := cleanForVoice(result.Text)
-	if response == "" {
-		response = fallbackResponse
-	}
-	return response, nil
+	return spokenOrFallback(cleanForVoice(result.Text)), nil
 }
 
 // dropSession clears the CLI resume id. Call whenever the session is

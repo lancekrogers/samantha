@@ -4,12 +4,15 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lancekrogers/samantha/internal/config"
 
 	"github.com/lancekrogers/samantha/internal/events"
 )
@@ -213,5 +216,66 @@ func TestTranscriptScore(t *testing.T) {
 	score := transcriptScore("hello samantha", "hello there samantha")
 	if score <= 0.7 {
 		t.Fatalf("transcriptScore() = %.2f, want > 0.7", score)
+	}
+}
+
+// Error case first: a mismatched --expect-text list must fail before any model
+// is loaded, since the pairing is positional and a silent misalignment would
+// score every fixture against the wrong transcript.
+func TestFullTurnBenchmarkRejectsMismatchedExpectations(t *testing.T) {
+	defer restoreBenchmarkFlags(
+		&benchmarkFullTurnFixtures, &benchmarkExpectedTranscripts,
+	)()
+	benchmarkFullTurnFixtures = []string{"a.wav", "b.wav"}
+	benchmarkExpectedTranscripts = []string{"only one"}
+
+	_, err := runFullTurnBenchmarks(context.Background(), &config.Config{})
+	if err == nil {
+		t.Fatal("expected an error when --expect-text count does not match --full-turn-fixture count")
+	}
+	if !strings.Contains(err.Error(), "--full-turn-fixture") {
+		t.Errorf("error should name the offending flag, got: %v", err)
+	}
+}
+
+// A full turn crosses both the latency and the transcript budgets, so its
+// results must be evaluated against both threshold families.
+func TestFullTurnResultsCarryBothThresholdFamilies(t *testing.T) {
+	savedPlayback, savedScore := benchmarkMaxPlaybackStart, benchmarkMinTranscriptScore
+	defer func() {
+		benchmarkMaxPlaybackStart, benchmarkMinTranscriptScore = savedPlayback, savedScore
+	}()
+	benchmarkMaxPlaybackStart = 500 * time.Millisecond
+	benchmarkMinTranscriptScore = 0.9
+
+	result := benchmarkResult{Mode: "voice", TranscriptScore: 0.5}
+	result.Metrics.PlaybackStartElapsed = 900 * time.Millisecond
+	violations := fullTurnViolations(result)
+
+	var sawLatency, sawScore bool
+	for _, v := range violations {
+		if strings.Contains(v, "playback start") {
+			sawLatency = true
+		}
+		if strings.Contains(v, "transcript score") {
+			sawScore = true
+		}
+	}
+	if !sawLatency || !sawScore {
+		t.Errorf("expected both a latency and a transcript-score violation, got %v", violations)
+	}
+}
+
+// restoreBenchmarkFlags snapshots package-level flag slices and restores them,
+// so tests that set them cannot leak into each other.
+func restoreBenchmarkFlags(slices ...*[]string) func() {
+	saved := make([][]string, len(slices))
+	for i, s := range slices {
+		saved[i] = *s
+	}
+	return func() {
+		for i, s := range slices {
+			*s = saved[i]
+		}
 	}
 }

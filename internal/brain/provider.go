@@ -10,6 +10,12 @@ type StreamOptions struct {
 	// when live labels are active. Empty means ordinary single-user "User".
 	// Stored on history turns and used for prompt attribution.
 	Speaker string
+	// OnPromptWarn reports a non-fatal prompt-resolution failure for this turn
+	// — typically a half-saved persona document. The turn continues on the last
+	// good prompt, so this is a warning the UI should surface rather than an
+	// error that ends the turn: bricking a live conversation because a file was
+	// mid-save is worse than speaking with a slightly stale personality.
+	OnPromptWarn func(message string)
 	// OnToolStart is invoked just before a tool runs (optional; for UI).
 	OnToolStart func(name, summary string)
 	// OnToolEnd is invoked after a tool returns (optional; for UI).

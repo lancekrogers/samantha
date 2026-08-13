@@ -48,6 +48,18 @@ func ResolveBinding(cfg *config.Config, id string) (*SessionBinding, error) {
 	}
 	p, err := Load(id)
 	if err != nil {
+		// A raw "no such file" sends the user looking for a path bug. Name the
+		// personas that do exist instead — same shape as EnsureAndApply's
+		// message, so both entry points fail the same way.
+		if isNotExist(err) {
+			if available, listErr := List(); listErr == nil && len(available) > 0 {
+				ids := make([]string, 0, len(available))
+				for _, x := range available {
+					ids = append(ids, x.ID)
+				}
+				return nil, fmt.Errorf("persona %q not found (available: %s)", id, strings.Join(ids, ", "))
+			}
+		}
 		return nil, err
 	}
 

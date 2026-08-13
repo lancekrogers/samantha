@@ -9,5 +9,17 @@ prompt:
 
 metadata:
   id: samantha-turn
-  version: 1
-  description: Per-turn response instruction appended to each user message on the Claude and Grok paths.
+  version: 2
+  description: |-
+    Per-turn response instruction. Reaches every provider through the shared
+    prompt policy (brain.SystemPromptPolicy): ollama rebuilds its system prompt
+    per turn so it rides there, while Claude and Grok append it to the user
+    message. Placement is provider mechanics; presence is policy.
+
+    A short-opening instruction was tried here and REMOVED — see festival
+    decision D012. Two phrasings were measured on the fixed five-turn set. The
+    first ("a dozen words at most") made short answers LONGER, because the model
+    read the number as a target to fill. The second, with no number, fixed that
+    on one model but moved the wrong way on qwen3.6, the model actually in use.
+    Neither run showed a benefit. Do not re-add it without measuring on the
+    model that will run it.

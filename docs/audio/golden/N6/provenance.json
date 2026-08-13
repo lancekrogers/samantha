@@ -1,0 +1,78 @@
+{
+  "item": "N6",
+  "claim": "Emoji are stripped and standalone four-digit years are read as years; plain integers and decimals are left to eSpeak, which already renders them as words.",
+  "before": {
+    "text": "Back in 1999 we shipped. Done \ud83c\udf89",
+    "audio": "before.wav",
+    "measured": {
+      "duration_s": 3.73,
+      "sample_rate": 24000,
+      "num_samples": 89514,
+      "peak": 0.4413,
+      "rms": 0.062,
+      "rms_dbfs": -24.15
+    }
+  },
+  "after": {
+    "text": "Back in 1999 we shipped. Done \ud83c\udf89",
+    "audio": "after.wav",
+    "measured": {
+      "duration_s": 2.728,
+      "sample_rate": 24000,
+      "num_samples": 65475,
+      "peak": 0.3736,
+      "rms": 0.0637,
+      "rms_dbfs": -23.92
+    }
+  },
+  "tts": {
+    "provider": "kokoro",
+    "voice": "af_heart",
+    "speed": 0.95,
+    "pack": "sherpa-multi-lang-v1_0",
+    "model_sha256": "c436dc6a842b62aba06af67e40bafcfb9c60ac3af895358f1974ad9a7f7c026b"
+  },
+  "provenance": {
+    "samantha_commit": "95616cc655c026ee83d41ba2b8c8162515150645-dirty",
+    "before_synthesized_at": "95616cc655c026ee83d41ba2b8c8162515150645",
+    "machine": "arm64",
+    "os": "Darwin 25.5.0"
+  },
+  "listen_check": {
+    "status": "pending",
+    "instructions": "Play before.wav then after.wav. Two audible differences: the before side speaks the emoji name aloud, and reads 1999 as 'one thousand nine hundred ninety-nine' where the after side says 'nineteen ninety-nine'.",
+    "verdict": null,
+    "listener": null
+  },
+  "isolation_probe": {
+    "method": "each transform isolated: same sentence synthesized pre-change vs post-change, durations in seconds",
+    "results": {
+      "integer_42": {
+        "old": 1.478,
+        "new": 1.488,
+        "delta_s": 0.01,
+        "verdict": "no-op \u2014 eSpeak already expands plain integers"
+      },
+      "decimal_314": {
+        "old": 2.583,
+        "new": 2.639,
+        "delta_s": 0.056,
+        "verdict": "no-op \u2014 eSpeak already expands simple decimals"
+      },
+      "year_1999": {
+        "old": 1.934,
+        "new": 1.649,
+        "delta_s": -0.285,
+        "verdict": "KEPT \u2014 cardinal reading became a year reading"
+      },
+      "emoji_tada": {
+        "old": 1.241,
+        "new": 0.624,
+        "delta_s": -0.617,
+        "verdict": "KEPT \u2014 Kokoro was speaking the emoji name aloud"
+      }
+    },
+    "conclusion": "The task's premise was half wrong. Kokoro/eSpeak ALREADY renders plain integers and simple decimals as words, so that half of the requirement was satisfied before this change. General number expansion was implemented, measured as a no-op, found to garble adjacent forms (555-1234, 2026-08-11, $5, R2D2, 12:00), and REMOVED. What shipped is only what measured a difference: emoji stripping and standalone four-digit year reading."
+  },
+  "scope_decision": "D008 \u2014 general number expansion removed after measurement; see 002_PLAN/decisions/"
+}

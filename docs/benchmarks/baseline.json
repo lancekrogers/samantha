@@ -1,0 +1,229 @@
+{
+  "schema": "samantha.benchmark.v1",
+  "provenance": {
+    "machine": "Mac16,9",
+    "cpu": "Apple M4 Max",
+    "os": "macOS 26.5",
+    "samantha_commit": "eb52c54",
+    "worktree": "dirty",
+    "persona": "samantha",
+    "brain_provider": "ollama",
+    "brain_model": "qwen3.6",
+    "tts_provider": "kokoro",
+    "fixtures": "synthetic fixtures",
+    "recorded_at": "2026-08-11T08:25:34Z"
+  },
+  "thresholds": {
+    "playback_start_p50_ms": 1200,
+    "regression_tolerance_pct": 10
+  },
+  "results": [
+    {
+      "mode": "voice",
+      "iteration": 1,
+      "fixture": "/Users/lancerogers/.cache/festival-voice/fixtures/bench/synth-01.wav",
+      "elapsed": 6405666542,
+      "metrics": {
+        "Outcome": "completed",
+        "Degraded": false,
+        "Interrupted": false,
+        "STTFinalElapsed": 3633117333,
+        "FirstModelChunkElapsed": 4756537208,
+        "ModelCompleteElapsed": 4777624625,
+        "FirstSegmentElapsed": 4777646083,
+        "FirstAudioReadyElapsed": 5685959000,
+        "PlaybackStartElapsed": 5685959042,
+        "PlaybackCompleteElapsed": 6405642667,
+        "BargeInElapsed": 0,
+        "ToolLeakLines": 0
+      },
+      "transcript": "What is the capital of France? Answer in one word.",
+      "expected": "What is the capital of France? Answer in one word.",
+      "transcript_score": 1
+    },
+    {
+      "mode": "voice",
+      "iteration": 1,
+      "fixture": "/Users/lancerogers/.cache/festival-voice/fixtures/bench/synth-02.wav",
+      "elapsed": 4611997375,
+      "metrics": {
+        "Outcome": "completed",
+        "Degraded": false,
+        "Interrupted": false,
+        "STTFinalElapsed": 3464012417,
+        "FirstModelChunkElapsed": 4601247083,
+        "ModelCompleteElapsed": 4611941083,
+        "FirstSegmentElapsed": 0,
+        "FirstAudioReadyElapsed": 0,
+        "PlaybackStartElapsed": 0,
+        "PlaybackCompleteElapsed": 0,
+        "BargeInElapsed": 0,
+        "ToolLeakLines": 1
+      },
+      "transcript": "What is 2 plus 2? Answer with just the number.",
+      "expected": "What is two plus two? Answer with just the number.",
+      "transcript_score": 0.8000000000000002
+    },
+    {
+      "mode": "voice",
+      "iteration": 1,
+      "fixture": "/Users/lancerogers/.cache/festival-voice/fixtures/bench/synth-03.wav",
+      "elapsed": 10602548500,
+      "metrics": {
+        "Outcome": "completed",
+        "Degraded": false,
+        "Interrupted": false,
+        "STTFinalElapsed": 2723627000,
+        "FirstModelChunkElapsed": 8671251416,
+        "ModelCompleteElapsed": 8713577583,
+        "FirstSegmentElapsed": 8713601208,
+        "FirstAudioReadyElapsed": 9604002666,
+        "PlaybackStartElapsed": 9604002708,
+        "PlaybackCompleteElapsed": 10602475666,
+        "BargeInElapsed": 0,
+        "ToolLeakLines": 0
+      },
+      "transcript": "Say hello in exactly three words.",
+      "expected": "Say hello in exactly three words.",
+      "transcript_score": 1
+    },
+    {
+      "mode": "voice",
+      "iteration": 2,
+      "fixture": "/Users/lancerogers/.cache/festival-voice/fixtures/bench/synth-01.wav",
+      "elapsed": 62409526250,
+      "metrics": {
+        "Outcome": "completed",
+        "Degraded": false,
+        "Interrupted": false,
+        "STTFinalElapsed": 3673135667,
+        "FirstModelChunkElapsed": 60890300875,
+        "ModelCompleteElapsed": 60901697667,
+        "FirstSegmentElapsed": 60901711250,
+        "FirstAudioReadyElapsed": 61712948125,
+        "PlaybackStartElapsed": 61712948167,
+        "PlaybackCompleteElapsed": 62409474792,
+        "BargeInElapsed": 0,
+        "ToolLeakLines": 0
+      },
+      "transcript": "What is the capital of France? Answer in one word.",
+      "expected": "What is the capital of France? Answer in one word.",
+      "transcript_score": 1
+    },
+    {
+      "mode": "voice",
+      "iteration": 2,
+      "fixture": "/Users/lancerogers/.cache/festival-voice/fixtures/bench/synth-02.wav",
+      "elapsed": 4383443750,
+      "metrics": {
+        "Outcome": "completed",
+        "Degraded": false,
+        "Interrupted": false,
+        "STTFinalElapsed": 3463293292,
+        "FirstModelChunkElapsed": 4372673833,
+        "ModelCompleteElapsed": 4383400875,
+        "FirstSegmentElapsed": 0,
+        "FirstAudioReadyElapsed": 0,
+        "PlaybackStartElapsed": 0,
+        "PlaybackCompleteElapsed": 0,
+        "BargeInElapsed": 0,
+        "ToolLeakLines": 1
+      },
+      "transcript": "What is 2 plus 2? Answer with just the number.",
+      "expected": "What is two plus two? Answer with just the number.",
+      "transcript_score": 0.8000000000000002
+    },
+    {
+      "mode": "voice",
+      "iteration": 2,
+      "fixture": "/Users/lancerogers/.cache/festival-voice/fixtures/bench/synth-03.wav",
+      "elapsed": 7774598459,
+      "metrics": {
+        "Outcome": "completed",
+        "Degraded": false,
+        "Interrupted": false,
+        "STTFinalElapsed": 2747891750,
+        "FirstModelChunkElapsed": 5892639250,
+        "ModelCompleteElapsed": 5956008708,
+        "FirstSegmentElapsed": 5956032291,
+        "FirstAudioReadyElapsed": 6845756208,
+        "PlaybackStartElapsed": 6845756250,
+        "PlaybackCompleteElapsed": 7774530750,
+        "BargeInElapsed": 0,
+        "ToolLeakLines": 0
+      },
+      "transcript": "Say hello in exactly three words.",
+      "expected": "Say hello in exactly three words.",
+      "transcript_score": 1
+    },
+    {
+      "mode": "voice",
+      "iteration": 3,
+      "fixture": "/Users/lancerogers/.cache/festival-voice/fixtures/bench/synth-01.wav",
+      "elapsed": 6166063750,
+      "metrics": {
+        "Outcome": "completed",
+        "Degraded": false,
+        "Interrupted": false,
+        "STTFinalElapsed": 3657467792,
+        "FirstModelChunkElapsed": 4627921375,
+        "ModelCompleteElapsed": 4649119750,
+        "FirstSegmentElapsed": 4649146000,
+        "FirstAudioReadyElapsed": 5446267667,
+        "PlaybackStartElapsed": 5446267708,
+        "PlaybackCompleteElapsed": 6166045042,
+        "BargeInElapsed": 0,
+        "ToolLeakLines": 0
+      },
+      "transcript": "What is the capital of France? Answer in one word.",
+      "expected": "What is the capital of France? Answer in one word.",
+      "transcript_score": 1
+    },
+    {
+      "mode": "voice",
+      "iteration": 3,
+      "fixture": "/Users/lancerogers/.cache/festival-voice/fixtures/bench/synth-02.wav",
+      "elapsed": 4553233416,
+      "metrics": {
+        "Outcome": "completed",
+        "Degraded": false,
+        "Interrupted": false,
+        "STTFinalElapsed": 3480330375,
+        "FirstModelChunkElapsed": 4542519917,
+        "ModelCompleteElapsed": 4553214792,
+        "FirstSegmentElapsed": 0,
+        "FirstAudioReadyElapsed": 0,
+        "PlaybackStartElapsed": 0,
+        "PlaybackCompleteElapsed": 0,
+        "BargeInElapsed": 0,
+        "ToolLeakLines": 1
+      },
+      "transcript": "What is 2 plus 2? Answer with just the number.",
+      "expected": "What is two plus two? Answer with just the number.",
+      "transcript_score": 0.8000000000000002
+    },
+    {
+      "mode": "voice",
+      "iteration": 3,
+      "fixture": "/Users/lancerogers/.cache/festival-voice/fixtures/bench/synth-03.wav",
+      "elapsed": 13513690542,
+      "metrics": {
+        "Outcome": "completed",
+        "Degraded": false,
+        "Interrupted": false,
+        "STTFinalElapsed": 2758437000,
+        "FirstModelChunkElapsed": 10798760917,
+        "ModelCompleteElapsed": 10883043833,
+        "FirstSegmentElapsed": 10883057250,
+        "FirstAudioReadyElapsed": 12027545958,
+        "PlaybackStartElapsed": 12027546083,
+        "PlaybackCompleteElapsed": 13513599750,
+        "BargeInElapsed": 0,
+        "ToolLeakLines": 0
+      },
+      "transcript": "Say hello in exactly three words.",
+      "expected": "Say hello in exactly three words.",
+      "transcript_score": 1
+    }
+  ]
+}

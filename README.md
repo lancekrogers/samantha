@@ -639,7 +639,7 @@ Prompt bodies stay in `prompts/` (see `samantha prompts`).
 | `whispercpp_model` | `base.en` | `WHISPERCPP_MODEL` | Downloadable whisper.cpp model name |
 | `whispercpp_model_path` | `~/.cache/festival-voice/models/whispercpp/ggml-base.en.bin` | `WHISPERCPP_MODEL_PATH` | whisper.cpp model path |
 | `vad_enabled` | `true` | | Enable voice activity detection |
-| `vad_silence_duration` | `0.8` | | Seconds of silence before ending speech (raise to stop being cut off) |
+| `vad_silence_duration` | `0.5` | | Seconds of silence before ending speech (raise to stop being cut off) |
 | `vad_threshold` | `0.6` | `VAD_THRESHOLD` | Speech-detection confidence (raise to ignore background noise) |
 | `vad_min_speech_duration` | `0.25` | `VAD_MIN_SPEECH_DURATION` | Minimum speech length in seconds (raise to ignore brief noises) |
 | `voice_frontend_enabled` | `false` | `VOICE_FRONTEND_ENABLED` | Local AEC/NS/AGC on mic input (off by default: the noise suppressor currently over-suppresses normal-volume speech; enable only with barge-in) |
@@ -782,8 +782,10 @@ installed (`samantha models ensure`, once available), run the smoke plan:
 # Deterministic, no models needed:
 go test ./internal/stt ./internal/endpoint ./internal/audio
 
+# Pipeline flow with stubbed stages (no models, no network):
+go test -tags integration ./tests/voiceflow      # turn state machine + barge-in
+
 # Real-provider smoke (needs models + whisper.cpp binary for that provider):
-go test -tags integration ./tests/voiceflow      # fixture-driven pipeline flow
 just qwen-live                                   # real native Qwen voices + cancel/restart WAVs
 samantha listen                                  # manual: speak a short command
 ```
@@ -802,12 +804,30 @@ milestone regresses, so the benchmark can gate CI or a local check:
 samantha benchmark --prompt "hello" \
   --max-total 2s --max-first-model-chunk 500ms --max-playback-start 800ms
 
-# STT fixture latency + transcript accuracy:
-samantha benchmark --mode stt --max-stt-final 2s --min-transcript-score 0.8
+# STT fixture latency + transcript accuracy (stops at the final transcript):
+samantha benchmark --audio-fixture utterance.wav --expect-text "hello there" \
+  --max-stt-final 2s --min-transcript-score 0.8
+
+# Full voice turn from a recording — capture, VAD, STT, brain, TTS, playback:
+samantha benchmark --full-turn-fixture utterance.wav --expect-text "hello there" \
+  --max-playback-start 1200ms
 
 # Machine-readable output for tracking regressions over time:
 samantha benchmark --prompt "hello" --json bench.json
 ```
+
+The three modes measure different paths, and only one of them measures the voice
+pipeline end to end:
+
+| Flag | Path | Use it for |
+|---|---|---|
+| `--prompt` (default) | brain → TTS, **non-streaming** — the whole reply is synthesized as one segment | Text-path regressions |
+| `--audio-fixture` | capture → VAD → STT, stops at the final transcript | STT latency and accuracy |
+| `--full-turn-fixture` | the real `RunTurn` path, end to end | Anything touching endpointing, sentence chunking, or time-to-first-audio |
+
+`--full-turn-fixture` is the one to use when comparing VAD, STT-provider or
+first-sentence changes: it is the only mode where `FirstSegmentElapsed` reflects
+real sentence chunking rather than end-of-generation.
 
 Interruption latency is reported only when a turn is interrupted; all milestones
 are always present in the `--json` output.

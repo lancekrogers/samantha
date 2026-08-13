@@ -34,6 +34,13 @@ func turnInstruction(cfg *config.Config) (string, error) {
 	return resolvePrompt(cfg, prompts.KindTurn, name)
 }
 
+// TurnInstructionFor exposes the resolved per-turn instruction so the CLI can
+// render exactly what a provider receives. Reusing the brain's own resolution is
+// the point: a second implementation would drift and the preview would lie.
+func TurnInstructionFor(cfg *config.Config) (string, error) {
+	return turnInstruction(cfg)
+}
+
 // CompactInstruction resolves the kind=compact document used as /compact's
 // summarize-turn prompt. Name comes from cfg.CompactPrompt; empty selects the
 // embedded default, so users customize compaction the same way as any prompt:
@@ -64,7 +71,7 @@ func resolvePrompt(cfg *config.Config, kind prompts.Kind, name string) (string, 
 		return "", fmt.Errorf("resolving %s prompt %q: %w", kind, name, err)
 	}
 	// Catalog-driven names/values (#166) with the nil-cfg-safe agent name (#164).
-	text, err := prompts.ResolvePlaceholders(doc.Assemble(), prompts.PlaceholderNames(), prompts.PlaceholderValues(agentName))
+	text, err := prompts.ResolvePlaceholders(doc.Assemble(), prompts.PlaceholderNames(), prompts.PlaceholderValues(agentName, prompts.PlaceholderEnv{}))
 	if err != nil {
 		return "", fmt.Errorf("%s prompt %q: %w", kind, name, err)
 	}

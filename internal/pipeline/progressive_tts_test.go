@@ -107,9 +107,15 @@ func TestProgressiveTTSSegmentsFeedWorker(t *testing.T) {
 			t.Error("first segment never reached TTS before more brain tokens")
 			return
 		}
-		// Brain still streaming after first synth started.
+		// Brain still streaming after first synth started. Six sentences, not
+		// three: asserting the full segment shape below needs enough segments to
+		// distinguish "one per sentence" from "the opening, then everything
+		// else" — a count alone cannot.
 		chunks <- "Second sentence is ready. "
-		chunks <- "Third finishes the reply."
+		chunks <- "Third continues the thought. "
+		chunks <- "Fourth keeps going. "
+		chunks <- "Fifth is still here. "
+		chunks <- "Sixth finishes the reply."
 		// Release first synth so the ordered worker can process remaining sentences.
 		close(holdFirst)
 		done <- brain.StreamResult{}
@@ -129,17 +135,29 @@ func TestProgressiveTTSSegmentsFeedWorker(t *testing.T) {
 	if interrupted {
 		t.Fatal("unexpected interrupt")
 	}
-	if !strings.Contains(response, "Hello") || !strings.Contains(response, "Third") {
+	if !strings.Contains(response, "Hello") || !strings.Contains(response, "Sixth") {
 		t.Fatalf("response = %q", response)
 	}
 
 	calls := provider.Calls()
-	if len(calls) < 3 {
-		t.Fatalf("Synthesize calls = %v, want 3 progressive segments", calls)
+	// One sentence per synthesis call (laterBatchSegments = 1, D009). Asserting
+	// the whole shape, not just a lower bound: a count alone cannot distinguish
+	// this from "the opening, then the entire rest of the reply".
+	want := []string{
+		"Hello there.",
+		"Second sentence is ready.",
+		"Third continues the thought.",
+		"Fourth keeps going.",
+		"Fifth is still here.",
+		"Sixth finishes the reply.",
 	}
-	// First segment must not be the entire multi-sentence reply.
-	if strings.Contains(calls[0], "Third") {
-		t.Fatalf("first synth was full reply, not progressive: %q", calls[0])
+	if len(calls) != len(want) {
+		t.Fatalf("Synthesize calls = %q, want %q", calls, want)
+	}
+	for i := range want {
+		if calls[i] != want[i] {
+			t.Errorf("segment %d = %q, want %q", i, calls[i], want[i])
+		}
 	}
 	if metrics.firstSegment.IsZero() {
 		t.Fatal("firstSegment metric not stamped")

@@ -18,6 +18,9 @@ mod voice '.justfiles/voice.just'
 [doc('Release (tag, publish, formula sha)')]
 mod release '.justfiles/release.just'
 
+[doc('Latency benchmarks and the recorded utterance corpus')]
+mod bench '.justfiles/bench.just'
+
 # Flat dev utilities
 import '.justfiles/dev.just'
 

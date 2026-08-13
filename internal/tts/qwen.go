@@ -16,6 +16,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/config"
 	managedqwen "github.com/lancekrogers/samantha/internal/qwen"
+	"github.com/lancekrogers/samantha/internal/textclean"
 )
 
 const (
@@ -305,6 +306,27 @@ func (q *Qwen3TTS) SynthesizeRequest(ctx context.Context, req SynthesisRequest) 
 	}
 	if strings.TrimSpace(req.Text) == "" {
 		return SynthesisResult{}, &ProviderError{Provider: qwen3TTSProviderName, Operation: "synthesize", Kind: ProviderErrorInput, Err: errors.New("text is empty")}
+	}
+	// Same spoken-text rules Kokoro gets: emoji stripped, years read as years.
+	// Applied after the empty check above, so genuinely empty input is still a
+	// caller error while text that merely *cleans* to nothing is not.
+	req.Text = textclean.PrepareSpokenText(req.Text)
+	if strings.TrimSpace(req.Text) == "" {
+		// A reply of nothing but an emoji. Nothing to say is not a failure —
+		// return a stream that closes with no frames, matching Kokoro.
+		stream := audio.NewPCMStream(ctx)
+		if err := stream.SetSampleRate(qwen3TTSSampleRate); err != nil {
+			return SynthesisResult{}, err
+		}
+		stream.Close()
+		return SynthesisResult{
+			Stream:     stream,
+			SampleRate: qwen3TTSSampleRate,
+			Provider:   qwen3TTSProviderName,
+			Model:      q.model,
+			Voice:      q.voice,
+			Mode:       VoiceModeStatic,
+		}, nil
 	}
 	if q.managed || q.native {
 		if req.Mode == "" || req.Mode == VoiceModeStatic {

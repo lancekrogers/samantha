@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/lancekrogers/samantha/internal/audio"
 	"github.com/lancekrogers/samantha/internal/brain"
@@ -18,6 +19,49 @@ import (
 )
 
 const voiceQueueDepth = 2
+
+// How many speakable segments go into one synthesis call.
+//
+// laterBatchSegments is 1, and the 2 it was briefly set to is why this comment
+// exists. Batching two sentences per call was supposed to let the synthesiser
+// carry intonation across a sentence boundary. Measurement killed it:
+//
+//	Kokoro realtime factor         1.32x   (0.901 s to synthesize 1.185 s of audio)
+//	synth(2 sentences)             1.989 s
+//	playback(1 opening sentence)   1.185 s
+//	=> 804 ms of silence after the opening sentence
+//
+// The synthesis worker is single and ordered, so segment 2 is synthesized while
+// segment 1 plays. At 1.32x, a two-sentence segment 2 cannot finish in time and
+// the listener hears a gap in the most audible position in the reply. Meanwhile
+// the prosody benefit was unverifiable: merged audio measurably differs from
+// concatenated audio, but total duration, inter-sentence pause and onset F0 were
+// identical, so nothing showed the difference was an improvement.
+//
+// Batching becomes free above a realtime factor of about 2.3x — roughly 1.8x
+// faster than Kokoro is today. `go test -tags integration ./internal/tts/ -run
+// TestKokoroRealtimeFactor` is the measurement; phase 009's TTS bake-off should
+// re-run it, and a candidate that clears 2.3x makes this a one-constant change.
+//
+// See festival decision D009.
+const (
+	openingBatchSegments = 1
+	laterBatchSegments   = 1
+)
+
+// hasPronounceableContent reports whether a segment contains anything a
+// synthesiser can say. Punctuation left behind by cleaning — a bare "." from
+// "Umm." — is not speech, and must not reach TTS or be batched onto a real
+// sentence. Letters and digits count; a voiced filler like "Hmm." therefore
+// still qualifies, which is the point of the voiced tier.
+func hasPronounceableContent(s string) bool {
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return true
+		}
+	}
+	return false
+}
 
 // defaultBrainTurnTimeout bounds model + tool work for one conversational
 // turn. Without this, a hung Ollama/Claude stream after tools leaves the TUI
@@ -446,6 +490,7 @@ func (p *Pipeline) RunTurn(ctx context.Context) (string, error) {
 		OnToolEnd:     p.toolEndHook(),
 		OnUsage:       p.usageHook(),
 		OnSessionWarn: p.sessionWarnHook(),
+		OnPromptWarn:  p.promptWarnHook(),
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -532,6 +577,7 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 		OnToolEnd:     p.toolEndHook(),
 		OnUsage:       p.usageHook(),
 		OnSessionWarn: p.sessionWarnHook(),
+		OnPromptWarn:  p.promptWarnHook(),
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -773,7 +819,8 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 	// Synthesis runs on a single ordered worker so this loop keeps servicing
 	// barge-in and playback events while a sentence is being generated —
 	// PlayStream cannot return until the TTS engine has produced audio, and
-	// Kokoro generates a whole sentence per uncancellable cgo call. One worker
+	// Kokoro generates a whole BATCH per uncancellable cgo call, holding its
+	// provider mutex for the duration (see openingBatchSegments). One worker
 	// (not one goroutine per sentence) preserves playback order. Backpressure is
 	// unchanged: the pending gate keeps at most voiceQueueDepth sentences
 	// outstanding, so the buffered handoff below never blocks.
@@ -786,6 +833,32 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 	var synthQueueOnce sync.Once
 	closeSynthQueue := func() { synthQueueOnce.Do(func() { close(synthQueue) }) }
 	defer closeSynthQueue()
+
+	// Adaptive batching: the first segment that will actually be heard goes out
+	// alone, and later segments are synthesized two at a time.
+	//
+	// The opening stays short because time-to-first-audio waits on it finishing
+	// synthesis. After that the listener is no longer waiting, and a chunk
+	// boundary is not free: each batch is an independent synthesis call, so
+	// prosody resets at every boundary and the player concatenates raw buffers.
+	// Batching lets the synthesiser carry intonation across a sentence boundary.
+	//
+	// This lives here rather than in brain.ChunkSentencesRaw because only this
+	// loop knows which segments become audio — the voice gate below suppresses
+	// tool output and code fences, and cleaning can empty a segment. Counting
+	// emitted chunks instead of audible ones spent the opening's budget on
+	// silence whenever a reply began with a suppressed tool line.
+	var voiceBatch []string
+	openingSpoken := false
+	flushVoiceBatch := func() {
+		if len(voiceBatch) == 0 {
+			return
+		}
+		pending++
+		synthQueue <- strings.Join(voiceBatch, " ")
+		voiceBatch = voiceBatch[:0]
+		openingSpoken = true
+	}
 	go func() {
 		for sentence := range synthQueue {
 			if !p.synthesizeSegment(streamCtx, loopDone, sentence, &audioStarted, playbackEvents, &stickFallback) {
@@ -865,6 +938,12 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 		case sentence, ok := <-sentenceCh:
 			if !ok {
 				sentences = nil
+				// A half-full batch is still a real segment: flush it before
+				// closing, or the last sentence of every odd-length reply is
+				// silently never spoken.
+				if !interrupted {
+					flushVoiceBatch()
+				}
 				closeSynthQueue() // no more handoffs; let the worker exit
 				continue
 			}
@@ -879,9 +958,11 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 			// one loses the boundary that closes a tool block or a fence.
 			voiceText, stripped := gate.filter(sentence)
 
-			// The transcript keeps the reply; only the voice channel is
-			// filtered (WI-dc9e33 B4).
-			if display := brain.CleanForVoice(sentence); display != "" {
+			// Filler-only chunks are provisional: providers replace a turn that
+			// ends there with the recovery reply. Keep them out of both transcript
+			// and TTS so the finalizer's replacement is the only visible/audible
+			// response. A filler followed by content in the same sentence survives.
+			if display := brain.CleanForVoice(sentence); brain.HasSpeakableContent(display) {
 				if fullResponse.Len() > 0 {
 					fullResponse.WriteByte(' ')
 				}
@@ -894,7 +975,14 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 
 			p.recordStrips(stripped, metrics)
 			speakable := brain.CleanForVoice(voiceText)
-			if speakable == "" {
+			if !brain.HasSpeakableContent(speakable) {
+				continue
+			}
+			// Not just != "": stripping a filler from "Umm." leaves a bare ".",
+			// which is non-empty, unpronounceable, and — now that segments are
+			// batched — would be glued onto the front of a real sentence inside
+			// one synthesis call.
+			if !hasPronounceableContent(speakable) {
 				continue
 			}
 
@@ -907,8 +995,14 @@ func (p *Pipeline) streamResponse(ctx context.Context, cancelTurn context.Cancel
 				go p.watchPlaybackStall(streamCtx, &audioStarted, cancel, stalled, p.stallTimeout())
 			}
 
-			pending++
-			synthQueue <- speakable
+			voiceBatch = append(voiceBatch, speakable)
+			target := laterBatchSegments
+			if !openingSpoken {
+				target = openingBatchSegments
+			}
+			if len(voiceBatch) >= target {
+				flushVoiceBatch()
+			}
 
 		case event := <-playbackEvents:
 			if interrupted && event.kind == playbackStarted && p.Player != nil {
@@ -1325,6 +1419,17 @@ func (p *Pipeline) usageHook() func(prefill, gen int) {
 
 // sessionWarnHook emits SessionWarning so a growing harness session is visible
 // in the activity feed before it becomes a latency or cost problem.
+// promptWarnHook surfaces a non-fatal prompt-resolution failure. The turn keeps
+// speaking on its last good prompt, so this is reported as an error event for
+// visibility rather than failing the turn — a half-saved persona file must not
+// end a live conversation, but it must not be silent either, or the user is left
+// wondering why their edit did nothing.
+func (p *Pipeline) promptWarnHook() func(message string) {
+	return func(message string) {
+		p.emit(events.Error{Stage: "prompt", Message: message})
+	}
+}
+
 func (p *Pipeline) sessionWarnHook() func(promptTokens, threshold int) {
 	return func(promptTokens, threshold int) {
 		p.emit(events.SessionWarning{PromptTokens: promptTokens, Threshold: threshold})

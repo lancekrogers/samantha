@@ -5,8 +5,20 @@ import (
 	"unicode"
 )
 
-// sentencesPerChunk controls how many sentences are batched before sending to TTS.
-// Keep this at 1 for low latency so Samantha can start speaking on the first complete sentence.
+// sentencesPerChunk is 1: this package segments, it does not batch.
+//
+// Batching for prosody — one sentence for the opening, two thereafter — lives in
+// the pipeline, and it has to. The property worth protecting is "the first
+// AUDIBLE chunk is short", and this package cannot tell which chunks become
+// audio: the pipeline's voice gate suppresses tool output and code fences, and
+// cleaning can empty a segment outright.
+//
+// Batching here counted emitted chunks instead, so a reply that opens with a
+// suppressed tool line spent its one-sentence budget on silence, and the first
+// thing the listener actually heard was a two-sentence synthesis — doubling
+// time-to-first-audio in exactly the case the policy exists to protect.
+//
+// See internal/pipeline/pipeline.go, where speakability is known.
 const sentencesPerChunk = 1
 
 // CleanForVoice strips markdown and vocal fillers from text bound for TTS.
@@ -15,9 +27,14 @@ const sentencesPerChunk = 1
 // this removes, so it gates first and cleans after.
 func CleanForVoice(s string) string { return cleanForVoice(s) }
 
-// ChunkSentences reads text chunks from input and emits voice-cleaned batches
-// of sentences for TTS. Batches sentencesPerChunk sentences together for
-// smoother playback.
+// HasSpeakableContent reports whether cleaned voice text contains more than a
+// standalone voiced filler. Streaming consumers use the same predicate as the
+// provider finalizer so a filler-only reply cannot be spoken on one path while
+// being replaced by the recovery line on another.
+func HasSpeakableContent(s string) bool { return hasSpeakableContent(s) }
+
+// ChunkSentences reads text chunks from input and emits one voice-cleaned
+// sentence at a time for TTS.
 func ChunkSentences(input <-chan string) <-chan string {
 	out := make(chan string, 4)
 	go func() {

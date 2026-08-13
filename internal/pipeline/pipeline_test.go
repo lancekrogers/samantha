@@ -78,12 +78,47 @@ func TestRunTurnOverlapsSynthesisWithPlayback(t *testing.T) {
 	}
 }
 
+func TestRunTurnFillerOnlyStreamSpeaksRecoveryInstead(t *testing.T) {
+	bus := events.NewBus()
+	brainProvider := &fakeBrain{chunks: []string{"Hmm.", " Hmm, I lost my train of thought for a second. What were you saying?"}}
+	ttsProvider := &fakeTTS{}
+	player := newFakePlayer(time.Millisecond)
+	defer player.Close()
+
+	var response events.ResponseReady
+	events.Subscribe(bus, func(e events.ResponseReady) { response = e })
+	p := &Pipeline{
+		STT:    &fakeSTT{text: "hello"},
+		Brain:  brainProvider,
+		TTS:    ttsProvider,
+		Player: player,
+		Events: bus,
+	}
+
+	if _, err := p.RunTurn(context.Background()); err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	calls := ttsProvider.Texts()
+	spoken := strings.Join(calls, " ")
+	if spoken != "Hmm, I lost my train of thought for a second. What were you saying?" {
+		t.Fatalf("TTS calls = %q, want only the recovery reply", calls)
+	}
+	if response.Response != spoken {
+		t.Fatalf("ResponseReady = %q, want %q", response.Response, spoken)
+	}
+}
+
 func TestRunTurnDrainsFullPlaybackQueue(t *testing.T) {
 	bus := events.NewBus()
 	sttProvider := &fakeSTT{text: "hello"}
-	// More sentences than voiceQueueDepth so the playback queue fills and the
+	// More SEGMENTS than voiceQueueDepth so the playback queue fills and the
 	// loop must apply backpressure without blocking — a regression guard for
 	// the slotSem deadlock that hung voice mode once the queue was full.
+	//
+	// Count SEGMENTS, not sentences. They are 1:1 only while laterBatchSegments
+	// is 1 (D009); re-enabling batching would cut five segments to three and this
+	// test would still pass while no longer filling the queue, which is the only
+	// thing it guards.
 	brainProvider := &fakeBrain{chunks: []string{"One. Two. Three. Four. Five."}}
 	ttsProvider := &fakeTTS{delay: 5 * time.Millisecond}
 	player := newFakePlayer(60 * time.Millisecond)
@@ -1129,5 +1164,83 @@ func TestRecoverTurnDoesNotDuplicateRecoveryReply(t *testing.T) {
 		if n := strings.Count(got[i], brain.RecoveryReply); n != 1 {
 			t.Fatalf("case %d: RecoveryReply appears %d times", i, n)
 		}
+	}
+}
+
+// Batching counts segments the listener will actually HEAR, not chunks the
+// segmenter emitted.
+//
+// This was a real defect while laterBatchSegments was 2: batching lived in
+// brain.ChunkSentencesRaw, which cannot see the voice gate, so a reply opening
+// with a suppressed tool line spent its one-sentence budget on silence and the
+// first audible segment was a two-sentence synthesis.
+//
+// D009 has since set laterBatchSegments to 1, which makes batching an identity
+// today. These cases still earn their place: they pin the accounting (audible
+// segments, no unpronounceable residue, nothing dropped at end of stream) that
+// has to hold the moment a faster synthesiser lets batching switch back on.
+func TestVoiceBatchingCountsAudibleSegments(t *testing.T) {
+	tests := []struct {
+		name  string
+		reply string
+		want  []string
+	}{
+		{
+			// The opener is suppressed by toolRegionRE, so the first AUDIBLE
+			// sentence must still go out alone.
+			name:  "suppressed tool opener does not spend the budget",
+			reply: "I called the search tool. Here is what I found. There are three results. That is all.",
+			want:  []string{"Here is what I found.", "There are three results.", "That is all."},
+		},
+		{
+			// "Umm." cleans to a bare "." — unpronounceable, and previously it
+			// both reached TTS and got glued onto the next real sentence.
+			name:  "filler residue is neither spoken nor batched onto real speech",
+			reply: "Umm. Let me think about this. Here is the answer. Done.",
+			want:  []string{"Let me think about this.", "Here is the answer.", "Done."},
+		},
+		{
+			name:  "an ordinary reply is one segment per sentence",
+			reply: "First. Second. Third. Fourth. Fifth.",
+			want:  []string{"First.", "Second.", "Third.", "Fourth.", "Fifth."},
+		},
+		{
+			// A partial batch at end of stream must still be spoken, or the last
+			// sentence of a reply is silently dropped. This matters again the
+			// moment laterBatchSegments goes above 1.
+			name:  "the final sentence is flushed, not dropped",
+			reply: "First. Second. Third. Fourth.",
+			want:  []string{"First.", "Second.", "Third.", "Fourth."},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ttsProvider := &fakeTTS{delay: time.Millisecond}
+			player := newFakePlayer(2 * time.Millisecond)
+			defer player.Close()
+
+			p := &Pipeline{
+				STT:    &fakeSTT{text: "hello"},
+				Brain:  &fakeBrain{chunks: []string{tt.reply}},
+				TTS:    ttsProvider,
+				Player: player,
+				Events: events.NewBus(),
+			}
+
+			if _, err := p.RunTurn(context.Background()); err != nil {
+				t.Fatalf("RunTurn() error = %v", err)
+			}
+
+			got := ttsProvider.Texts()
+			if len(got) != len(tt.want) {
+				t.Fatalf("TTS segments = %q, want %q", got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("segment %d = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
 	}
 }

@@ -5,6 +5,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -22,6 +23,7 @@ import (
 	"github.com/lancekrogers/samantha/internal/config"
 	"github.com/lancekrogers/samantha/internal/events"
 	"github.com/lancekrogers/samantha/internal/netapi"
+	"github.com/lancekrogers/samantha/internal/persona"
 	"github.com/lancekrogers/samantha/internal/pipeline"
 	"github.com/lancekrogers/samantha/internal/session"
 	"github.com/lancekrogers/samantha/internal/stt"
@@ -31,6 +33,7 @@ import (
 const defaultServePort = 7262 // "SAMA"
 
 var (
+	servePersona      string
 	serveBind         string
 	servePort         int
 	serveNoVoice      bool
@@ -104,11 +107,22 @@ remote_tools_enabled is set.`,
 		if err != nil {
 			return fmt.Errorf("load config: %w", err)
 		}
+		// --persona overrides the active persona for this process only.
+		// config.Load already applied the configured persona via the
+		// SetAfterLoad hook, so this simply re-binds to a different one.
+		if id := strings.TrimSpace(servePersona); id != "" {
+			binding, err := persona.ResolveBinding(cfg, id)
+			if err != nil {
+				return fmt.Errorf("resolve persona: %w", err)
+			}
+			cfg = binding.Config()
+		}
 		return runServe(cfg)
 	},
 }
 
 func init() {
+	serveCmd.Flags().StringVar(&servePersona, "persona", "", "Serve as this persona for this process only (never persisted)")
 	serveCmd.Flags().StringVar(&serveBind, "bind", "", "IP(s) to bind, comma-separated (default: auto-detected private LAN address + 127.0.0.1)")
 	serveCmd.Flags().IntVar(&servePort, "port", defaultServePort, "Port to listen on")
 	serveCmd.Flags().BoolVar(&serveNoVoice, "no-voice", false, "Do not speak responses through the local speaker")
@@ -216,7 +230,7 @@ func runServe(cfg *config.Config) error {
 	serveCfg := *cfg
 	serveCfg.VoiceToolsEnabled = cfg.RemoteToolsEnabled
 
-	p, fanout, ingress, cleanup, err := buildServePipeline(ctx, &serveCfg, bus, serveNoVoice, serveRemoteMic)
+	p, fanout, ingress, liveTTS, cleanup, err := buildServePipeline(ctx, &serveCfg, bus, serveNoVoice, serveRemoteMic)
 	if err != nil {
 		return fmt.Errorf("init serve pipeline: %w", err)
 	}
@@ -302,6 +316,7 @@ func runServe(cfg *config.Config) error {
 	go meetings.RunJanitor(ctx)
 
 	server := netapi.New(netapi.Options{
+		SetPersona:   serveSetPersona(cfg, p, liveTTS, ref),
 		Bind:         addr,
 		ExtraBinds:   extraBinds,
 		AllowPublic:  serveAllowPublic,
@@ -368,11 +383,79 @@ func runServe(cfg *config.Config) error {
 //
 // Fanout always owns the local player (if any) so cleanup is single-owner —
 // no double Close between serve and buildPipeline.
-func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, muteHost, remoteMic bool) (*pipeline.Pipeline, *netapi.AudioFanout, *audio.Ingress, func(), error) {
+// serveSetPersona backs the set_persona control message.
+//
+// It validates and resolves the persona, then constructs the complete runtime
+// the next turn will use. It deliberately does not persist: a remote client
+// switching persona for a session should not rewrite the host's config.yaml,
+// the same rule --persona follows locally.
+type servePersonaSwitcher struct {
+	cfg      *config.Config
+	pipeline *pipeline.Pipeline
+	tts      *liveTTSManager
+	sessions *sessionRef
+
+	newBrain func(*config.Config) (brain.Provider, error)
+	newTTS   func(*config.Config) (*ttsProviderSet, error)
+}
+
+func serveSetPersona(cfg *config.Config, p *pipeline.Pipeline, liveTTS *liveTTSManager, ref *sessionRef) func(string) (netapi.PersonaAck, error) {
+	switcher := &servePersonaSwitcher{
+		cfg: cfg, pipeline: p, tts: liveTTS, sessions: ref,
+		newBrain: brain.NewProvider,
+		newTTS:   newTTSProviderSet,
+	}
+	return switcher.apply
+}
+
+// apply replaces the complete persona-bound runtime. The dispatcher invokes
+// it only after the current turn has finished, so the acknowledged next turn
+// uses the new brain prompt/model and TTS voice as one atomic transition.
+func (s *servePersonaSwitcher) apply(id string) (netapi.PersonaAck, error) {
+	binding, err := persona.ResolveBinding(s.cfg, id)
+	if err != nil {
+		return netapi.PersonaAck{}, err
+	}
+	nextCfg := binding.Config()
+	nextBrain, err := s.newBrain(nextCfg)
+	if err != nil {
+		return netapi.PersonaAck{}, fmt.Errorf("init persona brain: %w", err)
+	}
+	nextTTS, err := s.newTTS(nextCfg)
+	if err != nil {
+		return netapi.PersonaAck{}, fmt.Errorf("init persona TTS: %w", err)
+	}
+
+	// Save the completed old conversation before starting a fresh identity.
+	// A persona is session-bound; carrying its history into the new brain would
+	// make the switch work technically while violating that contract.
+	if err := s.sessions.save(s.pipeline.Brain.History()); err != nil {
+		nextTTS.Close()
+		return netapi.PersonaAck{}, fmt.Errorf("save previous persona session: %w", err)
+	}
+	if !s.tts.install(s.pipeline, nextTTS) {
+		nextTTS.Close()
+		return netapi.PersonaAck{}, errors.New("serve runtime is shutting down")
+	}
+
+	s.pipeline.Brain = nextBrain
+	*s.cfg = *nextCfg
+	s.sessions.swap(session.New(nextCfg.BrainProvider, serveModelName(nextCfg)))
+	if warmer, ok := nextBrain.(brain.Warmer); ok {
+		go warmer.Warmup(context.Background())
+	}
+	return netapi.PersonaAck{
+		ID:          binding.PersonaID,
+		DisplayName: binding.DisplayName,
+		PromptHash:  binding.PromptRef,
+	}, nil
+}
+
+func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus, muteHost, remoteMic bool) (*pipeline.Pipeline, *netapi.AudioFanout, *audio.Ingress, *liveTTSManager, func(), error) {
 	// Brain only first (text=true, silent=true): no host mic, no default TTS/player.
 	p, baseCleanup, err := buildPipeline(ctx, cfg, bus, true, true)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
 	var cleanups []func()
@@ -382,17 +465,21 @@ func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus
 			cleanups[i]()
 		}
 	}
-	fail := func(err error) (*pipeline.Pipeline, *netapi.AudioFanout, *audio.Ingress, func(), error) {
+	fail := func(err error) (*pipeline.Pipeline, *netapi.AudioFanout, *audio.Ingress, *liveTTSManager, func(), error) {
 		cleanup()
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
+	liveTTS := &liveTTSManager{}
+	cleanups = append(cleanups, liveTTS.Close)
 	ttsSet, err := newTTSProviderSet(cfg)
 	if err != nil {
 		return fail(fmt.Errorf("init TTS: %w", err))
 	}
-	cleanups = append(cleanups, ttsSet.Close)
-	p.ReplaceTTS(ttsSet.Primary, ttsSet.Fallback)
+	if !liveTTS.install(p, ttsSet) {
+		ttsSet.Close()
+		return fail(errors.New("install initial TTS: runtime is shutting down"))
+	}
 	if ttsSet.FallbackWarning != nil {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", ttsSet.FallbackWarning)
 	}
@@ -435,7 +522,7 @@ func buildServePipeline(ctx context.Context, cfg *config.Config, bus *events.Bus
 		// Capture stays nil: barge-in on host mic is not used in serve mode.
 	}
 
-	return p, fanout, ingress, cleanup, nil
+	return p, fanout, ingress, liveTTS, cleanup, nil
 }
 
 func printServeBanner(addr string, creds *netapi.Credentials, cfg *config.Config) {

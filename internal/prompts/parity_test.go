@@ -25,14 +25,38 @@ func TestDefaultPersonaGolden(t *testing.T) {
 	}
 }
 
-// TestDefaultTurnGolden pins the embedded per-turn instruction to the exact
-// literal the Claude and Grok paths appended before the loader wiring.
+// TestDefaultTurnGolden pins the embedded per-turn instruction against
+// accidental drift.
+//
+// The migration-safety contract is unchanged and still checked: the instruction
+// must still OPEN with the exact literal the Claude and Grok paths appended
+// before the loader wiring. What may follow it is a short, explicitly enumerated
+// set of deliberate additions — so an accidental edit still fails, while an
+// intentional one has to be declared here and justified in turn.yaml's metadata.
 func TestDefaultTurnGolden(t *testing.T) {
 	got := resolveDefault(t, prompts.KindTurn, "Samantha")
 
-	const want = "Respond as Samantha. 2-3 sentences max, natural speech, NO markdown, NO formatting, NO code blocks, NO bullet points. Just talk naturally."
+	const original = "Respond as Samantha. 2-3 sentences max, natural speech, NO markdown, NO formatting, NO code blocks, NO bullet points. Just talk naturally."
+	if !strings.HasPrefix(got, original) {
+		t.Fatalf("assembled turn instruction no longer opens with the original literal, "+
+			"diverging at byte %d:\ngot:  %q\nwant prefix: %q", firstDiff(got, original), got, original)
+	}
+
+	// Every deliberate addition, newest last. Adding a line here is the point at
+	// which someone has to justify changing what every provider is told.
+	//
+	// Empty on purpose. R-L3's short-opening instruction lived here and was
+	// removed by D012 after measuring: it showed no benefit on either model
+	// tested and moved the wrong way on the one actually in use. The list stays
+	// so the next addition has somewhere to be declared.
+	var additions []string
+	want := original
+	for _, add := range additions {
+		want += "\n" + add
+	}
 	if got != want {
-		t.Errorf("assembled turn instruction diverges from the original literal at byte %d:\ngot:  %q\nwant: %q", firstDiff(got, want), got, want)
+		t.Errorf("assembled turn instruction has an undeclared change at byte %d:\ngot:  %q\nwant: %q",
+			firstDiff(got, want), got, want)
 	}
 }
 

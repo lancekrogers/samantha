@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -441,6 +442,8 @@ func (s *Server) readControls(ctx context.Context, ws *websocket.Conn, conn *str
 			// Drop exclusive claim after finalizing so another client can talk
 			// while TTS plays. releaseMic finalizes again (idempotent).
 			s.hub.releaseMic(conn)
+		case "set_persona":
+			s.handleSetPersona(ctx, conn, msg.Name)
 		default:
 			s.sendError(conn, "unknown control message type: "+msg.Type)
 		}
@@ -478,6 +481,43 @@ func (s *Server) sendAudioOutputAck(conn *streamConn, mode string) {
 	msg, err := json.Marshal(map[string]any{
 		"type": "audio_output_ack",
 		"mode": mode,
+	})
+	if err != nil {
+		return
+	}
+	select {
+	case conn.out <- msg:
+	default:
+		conn.evict("client too slow")
+	}
+}
+
+// handleSetPersona switches the persona used by subsequent turns.
+//
+// It deliberately does not touch the turn in flight. The dispatcher applies
+// the runtime swap after that turn, starts a fresh persona-bound session, and
+// only then returns the ack, so applies_to=next_turn is an enforceable contract.
+func (s *Server) handleSetPersona(ctx context.Context, conn *streamConn, name string) {
+	if s.opts.SetPersona == nil {
+		s.sendError(conn, "set_persona is not enabled on this server")
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		s.sendError(conn, "set_persona requires a name")
+		return
+	}
+	ack, err := s.dispatcher.SetPersona(ctx, name, s.opts.SetPersona)
+	if err != nil {
+		s.sendError(conn, err.Error())
+		return
+	}
+	msg, err := json.Marshal(map[string]any{
+		"type":         "set_persona_ack",
+		"id":           ack.ID,
+		"display_name": ack.DisplayName,
+		"prompt_hash":  ack.PromptHash,
+		"applies_to":   "next_turn",
 	})
 	if err != nil {
 		return
