@@ -59,9 +59,13 @@ const (
 //
 // So the pair is not redundant in either direction, which is easy to assume
 // from a glance and wrong. TestSpeakableSegmentNeedsBothHalves fails if either
-// half is dropped. Every speech path uses this one predicate: a path that
-// reaches for a half instead is how a filler-only reply got spoken while the
-// recovery line went only to history (PR #223 review).
+// half is dropped.
+//
+// Scope: progressive transcript and TTS sites in streamResponse only. Text mode
+// (RunTurnTextMode) still gates the whole reply via gateForSpeech and does not
+// call this — a filler glued to recovery can still be spoken there. Reaching
+// for a half on a progressive site is how a filler-only reply got spoken while
+// the recovery line went only to history (PR #223 review).
 func speakableSegment(s string) bool {
 	return brain.HasSpeakableContent(s) && hasPronounceableContent(s)
 }
