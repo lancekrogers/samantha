@@ -1250,6 +1250,11 @@ func (p *Pipeline) applyPlaybackEvent(event playbackEvent, metrics *turnMetrics,
 		armAt.CompareAndSwap(0, time.Now().Add(bargeInArmDelay).UnixNano())
 		if metrics.firstAudioReady.IsZero() {
 			metrics.firstAudioReady = time.Now()
+			// No sttFinal, no sample — deliberately. The only fallback stamp,
+			// metrics.start, includes the user's own speaking time, so it would
+			// inflate the rolling p50 and open the filler gate on turns that are
+			// actually fast. Text turns never play filler, so their missing
+			// sample costs nothing.
 			if p.backchannel != nil && !metrics.sttFinal.IsZero() {
 				p.backchannel.observe(metrics.firstAudioReady.Sub(metrics.sttFinal))
 			}
