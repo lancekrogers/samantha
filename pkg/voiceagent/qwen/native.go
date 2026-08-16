@@ -582,7 +582,10 @@ func EnsureNative(ctx context.Context, modelsDir string, opt NativeEnsureOptions
 		url = ResolveNativeURL("")
 	}
 	if strings.TrimSpace(opt.SHA256) == "" {
-		opt.SHA256 = ResolveNativeSHA256("")
+		// Never pair the pinned release's digest with a different archive:
+		// a custom URL without an explicit checksum skips the archive check
+		// (post-extract manifest verification still covers every file).
+		opt.SHA256 = resolveNativeSHAForURL(url, "")
 	}
 	if url == "" {
 		if status.Installed {
@@ -1024,9 +1027,20 @@ func ResolveNativeURL(configured string) string {
 	return url
 }
 
-// ResolveNativeSHA256 returns configured archive checksum, env override, or the
-// published platform default digest matching DefaultNativeRelease.
-func ResolveNativeSHA256(configured string) string {
+// ResolveNativeDownload resolves the download URL and its matching archive
+// checksum together. The pinned release digest belongs to the pinned URL
+// alone: a custom tarball (config or env URL) with no explicit checksum gets
+// an empty SHA — downloadNativeArchive then skips the archive check, and
+// VerifyNativeInstall still hashes every extracted file against the package
+// manifest.
+func ResolveNativeDownload(configuredURL, configuredSHA string) (url, sha string) {
+	url = ResolveNativeURL(configuredURL)
+	return url, resolveNativeSHAForURL(url, configuredSHA)
+}
+
+// resolveNativeSHAForURL returns the explicit configured/env checksum when
+// set, or the pinned digest only when url is the pinned release itself.
+func resolveNativeSHAForURL(url, configured string) string {
 	if v := strings.TrimSpace(configured); v != "" {
 		return v
 	}
@@ -1036,8 +1050,10 @@ func ResolveNativeSHA256(configured string) string {
 	if v := strings.TrimSpace(os.Getenv("QWEN_TTS_NATIVE_SHA256")); v != "" {
 		return v
 	}
-	_, sha := DefaultNativeRelease()
-	return sha
+	if defURL, defSHA := DefaultNativeRelease(); url == defURL {
+		return defSHA
+	}
+	return ""
 }
 
 // PreferNative is always true after cutover (native-only product path).

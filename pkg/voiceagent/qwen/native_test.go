@@ -98,6 +98,31 @@ func TestEnsureNativeTier17BUpgradesFromConfiguredURL(t *testing.T) {
 	}
 }
 
+// The operator path is qwen_tts_native_url alone: a custom URL with no
+// explicit checksum must not inherit the pinned release's digest (which can
+// only mismatch), and the upgrade must still succeed — post-extract manifest
+// verification covers file integrity.
+func TestEnsureNativeTier17BUpgradesFromCustomURLWithoutSHA(t *testing.T) {
+	modelsDir := t.TempDir()
+	oldArchive, oldSum := writeFakeNativeTar(t, t.TempDir())
+	if _, err := EnsureNative(context.Background(), modelsDir, NativeEnsureOptions{
+		URL: oldArchive, SHA256: oldSum, Tier: "0.6b",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	multiArchive, _ := writeFakeNativeTarTiers(t, t.TempDir(), "0.6b", "1.7b")
+	st, err := EnsureNative(context.Background(), modelsDir, NativeEnsureOptions{
+		URL: multiArchive, Tier: "1.7b",
+	}, nil)
+	if err != nil {
+		t.Fatalf("EnsureNative upgrade without SHA: %v", err)
+	}
+	if !st.Installed || !st.ModelReady {
+		t.Fatalf("status=%+v, want installed with 1.7b ready", st)
+	}
+}
+
 func TestEnsureNativeSHA256Mismatch(t *testing.T) {
 	modelsDir := t.TempDir()
 	archive, _ := writeFakeNativeTar(t, t.TempDir())
