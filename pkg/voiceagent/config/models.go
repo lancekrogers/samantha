@@ -216,6 +216,20 @@ func EnsureModels(ctx context.Context, cfg *Config, onProgress func(name string,
 	return EnsureRuntimeAssets(ctx, cfg, DefaultAssetRequest(cfg), onProgress)
 }
 
+// EnsureQwenTTSTier installs the native Qwen3-TTS package so the given tier is
+// ready, regardless of the active TTS provider — personas other than the
+// active one may route speech through qwen. Empty tier uses the configured one.
+func EnsureQwenTTSTier(ctx context.Context, cfg *Config, tier string, onProgress func(name string, pct float64)) error {
+	if cfg == nil {
+		return nil
+	}
+	cfgCopy := *cfg
+	if strings.TrimSpace(tier) != "" {
+		cfgCopy.QwenTTSModelTier = tier
+	}
+	return ensureQwenTTSAssets(ctx, &cfgCopy, onProgress)
+}
+
 // ensureQwenTTSAssets installs the native multi-tier package only (no Python/uv).
 func ensureQwenTTSAssets(ctx context.Context, cfg *Config, onProgress func(name string, pct float64)) error {
 	modelsDir := ModelsDirFrom(cfg)

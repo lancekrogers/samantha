@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/lancekrogers/samantha/internal/calibre"
+	"github.com/lancekrogers/samantha/internal/persona"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
+	managedqwen "github.com/lancekrogers/samantha/pkg/voiceagent/qwen"
 )
 
 var (
@@ -69,6 +72,7 @@ var severityMark = map[config.Severity]string{
 // probes (inject a fake in tests).
 func runDoctor(cmd *cobra.Command, cfg *config.Config, modelsDir string, lookPath func(string) (string, error), voiceChecker config.VoiceDeviceChecker, asJSON bool) error {
 	diags := config.Diagnose(cfg, modelsDir, lookPath)
+	diags = append(diags, personaQwenDiags(cfg, modelsDir)...)
 
 	if voiceChecker != nil {
 		parent := cmd.Context()
@@ -103,6 +107,43 @@ func runDoctor(cmd *cobra.Command, cfg *config.Config, modelsDir string, lookPat
 		return fmt.Errorf("doctor found setup errors; see remediation above")
 	}
 	return nil
+}
+
+// personaQwenDiags reports personas whose speech cannot start: they route
+// through qwen3-tts but the installed native package lacks their tier (or is
+// absent entirely). The active provider alone cannot see this — a kokoro
+// session with a qwen persona still needs the package.
+func personaQwenDiags(cfg *config.Config, modelsDir string) []config.Diagnostic {
+	profiles, err := persona.List()
+	if err != nil {
+		return nil
+	}
+	var diags []config.Diagnostic
+	for _, p := range profiles {
+		if p == nil || !strings.EqualFold(strings.TrimSpace(p.TTS.Provider), managedqwen.ProviderName) {
+			continue
+		}
+		tier := strings.TrimSpace(p.TTS.Tier)
+		if tier == "" && cfg != nil {
+			tier = strings.TrimSpace(cfg.QwenTTSModelTier)
+		}
+		tier = managedqwen.NormalizeModelTier(tier)
+		st := managedqwen.InspectNative(modelsDir, tier)
+		if st.Installed && st.ModelReady {
+			continue
+		}
+		detail := fmt.Sprintf("persona %q speaks through qwen3-tts tier %s, which is not installed", p.ID, tier)
+		if st.Installed {
+			detail = fmt.Sprintf("persona %q pins qwen3-tts tier %s but the installed package lacks it", p.ID, tier)
+		}
+		diags = append(diags, config.Diagnostic{
+			Name:        "qwen persona " + p.ID,
+			Severity:    config.SeverityWarn,
+			Detail:      detail,
+			Remediation: "run samantha models ensure --tts (or Settings → Qwen) to install the package for this tier",
+		})
+	}
+	return diags
 }
 
 func init() {

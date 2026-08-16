@@ -78,6 +78,7 @@ type settingsModel struct {
 	qwenStatus        managedqwen.Status
 	nativeStatus      managedqwen.NativeStatus
 	qwenInstalling    bool
+	qwenTierPending   string
 	qwenInstallCancel context.CancelFunc
 	qwenInstallEvents *eventBridge
 	ensureQwen        func(context.Context, string, managedqwen.ProgressFunc) (managedqwen.Status, error)
@@ -415,6 +416,36 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 	case qwenInstallDoneMsg:
 		m.qwenInstalling = false
 		m.qwenInstallCancel = nil
+		if tier := m.qwenTierPending; tier != "" {
+			// Tier-row upgrade: save the tier once its model is really on
+			// disk; never flip the TTS provider as a side effect.
+			m.qwenTierPending = ""
+			if msg.err != nil {
+				m.message = fmt.Sprintf("Tier %s install failed: %v", tier, msg.err)
+				m.buildQwenItems()
+				break
+			}
+			if !msg.native.ModelReady {
+				m.message = fmt.Sprintf("Package installed but tier %s is still missing — the download source has no %s model", tier, tier)
+				m.refreshQwenStatus()
+				m.buildQwenItems()
+				break
+			}
+			save := m.saveConfig
+			if save == nil {
+				save = config.SetAndSave
+			}
+			if err := save("qwen_tts_model_tier", tier); err != nil {
+				m.message = fmt.Sprintf("Tier %s installed but could not be saved: %v", tier, err)
+				m.buildQwenItems()
+				break
+			}
+			m.cfg.QwenTTSModelTier = tier
+			m.nativeStatus = msg.native
+			m.buildQwenItems()
+			m.message = fmt.Sprintf("Qwen model tier set to %s — restart voice / new conversation to apply", tier)
+			break
+		}
 		if msg.err != nil {
 			m.message = fmt.Sprintf("Qwen setup failed: %v", msg.err)
 			m.buildTTSItems()
