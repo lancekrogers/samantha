@@ -186,8 +186,11 @@ func (m *settingsModel) buildToolItems() {
 		fmt.Sprintf("Voice barge-in — %s", enabledLabel(m.cfg.BargeInEnabled)),
 		fmt.Sprintf("Voice frontend (AEC) — %s", enabledLabel(m.cfg.VoiceFrontendEnabled)),
 	)
-	// Mouse claim enables wheel scroll in chat but steals unmodified drag-select.
-	// OFF restores terminal selection; Page Up/Down still scroll either way.
+	// Off by default: the terminal keeps unmodified drag-select, and the wheel
+	// still scrolls chat through arrow-key translation while the composer is
+	// empty. ON routes the wheel straight to the viewport — smoother while
+	// drafting — at the cost of needing option/fn/shift to select. Page
+	// Up/Down scroll either way.
 	m.toolItems = append(m.toolItems,
 		fmt.Sprintf("Mouse scroll (claims mouse) — %s", enabledLabel(m.cfg.TUIMouseEnabled)),
 	)
@@ -257,7 +260,7 @@ func (m *settingsModel) selectToolItem() tea.Cmd {
 		if value {
 			m.message = "Mouse scroll ON · wheel scrolls chat; hold option/fn/shift to select text · applies when you return to chat"
 		} else {
-			m.message = "Mouse scroll OFF · unmodified drag-select works · PgUp/PgDn still scroll · applies when you return to chat"
+			m.message = "Mouse scroll OFF · unmodified drag-select works · wheel scrolls chat when the composer is empty, PgUp/PgDn always · applies when you return to chat"
 		}
 	default:
 		// Pipeline knobs (and tools/skills) are not hot-reloaded when /settings

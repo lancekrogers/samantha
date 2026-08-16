@@ -304,7 +304,15 @@ func (m conversationModel) Update(msg tea.Msg) (conversationModel, tea.Cmd) {
 				return m, nil
 			}
 		case "up", "down":
-			if m.activityFocused {
+			// Same rule Home/End already follow: an empty composer scrolls the
+			// transcript, a draft moves the cursor.
+			//
+			// This is what keeps the wheel usable now that Samantha leaves the
+			// mouse to the terminal. In the alternate screen a terminal with no
+			// mouse claim translates wheel turns into arrow keys, and an idle
+			// composer is exactly the moment a wheel turn means "scroll the
+			// chat" rather than "move my cursor".
+			if m.activityFocused || m.input.Value() == "" {
 				return m.updateScroll(msg)
 			}
 		}
