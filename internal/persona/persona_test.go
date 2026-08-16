@@ -96,6 +96,60 @@ func TestApplyQwenProviderAndVoice(t *testing.T) {
 	}
 }
 
+func TestApplyQwenTier(t *testing.T) {
+	// A qwen persona pins its own native model tier; spelling variants
+	// normalize to the canonical tier name.
+	cfg := &config.Config{TTSProvider: "kokoro", QwenTTSModelTier: "0.6b"}
+	Apply(cfg, &Profile{
+		ID:          "veronica",
+		DisplayName: "Veronica",
+		Prompts:     PromptRefs{Persona: "veronica"},
+		TTS:         TTS{Provider: "qwen3-tts", Voice: "Ono_Anna", Tier: "1.7"},
+	})
+	if cfg.QwenTTSModelTier != "1.7b" {
+		t.Fatalf("QwenTTSModelTier = %q, want 1.7b", cfg.QwenTTSModelTier)
+	}
+
+	// Empty tier inherits the app-level setting.
+	cfg = &config.Config{QwenTTSModelTier: "1.7b"}
+	Apply(cfg, &Profile{
+		ID:          "dylan",
+		DisplayName: "Dylan",
+		Prompts:     PromptRefs{Persona: "dylan"},
+		TTS:         TTS{Provider: "qwen3-tts", Voice: "Vivian"},
+	})
+	if cfg.QwenTTSModelTier != "1.7b" {
+		t.Fatalf("QwenTTSModelTier = %q, want inherited 1.7b", cfg.QwenTTSModelTier)
+	}
+
+	// A non-qwen persona never touches the tier, even if one is recorded.
+	cfg = &config.Config{QwenTTSModelTier: "0.6b"}
+	Apply(cfg, &Profile{
+		ID:          "samantha",
+		DisplayName: "Samantha",
+		Prompts:     PromptRefs{Persona: "samantha"},
+		TTS:         TTS{Provider: "kokoro", Voice: "af_sky", Tier: "1.7b"},
+	})
+	if cfg.QwenTTSModelTier != "0.6b" {
+		t.Fatalf("QwenTTSModelTier = %q, want untouched 0.6b", cfg.QwenTTSModelTier)
+	}
+}
+
+func TestValidateRejectsUnknownTier(t *testing.T) {
+	p := &Profile{
+		Schema: Schema, ID: "x", DisplayName: "X",
+		Prompts: PromptRefs{Persona: "x"},
+		TTS:     TTS{Provider: "qwen3-tts", Tier: "3b"},
+	}
+	if err := p.Validate(); err == nil {
+		t.Fatal("Validate() = nil, want unknown-tier error")
+	}
+	p.TTS.Tier = "1.7b"
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil for known tier", err)
+	}
+}
+
 func TestFromConfigCapturesQwenVoice(t *testing.T) {
 	p := FromConfig(&config.Config{
 		AgentName:    "Q",
@@ -125,7 +179,7 @@ func TestUpdateStackPersistsBrainAndTTS(t *testing.T) {
 
 	p, err := UpdateStack("samantha",
 		Brain{Provider: "ollama", Model: "qwen2.5:14b"},
-		TTS{Provider: "qwen3-tts", Voice: "Ryan"})
+		TTS{Provider: "qwen3-tts", Voice: "Ryan", Tier: "1.7"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,8 +194,8 @@ func TestUpdateStackPersistsBrainAndTTS(t *testing.T) {
 	if profile.Brain.Provider != "ollama" || profile.Brain.Model != "qwen2.5:14b" {
 		t.Fatalf("persisted brain = %+v, want ollama/qwen2.5:14b", profile.Brain)
 	}
-	if profile.TTS.Provider != "qwen3-tts" || profile.TTS.Voice != "Ryan" {
-		t.Fatalf("persisted TTS = %+v, want qwen3-tts/Ryan", profile.TTS)
+	if profile.TTS.Provider != "qwen3-tts" || profile.TTS.Voice != "Ryan" || profile.TTS.Tier != "1.7b" {
+		t.Fatalf("persisted TTS = %+v, want qwen3-tts/Ryan/1.7b", profile.TTS)
 	}
 
 	// Empty fields clear back to inherit-global.

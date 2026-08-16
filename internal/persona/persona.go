@@ -19,6 +19,7 @@ import (
 
 	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/prompts"
+	managedqwen "github.com/lancekrogers/samantha/pkg/voiceagent/qwen"
 )
 
 // Schema identifies the persona profile document version.
@@ -60,6 +61,7 @@ type Brain struct {
 //	tts:
 //	  provider: kokoro      # or qwen3-tts, …
 //	  voice: af_heart       # kokoro voice id, or Qwen preset (e.g. Vivian)
+//	  tier: 1.7b            # qwen3-tts only: native model tier (0.6b / 1.7b)
 //
 // Empty provider leaves the app-level tts_provider unchanged and routes voice
 // using the effective provider after Apply. Empty voice leaves voice keys alone.
@@ -68,6 +70,10 @@ type TTS struct {
 	Provider string `yaml:"provider,omitempty"`
 	// Voice is the speaker id for Provider (Kokoro voice name or Qwen preset).
 	Voice string `yaml:"voice,omitempty"`
+	// Tier selects the native Qwen3-TTS model tier for this persona (0.6b for
+	// latency, 1.7b for quality). Empty inherits the app-level
+	// qwen_tts_model_tier; only qwen3-tts reads it.
+	Tier string `yaml:"tier,omitempty"`
 }
 
 // PromptRefs names documents in the prompts catalog.
@@ -100,7 +106,33 @@ func (p *Profile) Validate() error {
 	if strings.TrimSpace(p.Prompts.Persona) == "" {
 		return fmt.Errorf("persona profile %q: missing prompts.persona", p.ID)
 	}
+	if err := validateTier(p.TTS.Tier); err != nil {
+		return fmt.Errorf("persona profile %q: %w", p.ID, err)
+	}
 	return nil
+}
+
+// canonicalTier normalizes a non-empty tier to its canonical spelling on
+// persist, so the profile on disk matches the catalog ("1.7" never sits
+// beside "1.7b" in the editor).
+func canonicalTier(tier string) string {
+	if strings.TrimSpace(tier) == "" {
+		return ""
+	}
+	return managedqwen.NormalizeModelTier(tier)
+}
+
+// validateTier accepts an empty tier (inherit the app default) or any spelling
+// that normalizes to a known native Qwen3-TTS tier.
+func validateTier(tier string) error {
+	if strings.TrimSpace(tier) == "" {
+		return nil
+	}
+	switch managedqwen.NormalizeModelTier(tier) {
+	case managedqwen.DefaultModelTier, managedqwen.Tier1_7B:
+		return nil
+	}
+	return fmt.Errorf("tts.tier %q: unknown tier (use 0.6b or 1.7b)", tier)
 }
 
 // ValidateID enforces lowercase kebab-case persona ids.
@@ -335,22 +367,25 @@ func modelForProvider(cfg *config.Config, provider string) string {
 	}
 }
 
-// applyTTS writes provider/voice from the profile onto cfg.
+// applyTTS writes provider/voice/tier from the profile onto cfg.
 func applyTTS(cfg *config.Config, t TTS) {
 	if provider := strings.TrimSpace(t.Provider); provider != "" {
 		cfg.TTSProvider = provider
 	}
-	voice := strings.TrimSpace(t.Voice)
-	if voice == "" {
-		return
+	if voice := strings.TrimSpace(t.Voice); voice != "" {
+		// Route voice to the config key the selected provider reads.
+		switch normalizeTTSProvider(cfg.TTSProvider) {
+		case "qwen3-tts":
+			cfg.QwenTTSVoice = voice
+		default:
+			// kokoro and any other voice-keyed providers use tts_voice.
+			cfg.TTSVoice = voice
+		}
 	}
-	// Route voice to the config key the selected provider reads.
-	switch normalizeTTSProvider(cfg.TTSProvider) {
-	case "qwen3-tts":
-		cfg.QwenTTSVoice = voice
-	default:
-		// kokoro and any other voice-keyed providers use tts_voice.
-		cfg.TTSVoice = voice
+	// Tier picks the native model inside the multi-tier package; only qwen
+	// reads it, and empty inherits the app-level qwen_tts_model_tier.
+	if tier := strings.TrimSpace(t.Tier); tier != "" && normalizeTTSProvider(cfg.TTSProvider) == "qwen3-tts" {
+		cfg.QwenTTSModelTier = managedqwen.NormalizeModelTier(tier)
 	}
 }
 

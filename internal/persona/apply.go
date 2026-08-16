@@ -167,6 +167,7 @@ func UpdateStack(id string, brain Brain, tts TTS) (*Profile, error) {
 	p.TTS = TTS{
 		Provider: strings.TrimSpace(tts.Provider),
 		Voice:    strings.TrimSpace(tts.Voice),
+		Tier:     canonicalTier(tts.Tier),
 	}
 	if err := Write(p, false); err != nil {
 		return nil, fmt.Errorf("saving persona stack: %w", err)

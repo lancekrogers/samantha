@@ -185,11 +185,21 @@ func (m personasModel) stackLines() []string {
 	if idx := m.stackVoiceIndex(); idx >= 0 && idx < len(voices) {
 		voiceLabel = voices[idx]
 	}
+	tierValue := dimStyle.Render("— (qwen3-tts only)")
+	if m.stackTierUsable() {
+		tiers := m.stackTierList()
+		tierLabel := stackDefaultLabel
+		if idx := m.stackTierIndex(); idx >= 0 && idx < len(tiers) {
+			tierLabel = tiers[idx]
+		}
+		tierValue = "‹ " + tierLabel + " ›"
+	}
 	return []string{
 		brainRow,
 		row(stackRowBrainModel, "Model", m.brainModelInput.View()),
 		row(stackRowTTSProvider, "TTS  ", "‹ "+ttsProvider+" ›"),
 		row(stackRowVoice, "Voice", "‹ "+voiceLabel+" ›"),
+		row(stackRowTier, "Tier ", tierValue),
 	}
 }
 
