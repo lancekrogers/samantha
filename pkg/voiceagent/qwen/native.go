@@ -559,8 +559,20 @@ func EnsureNative(ctx context.Context, modelsDir string, opt NativeEnsureOptions
 	}
 	// Package present but requested tier absent (e.g. 1.7B not shipped / engine-blocked).
 	if status.WorkerReady && status.PresetsReady && !status.ModelReady {
+		// Fail fast for 1.7B only when the download source is the pinned
+		// default release, which is known to ship 0.6b alone — re-fetching it
+		// cannot add the tier. A configured URL (qwen_tts_native_url or env)
+		// is how a multi-tier tarball arrives, so it falls through to the
+		// re-download below instead.
 		if tier == Tier1_7B {
-			return status, fmt.Errorf("native Qwen3-TTS tier %s is not in this package (engine/convert may still block 1.7B); keep tier 0.6b or install a multi-tier release", tier)
+			defaultURL, _ := DefaultNativeRelease()
+			effective := strings.TrimSpace(opt.URL)
+			if effective == "" {
+				effective = ResolveNativeURL("")
+			}
+			if effective == "" || effective == defaultURL {
+				return status, fmt.Errorf("native Qwen3-TTS tier %s is not in the pinned release; set qwen_tts_native_url to a multi-tier tarball or keep tier 0.6b", tier)
+			}
 		}
 		// Fall through to re-download if URL provided; otherwise incomplete install error.
 	}
