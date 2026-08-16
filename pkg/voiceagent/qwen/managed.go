@@ -141,9 +141,10 @@ func Ensure(ctx context.Context, modelsDir string, progress ProgressFunc) (Statu
 		}
 		return st, nil
 	}
+	ensureURL, ensureSHA := ResolveNativeDownload("", "")
 	ns, err := EnsureNative(ctx, modelsDir, NativeEnsureOptions{
-		URL:    ResolveNativeURL(""),
-		SHA256: ResolveNativeSHA256(""),
+		URL:    ensureURL,
+		SHA256: ensureSHA,
 		Tier:   DefaultModelTier,
 	}, progress)
 	if err != nil {

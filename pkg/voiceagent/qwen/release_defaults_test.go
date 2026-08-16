@@ -23,8 +23,18 @@ func TestDefaultNativeReleaseDarwinArm64(t *testing.T) {
 	if got := ResolveNativeURL(""); got != url {
 		t.Fatalf("ResolveNativeURL() = %q, want default %q", got, url)
 	}
-	if got := ResolveNativeSHA256(""); got != sha {
-		t.Fatalf("ResolveNativeSHA256() = %q, want default", got)
+	if gotURL, gotSHA := ResolveNativeDownload("", ""); gotURL != url || gotSHA != sha {
+		t.Fatalf("ResolveNativeDownload() = %q/%q, want default pin %q/%q", gotURL, gotSHA, url, sha)
+	}
+	// The pin's digest must never attach to a different archive: a custom URL
+	// with no explicit checksum resolves to an empty SHA (archive check
+	// skipped; post-extract manifest verification still covers every file).
+	if gotURL, gotSHA := ResolveNativeDownload("file:///tmp/custom.tar.gz", ""); gotURL != "file:///tmp/custom.tar.gz" || gotSHA != "" {
+		t.Fatalf("ResolveNativeDownload(custom) = %q/%q, want custom URL with empty SHA", gotURL, gotSHA)
+	}
+	// An explicit checksum always wins.
+	if _, gotSHA := ResolveNativeDownload("file:///tmp/custom.tar.gz", "abc123"); gotSHA != "abc123" {
+		t.Fatalf("ResolveNativeDownload(custom, sha) sha = %q, want abc123", gotSHA)
 	}
 }
 
