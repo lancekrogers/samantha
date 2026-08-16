@@ -112,6 +112,16 @@ func (p *Profile) Validate() error {
 	return nil
 }
 
+// canonicalTier normalizes a non-empty tier to its canonical spelling on
+// persist, so the profile on disk matches the catalog ("1.7" never sits
+// beside "1.7b" in the editor).
+func canonicalTier(tier string) string {
+	if strings.TrimSpace(tier) == "" {
+		return ""
+	}
+	return managedqwen.NormalizeModelTier(tier)
+}
+
 // validateTier accepts an empty tier (inherit the app default) or any spelling
 // that normalizes to a known native Qwen3-TTS tier.
 func validateTier(tier string) error {

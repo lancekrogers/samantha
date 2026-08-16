@@ -179,7 +179,7 @@ func TestUpdateStackPersistsBrainAndTTS(t *testing.T) {
 
 	p, err := UpdateStack("samantha",
 		Brain{Provider: "ollama", Model: "qwen2.5:14b"},
-		TTS{Provider: "qwen3-tts", Voice: "Ryan", Tier: "1.7b"})
+		TTS{Provider: "qwen3-tts", Voice: "Ryan", Tier: "1.7"})
 	if err != nil {
 		t.Fatal(err)
 	}
