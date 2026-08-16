@@ -24,6 +24,12 @@ func LoadSummaryFromJSONL(jsonlPath string) (meetinglog.Summary, error) {
 	if err != nil {
 		return meetinglog.Summary{}, err
 	}
+	return summaryFromEvents(jsonlPath, bundle, events), nil
+}
+
+// summaryFromEvents is the pure half of LoadSummaryFromJSONL: derive a
+// Summary from already-parsed events (sweep reuses its single read).
+func summaryFromEvents(jsonlPath, bundle string, events []meetinglog.Event) meetinglog.Summary {
 	s := meetinglog.Summary{
 		JSONLFile: jsonlPath,
 		File:      filepath.Join(bundle, meetinglog.BundleDocumentName),
@@ -62,7 +68,7 @@ func LoadSummaryFromJSONL(jsonlPath string) (meetinglog.Summary, error) {
 	if !s.StartedAt.IsZero() && !s.EndedAt.IsZero() {
 		s.DurationSeconds = int64(s.Duration().Round(time.Second) / time.Second)
 	}
-	return s, nil
+	return s
 }
 
 func bundlePathForJSONL(jsonlPath string) string {

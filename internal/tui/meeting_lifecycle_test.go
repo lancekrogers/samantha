@@ -207,6 +207,37 @@ func TestMeetingReadyPersistsAutoModeDefaultPlan(t *testing.T) {
 	}
 }
 
+// A failed route-plan write voids the durability promise — it must be loud
+// in the recorder, not silently dropped (R3).
+func TestMeetingReadyWarnsWhenRoutePlanWriteFails(t *testing.T) {
+	w := recordedBundleWriter(t)
+	if _, err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	app := App{
+		cfg:    &config.Config{},
+		runCtx: runCtx,
+		meetingRoutePlan: meetingRoutePlan{
+			Kind: routePlanDest,
+			Dest: meeting.Destination{ID: "camp:obey-campaign", Type: meeting.TypeCampaign},
+		},
+		meeting: newEmbeddedMeeting(),
+	}
+	model, _ := app.Update(meetingReadyMsg{rt: &MeetingRuntime{Writer: w}})
+	got := model.(App)
+	warned := false
+	for _, line := range got.meeting.lines {
+		if strings.Contains(line.rendered, "route intent not saved") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatalf("no durability warning in recorder timeline: %+v", got.meeting.lines)
+	}
+}
+
 // The demo finalizer must land on the runtime: background diarize runs off
 // rt.FinalizeSpeakers, so a MeetingOpts-only assignment would never execute.
 func TestMeetingReadyWiresDemoFinalizerOntoRuntime(t *testing.T) {
