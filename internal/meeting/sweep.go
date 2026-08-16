@@ -50,7 +50,7 @@ func SweepPendingRoutes(ctx context.Context, router *Router, meetingsDir string)
 			continue
 		}
 		bundle := filepath.Join(meetingsDir, entry.Name())
-		destID, ok := pendingRoutePlan(bundle)
+		destID, events, ok := pendingRoutePlan(bundle)
 		if !ok {
 			continue
 		}
@@ -63,16 +63,19 @@ func SweepPendingRoutes(ctx context.Context, router *Router, meetingsDir string)
 			cancel()
 			expanded = true
 		}
-		results = append(results, sweepRoute(ctx, router, bundle, destID))
+		results = append(results, sweepRoute(ctx, router, bundle, destID, events))
 	}
 	return results
 }
 
-// pendingRoutePlan reports the destination of an undelivered route plan.
-func pendingRoutePlan(bundle string) (destID string, pending bool) {
+// pendingRoutePlan reports the destination of an undelivered route plan,
+// returning the parsed events so delivery never re-reads the stream. An
+// unreadable stream is not pending: a bundle whose plan cannot even be parsed
+// is a CLI-recovery case, not an automatic-retry loop.
+func pendingRoutePlan(bundle string) (destID string, events []meetinglog.Event, pending bool) {
 	events, err := ReadEvents(bundleEventsPath(bundle))
 	if err != nil {
-		return "", false
+		return "", nil, false
 	}
 	var (
 		plan     string
@@ -97,26 +100,23 @@ func pendingRoutePlan(bundle string) (destID string, pending bool) {
 		}
 	}
 	if plan == "" || !ended || routed || failures >= SweepMaxAttempts {
-		return "", false
+		return "", nil, false
 	}
 	if !endedAt.IsZero() && time.Since(endedAt) > SweepWindow {
-		return "", false
+		return "", nil, false
 	}
-	return plan, true
+	return plan, events, true
 }
 
-func sweepRoute(ctx context.Context, router *Router, bundle, destID string) SweepResult {
+// sweepRoute delivers one pending plan. Summary and note derive purely from
+// the events pendingRoutePlan already parsed, so the only failure path is
+// RouteByID — which appends the durable routed / route_failed provenance
+// that keeps automatic retries capped at SweepMaxAttempts.
+func sweepRoute(ctx context.Context, router *Router, bundle, destID string, events []meetinglog.Event) SweepResult {
 	result := SweepResult{Bundle: bundle, DestID: destID}
-	summary, err := LoadSummaryFromJSONL(bundleEventsPath(bundle))
-	if err != nil {
-		result.Err = err
-		return result
-	}
-	note, err := Render(summary, router.Cfg.Body)
-	if err != nil {
-		result.Err = err
-		return result
-	}
+	jsonlPath := bundleEventsPath(bundle)
+	summary := summaryFromEvents(jsonlPath, bundle, events)
+	note := RenderEvents(summary, events, router.Cfg.Body)
 	result.Receipt, result.Err = router.RouteByID(ctx, note, destID)
 	return result
 }

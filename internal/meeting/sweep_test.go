@@ -128,6 +128,26 @@ func TestSweepFailureIsDurableAndCapped(t *testing.T) {
 	}
 }
 
+// A bundle whose event stream cannot be parsed must not enter the retry loop
+// at all — corrupt bundles are a CLI-recovery case, never an every-launch
+// failure banner.
+func TestSweepSkipsUnreadableBundle(t *testing.T) {
+	dir := t.TempDir()
+	meetingsDir := filepath.Join(dir, "meetings")
+	internal := filepath.Join(meetingsDir, "bad.meeting", meetinglog.BundleInternalDirName)
+	if err := os.MkdirAll(internal, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(internal, meetinglog.BundleEventsName), []byte("{not json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 2 {
+		if results := SweepPendingRoutes(context.Background(), sweepTestRouter(t.TempDir()), meetingsDir); len(results) != 0 {
+			t.Fatalf("sweep %d picked up unreadable bundle: %+v", i, results)
+		}
+	}
+}
+
 func TestRouteFailureAppendsRouteFailedProvenance(t *testing.T) {
 	dir := t.TempDir()
 	meetingsDir := filepath.Join(dir, "meetings")

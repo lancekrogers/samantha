@@ -388,10 +388,12 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.meetingRT = msg.rt
 		// Persist the start-of-meeting dest plan so delivery survives quits and
-		// crashes (the startup sweep retries route_plan without routed).
-		// Best-effort: a provenance write must not block recording.
+		// crashes (the startup sweep retries route_plan without routed). A
+		// failed write must not block recording, but it voids the durability
+		// promise — surface it in the recorder timeline (R3).
+		var planErr error
 		if a.meetingRoutePlan.Kind == routePlanDest && a.meetingRoutePlan.Dest.ID != "" && msg.rt.Writer != nil {
-			_ = msg.rt.Writer.WriteRoutePlan(a.meetingRoutePlan.Dest.ID, routePlanDest)
+			planErr = msg.rt.Writer.WriteRoutePlan(a.meetingRoutePlan.Dest.ID, routePlanDest)
 		}
 		finalizeSpeakers := msg.rt.FinalizeSpeakers
 		speakerStatus, speakerError := msg.rt.SpeakerStatus, msg.rt.SpeakerError
@@ -420,6 +422,11 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			LiveSpeaker:      msg.rt.LiveSpeaker,
 			Embedded:         true,
 		})
+		if planErr != nil {
+			a.meeting.appendSystemLine(errorStyle.Render(fmt.Sprintf(
+				"  ⚠ route intent not saved (%v) — %s delivery depends on this session; crash recovery unavailable",
+				planErr, a.meetingRoutePlan.Dest.ID)))
+		}
 		return a, cmd
 
 	case meetingDoneMsg:
