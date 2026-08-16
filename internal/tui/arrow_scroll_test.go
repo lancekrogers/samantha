@@ -45,6 +45,7 @@ func TestConversationArrowsMoveCursorWhileDrafting(t *testing.T) {
 	m.input.SetValue("first line\nsecond line")
 	m.viewport.GotoBottom()
 	offset := m.viewport.YOffset
+	startLine := m.input.Line()
 
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	if m.viewport.YOffset != offset {
@@ -52,5 +53,10 @@ func TestConversationArrowsMoveCursorWhileDrafting(t *testing.T) {
 	}
 	if got := m.input.Value(); got != "first line\nsecond line" {
 		t.Errorf("draft changed under an arrow key: %q", got)
+	}
+	// Not just "the viewport held still": the arrow has to actually reach the
+	// composer. Asserting only stability would pass if the key were dropped.
+	if got := m.input.Line(); got >= startLine {
+		t.Errorf("Up did not move the composer cursor: line %d -> %d", startLine, got)
 	}
 }
