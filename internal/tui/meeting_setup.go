@@ -53,10 +53,7 @@ type startMeetingMsg struct {
 }
 
 // meetingDoneMsg returns from the embedded recorder to the launcher / route picker.
-type meetingDoneMsg struct {
-	Err      error
-	Analysis meeting.AnalysisResult
-}
+type meetingDoneMsg struct{ Err error }
 
 // meetingDestsMsg folds async DiscoverDestinations into the setup model.
 type meetingDestsMsg struct {

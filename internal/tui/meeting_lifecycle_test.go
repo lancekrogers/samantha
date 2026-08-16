@@ -180,6 +180,33 @@ func TestMeetingReadyPersistsDestPlan(t *testing.T) {
 	}
 }
 
+// Without an explicit start pick, mode=auto's default is still a durable
+// delivery intent — the sweep must be able to retry it after a crash.
+func TestMeetingReadyPersistsAutoModeDefaultPlan(t *testing.T) {
+	w := recordedBundleWriter(t)
+	t.Cleanup(func() { _, _ = w.Close() })
+	runCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	app := App{
+		cfg: &config.Config{Meeting: config.MeetingConfig{Route: config.MeetingRouteConfig{
+			Mode:    "auto",
+			Default: "camp:obey-campaign",
+		}}},
+		runCtx:  runCtx,
+		meeting: newEmbeddedMeeting(),
+	}
+	model, _ := app.Update(meetingReadyMsg{rt: &MeetingRuntime{Writer: w}})
+	_ = model
+	events, err := os.ReadFile(w.JSONLPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(events), `"type":"route_plan"`) ||
+		!strings.Contains(string(events), "camp:obey-campaign") {
+		t.Fatalf("auto-mode default not persisted:\n%s", events)
+	}
+}
+
 // A failed route-plan write voids the durability promise — it must be loud
 // in the recorder, not silently dropped (R3).
 func TestMeetingReadyWarnsWhenRoutePlanWriteFails(t *testing.T) {
@@ -353,24 +380,34 @@ func pumpMeetingLoop(t *testing.T, cmd tea.Cmd) []tea.Msg {
 	}
 }
 
-// Embedded stop must not run diarization inline; the CLI recorder keeps the
-// synchronous, cancellable path.
-func TestStartLoopDefersFinalizeOnlyWhenEmbedded(t *testing.T) {
+// Stop never runs diarization inline — the loop reports done as soon as
+// capture ends, for both the embedded and standalone recorders.
+func TestStartLoopReportsDoneWithoutInlineWork(t *testing.T) {
 	for _, embedded := range []bool{true, false} {
-		finalized := false
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // loop exits before touching capture/provider
-		m := meetingModel{opts: MeetingOpts{
-			Ctx:      ctx,
-			Embedded: embedded,
-			FinalizeSpeakers: func(context.Context) (meeting.AnalysisResult, error) {
-				finalized = true
-				return meeting.AnalysisResult{Status: meeting.AnalysisComplete}, nil
-			},
-		}}
-		pumpMeetingLoop(t, m.startLoop())
-		if finalized == embedded {
-			t.Fatalf("embedded=%v finalized=%v: inline finalize must run only for the CLI path", embedded, finalized)
+		m := meetingModel{opts: MeetingOpts{Ctx: ctx, Embedded: embedded}}
+		msgs := pumpMeetingLoop(t, m.startLoop())
+		if len(msgs) == 0 {
+			t.Fatalf("embedded=%v: no loop messages", embedded)
 		}
+		if _, ok := msgs[len(msgs)-1].(meetingLoopDoneMsg); !ok {
+			t.Fatalf("embedded=%v: last msg = %T, want meetingLoopDoneMsg", embedded, msgs[len(msgs)-1])
+		}
+	}
+}
+
+// The standalone review screen folds a late diarization outcome in live.
+func TestStandaloneResultsFoldsAnalysisOutcome(t *testing.T) {
+	m := standaloneMeetingResults{meetingResultsModel: meetingResultsModel{
+		summary:      meetinglog.Summary{Description: "d"},
+		analysisBusy: true,
+	}}
+	model, _ := m.Update(meetingAnalysisDoneMsg{
+		result: meeting.AnalysisResult{Status: meeting.AnalysisError, Error: "boom"},
+	})
+	got := model.(standaloneMeetingResults)
+	if got.analysisBusy || got.summary.SpeakerError != "boom" {
+		t.Fatalf("analysis outcome not folded: %+v", got.meetingResultsModel.summary)
 	}
 }

@@ -17,8 +17,37 @@ import (
 	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
+// cliAutoRouteDest returns the destination to deliver automatically at
+// capture end: --route wins, else mode=auto's configured default. Empty means
+// routing is interactive (ask), disabled, or suppressed by --no-route.
+func cliAutoRouteDest(routeCfg meeting.Config, opts meetingOptions) string {
+	if opts.NoRoute {
+		return ""
+	}
+	if opts.RouteTo != "" {
+		return opts.RouteTo
+	}
+	if routeCfg.Mode == meeting.ModeAuto && routeCfg.Default != "" {
+		return routeCfg.Default
+	}
+	return ""
+}
+
+// routeAfterRecordTo resolves destinations and delivers to destID — the
+// auto-delivery path that runs at capture end, before review (WI-162bbb R2).
+func routeAfterRecordTo(cmd *cobra.Command, cfg *config.Config, summary meetinglog.Summary, destID string, jsonOut bool) error {
+	routeCfg := meeting.FromConfig(cfg)
+	router := meeting.NewDefaultRouter(routeCfg)
+	ctx, cancel := context.WithTimeout(context.Background(), meeting.DiscoverTimeout)
+	defer cancel()
+	expanded, _, _ := router.ExpandForRouting(ctx)
+	router.Cfg = expanded
+	return routeAndPrint(cmd, router, summary, expanded.Body, destID, jsonOut)
+}
+
 // maybeRouteAfterRecord applies post-meeting routing for the CLI record path.
-// --no-route wins; --route <id> forces a destination; otherwise mode from config.
+// Auto-delivery (--route / mode=auto) is handled earlier by routeAfterRecordTo;
+// this covers the interactive ask flow and mode=off.
 //
 // Human status lines never go to stdout when opts.JSON is set — machine-readable
 // mode must keep stdout as pure JSON (summary / utterance stream only).

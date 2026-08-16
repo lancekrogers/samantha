@@ -387,45 +387,53 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.meetingRT = msg.rt
-		// Persist the start-of-meeting dest plan so delivery survives quits and
-		// crashes (the startup sweep retries route_plan without routed). A
+		// Persist the start-of-meeting delivery intent so it survives quits and
+		// crashes (the startup sweep retries route_plan without routed): an
+		// explicit dest pick, or mode=auto's default when no pick was made. A
 		// failed write must not block recording, but it voids the durability
 		// promise — surface it in the recorder timeline (R3).
 		var planErr error
-		if a.meetingRoutePlan.Kind == routePlanDest && a.meetingRoutePlan.Dest.ID != "" && msg.rt.Writer != nil {
-			planErr = msg.rt.Writer.WriteRoutePlan(a.meetingRoutePlan.Dest.ID, routePlanDest)
+		plannedDest := ""
+		if msg.rt.Writer != nil {
+			switch {
+			case a.meetingRoutePlan.Kind == routePlanDest && a.meetingRoutePlan.Dest.ID != "":
+				plannedDest = a.meetingRoutePlan.Dest.ID
+				planErr = msg.rt.Writer.WriteRoutePlan(plannedDest, routePlanDest)
+			case a.meetingRoutePlan.Kind == "" && a.cfg != nil:
+				if rc := meeting.FromConfig(a.cfg); rc.Mode == meeting.ModeAuto && rc.Default != "" {
+					plannedDest = rc.Default
+					planErr = msg.rt.Writer.WriteRoutePlan(plannedDest, "auto")
+				}
+			}
 		}
-		finalizeSpeakers := msg.rt.FinalizeSpeakers
 		speakerStatus, speakerError := msg.rt.SpeakerStatus, msg.rt.SpeakerError
-		if demoMeetingSpeakersEnabled() && finalizeSpeakers == nil {
-			finalizeSpeakers = demoMeetingSpeakerFinalizer(msg.rt.Writer, msg.rt.Path)
-			// Background diarize runs off the runtime, not MeetingOpts — the
-			// demo finalizer must land on the runtime to run at all.
-			msg.rt.FinalizeSpeakers = finalizeSpeakers
+		if demoMeetingSpeakersEnabled() && msg.rt.FinalizeSpeakers == nil {
+			// Background diarize runs off the runtime; the demo finalizer must
+			// land there to run at all.
+			msg.rt.FinalizeSpeakers = demoMeetingSpeakerFinalizer(msg.rt.Writer, msg.rt.Path)
 			speakerStatus = meeting.AnalysisQueued
 			speakerError = "scripted multi-speaker fixture"
 		}
 		// Child cancel stops the listen loop without ending the whole App.
 		mctx, mcancel := context.WithCancel(a.runCtx)
 		cmd := a.meeting.beginRecording(MeetingOpts{
-			Ctx:              mctx,
-			Cancel:           mcancel,
-			Capture:          msg.rt.Capture,
-			Provider:         msg.rt.Provider,
-			Writer:           msg.rt.Writer,
-			Description:      msg.rt.Description,
-			Path:             msg.rt.Path,
-			StopPhrases:      msg.rt.StopPhrases,
-			SpeakerStatus:    speakerStatus,
-			SpeakerError:     speakerError,
-			FinalizeSpeakers: finalizeSpeakers,
-			LiveSpeaker:      msg.rt.LiveSpeaker,
-			Embedded:         true,
+			Ctx:           mctx,
+			Cancel:        mcancel,
+			Capture:       msg.rt.Capture,
+			Provider:      msg.rt.Provider,
+			Writer:        msg.rt.Writer,
+			Description:   msg.rt.Description,
+			Path:          msg.rt.Path,
+			StopPhrases:   msg.rt.StopPhrases,
+			SpeakerStatus: speakerStatus,
+			SpeakerError:  speakerError,
+			LiveSpeaker:   msg.rt.LiveSpeaker,
+			Embedded:      true,
 		})
 		if planErr != nil {
 			a.meeting.appendSystemLine(errorStyle.Render(fmt.Sprintf(
 				"  ⚠ route intent not saved (%v) — %s delivery depends on this session; crash recovery unavailable",
-				planErr, a.meetingRoutePlan.Dest.ID)))
+				planErr, plannedDest)))
 		}
 		return a, cmd
 

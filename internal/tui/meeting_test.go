@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -71,10 +70,9 @@ func TestMeetingSpeakerStatusFromRuntimeChannel(t *testing.T) {
 	if m.opts.SpeakerStatus != meeting.AnalysisRunning || !strings.Contains(m.View(), "diarizing captured audio") {
 		t.Fatalf("speaker status not applied:\n%s", m.View())
 	}
-	result := meeting.AnalysisResult{Status: meeting.AnalysisComplete, SpeakerCount: 2, Artifact: "/tmp/a.json"}
-	m, _ = m.handleListenMsg(meetingLoopDoneMsg{analysis: result})
-	if m.analysis.SpeakerCount != 2 {
-		t.Fatalf("analysis result = %+v", m.analysis)
+	m, _ = m.handleListenMsg(meetingLoopDoneMsg{})
+	if !m.loopDone || m.sessionPhase != meetingSessionDone {
+		t.Fatalf("loop done not applied: done=%v phase=%v", m.loopDone, m.sessionPhase)
 	}
 }
 
@@ -218,22 +216,6 @@ func TestMeetingDiarizingChrome(t *testing.T) {
 	}
 }
 
-func TestMeetingAbandonDiarizeCancelsAnalysis(t *testing.T) {
-	m := sizedMeeting(t, 80, 24)
-	m.markStopping()
-	m.sessionPhase = meetingSessionDiarizing
-	cancelled := false
-	m.analysisCancel = func() { cancelled = true }
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	mm := updated.(meetingModel)
-	if !cancelled {
-		t.Fatal("ctrl+c during diarize must cancel analysis")
-	}
-	if mm.analysisCancel != nil {
-		t.Fatal("analysisCancel should clear after abandon")
-	}
-}
-
 func TestApplySpeakerStatusRunningOnlyAfterStop(t *testing.T) {
 	m := sizedMeeting(t, 80, 24)
 	// Demo-style pre-stop running status must not freeze capture chrome.
@@ -254,64 +236,6 @@ func TestApplySpeakerStatusRunningOnlyAfterStop(t *testing.T) {
 	m.applySpeakerStatus(meetingSpeakerStatusMsg{status: meeting.AnalysisRunning, detail: "diarizing captured audio…"})
 	if m.sessionPhase != meetingSessionDiarizing {
 		t.Fatalf("post-stop AnalysisRunning → diarizing, got %v", m.sessionPhase)
-	}
-}
-
-func TestRunMeetingFinalizeAbandonUnblocks(t *testing.T) {
-	ch := make(chan tea.Msg, 16)
-	started := make(chan struct{})
-	finalize := func(ctx context.Context) (meeting.AnalysisResult, error) {
-		close(started)
-		// Simulate multi-minute sherpa Process: ignore cancel until return.
-		select {
-		case <-ctx.Done():
-			// Still sleep past cancel to prove UI does not wait.
-			time.Sleep(200 * time.Millisecond)
-			return meeting.AnalysisResult{Status: meeting.AnalysisError, Error: ctx.Err().Error()}, nil
-		case <-time.After(30 * time.Second):
-			return meeting.AnalysisResult{Status: meeting.AnalysisComplete, SpeakerCount: 1}, nil
-		}
-	}
-	done := make(chan meeting.AnalysisResult, 1)
-	go func() {
-		done <- runMeetingFinalize(ch, finalize)
-	}()
-	// Wait until finalize started and cancel is registered, then abandon.
-	<-started
-	// Drain until we see cancel registration (or timeout).
-	var cancel context.CancelFunc
-	deadline := time.After(2 * time.Second)
-drain:
-	for {
-		select {
-		case msg := <-ch:
-			if m, ok := msg.(meetingAnalysisCancelMsg); ok {
-				cancel = m.cancel
-				break drain
-			}
-		case <-deadline:
-			t.Fatal("timeout waiting for analysis cancel registration")
-		}
-	}
-	cancel()
-	select {
-	case got := <-done:
-		if got.Status != meeting.AnalysisError || got.Error != "speaker analysis cancelled" {
-			t.Fatalf("abandon result = %+v", got)
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("runMeetingFinalize must return promptly on cancel without waiting for finalize sleep")
-	}
-}
-
-func TestNormalizeMeetingAnalysisResultCancelWithoutGoError(t *testing.T) {
-	// SpeakerSession often returns (result with Error, nil).
-	got := normalizeMeetingAnalysisResult(meeting.AnalysisResult{
-		Status: meeting.AnalysisError,
-		Error:  "context canceled",
-	}, nil, false)
-	if got.Error != "speaker analysis cancelled" {
-		t.Fatalf("got %+v", got)
 	}
 }
 
@@ -465,9 +389,7 @@ func TestMeetingDoneShowsCompletedSpeakerAnalysis(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	updated, _ := app.Update(meetingDoneMsg{Analysis: meeting.AnalysisResult{
-		Status: meeting.AnalysisComplete, SpeakerCount: 3, Artifact: "/tmp/done.speaker-analysis.json",
-	}})
+	updated, _ := app.Update(meetingDoneMsg{})
 	a := updated.(App)
 	if a.screen != screenMeetingResults {
 		t.Fatalf("screen = %v, want meeting results", a.screen)
