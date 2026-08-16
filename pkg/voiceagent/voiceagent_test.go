@@ -344,25 +344,50 @@ func textAgent(t *testing.T) (*Agent, func()) {
 
 // A field that is accepted and then ignored is worse than an absent one. These
 // pin that the two stage-2 options actually reach the thing they configure.
-func TestOptionsPromptsDirIsNotIgnored(t *testing.T) {
-	cfg := &config.Config{AgentName: "Test"}
-	_, cleanup, err := New(context.Background(), Options{
-		Config:     cfg,
-		Events:     events.NewBus(),
-		Brain:      &stubBrain{},
-		TextOnly:   true,
-		Silent:     true,
-		PromptsDir: "/tmp/some-embedder-prompts",
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
+// Env and PromptsDir only reach a brain New builds from Config. With an
+// injected Brain they would be silently ignored, so New must refuse them —
+// a constructor that accepts an option and discards it is how this library's
+// earliest bugs looked.
+func TestNewRejectsDeadOptionsWithInjectedBrain(t *testing.T) {
+	tests := []struct {
+		name string
+		opts Options
+		want string
+	}{
+		{
+			"env with injected brain",
+			Options{
+				Config: &config.Config{AgentName: "Test"},
+				Events: events.NewBus(), Brain: &stubBrain{},
+				TextOnly: true, Silent: true,
+				Env: brain.Env{User: "svc"},
+			},
+			"Options.Env",
+		},
+		{
+			"prompts dir with injected brain",
+			Options{
+				Config: &config.Config{AgentName: "Test"},
+				Events: events.NewBus(), Brain: &stubBrain{},
+				TextOnly: true, Silent: true,
+				PromptsDir: "/tmp/some-embedder-prompts",
+			},
+			"Options.PromptsDir",
+		},
 	}
-	defer cleanup()
-
-	// The caller's config must not be rewritten underneath it: a host reusing
-	// one *Config across agents would otherwise find it mutated.
-	if cfg.PromptsDir != "" {
-		t.Errorf("New mutated the caller's Config.PromptsDir to %q", cfg.PromptsDir)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agent, cleanup, err := New(context.Background(), tt.opts)
+			if err == nil {
+				t.Fatal("New accepted an option an injected Brain can never see")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %q, want it to mention %q", err, tt.want)
+			}
+			if agent != nil || cleanup != nil {
+				t.Error("a failed New must return no agent and no cleanup to call")
+			}
+		})
 	}
 }
 
@@ -391,7 +416,8 @@ func TestOptionsEnvReachesBrainConstructedByNew(t *testing.T) {
 	}
 	agent, cleanup, err := New(context.Background(), Options{
 		Config: cfg, Events: events.NewBus(), TextOnly: true, Silent: true,
-		Env: brain.Env{User: "svc-account", Hostname: "prod-1", OS: "linux/amd64"},
+		Env:        brain.Env{User: "svc-account", Hostname: "prod-1", OS: "linux/amd64"},
+		PromptsDir: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -407,6 +433,11 @@ func TestOptionsEnvReachesBrainConstructedByNew(t *testing.T) {
 	}
 	if cfg.RuntimeEnvUser != "" || cfg.RuntimeEnvHostname != "" || cfg.RuntimeEnvOS != "" {
 		t.Fatal("New mutated the caller's config with runtime environment values")
+	}
+	// The caller's config must not be rewritten underneath it: a host reusing
+	// one *Config across agents would otherwise find it mutated.
+	if cfg.PromptsDir != "" {
+		t.Errorf("New mutated the caller's Config.PromptsDir to %q", cfg.PromptsDir)
 	}
 }
 

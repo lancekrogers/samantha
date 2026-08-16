@@ -57,6 +57,10 @@ type Options struct {
 
 	// Brain, STT, TTS, TTSFallback and Player each replace the provider that
 	// Config would otherwise select.
+	//
+	// An injected Brain assembled its prompts before New was called, so Env and
+	// PromptsDir cannot reach it; New rejects those combinations rather than
+	// accept an option it would ignore.
 	Brain       brain.Provider
 	STT         stt.Provider
 	TTS         tts.Provider
@@ -83,12 +87,14 @@ type Options struct {
 	// Env describes the machine the agent tells the model it is running on. A
 	// zero Env falls back to the host, which is what the CLI wants. A server
 	// answering for many users should set it: telling the model it is running as
-	// whoever started the process is worse than saying nothing.
+	// whoever started the process is worse than saying nothing. Only reaches a
+	// brain New builds from Config — rejected with an injected Brain.
 	Env brain.Env
 
 	// PromptsDir is where user prompt documents are read from. Empty falls back
 	// to the configured directory, so an embedder can ship its own prompts from
-	// anywhere without touching the host's config.
+	// anywhere without touching the host's config. Only reaches a brain New
+	// builds from Config — rejected with an injected Brain.
 	PromptsDir string
 
 	// Logf receives non-fatal setup diagnostics — a configured TTS fallback that
@@ -112,6 +118,18 @@ func New(ctx context.Context, opts Options) (*Agent, func(), error) {
 	}
 	if opts.Events == nil {
 		return nil, nil, fmt.Errorf("voiceagent: Events is required")
+	}
+	// Env and PromptsDir only reach a brain New builds from Config; an injected
+	// Brain assembled its prompts before New was called. Rejecting the
+	// combination keeps both options impossible to set-and-ignore — the same
+	// contract as an injected Capture requiring an injected STT.
+	if opts.Brain != nil {
+		if opts.Env != (brain.Env{}) {
+			return nil, nil, fmt.Errorf("voiceagent: Options.Env cannot reach an injected Brain — give the brain its environment context directly")
+		}
+		if opts.PromptsDir != "" {
+			return nil, nil, fmt.Errorf("voiceagent: Options.PromptsDir cannot reach an injected Brain — point the brain at its prompts directly")
+		}
 	}
 	cfg := opts.Config
 	logf := opts.Logf
