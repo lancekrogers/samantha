@@ -167,7 +167,10 @@ func (m *settingsModel) selectQwenItem() tea.Cmd {
 		}
 		// A tier that is not in the installed package is an install job, not a
 		// config problem: kick the package install targeted at that tier and
-		// save the key when it lands (qwenInstallDoneMsg).
+		// save the key when it lands (qwenInstallDoneMsg). Whether the source
+		// actually carries the tier is EnsureNative's call — the pinned
+		// release fails fast with its own remediation before any download, so
+		// the message here stays neutral about what the source contains.
 		if next == managedqwen.Tier1_7B {
 			st := managedqwen.InspectNative(config.ModelsDirFrom(m.cfg), next)
 			if !st.ModelReady {
@@ -180,7 +183,7 @@ func (m *settingsModel) selectQwenItem() tea.Cmd {
 				m.qwenInstalling = true
 				m.qwenTierPending = next
 				m.qwenInstallEvents = newEventBridge(16)
-				m.message = fmt.Sprintf("Tier %s is not installed — downloading the multi-tier package…", next)
+				m.message = fmt.Sprintf("Tier %s is not installed — fetching the native package for it…", next)
 				m.buildQwenItems()
 				return tea.Batch(m.qwenInstallEvents.wait(), m.installQwenAssets(ctx))
 			}
