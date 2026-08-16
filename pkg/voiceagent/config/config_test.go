@@ -131,17 +131,19 @@ func TestTUIMouseDefaultsOnAndCanBeDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
-	if !cfg.TUIMouseEnabled {
-		t.Error("TUIMouseEnabled = false, want true by default")
+	// Off by default: the terminal keeps click-drag selection so transcript
+	// text can be copied the way it is in any other agent chat.
+	if cfg.TUIMouseEnabled {
+		t.Error("TUIMouseEnabled = true, want false by default")
 	}
 
-	t.Setenv("TUI_MOUSE_ENABLED", "false")
+	t.Setenv("TUI_MOUSE_ENABLED", "true")
 	cfg, err = Load()
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
-	if cfg.TUIMouseEnabled {
-		t.Error("TUIMouseEnabled = true, want false from env")
+	if !cfg.TUIMouseEnabled {
+		t.Error("TUIMouseEnabled = false, want true from env")
 	}
 }
 

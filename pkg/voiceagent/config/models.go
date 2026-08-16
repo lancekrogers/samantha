@@ -238,8 +238,7 @@ func ensureQwenTTSAssets(ctx context.Context, cfg *Config, onProgress func(name 
 	sha := ""
 	if cfg != nil {
 		tier = cfg.QwenTTSModelTier
-		url = qwen.ResolveNativeURL(cfg.QwenTTSNativeURL)
-		sha = qwen.ResolveNativeSHA256(cfg.QwenTTSNativeSHA256)
+		url, sha = qwen.ResolveNativeDownload(cfg.QwenTTSNativeURL, cfg.QwenTTSNativeSHA256)
 	}
 
 	if qwen.InspectNative(modelsDir, tier).Installed {

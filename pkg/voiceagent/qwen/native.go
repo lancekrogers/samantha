@@ -559,8 +559,20 @@ func EnsureNative(ctx context.Context, modelsDir string, opt NativeEnsureOptions
 	}
 	// Package present but requested tier absent (e.g. 1.7B not shipped / engine-blocked).
 	if status.WorkerReady && status.PresetsReady && !status.ModelReady {
+		// Fail fast for 1.7B only when the download source is the pinned
+		// default release, which is known to ship 0.6b alone — re-fetching it
+		// cannot add the tier. A configured URL (qwen_tts_native_url or env)
+		// is how a multi-tier tarball arrives, so it falls through to the
+		// re-download below instead.
 		if tier == Tier1_7B {
-			return status, fmt.Errorf("native Qwen3-TTS tier %s is not in this package (engine/convert may still block 1.7B); keep tier 0.6b or install a multi-tier release", tier)
+			defaultURL, _ := DefaultNativeRelease()
+			effective := strings.TrimSpace(opt.URL)
+			if effective == "" {
+				effective = ResolveNativeURL("")
+			}
+			if effective == "" || effective == defaultURL {
+				return status, fmt.Errorf("native Qwen3-TTS tier %s is not in the pinned release; set qwen_tts_native_url to a multi-tier tarball or keep tier 0.6b", tier)
+			}
 		}
 		// Fall through to re-download if URL provided; otherwise incomplete install error.
 	}
@@ -570,7 +582,10 @@ func EnsureNative(ctx context.Context, modelsDir string, opt NativeEnsureOptions
 		url = ResolveNativeURL("")
 	}
 	if strings.TrimSpace(opt.SHA256) == "" {
-		opt.SHA256 = ResolveNativeSHA256("")
+		// Never pair the pinned release's digest with a different archive:
+		// a custom URL without an explicit checksum skips the archive check
+		// (post-extract manifest verification still covers every file).
+		opt.SHA256 = resolveNativeSHAForURL(url, "")
 	}
 	if url == "" {
 		if status.Installed {
@@ -1012,9 +1027,20 @@ func ResolveNativeURL(configured string) string {
 	return url
 }
 
-// ResolveNativeSHA256 returns configured archive checksum, env override, or the
-// published platform default digest matching DefaultNativeRelease.
-func ResolveNativeSHA256(configured string) string {
+// ResolveNativeDownload resolves the download URL and its matching archive
+// checksum together. The pinned release digest belongs to the pinned URL
+// alone: a custom tarball (config or env URL) with no explicit checksum gets
+// an empty SHA — downloadNativeArchive then skips the archive check, and
+// VerifyNativeInstall still hashes every extracted file against the package
+// manifest.
+func ResolveNativeDownload(configuredURL, configuredSHA string) (url, sha string) {
+	url = ResolveNativeURL(configuredURL)
+	return url, resolveNativeSHAForURL(url, configuredSHA)
+}
+
+// resolveNativeSHAForURL returns the explicit configured/env checksum when
+// set, or the pinned digest only when url is the pinned release itself.
+func resolveNativeSHAForURL(url, configured string) string {
 	if v := strings.TrimSpace(configured); v != "" {
 		return v
 	}
@@ -1024,8 +1050,10 @@ func ResolveNativeSHA256(configured string) string {
 	if v := strings.TrimSpace(os.Getenv("QWEN_TTS_NATIVE_SHA256")); v != "" {
 		return v
 	}
-	_, sha := DefaultNativeRelease()
-	return sha
+	if defURL, defSHA := DefaultNativeRelease(); url == defURL {
+		return defSHA
+	}
+	return ""
 }
 
 // PreferNative is always true after cutover (native-only product path).

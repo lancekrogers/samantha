@@ -71,6 +71,58 @@ func TestEnsureNativeTier17BFailClosedWhenMissing(t *testing.T) {
 	}
 }
 
+// A configured URL is how a multi-tier tarball arrives: requesting 1.7b over
+// an installed 0.6b-only package must re-download from it, not fail closed.
+func TestEnsureNativeTier17BUpgradesFromConfiguredURL(t *testing.T) {
+	modelsDir := t.TempDir()
+	oldArchive, oldSum := writeFakeNativeTar(t, t.TempDir())
+	if _, err := EnsureNative(context.Background(), modelsDir, NativeEnsureOptions{
+		URL: oldArchive, SHA256: oldSum, Tier: "0.6b",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	multiArchive, multiSum := writeFakeNativeTarTiers(t, t.TempDir(), "0.6b", "1.7b")
+	st, err := EnsureNative(context.Background(), modelsDir, NativeEnsureOptions{
+		URL: multiArchive, SHA256: multiSum, Tier: "1.7b",
+	}, nil)
+	if err != nil {
+		t.Fatalf("EnsureNative upgrade: %v", err)
+	}
+	if !st.Installed || !st.ModelReady {
+		t.Fatalf("status=%+v, want installed with 1.7b ready", st)
+	}
+	p := NativeInstallPaths(modelsDir)
+	if !regularFile(filepath.Join(p.ModelDir, "qwen3-tts-1.7b-f16.gguf")) {
+		t.Fatal("expected 1.7b gguf after upgrade")
+	}
+}
+
+// The operator path is qwen_tts_native_url alone: a custom URL with no
+// explicit checksum must not inherit the pinned release's digest (which can
+// only mismatch), and the upgrade must still succeed — post-extract manifest
+// verification covers file integrity.
+func TestEnsureNativeTier17BUpgradesFromCustomURLWithoutSHA(t *testing.T) {
+	modelsDir := t.TempDir()
+	oldArchive, oldSum := writeFakeNativeTar(t, t.TempDir())
+	if _, err := EnsureNative(context.Background(), modelsDir, NativeEnsureOptions{
+		URL: oldArchive, SHA256: oldSum, Tier: "0.6b",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	multiArchive, _ := writeFakeNativeTarTiers(t, t.TempDir(), "0.6b", "1.7b")
+	st, err := EnsureNative(context.Background(), modelsDir, NativeEnsureOptions{
+		URL: multiArchive, Tier: "1.7b",
+	}, nil)
+	if err != nil {
+		t.Fatalf("EnsureNative upgrade without SHA: %v", err)
+	}
+	if !st.Installed || !st.ModelReady {
+		t.Fatalf("status=%+v, want installed with 1.7b ready", st)
+	}
+}
+
 func TestEnsureNativeSHA256Mismatch(t *testing.T) {
 	modelsDir := t.TempDir()
 	archive, _ := writeFakeNativeTar(t, t.TempDir())
@@ -341,6 +393,11 @@ func TestNormalizeTier(t *testing.T) {
 
 func writeFakeNativeTar(t *testing.T, dir string) (path, shaHex string) {
 	t.Helper()
+	return writeFakeNativeTarTiers(t, dir, "0.6b")
+}
+
+func writeFakeNativeTarTiers(t *testing.T, dir string, tiers ...string) (path, shaHex string) {
+	t.Helper()
 	presets := `{"schema":"qwen3-tts-native.presets.v1","voices":[{"name":"Vivian","path":"presets/Vivian.q3te"}]}`
 	// Portable package ships worker + libqwen3tts + libggml* (product load path).
 	libSuffix := ".dylib"
@@ -352,10 +409,23 @@ func writeFakeNativeTar(t *testing.T, dir string) (path, shaHex string) {
 		"bin/qwen3-tts-cli":                   "#!/bin/sh\n",
 		"bin/libqwen3tts" + libSuffix:         "fake-qwen-lib",
 		"bin/libggml" + libSuffix:             "fake-ggml-lib",
-		"models/qwen3-tts-0.6b-f16.gguf":      "gguf-tts",
 		"models/qwen3-tts-tokenizer-f16.gguf": "gguf-tok",
 		"models/presets/presets.json":         presets,
 		"models/presets/Vivian.q3te":          "Q3TE",
+	}
+	modelEntries := map[string]any{}
+	for _, tier := range tiers {
+		gguf := "models/qwen3-tts-" + tier + "-f16.gguf"
+		files[gguf] = "gguf-tts-" + tier
+		modelEntries[tier] = map[string]any{
+			"quant": "f16",
+			"tts": map[string]string{
+				"path": gguf, "sha256": sha256Text(files[gguf]),
+			},
+			"tokenizer": map[string]string{
+				"path": "models/qwen3-tts-tokenizer-f16.gguf", "sha256": sha256Text(files["models/qwen3-tts-tokenizer-f16.gguf"]),
+			},
+		}
 	}
 	install := map[string]any{
 		"schema":       nativeInstallSchema,
@@ -373,17 +443,7 @@ func writeFakeNativeTar(t *testing.T, dir string) (path, shaHex string) {
 			"cli":           "bin/qwen3-tts-cli",
 			"cli_sha256":    sha256Text(files["bin/qwen3-tts-cli"]),
 		},
-		"models": map[string]any{
-			"0.6b": map[string]any{
-				"quant": "f16",
-				"tts": map[string]string{
-					"path": "models/qwen3-tts-0.6b-f16.gguf", "sha256": sha256Text(files["models/qwen3-tts-0.6b-f16.gguf"]),
-				},
-				"tokenizer": map[string]string{
-					"path": "models/qwen3-tts-tokenizer-f16.gguf", "sha256": sha256Text(files["models/qwen3-tts-tokenizer-f16.gguf"]),
-				},
-			},
-		},
+		"models": modelEntries,
 		"presets":        "models/presets/presets.json",
 		"presets_sha256": sha256Text(files["models/presets/presets.json"]),
 	}
