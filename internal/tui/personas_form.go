@@ -9,6 +9,7 @@ import (
 
 	"github.com/lancekrogers/samantha/internal/persona"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/brain"
+	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 	managedqwen "github.com/lancekrogers/samantha/pkg/voiceagent/qwen"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/tts"
 )
@@ -25,7 +26,8 @@ const (
 	stackRowBrainModel    = 1
 	stackRowTTSProvider   = 2
 	stackRowVoice         = 3
-	stackRowCount         = 4
+	stackRowTier          = 4
+	stackRowCount         = 5
 )
 
 // stackDefaultLabel is provider index 0: inherit the app-level default.
@@ -154,6 +156,86 @@ func (m *personasModel) cycleStackVoice(delta int) {
 		return
 	}
 	m.selectedVoice = list[idx]
+}
+
+// effectiveStackTTSProvider is the provider the voice/tier rows describe: the
+// form selection, or the app Settings provider when the row is "(default)".
+func (m personasModel) effectiveStackTTSProvider() string {
+	provider := providerAt(stackTTSProviders(), m.ttsProviderIdx)
+	if provider == "" && m.cfg != nil {
+		provider = strings.TrimSpace(m.cfg.TTSProvider)
+	}
+	return provider
+}
+
+// stackTierUsable reports whether the tier row means anything: only the native
+// Qwen3-TTS package is tiered.
+func (m personasModel) stackTierUsable() bool {
+	return strings.EqualFold(m.effectiveStackTTSProvider(), managedqwen.ProviderName)
+}
+
+// stackTierList builds the tier row: (default) + tiers present in the
+// installed native package, plus any hand-edited value already on the persona
+// so edit never drops it.
+func (m personasModel) stackTierList() []string {
+	out := []string{stackDefaultLabel}
+	st := managedqwen.InspectNative(config.ModelsDirFrom(m.cfg), "")
+	out = append(out, st.TiersReady...)
+	if v := strings.TrimSpace(m.selectedTier); v != "" {
+		found := false
+		for _, item := range out[1:] {
+			if strings.EqualFold(item, v) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// stackTierIndex maps selectedTier onto stackTierList (0 = inherit default).
+func (m personasModel) stackTierIndex() int {
+	v := strings.TrimSpace(m.selectedTier)
+	if v == "" {
+		return 0
+	}
+	for i, item := range m.stackTierList() {
+		if i == 0 {
+			continue
+		}
+		if strings.EqualFold(item, v) {
+			return i
+		}
+	}
+	return 0
+}
+
+// cycleStackTier moves ←/→ through the installed tiers; no-op off qwen.
+func (m *personasModel) cycleStackTier(delta int) {
+	if !m.stackTierUsable() {
+		return
+	}
+	list := m.stackTierList()
+	idx := (m.stackTierIndex() + delta + len(list)) % len(list)
+	if idx == 0 {
+		m.selectedTier = ""
+		return
+	}
+	m.selectedTier = list[idx]
+}
+
+// clampSelectedTier drops the tier when the provider row moves off qwen, so a
+// Kokoro persona never carries a stale qwen tier.
+func (m *personasModel) clampSelectedTier() {
+	if strings.TrimSpace(m.selectedTier) == "" {
+		return
+	}
+	if !m.stackTierUsable() {
+		m.selectedTier = ""
+	}
 }
 
 func newPersonaStackInput(placeholder string) textinput.Model {
@@ -292,12 +374,16 @@ func (m personasModel) updateStackStep(msg tea.KeyMsg) (personasModel, tea.Cmd) 
 		case stackRowTTSProvider:
 			list := stackTTSProviders()
 			m.ttsProviderIdx = (m.ttsProviderIdx + delta + len(list)) % len(list)
-			// Voice catalog is provider-specific: drop a selection that is no
-			// longer in the new list so we don't keep a Kokoro id under Qwen.
+			// Voice catalog and tier are provider-specific: drop selections
+			// that no longer apply so we don't keep a Kokoro id under Qwen.
 			m.clampSelectedVoice()
+			m.clampSelectedTier()
 			return m, nil
 		case stackRowVoice:
 			m.cycleStackVoice(delta)
+			return m, nil
+		case stackRowTier:
+			m.cycleStackTier(delta)
 			return m, nil
 		}
 	}
@@ -364,6 +450,7 @@ func (m *personasModel) formTTS() persona.TTS {
 	return persona.TTS{
 		Provider: providerAt(stackTTSProviders(), m.ttsProviderIdx),
 		Voice:    strings.TrimSpace(m.selectedVoice),
+		Tier:     strings.TrimSpace(m.selectedTier),
 	}
 }
 
@@ -374,11 +461,13 @@ func (m *personasModel) prefillStack(p *persona.Profile) {
 		m.ttsProviderIdx = 0
 		m.brainModelInput.SetValue("")
 		m.selectedVoice = ""
+		m.selectedTier = ""
 		return
 	}
 	m.brainProviderIdx = providerIndex(stackBrainProviders(), p.Brain.Provider)
 	m.ttsProviderIdx = providerIndex(stackTTSProviders(), p.TTS.Provider)
 	m.brainModelInput.SetValue(strings.TrimSpace(p.Brain.Model))
+	m.selectedTier = strings.TrimSpace(p.TTS.Tier)
 	m.selectedVoice = strings.TrimSpace(p.TTS.Voice)
 	// Canonicalize known voices to catalog spelling; keep unknown as sticky
 	// options so a hand-edited yaml value is not silently wiped.

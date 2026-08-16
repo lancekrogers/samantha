@@ -42,6 +42,7 @@ type personasModel struct {
 	ttsProviderIdx   int
 	brainModelInput  textinput.Model
 	selectedVoice    string
+	selectedTier     string
 
 	listPersonas         func() ([]*persona.Profile, error)
 	usePersona           func(*config.Config, string) error
