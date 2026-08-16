@@ -165,12 +165,27 @@ func (m *settingsModel) selectQwenItem() tea.Cmd {
 		if cur == managedqwen.DefaultModelTier || cur == "0.6b" {
 			next = managedqwen.Tier1_7B
 		}
-		// Fail closed if 1.7B requested but not present in the installed package.
+		// A tier that is not in the installed package is an install job, not a
+		// config problem: kick the package install targeted at that tier and
+		// save the key when it lands (qwenInstallDoneMsg). Whether the source
+		// actually carries the tier is EnsureNative's call — the pinned
+		// release fails fast with its own remediation before any download, so
+		// the message here stays neutral about what the source contains.
 		if next == managedqwen.Tier1_7B {
 			st := managedqwen.InspectNative(config.ModelsDirFrom(m.cfg), next)
 			if !st.ModelReady {
-				m.message = "1.7B is not in the installed native package — install a multi-tier release or keep 0.6b"
-				return nil
+				if m.qwenInstalling {
+					m.message = "Qwen package install already running…"
+					return nil
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				m.qwenInstallCancel = cancel
+				m.qwenInstalling = true
+				m.qwenTierPending = next
+				m.qwenInstallEvents = newEventBridge(16)
+				m.message = fmt.Sprintf("Tier %s is not installed — fetching the native package for it…", next)
+				m.buildQwenItems()
+				return tea.Batch(m.qwenInstallEvents.wait(), m.installQwenAssets(ctx))
 			}
 		}
 		if err := save("qwen_tts_model_tier", next); err != nil {
@@ -237,6 +252,10 @@ func (m settingsModel) installQwenAssets(ctx context.Context) tea.Cmd {
 	cfgCopy := *m.cfg
 	// Ensure path keys off qwen3-tts provider.
 	cfgCopy.TTSProvider = managedqwen.ProviderName
+	// A tier-row install targets the requested tier, not the saved one.
+	if m.qwenTierPending != "" {
+		cfgCopy.QwenTTSModelTier = m.qwenTierPending
+	}
 	return func() tea.Msg {
 		progress := func(name string, pct float64) {
 			if events == nil {

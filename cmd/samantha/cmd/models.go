@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/lancekrogers/samantha/internal/persona"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 	managedqwen "github.com/lancekrogers/samantha/pkg/voiceagent/qwen"
 )
@@ -151,14 +153,26 @@ func runModelsEnsure(cmd *cobra.Command, cfg *config.Config, req config.AssetReq
 	out := cmd.OutOrStdout()
 
 	started := map[string]bool{}
-	err := ensure(cmd.Context(), cfg, req, func(name string, pct float64) {
+	progress := func(name string, pct float64) {
 		if !started[name] {
 			started[name] = true
 			fmt.Fprintf(out, "  downloading %s ...\n", name)
 		}
-	})
+	}
+	err := ensure(cmd.Context(), cfg, req, progress)
 	if err != nil {
 		return fmt.Errorf("models ensure: %w", err)
+	}
+
+	// Personas route speech independently of the active TTS provider: a
+	// kokoro session with a qwen persona still needs the native package.
+	// Ensuring an installed tier is a no-op, so this never re-downloads.
+	if req.NeedTTS {
+		for _, tier := range qwenPersonaTiers(cfg) {
+			if err := ensureQwenTierFn(cmd.Context(), cfg, tier, progress); err != nil {
+				return fmt.Errorf("models ensure (qwen tier %s for personas): %w", tier, err)
+			}
+		}
 	}
 
 	if len(started) == 0 {
@@ -167,6 +181,37 @@ func runModelsEnsure(cmd *cobra.Command, cfg *config.Config, req config.AssetReq
 		fmt.Fprintf(out, "  Done — %d asset(s) ensured.\n", len(started))
 	}
 	return nil
+}
+
+// ensureQwenTierFn is the persona-tier ensure seam; tests swap it to observe
+// tiers without downloading.
+var ensureQwenTierFn = config.EnsureQwenTTSTier
+
+// qwenPersonaTiers returns the distinct native tiers persona profiles route
+// speech through. Profiles without a pinned tier need the app-level one.
+func qwenPersonaTiers(cfg *config.Config) []string {
+	profiles, err := persona.List()
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var tiers []string
+	for _, p := range profiles {
+		if p == nil || !strings.EqualFold(strings.TrimSpace(p.TTS.Provider), managedqwen.ProviderName) {
+			continue
+		}
+		tier := strings.TrimSpace(p.TTS.Tier)
+		if tier == "" && cfg != nil {
+			tier = strings.TrimSpace(cfg.QwenTTSModelTier)
+		}
+		tier = managedqwen.NormalizeModelTier(tier)
+		if !seen[tier] {
+			seen[tier] = true
+			tiers = append(tiers, tier)
+		}
+	}
+	sort.Strings(tiers)
+	return tiers
 }
 
 var modelsCleanCmd = &cobra.Command{
