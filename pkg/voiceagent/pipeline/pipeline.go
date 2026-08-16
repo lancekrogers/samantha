@@ -61,13 +61,41 @@ const (
 // from a glance and wrong. TestSpeakableSegmentNeedsBothHalves fails if either
 // half is dropped.
 //
-// Scope: progressive transcript and TTS sites in streamResponse only. Text mode
-// (RunTurnTextMode) still gates the whole reply via gateForSpeech and does not
-// call this — a filler glued to recovery can still be spoken there. Reaching
-// for a half on a progressive site is how a filler-only reply got spoken while
-// the recovery line went only to history (PR #223 review).
+// Both speech paths decide here: streamResponse per segment as segments arrive,
+// RunTurnTextMode through speakableFromResponse. Reaching for a half instead is
+// how a filler-only reply got spoken while the recovery line went only to
+// history (PR #223 review).
 func speakableSegment(s string) bool {
 	return brain.HasSpeakableContent(s) && hasPronounceableContent(s)
+}
+
+// speakableFromResponse reduces a whole gated reply to the text worth
+// synthesizing, applying per segment what the progressive loop applies as
+// segments arrive: the same splitter, the same cleaning, the same predicate.
+//
+// Text mode used to synthesize the gated reply verbatim, so it spoke markdown
+// ("Here is **bold** text") and read a leading "Hmm." aloud before the recovery
+// line that had replaced it — the PR #223 bug living on in the one path that
+// fix did not reach.
+//
+// Segment granularity is the whole point. speakableSegment on the entire reply
+// cannot work: "Hmm. <recovery>" satisfies both halves as soon as the recovery
+// text is present, so the filler rides along. Only splitting first exposes it.
+func speakableFromResponse(gated string) string {
+	if gated == "" {
+		return ""
+	}
+	input := make(chan string, 1)
+	input <- gated
+	close(input)
+
+	var kept []string
+	for segment := range brain.ChunkSentencesRaw(input) {
+		if cleaned := brain.CleanForVoice(segment); speakableSegment(cleaned) {
+			kept = append(kept, cleaned)
+		}
+	}
+	return strings.Join(kept, " ")
 }
 
 // hasPronounceableContent reports whether a segment contains anything a
@@ -657,9 +685,14 @@ func (p *Pipeline) RunTurnTextMode(ctx context.Context, input string) error {
 	// Voice gate (WI-dc9e33 B4): the full raw response stays in the chat
 	// transcript; only voice-safe text may be synthesized. Gate only when the
 	// turn would actually speak, so mute never counts phantom leaks.
+	//
+	// gateForSpeech removes structure the listener should not hear (fences,
+	// tool blocks); speakableFromResponse then applies the per-segment cleaning
+	// and predicate the progressive path uses, so a typed turn and a spoken one
+	// say the same thing.
 	speakable := ""
 	if !p.OutputMuted() && p.Player != nil && p.ttsReady() {
-		speakable = p.gateForSpeech(response, metrics)
+		speakable = speakableFromResponse(p.gateForSpeech(response, metrics))
 	}
 	if speakable != "" {
 		turn.to(TurnSpeaking)
