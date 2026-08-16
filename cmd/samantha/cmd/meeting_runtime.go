@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/mattn/go-isatty"
@@ -224,14 +225,29 @@ func meetingRuntimeBuilder() appTUI.MeetingBuilder {
 		}
 		liveSpeaker, stopLive := prepareMeetingLiveSpeaker(ctx, cfg, capture, progress)
 		runtimeCleanup := cleanup
+		// Two-stage teardown: capture resources (mic, STT, live labels) release
+		// at stop so the next screen can use the device, while the speaker
+		// analyzer stays alive for background diarization. Each stage is
+		// idempotent so the global-quit path may run both unconditionally.
+		var releaseOnce, cleanupOnce sync.Once
+		releaseCapture := func() {
+			releaseOnce.Do(func() {
+				if stopLive != nil {
+					stopLive()
+				}
+				if speakerSession != nil {
+					speakerSession.StopCapture()
+				}
+				runtimeCleanup()
+			})
+		}
 		cleanup = func() {
-			if stopLive != nil {
-				stopLive()
-			}
-			if speakerSession != nil {
-				_ = speakerSession.Close()
-			}
-			runtimeCleanup()
+			releaseCapture()
+			cleanupOnce.Do(func() {
+				if speakerSession != nil {
+					_ = speakerSession.Close()
+				}
+			})
 		}
 		return &appTUI.MeetingRuntime{
 			Capture:          capture,
@@ -244,6 +260,7 @@ func meetingRuntimeBuilder() appTUI.MeetingBuilder {
 			Description:      description,
 			Path:             bundlePath,
 			StopPhrases:      stopPhraseSet(nil),
+			ReleaseCapture:   releaseCapture,
 			Cleanup:          cleanup,
 		}, nil
 	}

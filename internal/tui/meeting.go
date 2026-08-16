@@ -276,7 +276,10 @@ func (m *meetingModel) startLoop() tea.Cmd {
 		}
 		err := listen.LoopWithHooks(opts.Ctx, capture, provider, sink, hooks)
 		var analysis meeting.AnalysisResult
-		if opts.FinalizeSpeakers != nil {
+		// Embedded stop must return control immediately: diarization runs as a
+		// background job owned by the App after meetingDoneMsg (WI-162bbb R1).
+		// The standalone CLI recorder keeps the synchronous, cancellable path.
+		if opts.FinalizeSpeakers != nil && !opts.Embedded {
 			analysis = runMeetingFinalize(ch, opts.FinalizeSpeakers)
 		}
 		// Loop completion must not be dropped: UI uses it to exit cleanly.

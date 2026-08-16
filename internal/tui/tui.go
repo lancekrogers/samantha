@@ -82,6 +82,15 @@ type App struct {
 	meetingBuilder   MeetingBuilder
 	meetingRT        *MeetingRuntime
 	meetingRoutePlan meetingRoutePlan // chosen at setup; consumed after stop
+	// Post-stop background state (WI-162bbb): a dest plan routes at capture
+	// end, and diarization runs as a background job behind the results screen.
+	meetingRouteAuto    bool   // dest plan consumed; route fired at capture end
+	meetingRouteBanner  string // route result, shown on results and/or launcher
+	meetingRouteErr     bool
+	meetingAnalysisBusy bool // background diarization in flight
+	// meetingSweep retries undelivered route plans at startup. Wired by run()
+	// only, so unit-test Apps never touch the real meetings directory.
+	meetingSweep tea.Cmd
 
 	// Set once the conversation runtime is built; Run tears it down after
 	// the program exits.
@@ -124,9 +133,12 @@ func NewApp(cfg *config.Config) App {
 
 func (a App) Init() tea.Cmd {
 	if a.startInConversation {
+		if a.meetingSweep != nil {
+			return tea.Batch(func() tea.Msg { return startPipelineMsg{} }, a.meetingSweep)
+		}
 		return func() tea.Msg { return startPipelineMsg{} }
 	}
-	return nil
+	return a.meetingSweep
 }
 
 // switchScreen is a message to change screens.
@@ -212,7 +224,11 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		// Meeting owns Ctrl+C as "stop recording" (returns to launcher).
-		if msg.String() == "ctrl+c" && (a.screen == screenMeeting || a.screen == screenMeetingSetup) {
+		// Results and the route picker own it too: quitting the app from
+		// those screens silently discarded the planned route (WI-162bbb).
+		if msg.String() == "ctrl+c" &&
+			(a.screen == screenMeeting || a.screen == screenMeetingSetup ||
+				a.screen == screenMeetingResults || a.screen == screenMeetingRoute) {
 			break // fall through to screen Update
 		}
 		if msg.String() == "ctrl+c" {
@@ -351,6 +367,10 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Kind: msg.RoutePlan,
 			Dest: msg.Destination,
 		}
+		a.meetingRouteAuto = false
+		a.meetingRouteBanner = ""
+		a.meetingRouteErr = false
+		a.meetingAnalysisBusy = false
 		a.screen = screenMeeting
 		a.meeting = newEmbeddedMeeting()
 		a.meeting.width, a.meeting.height = a.width, a.height
@@ -367,10 +387,21 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.meetingRT = msg.rt
+		// Persist the start-of-meeting dest plan so delivery survives quits and
+		// crashes (the startup sweep retries route_plan without routed). A
+		// failed write must not block recording, but it voids the durability
+		// promise — surface it in the recorder timeline (R3).
+		var planErr error
+		if a.meetingRoutePlan.Kind == routePlanDest && a.meetingRoutePlan.Dest.ID != "" && msg.rt.Writer != nil {
+			planErr = msg.rt.Writer.WriteRoutePlan(a.meetingRoutePlan.Dest.ID, routePlanDest)
+		}
 		finalizeSpeakers := msg.rt.FinalizeSpeakers
 		speakerStatus, speakerError := msg.rt.SpeakerStatus, msg.rt.SpeakerError
 		if demoMeetingSpeakersEnabled() && finalizeSpeakers == nil {
 			finalizeSpeakers = demoMeetingSpeakerFinalizer(msg.rt.Writer, msg.rt.Path)
+			// Background diarize runs off the runtime, not MeetingOpts — the
+			// demo finalizer must land on the runtime to run at all.
+			msg.rt.FinalizeSpeakers = finalizeSpeakers
 			speakerStatus = meeting.AnalysisQueued
 			speakerError = "scripted multi-speaker fixture"
 		}
@@ -391,24 +422,69 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			LiveSpeaker:      msg.rt.LiveSpeaker,
 			Embedded:         true,
 		})
+		if planErr != nil {
+			a.meeting.appendSystemLine(errorStyle.Render(fmt.Sprintf(
+				"  ⚠ route intent not saved (%v) — %s delivery depends on this session; crash recovery unavailable",
+				planErr, a.meetingRoutePlan.Dest.ID)))
+		}
 		return a, cmd
 
 	case meetingDoneMsg:
-		summary, closeErr := a.stopMeetingRuntimeWithSummary()
+		rt, summary, closeErr := a.finishMeetingCapture()
+		plan := a.meetingRoutePlan
 		if err := errors.Join(msg.Err, closeErr); err != nil {
+			if rt != nil && rt.Cleanup != nil {
+				rt.Cleanup()
+			}
+			banner := fmt.Sprintf("Meeting ended with error: %v", err)
+			// Fail loudly when a chosen destination was not reached (R3): the
+			// startup sweep cannot retry a bundle whose trailer never landed.
+			if plan.Kind == routePlanDest && plan.Dest.ID != "" {
+				a.meetingRoutePlan = meetingRoutePlan{}
+				banner += fmt.Sprintf(" — NOT filed to %s; recover with: samantha meeting route %s --to %s",
+					plan.Dest.ID, summary.Bundle, plan.Dest.ID)
+			}
 			a.screen = screenLauncher
-			a.launcher = a.launcher.withBanner(fmt.Sprintf("Meeting ended with error: %v", err), true)
+			a.launcher = a.launcher.withBanner(banner, true)
 			return a, nil
 		}
-		// Keep the completed meeting visible for review. Routing continues only
-		// after the user has seen the attributed transcript.
+		// Keep the completed meeting visible for review. Capture stop is the end
+		// of the meeting: diarization and a start-plan route continue behind the
+		// results screen instead of gating it (WI-162bbb R1/R2).
 		a.meetingResults = newMeetingResults(summary)
 		a.meetingResults.width, a.meetingResults.height = a.width, a.height
+		var cmds []tea.Cmd
+		if rt != nil && rt.FinalizeSpeakers != nil {
+			a.meetingAnalysisBusy = true
+			a.meetingResults.analysisBusy = true
+			cmds = append(cmds, runBackgroundDiarize(a.runCtx, rt))
+		} else if rt != nil && rt.Cleanup != nil {
+			rt.Cleanup()
+		}
+		if plan.Kind == routePlanDest && plan.Dest.ID != "" && a.cfg != nil {
+			a.meetingRoutePlan = meetingRoutePlan{} // consume once
+			a.meetingRouteAuto = true
+			a.meetingRouteBanner = ""
+			a.meetingRouteErr = false
+			a.meetingResults.routeStatus = "Filing to " + plan.Dest.ID + "…"
+			cmds = append(cmds, destRouteCmd(summary, meeting.FromConfig(a.cfg), plan.Dest))
+		}
 		a.meetingResults.resize()
 		a.screen = screenMeetingResults
-		return a, nil
+		return a, tea.Batch(cmds...)
 
 	case meetingResultsDoneMsg:
+		// A dest plan already routed at capture end; leaving results just needs
+		// the launcher to carry the outcome (or the still-pending note).
+		if a.meetingRouteAuto {
+			banner, isErr := a.meetingRouteBanner, a.meetingRouteErr
+			if banner == "" {
+				banner, isErr = "Filing meeting notes…", false
+			}
+			a.screen = screenLauncher
+			a.launcher = a.launcher.withBanner(banner, isErr)
+			return a, nil
+		}
 		// Post-meeting routing: ask / auto / off / start-picker plan.
 		// beginMeetingRoute may switch screens or return asynchronous work.
 		prevScreen := a.screen
@@ -431,9 +507,42 @@ func (a App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case meetingRouteResultMsg:
+		a.meetingRouteBanner = msg.Banner
+		a.meetingRouteErr = msg.IsErr
+		// Route finished while the user is still reviewing: show it on the
+		// results status line and keep them there; the launcher banner lands
+		// when they leave (meetingResultsDoneMsg).
+		if a.screen == screenMeetingResults {
+			a.meetingResults.routeStatus = msg.Banner
+			a.meetingResults.routeErr = msg.IsErr
+			return a, nil
+		}
 		a.screen = screenLauncher
 		if msg.Banner != "" {
 			a.launcher = a.launcher.withBanner(msg.Banner, msg.IsErr)
+		}
+		return a, nil
+
+	case meetingAnalysisDoneMsg:
+		a.meetingAnalysisBusy = false
+		if a.screen == screenMeetingResults {
+			a.meetingResults.applyAnalysis(msg.result, msg.err)
+			return a, nil
+		}
+		// R3: background completion stays loud after leaving results, but only
+		// the launcher shows banners — never interrupt a live conversation.
+		if a.screen == screenLauncher {
+			if failed, detail := analysisFailure(msg.result, msg.err); failed {
+				a.launcher = a.launcher.withBanner("Speaker analysis failed: "+detail, true)
+			} else {
+				a.launcher = a.launcher.withBanner("Speaker labels updated: "+meetingAnalysisDetail(msg.result), false)
+			}
+		}
+		return a, nil
+
+	case meetingSweepDoneMsg:
+		if banner, isErr := sweepBanner(msg.results); banner != "" && a.screen == screenLauncher {
+			a.launcher = a.launcher.withBanner(banner, isErr)
 		}
 		return a, nil
 

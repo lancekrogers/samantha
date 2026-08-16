@@ -25,6 +25,11 @@ type meetingResultsModel struct {
 	ready      bool
 	standalone bool
 	view       viewport.Model
+	// Post-stop background jobs surfaced without blocking review (WI-162bbb):
+	// diarization state and the start-plan route outcome.
+	analysisBusy bool
+	routeStatus  string
+	routeErr     bool
 }
 
 type meetingResultsDoneMsg struct{ summary meetinglog.Summary }
@@ -58,6 +63,9 @@ func (m *meetingResultsModel) resize() {
 	if m.summary.SpeakerError != "" {
 		chrome++
 	}
+	if m.routeStatus != "" {
+		chrome++
+	}
 	height := max(m.height-chrome, 3)
 	if !m.ready {
 		m.view = viewport.New(max(m.width-4, 1), height)
@@ -77,7 +85,9 @@ func (m meetingResultsModel) Update(msg tea.Msg) (meetingResultsModel, tea.Cmd) 
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "enter", "esc":
+		// Ctrl+C leaves like enter/esc instead of falling through to app quit:
+		// silently exiting here discarded the planned route (WI-162bbb).
+		case "enter", "esc", "ctrl+c":
 			if m.standalone {
 				return m, tea.Quit
 			}
@@ -152,6 +162,23 @@ func (m meetingResultsModel) content() string {
 	return lipgloss.NewStyle().Width(max(m.view.Width, 1)).Render(b.String())
 }
 
+// applyAnalysis folds a background diarization outcome into the review: the
+// attributed transcript just landed in the bundle, so re-read events and
+// refresh the speaker chrome.
+func (m *meetingResultsModel) applyAnalysis(result meeting.AnalysisResult, err error) {
+	m.analysisBusy = false
+	m.summary.SpeakerStatus = string(result.Status)
+	m.summary.SpeakerCount = result.SpeakerCount
+	m.summary.SpeakerError = result.Error
+	if err != nil && m.summary.SpeakerError == "" {
+		m.summary.SpeakerError = err.Error()
+	}
+	if events, rerr := meeting.ReadEvents(m.summary.JSONLFile); rerr == nil {
+		m.events = events
+	}
+	m.resize()
+}
+
 func resultOffset(ms int64) string {
 	if ms <= 0 {
 		return ""
@@ -175,7 +202,9 @@ func (m meetingResultsModel) View() string {
 	header := ansi.Truncate(titleStyle.Render("  Meeting complete")+"  "+normalStyle.Render(desc), w, "…")
 	stats := fmt.Sprintf("  %s · %d spoken · %d notes · %d ★",
 		m.summary.Duration().Round(time.Second), m.summary.Utterances, m.summary.Notes, m.summary.Bookmarks)
-	if m.summary.SpeakerStatus != "" {
+	if m.analysisBusy {
+		stats += " · speakers updating in background…"
+	} else if m.summary.SpeakerStatus != "" {
 		stats += fmt.Sprintf(" · speakers %s", m.summary.SpeakerStatus)
 		if m.summary.SpeakerCount > 0 {
 			stats += fmt.Sprintf(" (%d)", m.summary.SpeakerCount)
@@ -183,11 +212,19 @@ func (m meetingResultsModel) View() string {
 	}
 	pathLine := ansi.Truncate("  Saved: "+m.summary.Bundle, w, "…")
 	rule := lipgloss.NewStyle().Foreground(colorAccent).Render(strings.Repeat("─", w))
-	footer := ansi.Truncate("  ↑/↓/pgup/pgdown review  •  enter/esc continue to routing", w, "…")
+	footer := ansi.Truncate("  ↑/↓/pgup/pgdown review  •  enter/esc continue", w, "…")
+	routeLine := ""
+	if m.routeStatus != "" {
+		style := dimStyle
+		if m.routeErr {
+			style = errorStyle
+		}
+		routeLine = style.Render(ansi.Truncate("  "+m.routeStatus, w, "…")) + "\n"
+	}
 	analysisError := ""
 	if m.summary.SpeakerError != "" {
 		analysisError = errorStyle.Render(ansi.Truncate("  Speaker analysis: "+m.summary.SpeakerError, w, "…")) + "\n"
 	}
-	return header + "\n" + dimStyle.Render(stats) + "\n" + analysisError + dimStyle.Render(pathLine) + "\n" + rule + "\n" +
+	return header + "\n" + dimStyle.Render(stats) + "\n" + routeLine + analysisError + dimStyle.Render(pathLine) + "\n" + rule + "\n" +
 		m.view.View() + "\n" + rule + "\n" + dimStyle.Render(footer) + "\n"
 }

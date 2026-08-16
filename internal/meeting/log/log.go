@@ -35,6 +35,9 @@ const (
 	TypeSpeakerSegment   = "speaker_segment"
 	TypeSpeakerUtterance = "speaker_utterance"
 	TypeSessionEnd       = "session_end"
+	// TypeRoutePlan is the durable start-of-meeting routing intent. A bundle
+	// holding a route_plan but no routed event has an undelivered route.
+	TypeRoutePlan = "route_plan"
 
 	// Control events are additive: only remote (phone/Watch) recordings emit
 	// them, and readers that predate them simply skip unknown types. Idea
@@ -455,14 +458,39 @@ func controlLine(symbol, label, text string, at time.Time) string {
 	return line + "\n"
 }
 
+// WriteRoutePlan records the user's start-of-meeting routing intent as a
+// durable JSONL event. Delivery is checked against this on the next launch:
+// route_plan without a routed event means the route never completed.
+func (w *Writer) WriteRoutePlan(destID, mode string) error {
+	destID = strings.TrimSpace(destID)
+	if destID == "" {
+		return fmt.Errorf("meetinglog: route plan destination is required")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return fmt.Errorf("meetinglog: writer closed before route plan")
+	}
+	return w.writeEvent(Event{Type: TypeRoutePlan, Label: destID, Text: mode})
+}
+
 // WriteSpeakerAnalysis appends post-capture status, timeline, and attributed
 // utterances. Historical transcript lines remain untouched; the additive
 // section and event types make fallback/reprocessing explicit.
+//
+// Diarization is background enrichment and may finish after Close: when the
+// writer is already closed, the bundle files are reopened in append mode for
+// this write (the section and events are additive, and readers already
+// tolerate post-session_end appends — see meeting.AppendRoutedEvent).
 func (w *Writer) WriteSpeakerAnalysis(analysis SpeakerAnalysis) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed {
-		return fmt.Errorf("meetinglog: writer closed before speaker analysis")
+		reopen, err := w.reopenForAppend()
+		if err != nil {
+			return err
+		}
+		defer reopen()
 	}
 
 	speakers := make(map[string]struct{})
@@ -552,6 +580,27 @@ func formatOffsetRange(startMS, endMS int64) string {
 			int(d.Hours()), int(d.Minutes())%60, int(d.Seconds())%60, int(d.Milliseconds())%1000)
 	}
 	return format(startMS) + "–" + format(endMS)
+}
+
+// reopenForAppend swaps in append-mode file handles for a post-Close
+// enrichment write. Caller must hold w.mu and defer the returned restore.
+func (w *Writer) reopenForAppend() (restore func(), err error) {
+	logF, err := os.OpenFile(w.path, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("meetinglog: reopen log for append: %w", err)
+	}
+	jsonlF, err := os.OpenFile(w.jsonlPath, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		_ = logF.Close()
+		return nil, fmt.Errorf("meetinglog: reopen jsonl for append: %w", err)
+	}
+	prevLog, prevJSONL := w.log, w.jsonl
+	w.log, w.jsonl = logF, jsonlF
+	return func() {
+		_ = logF.Close()
+		_ = jsonlF.Close()
+		w.log, w.jsonl = prevLog, prevJSONL
+	}, nil
 }
 
 // Close writes the trailer / session_end and closes both files.
