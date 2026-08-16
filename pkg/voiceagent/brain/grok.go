@@ -43,6 +43,13 @@ type GrokBrain struct {
 // SetSpeakerNames attaches a rename table for user-turn prompt attribution.
 func (g *GrokBrain) SetSpeakerNames(names SpeakerNames) { g.speakerNames = names }
 
+func (g *GrokBrain) agentName() string {
+	if g.cfg != nil {
+		return g.cfg.AgentName
+	}
+	return ""
+}
+
 // NewGrok creates a Grok brain provider backed by the grok CLI.
 func NewGrok(cfg *config.Config) (*GrokBrain, error) {
 	client, err := grok.NewClientFromPath()
@@ -135,7 +142,7 @@ func (g *GrokBrain) ThinkStream(ctx context.Context, input string, streamOpts St
 			return
 		}
 
-		response, finErr := finalizeStreamedText(ctx, out, raw)
+		response, finErr := finalizeStreamedText(ctx, out, StripAgentLabel(g.agentName(), raw))
 		if finErr != nil {
 			done <- StreamResult{Err: finErr}
 			return
@@ -155,6 +162,7 @@ func (g *GrokBrain) ThinkStream(ctx context.Context, input string, streamOpts St
 // any resume-failure retry, so a failed first attempt never emits the fallback.
 func (g *GrokBrain) streamAttempt(ctx context.Context, out chan<- string, streamOpts StreamOptions) (string, bool, error) {
 	prompt := g.buildPrompt(streamOpts.OmitTurnInstruction)
+	strip := newLabelStripper(g.agentName())
 
 	events, errs := g.client.StreamPrompt(ctx, prompt, g.runOptions(grok.StreamingJSONOutput, streamOpts.ToolsEnabled))
 
@@ -173,10 +181,12 @@ func (g *GrokBrain) streamAttempt(ctx context.Context, out chan<- string, stream
 		case grok.EventText:
 			if text := ev.Content(); text != "" {
 				fullResponse.WriteString(text)
-				if err := sendChunk(ctx, out, text); err != nil {
-					return fullResponse.String(), streamedAny, err
+				if emit := strip.Feed(text); emit != "" {
+					if err := sendChunk(ctx, out, emit); err != nil {
+						return fullResponse.String(), streamedAny, err
+					}
+					streamedAny = true
 				}
-				streamedAny = true
 			}
 		case grok.EventError:
 			// An error event before any text is also how a rejected --resume
@@ -191,6 +201,18 @@ func (g *GrokBrain) streamAttempt(ctx context.Context, out chan<- string, stream
 	for err := range errs {
 		if err != nil && streamErr == nil {
 			streamErr = fmt.Errorf("grok stream: %w", err)
+		}
+	}
+
+	// Release a short reply the label check still holds — but only on success.
+	// On a failed attempt nothing was emitted, so streamedAny stays false and
+	// the resume retry can re-stream the reply from the top.
+	if streamErr == nil {
+		if held := strip.Flush(); held != "" {
+			if err := sendChunk(ctx, out, held); err != nil {
+				return fullResponse.String(), streamedAny, err
+			}
+			streamedAny = true
 		}
 	}
 
@@ -246,8 +268,8 @@ func (g *GrokBrain) thinkFullAttempt(ctx context.Context, streamOpts StreamOptio
 		return "", resultError("grok", result.Subtype, result.Text)
 	}
 
-	// Clean first, then fall back, so the fallback is spoken verbatim.
-	return spokenOrFallback(cleanForVoice(result.Text)), nil
+	// Strip the label, clean, then fall back, so the fallback is spoken verbatim.
+	return spokenOrFallback(cleanForVoice(StripAgentLabel(g.agentName(), result.Text))), nil
 }
 
 // dropSession clears the CLI resume id. Call whenever the session is
@@ -289,10 +311,7 @@ func (g *GrokBrain) runOptions(format grok.OutputFormat, toolsEnabled bool) *gro
 // the model reads.
 func (g *GrokBrain) buildPrompt(omitTurnInstruction bool) string {
 	var parts []string
-	agentName := ""
-	if g.cfg != nil {
-		agentName = g.cfg.AgentName
-	}
+	agentName := g.agentName()
 
 	// Only prepend flattened history when no CLI session carries it. With a
 	// resume id the CLI owns history server-side — send only the new turn

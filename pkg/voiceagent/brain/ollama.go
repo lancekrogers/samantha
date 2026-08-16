@@ -228,6 +228,7 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 			var textBuf strings.Builder
 			var toolCalls []api.ToolCall
 			var prefillTokens, genTokens int
+			strip := newLabelStripper(o.cfg.AgentName)
 
 			err := o.chat(ctx, req, func(resp api.ChatResponse) error {
 				if resp.Message.Content != "" {
@@ -236,8 +237,10 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 					// not, so the TUI renders token-by-token. Any preamble a
 					// tool-calling iteration emits streams too; the final answer
 					// continues the same reply after tools run.
-					if err := sendChunk(ctx, out, resp.Message.Content); err != nil {
-						return err
+					if emit := strip.Feed(resp.Message.Content); emit != "" {
+						if err := sendChunk(ctx, out, emit); err != nil {
+							return err
+						}
 					}
 				}
 				if len(resp.Message.ToolCalls) > 0 {
@@ -248,6 +251,13 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 				}
 				return nil
 			})
+			// Anything the label check still holds is real reply text; release
+			// it whether the turn ends, errors, or loops into tools.
+			if held := strip.Flush(); held != "" {
+				if sendErr := sendChunk(ctx, out, held); sendErr != nil && err == nil {
+					err = sendErr
+				}
+			}
 			if opts.OnUsage != nil && prefillTokens+genTokens > 0 {
 				opts.OnUsage(prefillTokens, genTokens)
 			}
@@ -264,7 +274,7 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 				// Keep any partial streamed text: the user already saw/heard
 				// it, so the next turn's context must include it too.
 				reply := RecoveryReply
-				if partial := strings.TrimSpace(textBuf.String()); partial != "" {
+				if partial := strings.TrimSpace(StripAgentLabel(o.cfg.AgentName, textBuf.String())); partial != "" {
 					reply = partial + "\n\n" + RecoveryReply
 				}
 				o.history = append(o.history, api.Message{Role: "assistant", Content: reply})
@@ -278,7 +288,7 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 				// Add the assistant's tool-calling message to history.
 				o.history = append(o.history, api.Message{
 					Role:      "assistant",
-					Content:   textBuf.String(),
+					Content:   StripAgentLabel(o.cfg.AgentName, textBuf.String()),
 					ToolCalls: toolCalls,
 				})
 
@@ -297,7 +307,7 @@ func (o *OllamaBrain) ThinkStream(ctx context.Context, input string, opts Stream
 			// cleaned form in history. Tool-only turns often finish with an
 			// empty final message; finalizeStreamedText streams a fallback so
 			// the UI never ends on "looking into it" with silence.
-			response, err := finalizeStreamedText(ctx, out, textBuf.String())
+			response, err := finalizeStreamedText(ctx, out, StripAgentLabel(o.cfg.AgentName, textBuf.String()))
 			if err != nil {
 				done <- StreamResult{Err: err}
 				return
@@ -375,7 +385,7 @@ func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOp
 		if len(response.ToolCalls) > 0 {
 			o.history = append(o.history, api.Message{
 				Role:      "assistant",
-				Content:   response.Content,
+				Content:   StripAgentLabel(o.cfg.AgentName, response.Content),
 				ToolCalls: response.ToolCalls,
 			})
 
@@ -389,8 +399,9 @@ func (o *OllamaBrain) ThinkFull(ctx context.Context, input string, opts StreamOp
 			continue
 		}
 
-		// Text response. Clean first, then fall back, so the fallback is spoken verbatim.
-		text := spokenOrFallback(cleanForVoice(response.Content))
+		// Text response. Strip the label, clean, then fall back, so the
+		// fallback is spoken verbatim.
+		text := spokenOrFallback(cleanForVoice(StripAgentLabel(o.cfg.AgentName, response.Content)))
 		o.history = append(o.history, api.Message{Role: "assistant", Content: text})
 		o.trimHistory()
 		return text, nil

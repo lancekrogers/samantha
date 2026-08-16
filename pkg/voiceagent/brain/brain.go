@@ -57,6 +57,13 @@ type Brain struct {
 // SetSpeakerNames attaches a rename table for user-turn prompt attribution.
 func (b *Brain) SetSpeakerNames(names SpeakerNames) { b.speakerNames = names }
 
+func (b *Brain) agentName() string {
+	if b.cfg != nil {
+		return b.cfg.AgentName
+	}
+	return ""
+}
+
 // claudeUsage is the token accounting the CLI reports on each assistant
 // message. Prompt tokens are split across three fields depending on what the
 // cache served, so the real prompt size is their sum.
@@ -205,7 +212,7 @@ func (b *Brain) ThinkStream(ctx context.Context, input string, streamOpts Stream
 			return
 		}
 
-		response, finErr := finalizeStreamedText(ctx, out, raw)
+		response, finErr := finalizeStreamedText(ctx, out, StripAgentLabel(b.agentName(), raw))
 		if finErr != nil {
 			done <- StreamResult{Err: finErr}
 			return
@@ -276,6 +283,7 @@ func (b *Brain) warnSessionSize(streamOpts StreamOptions) {
 // resume-failure retry, so a failed first attempt never emits the fallback.
 func (b *Brain) streamAttempt(ctx context.Context, out chan<- string, streamOpts StreamOptions) (string, bool, error) {
 	prompt := b.buildPrompt(streamOpts.OmitTurnInstruction)
+	strip := newLabelStripper(b.agentName())
 
 	// Partial (stream_event) messages are not requested: chunking is
 	// per-assistant-message, so deltas would be discarded anyway.
@@ -326,10 +334,12 @@ func (b *Brain) streamAttempt(ctx context.Context, out chan<- string, streamOpts
 				for _, c := range content.Content {
 					if c.Type == "text" && c.Text != "" {
 						fullResponse.WriteString(c.Text)
-						if err := sendChunk(ctx, out, c.Text); err != nil {
-							return fullResponse.String(), streamedAny, err
+						if emit := strip.Feed(c.Text); emit != "" {
+							if err := sendChunk(ctx, out, emit); err != nil {
+								return fullResponse.String(), streamedAny, err
+							}
+							streamedAny = true
 						}
-						streamedAny = true
 					}
 				}
 			}
@@ -346,10 +356,12 @@ func (b *Brain) streamAttempt(ctx context.Context, out chan<- string, streamOpts
 			}
 			if msg.Result != "" && fullResponse.Len() == 0 && !msg.IsError {
 				fullResponse.WriteString(msg.Result)
-				if err := sendChunk(ctx, out, msg.Result); err != nil {
-					return fullResponse.String(), streamedAny, err
+				if emit := strip.Feed(msg.Result); emit != "" {
+					if err := sendChunk(ctx, out, emit); err != nil {
+						return fullResponse.String(), streamedAny, err
+					}
+					streamedAny = true
 				}
-				streamedAny = true
 			}
 		}
 	}
@@ -364,6 +376,18 @@ func (b *Brain) streamAttempt(ctx context.Context, out chan<- string, streamOpts
 	}
 	if streamErr == nil {
 		streamErr = resultErr
+	}
+
+	// Release a short reply the label check still holds — but only on success.
+	// On a failed attempt nothing was emitted, so streamedAny stays false and
+	// the resume retry can re-stream the reply from the top.
+	if streamErr == nil {
+		if held := strip.Flush(); held != "" {
+			if err := sendChunk(ctx, out, held); err != nil {
+				return fullResponse.String(), streamedAny, err
+			}
+			streamedAny = true
+		}
 	}
 
 	return fullResponse.String(), streamedAny, streamErr
@@ -454,8 +478,8 @@ func (b *Brain) thinkFullAttempt(ctx context.Context, streamOpts StreamOptions) 
 		return "", resultError("claude", result.Subtype, result.Result)
 	}
 
-	// Clean first, then fall back, so the fallback is spoken verbatim.
-	return spokenOrFallback(cleanForVoice(result.Result)), nil
+	// Strip the label, clean, then fall back, so the fallback is spoken verbatim.
+	return spokenOrFallback(cleanForVoice(StripAgentLabel(b.agentName(), result.Result))), nil
 }
 
 // buildPrompt renders the next turn for the CLI. omitTurnInstruction leaves off
@@ -463,10 +487,7 @@ func (b *Brain) thinkFullAttempt(ctx context.Context, streamOpts StreamOptions) 
 // the model reads.
 func (b *Brain) buildPrompt(omitTurnInstruction bool) string {
 	var parts []string
-	agentName := ""
-	if b.cfg != nil {
-		agentName = b.cfg.AgentName
-	}
+	agentName := b.agentName()
 
 	// Only prepend flattened history when no CLI session carries it. With a
 	// resume id the CLI owns history server-side, so re-sending it would bust
