@@ -48,11 +48,29 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 	defer cancel()
 
 	progress := meetingAssetProgress(opts.JSON)
-	capture, provider, sttLabel, cleanup, err := buildSTTOnly(ctx, &cfgCopy, progress)
+	capture, provider, sttLabel, sttCleanup, err := buildSTTOnly(ctx, &cfgCopy, progress)
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	// Two-stage teardown (launcher parity, WI-162bbb R1): releaseCapture frees
+	// the mic/STT/live stack at capture stop — the device must not stay hot
+	// through review and diarization — while the analyzer stays alive for
+	// background Finalize; the deferred speakerSession.Close releases it.
+	var speakerSession *meeting.SpeakerSession
+	var stopLive func()
+	var releaseOnce sync.Once
+	releaseCapture := func() {
+		releaseOnce.Do(func() {
+			if stopLive != nil {
+				stopLive()
+			}
+			if speakerSession != nil {
+				speakerSession.StopCapture()
+			}
+			sttCleanup()
+		})
+	}
+	defer releaseCapture()
 
 	outDir := opts.OutDir
 	if outDir == "" {
@@ -71,12 +89,16 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 	}
 	// Durable delivery intent: an auto destination known at start is recorded
 	// so the launcher's startup sweep can retry if this process never routes.
+	// A failed write voids that promise — say so instead of claiming durability.
 	if dest := cliAutoRouteDest(meeting.FromConfig(&cfgCopy), opts); dest != "" {
 		mode := "auto"
 		if opts.RouteTo != "" {
 			mode = "dest"
 		}
-		_ = writer.WriteRoutePlan(dest, mode)
+		if err := writer.WriteRoutePlan(dest, mode); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"warning: route plan not persisted: %v — %s delivery will not survive a crash\n", err, dest)
+		}
 	}
 	speakerSession, speakerSetupErr := prepareMeetingSpeakers(ctx, &cfgCopy, capture, writer, bundlePath, progress)
 	if speakerSession != nil {
@@ -87,10 +109,8 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 			Status: string(meeting.AnalysisError), Error: speakerSetupErr.Error(),
 		})
 	}
-	liveSpeaker, stopLive := prepareMeetingLiveSpeaker(ctx, &cfgCopy, capture, progress)
-	if stopLive != nil {
-		defer stopLive()
-	}
+	var liveSpeaker appTUI.LiveSpeakerController
+	liveSpeaker, stopLive = prepareMeetingLiveSpeaker(ctx, &cfgCopy, capture, progress)
 
 	out := cmd.OutOrStdout()
 	useTUI := useMeetingRecordTUI(opts)
@@ -129,9 +149,13 @@ func runMeetingRecord(cmd *cobra.Command, opts meetingOptions) error {
 		loopErr = listen.Loop(ctx, capture, provider, sink)
 	}
 
-	// Capture ended: trailer/session_end land now. Diarization and routing run
-	// behind the review instead of gating it (WI-162bbb R1/R2); analysis
-	// events append to the closed bundle.
+	// Capture ended: free the mic/STT/live stack now — the device must not
+	// stay hot through review or diarization, and unsubscribing the speaker
+	// session here keeps post-stop PCM out of the diarization working file.
+	releaseCapture()
+	// Trailer/session_end land now. Diarization and routing run behind the
+	// review instead of gating it (WI-162bbb R1/R2); analysis events append
+	// to the closed bundle.
 	summary, closeErr := writer.Close()
 
 	resultsAnalysis, waitAnalysis, stopAnalysis := startBackgroundDiarize(speakerSession)
