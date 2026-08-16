@@ -317,9 +317,17 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("voice_frontend_enabled", false)
 	v.SetDefault("barge_in_enabled", false)
 
-	// Scrolling is the common case; unmodified mouse selection is recoverable
-	// by turning this off.
-	v.SetDefault("tui_mouse_enabled", true)
+	// Off by default so the terminal keeps its own click-drag selection, which
+	// is how every other agent chat behaves — you select transcript text and
+	// copy it with the terminal, no modifier and no app-specific mode.
+	//
+	// Claiming the mouse buys wheel events routed straight to the viewport and
+	// costs selection outright, which is the wrong trade for a surface whose
+	// whole output is text worth copying. Wheel scrolling survives anyway:
+	// terminals in the alternate screen send arrow keys when nothing has
+	// claimed the mouse, and an empty composer scrolls the transcript with
+	// them. Page Up / Page Down are unconditional.
+	v.SetDefault("tui_mouse_enabled", false)
 
 	// Local-first: the default brain is the local Ollama server. A fresh install
 	// with no ollama_model fails with an actionable message from NewOllama rather

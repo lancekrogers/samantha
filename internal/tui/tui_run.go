@@ -69,20 +69,24 @@ func run(cfg *config.Config, build RuntimeBuilder, meeting MeetingBuilder, start
 	// hang or mis-detect on bare PTYs (VHS/ttyd). Same pattern as festival.
 	forceTUIColorProfile()
 
-	// Cell-motion reporting makes wheel and trackpad events available to the
-	// conversation viewport, and avoids the noisier all-motion mode: pointer
-	// movement is reported only while a button is held.
+	// The mouse is left to the terminal by default (tui_mouse_enabled=false),
+	// so click-drag selection and copy work the way they do in any other agent
+	// chat. A transcript exists to be read and copied out of; taking selection
+	// away to gain wheel routing is the wrong side of that trade.
 	//
-	// This is a deliberate trade, not a free win. Claiming the mouse means the
-	// terminal sends clicks and drags to Samantha rather than doing its own
-	// selection, so copying transcript text needs a modifier (option in iTerm2,
-	// fn in Terminal.app, shift in kitty). tui_mouse_enabled=false gives
-	// unmodified selection back; PgUp/PgDn scroll either way.
+	// Nothing is lost to get it. Page Up / Page Down always scroll, and with no
+	// mouse claim a terminal in the alternate screen sends arrow keys for wheel
+	// turns, which the conversation scrolls with while the composer is empty.
+	//
+	// tui_mouse_enabled=true opts back in to cell-motion reporting (wheel and
+	// trackpad delivered straight to the viewport, pointer movement reported
+	// only while a button is held) at the cost of needing a modifier to select
+	// — option in iTerm2, fn in Terminal.app, shift in kitty.
 	//
 	// The claim is not a startup option because only the conversation routes
 	// wheel events — App.Update takes it on entering that screen and releases
-	// it on leaving, so the launcher, settings and meeting screens keep
-	// unmodified selection.
+	// it on leaving, so the launcher, settings and meeting screens are
+	// unaffected either way.
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	m, runErr := p.Run()
 	final, _ := m.(App)
