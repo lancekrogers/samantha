@@ -72,7 +72,7 @@ func TestSourceTreeHasNoEmbeddedQwenWorkerPy(t *testing.T) {
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
-	// internal/tts → repo root
+	// pkg/voiceagent/tts → repo root
 	root := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", "..", ".."))
 	forbidden := []string{
 		"//go:embed worker.py",

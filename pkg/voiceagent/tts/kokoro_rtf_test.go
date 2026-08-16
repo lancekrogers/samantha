@@ -27,7 +27,7 @@ import (
 // synthesiser above ~2.3x makes cross-sentence batching viable, and this is the
 // measurement that says so.
 //
-//	go test -tags integration ./internal/tts/ -run TestKokoroRealtimeFactor -v
+//	go test -tags integration ./pkg/voiceagent/tts/ -run TestKokoroRealtimeFactor -v
 func TestKokoroRealtimeFactor(t *testing.T) {
 	cfg, err := config.Load()
 	if err != nil {

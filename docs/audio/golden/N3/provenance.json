@@ -101,6 +101,7 @@
     },
     "cost": {
       "method": "go test -tags integration ./internal/tts/ -run TestKokoroRealtimeFactor (M4 Max)",
+      "method_note": "Path at measurement time. Package is now pkg/voiceagent/tts; re-run with: go test -tags integration ./pkg/voiceagent/tts/ -run TestKokoroRealtimeFactor",
       "one_sentence": {
         "synth_ms": 901.2,
         "audio_s": 1.185,
