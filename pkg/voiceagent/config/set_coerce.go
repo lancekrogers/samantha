@@ -1,12 +1,15 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math"
 	"slices"
 	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // coerceToSpec turns a command-line string into the Go value the key's schema
@@ -82,6 +85,16 @@ func normalizeToSpec(spec KeySpec, value any) (any, error) {
 			return nil, invalidValue(spec, "expects a list of strings", fmt.Sprint(value))
 		}
 		return list, nil
+	case TypeOpaque:
+		// An opaque key's shape is known only to the code that owns it (today
+		// meeting.route.destinations, a list of destination structs). There is
+		// nothing to validate here, so the value is passed through and encoded
+		// by the YAML writer. The string CLI path never reaches this: it
+		// refuses opaque keys as not_editable.
+		if value == nil {
+			return nil, invalidValue(spec, "expects a value", "nil")
+		}
+		return value, nil
 	default:
 		return nil, invalidValue(spec, "cannot be written directly", fmt.Sprint(value))
 	}
@@ -173,8 +186,37 @@ func sameValue(current, next any) bool {
 		got, ok := toStringSlice(current)
 		return ok && slices.Equal(got, want)
 	default:
-		return false
+		// Structured (opaque) values: compare what each would serialize to, so
+		// rewriting an unchanged destination list is still a no-op.
+		return sameEncoded(current, next)
 	}
+}
+
+// sameEncoded compares two values by their YAML encoding. current comes from
+// the document as generic maps and slices while next is a Go struct, so their
+// types never match even when the content does.
+func sameEncoded(current, next any) bool {
+	currentYAML, currentOK := canonicalYAML(current)
+	nextYAML, nextOK := canonicalYAML(next)
+	return currentOK && nextOK && bytes.Equal(currentYAML, nextYAML)
+}
+
+// canonicalYAML renders a value through a generic round trip, so a struct and
+// the maps it was decoded from serialize their fields in the same order.
+func canonicalYAML(value any) ([]byte, bool) {
+	encoded, err := yaml.Marshal(value)
+	if err != nil {
+		return nil, false
+	}
+	var generic any
+	if err := yaml.Unmarshal(encoded, &generic); err != nil {
+		return nil, false
+	}
+	out, err := yaml.Marshal(generic)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
 }
 
 func toFloat(value any) (float64, bool) {

@@ -54,11 +54,15 @@ var fileWriteMu sync.Mutex
 // coerced by the key's schema type (never by whatever type happens to be in the
 // file), and only that key's line changes — comments and key order survive.
 //
-// It is the single writer shared by the CLI, the TUI and the Mac app. A no-op
-// write (the value already in the file) reports Changed=false and touches
-// nothing, so an optimistic front-end toggle cannot churn the file.
+// This is the string-valued, user-facing door: `samantha config set` and the
+// legacy two-argument form. It refuses a key the schema marks non-editable,
+// naming the verb that owns it, because a generic setter is exactly where a
+// user would otherwise corrupt state another command maintains.
+//
+// A no-op write (the value already in the file) reports Changed=false and
+// touches nothing, so an optimistic front-end toggle cannot churn the file.
 func SetKeyFile(key, raw string) (SetResult, error) {
-	spec, err := resolveSpec(key, false)
+	spec, err := resolveSpec(key, true)
 	if err != nil {
 		return SetResult{}, err
 	}
@@ -69,23 +73,19 @@ func SetKeyFile(key, raw string) (SetResult, error) {
 	return writeKeyToFile(spec, value)
 }
 
-// SetKeyFileValue is SetKeyFile for callers that already hold a typed value
-// (the TUI's Settings screens). The value is validated and normalized against
-// the key's schema type before it reaches the file.
+// SetKeyFileValue is SetKeyFile for in-process callers that already hold a
+// typed value: the TUI's Settings screens, `persona use`, the meeting
+// destination editor. The value is validated and normalized against the key's
+// schema type before it reaches the file.
+//
+// It deliberately does NOT enforce KeySpec.Editable. That flag answers "may a
+// generic Settings control or `config set` change this?", and the answer is no
+// precisely because some other code owns the key — the TUI owns
+// tui_mouse_enabled, `persona use` owns active_persona, the meeting editor owns
+// meeting.route.destinations. Those owners are these callers; refusing them
+// would break the feature the flag exists to protect.
 func SetKeyFileValue(key string, value any) (SetResult, error) {
-	return setKeyFileValue(key, value, false)
-}
-
-// SetManagedKey writes a key the schema marks non-editable, on behalf of the
-// verb that owns it. `persona use` owns active_persona and persona: the flag
-// means "not a generic Settings control", not "never written".
-func SetManagedKey(key string, value any) error {
-	_, err := setKeyFileValue(key, value, true)
-	return err
-}
-
-func setKeyFileValue(key string, value any, allowManaged bool) (SetResult, error) {
-	spec, err := resolveSpec(key, allowManaged)
+	spec, err := resolveSpec(key, false)
 	if err != nil {
 		return SetResult{}, err
 	}
@@ -97,7 +97,8 @@ func setKeyFileValue(key string, value any, allowManaged bool) (SetResult, error
 }
 
 // resolveSpec resolves key to a spec the caller is allowed to write.
-func resolveSpec(key string, allowManaged bool) (KeySpec, error) {
+// enforceEditable is set by the string CLI path only; see SetKeyFileValue.
+func resolveSpec(key string, enforceEditable bool) (KeySpec, error) {
 	key = strings.ToLower(strings.TrimSpace(key))
 	spec, ok := SpecFor(key)
 	if !ok {
@@ -108,14 +109,29 @@ func resolveSpec(key string, allowManaged bool) (KeySpec, error) {
 			DidYouMean: SuggestKeys(key),
 		}
 	}
-	if !spec.Editable && !allowManaged {
+	if enforceEditable && !spec.Editable {
 		return KeySpec{}, &SetError{
 			Code:    CodeNotEditable,
 			Key:     spec.Key,
-			Message: fmt.Sprintf("%s is managed by `samantha %s`", spec.Key, spec.ManagedBy),
+			Message: fmt.Sprintf("%s is managed by `%s`", spec.Key, managedByCommand(spec.ManagedBy)),
 		}
 	}
 	return spec, nil
+}
+
+// managedByCommand renders a ManagedBy verb as the command a user would type.
+// The verbs are written as the user says them ("persona use", "samantha TUI"),
+// so the samantha prefix is added only when it is not already there — without
+// this, tui_mouse_enabled reported "samantha samantha TUI".
+func managedByCommand(managedBy string) string {
+	managedBy = strings.TrimSpace(managedBy)
+	if managedBy == "" {
+		return "samantha"
+	}
+	if strings.HasPrefix(strings.ToLower(managedBy), "samantha") {
+		return managedBy
+	}
+	return "samantha " + managedBy
 }
 
 // SuggestKeys returns up to five known keys that share a prefix with, or
@@ -191,7 +207,14 @@ func writeKeyToFile(spec KeySpec, value any) (SetResult, error) {
 		return SetResult{}, err
 	}
 
-	Set(spec.Key, value)
+	// Refresh the in-process value from the patched document rather than from
+	// the Go value: a later Get in this process then sees exactly what a fresh
+	// Load would, including for structured keys whose Go type has no JSON tags.
+	refreshed := value
+	if roundTripped, ok := yamlValueAt(mapping, segments); ok {
+		refreshed = roundTripped
+	}
+	Set(spec.Key, refreshed)
 	result.BackupPath = backupPath
 	result.Changed = true
 	return result, nil

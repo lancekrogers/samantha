@@ -133,15 +133,13 @@ func Use(cfg *config.Config, id string) error {
 	if err != nil {
 		return err
 	}
-	// active_persona and persona are schema-managed: this verb owns them, so it
-	// writes them through the managed-key door rather than the Settings one.
-	if err := config.SetManagedKey("active_persona", id); err != nil {
+	if err := config.SetAndSave("active_persona", id); err != nil {
 		return fmt.Errorf("saving active_persona: %w", err)
 	}
 	// Keep app config keys in sync so Settings / doctor / older tools match.
 	_ = config.SetAndSave("agent_name", p.DisplayName)
 	if ref := strings.TrimSpace(p.Prompts.Persona); ref != "" {
-		_ = config.SetManagedKey("persona", ref)
+		_ = config.SetAndSave("persona", ref)
 	}
 	if err := PersistTTS(p); err != nil {
 		return fmt.Errorf("saving persona tts: %w", err)

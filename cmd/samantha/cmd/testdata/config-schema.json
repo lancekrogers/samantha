@@ -888,7 +888,7 @@
     {
       "key": "models_dir",
       "type": "string",
-      "default": "/var/folders/9d/nyc358s50g7591g74wjx8pn40000gn/T/tmp.onpJLlptoE/home/.cache/festival-voice/models",
+      "default": "/Users/lance/.cache/festival-voice/models",
       "group": "models",
       "title": "Models folder",
       "help": "Where downloaded voice and speech models are cached. Moving it re-downloads everything.",
@@ -1231,7 +1231,7 @@
     {
       "key": "whispercpp_model_path",
       "type": "string",
-      "default": "/var/folders/9d/nyc358s50g7591g74wjx8pn40000gn/T/tmp.onpJLlptoE/home/.cache/festival-voice/models/whispercpp/ggml-base.en.bin",
+      "default": "/Users/lance/.cache/festival-voice/models/whispercpp/ggml-base.en.bin",
       "group": "models",
       "title": "whisper.cpp model file",
       "help": "The exact ggml file to load, when it is not in the models folder.",

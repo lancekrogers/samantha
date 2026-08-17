@@ -612,3 +612,146 @@ func TestSetKeyFileFillsAnEmptySection(t *testing.T) {
 		t.Errorf("speaker.live.window_ms = %d, want 2000", cfg.Speaker.Live.WindowMS)
 	}
 }
+
+// The two doors differ on exactly one thing: whether a key another command owns
+// may be written. The string CLI door refuses; the typed in-process door is how
+// those owners write.
+
+func TestSetKeyFileRefusesManagedKeysWithTheRightCommand(t *testing.T) {
+	tests := []struct {
+		key     string
+		value   string
+		wantCmd string
+	}{
+		{"meeting.route.destinations", "[]", "`samantha meeting destinations`"},
+		{"active_persona", "ada", "`samantha persona use`"},
+		{"persona", "ada", "`samantha persona use`"},
+		// The verb already names samantha; the message must not say it twice.
+		{"tui_mouse_enabled", "true", "`samantha TUI`"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			path := newInstall(t, commentedConfig)
+			before := readConfig(t, path)
+
+			_, err := SetKeyFile(tt.key, tt.value)
+			setErr := setError(t, err)
+			if setErr.Code != CodeNotEditable {
+				t.Fatalf("code = %q, want %q", setErr.Code, CodeNotEditable)
+			}
+			if !strings.Contains(setErr.Message, tt.wantCmd) {
+				t.Errorf("message = %q, want it to name %s", setErr.Message, tt.wantCmd)
+			}
+			if strings.Contains(setErr.Message, "samantha samantha") {
+				t.Errorf("message repeats the command name: %q", setErr.Message)
+			}
+			if readConfig(t, path) != before {
+				t.Error("config changed despite a refusal")
+			}
+		})
+	}
+}
+
+func TestSetKeyFileValueWritesManagedKeysForTheirOwners(t *testing.T) {
+	// tui_mouse_enabled is owned by the TUI, active_persona by `persona use`.
+	// Both are editable:false, and both must still be writable in process.
+	path := newInstall(t, commentedConfig)
+
+	if _, err := SetKeyFileValue("tui_mouse_enabled", true); err != nil {
+		t.Fatalf("the TUI cannot write its own key: %v", err)
+	}
+	if _, err := SetKeyFileValue("active_persona", "ada"); err != nil {
+		t.Fatalf("persona use cannot write its own key: %v", err)
+	}
+
+	got := readConfig(t, path)
+	for _, want := range []string{"tui_mouse_enabled: true", "active_persona: ada"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	cfg, err := LoadRaw()
+	if err != nil {
+		t.Fatalf("LoadRaw: %v", err)
+	}
+	if !cfg.TUIMouseEnabled || cfg.ActivePersona != "ada" {
+		t.Errorf("values did not round-trip: mouse=%v persona=%q", cfg.TUIMouseEnabled, cfg.ActivePersona)
+	}
+}
+
+func TestSetKeyFileValueWritesOpaqueStructuredValues(t *testing.T) {
+	path := newInstall(t, "# keep me\nmeeting:\n  route:\n    mode: ask\n")
+
+	dests := []MeetingDestinationConfig{
+		{ID: "campaign:My_Tools", Type: "campaign", Campaign: "My_Tools", Capture: "meeting"},
+		{ID: "notes", Type: "apple-notes", Folder: "Meetings", Capture: "note"},
+	}
+	result, err := SetKeyFileValue("meeting.route.destinations", dests)
+	if err != nil {
+		t.Fatalf("writing an opaque key: %v", err)
+	}
+	if !result.Changed {
+		t.Error("changed = false for a new destination list")
+	}
+
+	got := readConfig(t, path)
+	if !strings.Contains(got, "# keep me") || !strings.Contains(got, "mode: ask") {
+		t.Errorf("surrounding config damaged:\n%s", got)
+	}
+
+	cfg, err := LoadRaw()
+	if err != nil {
+		t.Fatalf("LoadRaw: %v", err)
+	}
+	if len(cfg.Meeting.Route.Destinations) != 2 {
+		t.Fatalf("destinations = %+v, want two", cfg.Meeting.Route.Destinations)
+	}
+	if cfg.Meeting.Route.Destinations[1].Folder != "Meetings" {
+		t.Errorf("nested destination field lost: %+v", cfg.Meeting.Route.Destinations[1])
+	}
+
+	// Writing the same list again is a no-op, so a settings screen that
+	// re-asserts its state cannot churn the file or pile up backups.
+	result, err = SetKeyFileValue("meeting.route.destinations", dests)
+	if err != nil {
+		t.Fatalf("rewriting the same list: %v", err)
+	}
+	if result.Changed {
+		t.Error("changed = true for an identical structured value")
+	}
+	if backups := backupsFor(t, path); len(backups) != 1 {
+		t.Errorf("backups = %d, want 1 (the no-op must not take another)", len(backups))
+	}
+}
+
+func TestSetKeyFileMatchesExistingKeysCaseInsensitively(t *testing.T) {
+	// viper lowercases every key it reads, so a file written with different
+	// casing still resolves. The writer must edit that key rather than append a
+	// second, shadowed one.
+	path := newInstall(t, "TTS_Provider: kokoro\nSpeaker:\n  Live:\n    Window_MS: 1500\n")
+
+	if _, err := SetKeyFile("tts_provider", "qwen3-tts"); err != nil {
+		t.Fatalf("top-level: %v", err)
+	}
+	if _, err := SetKeyFile("speaker.live.window_ms", "2000"); err != nil {
+		t.Fatalf("nested: %v", err)
+	}
+
+	got := readConfig(t, path)
+	if strings.Count(strings.ToLower(got), "tts_provider") != 1 {
+		t.Errorf("duplicate top-level key:\n%s", got)
+	}
+	if strings.Count(strings.ToLower(got), "window_ms") != 1 {
+		t.Errorf("duplicate nested key:\n%s", got)
+	}
+	if strings.Count(strings.ToLower(got), "speaker:") != 1 {
+		t.Errorf("duplicate parent section:\n%s", got)
+	}
+	cfg, err := LoadRaw()
+	if err != nil {
+		t.Fatalf("LoadRaw: %v", err)
+	}
+	if cfg.TTSProvider != "qwen3-tts" || cfg.Speaker.Live.WindowMS != 2000 {
+		t.Errorf("values = %q/%d, want qwen3-tts/2000", cfg.TTSProvider, cfg.Speaker.Live.WindowMS)
+	}
+}

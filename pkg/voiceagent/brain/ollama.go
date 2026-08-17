@@ -441,6 +441,16 @@ const (
 	thinkMax    = "max"
 )
 
+// ThinkLevels are the canonical ollama_think values a picker should offer, in
+// increasing order of effort. The parser also accepts off/0/no and on/1/yes as
+// aliases of the two booleans; those are understood, not offered.
+//
+// It is the source of truth for the ollama_think setting: a level the parser
+// gains is invisible to Settings until it is listed here.
+func ThinkLevels() []string {
+	return []string{"false", "true", thinkLow, thinkMedium, thinkHigh, thinkMax}
+}
+
 // ThinkLevelAccepted reports whether ollamaThinkValue understands value. It
 // exists so the settings schema can offer only values the parser honors —
 // an unknown value silently disables thinking, which would be invisible in a

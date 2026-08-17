@@ -55,8 +55,12 @@ prompts:
 YAML
 printf 'active_persona: ada\n' >>"$root/config.yaml"
 
+# Two defaults (models_dir, whispercpp_model_path) live under the cache root
+# rather than the install root, so both have to be normalized or the fixtures
+# carry this run's mktemp path and churn on every re-capture.
 canonical='/Users/lance/.obey/agents/voice/festival-voice'
-normalize() { sed "s#$root#$canonical#g"; }
+canonicalCache='/Users/lance/.cache/festival-voice'
+normalize() { sed -e "s#$root#$canonical#g" -e "s#$HOME/.cache/festival-voice#$canonicalCache#g"; }
 
 "$bin" config schema --json | normalize >"$here/config-schema.json"
 OLLAMA_MODEL=qwen2.5:14b "$bin" config get --json | normalize >"$here/config-get.json"

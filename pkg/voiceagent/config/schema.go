@@ -88,15 +88,23 @@ func Schema() []KeySpec {
 	table := schemaTable()
 	out := make([]KeySpec, 0, len(table))
 	for _, spec := range table {
-		spec.RestartRequired = RestartRequired(spec.Key)
-		spec.RestartVerified = RestartVerified(spec.Key)
-		spec.Env = envBindings[spec.Key]
-		spec.Editable = spec.ManagedBy == ""
-		spec.Enum = copyStrings(spec.Enum)
-		out = append(out, spec)
+		out = append(out, derive(spec))
 	}
 	sortSchema(out)
 	return out
+}
+
+// derive fills the fields a KeySpec literal must never carry itself: restart
+// truth from restart.go, the env binding from the loader's own table, and
+// editability from whether a verb owns the key. One truth each, so a literal
+// cannot disagree with the code that acts on it.
+func derive(spec KeySpec) KeySpec {
+	spec.RestartRequired = RestartRequired(spec.Key)
+	spec.RestartVerified = RestartVerified(spec.Key)
+	spec.Env = envBindings[spec.Key]
+	spec.Editable = spec.ManagedBy == ""
+	spec.Enum = copyStrings(spec.Enum)
+	return spec
 }
 
 // SchemaFor is Schema with the enums that only a loaded config can fill.
@@ -128,11 +136,16 @@ func SchemaFor(cfg *Config) []KeySpec {
 }
 
 // SpecFor looks a key up case-insensitively.
+//
+// It scans the unsorted table and derives only the match, rather than building
+// and sorting the whole schema for one lookup. The table itself is not cached:
+// two defaults (models_dir, whispercpp_model_path) are derived from the home
+// directory, which tests relocate.
 func SpecFor(key string) (KeySpec, bool) {
 	key = strings.ToLower(strings.TrimSpace(key))
-	for _, spec := range Schema() {
+	for _, spec := range schemaTable() {
 		if spec.Key == key {
-			return spec, true
+			return derive(spec), true
 		}
 	}
 	return KeySpec{}, false

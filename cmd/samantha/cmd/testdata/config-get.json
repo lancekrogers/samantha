@@ -99,7 +99,7 @@
       "source": "default"
     },
     "models_dir": {
-      "value": "/var/folders/9d/nyc358s50g7591g74wjx8pn40000gn/T/tmp.onpJLlptoE/home/.cache/festival-voice/models",
+      "value": "/Users/lance/.cache/festival-voice/models",
       "source": "default"
     },
     "ollama_embedding_model": {
@@ -347,7 +347,7 @@
       "source": "default"
     },
     "whispercpp_model_path": {
-      "value": "/var/folders/9d/nyc358s50g7591g74wjx8pn40000gn/T/tmp.onpJLlptoE/home/.cache/festival-voice/models/whispercpp/ggml-base.en.bin",
+      "value": "/Users/lance/.cache/festival-voice/models/whispercpp/ggml-base.en.bin",
       "source": "default"
     }
   },

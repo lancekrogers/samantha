@@ -49,6 +49,7 @@ func TestSchemaEnumsMatchOwningPackages(t *testing.T) {
 			string(tts.VoiceModeApprovedClone),
 		}},
 		{"calibre_prefer_format", "calibre.SupportedFormats", calibre.SupportedFormats()},
+		{"ollama_think", "brain.ThinkLevels", brain.ThinkLevels()},
 	}
 
 	for _, tc := range cases {
@@ -68,18 +69,24 @@ func TestSchemaEnumsMatchOwningPackages(t *testing.T) {
 	}
 }
 
+// The set equality above pins what the schema offers against what brain
+// publishes. This pins that list against the parser itself, so a level nobody
+// can actually select cannot survive in either table.
 func TestSchemaThinkEnumIsAcceptedByTheParser(t *testing.T) {
 	spec, ok := config.SpecFor("ollama_think")
 	if !ok {
 		t.Fatal("ollama_think missing from the schema")
+	}
+	if len(spec.Enum) == 0 {
+		t.Fatal("ollama_think has no offered values")
 	}
 	for _, value := range spec.Enum {
 		if !brain.ThinkLevelAccepted(value) {
 			t.Errorf("ollama_think offers %q, which the think-level parser rejects", value)
 		}
 	}
-	if len(spec.Enum) == 0 {
-		t.Fatal("ollama_think has no offered values")
+	if brain.ThinkLevelAccepted("sometimes") {
+		t.Error("the parser accepts anything, so this check proves nothing")
 	}
 }
 

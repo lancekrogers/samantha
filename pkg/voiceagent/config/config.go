@@ -202,14 +202,19 @@ type MeetingRouteConfig struct {
 }
 
 // MeetingDestinationConfig is one named export target.
+//
+// The yaml tags matter only on the way out: `config set` writes a destination
+// list back through the YAML encoder, and without omitempty every entry would
+// carry the fields its type does not use (tags: [], path: "", folder: "") into
+// the user's file. Reading still goes through viper and the mapstructure tags.
 type MeetingDestinationConfig struct {
-	ID       string   `mapstructure:"id"`
-	Type     string   `mapstructure:"type"` // campaign | file | apple-notes
-	Campaign string   `mapstructure:"campaign"`
-	Capture  string   `mapstructure:"capture"` // meeting | intent | note (default meeting → import-meeting)
-	Tags     []string `mapstructure:"tags"`
-	Path     string   `mapstructure:"path"`
-	Folder   string   `mapstructure:"folder"`
+	ID       string   `mapstructure:"id" yaml:"id"`
+	Type     string   `mapstructure:"type" yaml:"type"` // campaign | file | apple-notes
+	Campaign string   `mapstructure:"campaign" yaml:"campaign,omitempty"`
+	Capture  string   `mapstructure:"capture" yaml:"capture,omitempty"` // meeting | intent | note (default meeting → import-meeting)
+	Tags     []string `mapstructure:"tags" yaml:"tags,omitempty"`
+	Path     string   `mapstructure:"path" yaml:"path,omitempty"`
+	Folder   string   `mapstructure:"folder" yaml:"folder,omitempty"`
 }
 
 // SpeakerConfig mirrors speaker.Config for viper unmarshal (keeps config package
