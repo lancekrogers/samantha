@@ -340,7 +340,16 @@ func qwenPersonaProfile(id, tier string) *persona.Profile {
 	}
 }
 
+// runClean runs a clean the way a human at a terminal does: no plan file, and
+// stdout is a TTY so the interactive gate lets --yes through.
 func runClean(t *testing.T, cfg *config.Config, modelsDir string, unused, dryRun, yes, asJSON bool) (string, error) {
+	t.Helper()
+	stubStdoutTTY(t, true)
+	return runCleanOpts(t, cfg, modelsDir, cleanOptions{Unused: unused, DryRun: dryRun, Yes: yes, JSON: asJSON}, "")
+}
+
+// runCleanOpts runs one clean with explicit flags and stdin contents.
+func runCleanOpts(t *testing.T, cfg *config.Config, modelsDir string, opts cleanOptions, stdin string) (string, error) {
 	t.Helper()
 	if personaProfilesFn == nil {
 		t.Fatal("persona lister is not stubbed")
@@ -349,8 +358,45 @@ func runClean(t *testing.T, cfg *config.Config, modelsDir string, unused, dryRun
 	cmd.SetContext(context.Background())
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
-	err := runModelsClean(cmd, cfg, modelsDir, unused, dryRun, yes, asJSON)
+	cmd.SetIn(strings.NewReader(stdin))
+	err := runModelsClean(cmd, cfg, modelsDir, opts)
 	return buf.String(), err
+}
+
+// stubStdoutTTY forces the interactive check for the duration of t.
+func stubStdoutTTY(t *testing.T, tty bool) {
+	t.Helper()
+	original := stdoutIsTerminalFn
+	stdoutIsTerminalFn = func() bool { return tty }
+	t.Cleanup(func() { stdoutIsTerminalFn = original })
+}
+
+// cleanFixtureDir lays down one required asset, one leftover, and returns the
+// models dir plus the leftover's path.
+func cleanFixtureDir(t *testing.T) (dir, stale string) {
+	t.Helper()
+	dir = t.TempDir()
+	stale = filepath.Join(dir, "stale.bin")
+	for _, path := range []string{filepath.Join(dir, "silero_vad.onnx"), stale} {
+		if err := os.WriteFile(path, []byte("data"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir, stale
+}
+
+// currentPlanID is the plan id clean would compute for dir right now.
+func currentPlanID(t *testing.T, cfg *config.Config, dir string) string {
+	t.Helper()
+	out, err := runClean(t, cfg, dir, true, true, false, true)
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	var plan config.CleanPlan
+	if err := json.Unmarshal([]byte(out), &plan); err != nil {
+		t.Fatalf("dry run json: %v", err)
+	}
+	return plan.PlanID
 }
 
 func TestModelsCleanFlagValidation(t *testing.T) {
@@ -576,13 +622,13 @@ func TestModelsCleanYesJSONReportsDeletedCandidates(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("--json output is not valid JSON: %v\n%s", err, out)
 	}
-	if len(result.Deleted) != 1 || result.Deleted[0].Path != filepath.Join(dir, "stale.bin") || result.Bytes != 4 {
+	if len(result.Deleted) != 1 || result.Deleted[0].Path != filepath.Join(dir, "stale.bin") || result.BytesFreed != 4 {
 		t.Fatalf("json result = %+v, want one deleted 4-byte stale.bin", result)
 	}
 }
 
 func TestModelsCleanCommandRegistersFlags(t *testing.T) {
-	for _, name := range []string{"unused", "dry-run", "yes", "json"} {
+	for _, name := range []string{"unused", "dry-run", "yes", "json", "plan"} {
 		if modelsCleanCmd.Flags().Lookup(name) == nil {
 			t.Errorf("clean command missing --%s flag", name)
 		}
@@ -703,5 +749,182 @@ func TestModelsCleanFixtureRoundTrips(t *testing.T) {
 	}
 	if string(encoded)+"\n" != raw {
 		t.Errorf("CleanPlan does not round-trip the captured payload:\ngot:\n%s\nwant:\n%s", encoded, raw)
+	}
+}
+
+func TestModelsCleanApplyRefusesWithoutAPlanWhenNotInteractive(t *testing.T) {
+	// A non-interactive --yes is the Mac app's one-click delete. It must name
+	// the list it is deleting, or delete nothing.
+	stubPersonas(t, nil, nil)
+	stubStdoutTTY(t, false)
+	cfg := &config.Config{STTProvider: "none", TTSProvider: "none", VADEnabled: true}
+	dir, stale := cleanFixtureDir(t)
+
+	out, err := runCleanOpts(t, cfg, dir, cleanOptions{Unused: true, Yes: true, JSON: true}, "")
+	if err == nil || !contains(err.Error(), "clean: --plan is required when not interactive") {
+		t.Fatalf("clean error = %v, want the non-interactive refusal", err)
+	}
+	if ExitCode(err) == 0 {
+		t.Error("a refused apply must exit non-zero")
+	}
+	if out != "" {
+		t.Errorf("a refused apply must print nothing:\n%s", out)
+	}
+	if _, statErr := os.Stat(stale); statErr != nil {
+		t.Fatalf("a refused apply must delete nothing: %v", statErr)
+	}
+}
+
+func TestModelsCleanApplyRefusesAStalePlan(t *testing.T) {
+	stubPersonas(t, nil, nil)
+	stubStdoutTTY(t, false)
+	cfg := &config.Config{STTProvider: "none", TTSProvider: "none", VADEnabled: true}
+	dir, stale := cleanFixtureDir(t)
+	current := currentPlanID(t, cfg, dir)
+
+	stalePlan := filepath.Join(t.TempDir(), "plan.json")
+	// A plan captured when the models dir held nothing removable: a valid
+	// document, describing a list that is no longer the current one.
+	staleID := config.CleanPlanID(nil)
+	body := fmt.Sprintf(`{"schema_version":2,"models_dir":%q,"candidates":[],"protected":[],"total_bytes":0,"plan_id":%q}`, dir, staleID)
+	if err := os.WriteFile(stalePlan, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runCleanOpts(t, cfg, dir, cleanOptions{Unused: true, Yes: true, JSON: true, Plan: stalePlan}, "")
+	if err == nil {
+		t.Fatal("clean error = nil, want plan_changed")
+	}
+	if ExitCode(err) == 0 {
+		t.Error("plan_changed must exit non-zero")
+	}
+	var payload config.PlanChangedError
+	if jsonErr := json.Unmarshal([]byte(out), &payload); jsonErr != nil {
+		t.Fatalf("plan_changed payload is not JSON: %v\n%s", jsonErr, out)
+	}
+	if payload.Kind != config.PlanChangedKind || payload.PlanID != staleID || payload.CurrentPlanID != current {
+		t.Errorf("payload = %+v, want plan_changed with both ids", payload)
+	}
+	if _, statErr := os.Stat(stale); statErr != nil {
+		t.Fatalf("a changed plan must delete nothing: %v", statErr)
+	}
+}
+
+func TestModelsCleanApplyAcceptsTheReviewedPlan(t *testing.T) {
+	cases := []struct {
+		name string
+		// plan is built from the current plan id: a document, a bare id, or
+		// stdin.
+		build func(t *testing.T, dir, planID string) (flag, stdin string)
+	}{
+		{
+			name: "dry-run document from a file",
+			build: func(t *testing.T, dir, planID string) (string, string) {
+				path := filepath.Join(t.TempDir(), "plan.json")
+				body := fmt.Sprintf(`{"schema_version":2,"models_dir":%q,"candidates":[{"path":%q,"rel":"stale.bin","size_bytes":4,"category":"asset","kind":"file"}],"protected":[],"total_bytes":4,"plan_id":%q}`,
+					dir, filepath.Join(dir, "stale.bin"), planID)
+				if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return path, ""
+			},
+		},
+		{
+			name: "bare plan id",
+			build: func(t *testing.T, dir, planID string) (string, string) {
+				path := filepath.Join(t.TempDir(), "plan.id")
+				if err := os.WriteFile(path, []byte(planID+"\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return path, ""
+			},
+		},
+		{
+			name: "document on stdin",
+			build: func(t *testing.T, dir, planID string) (string, string) {
+				return "-", fmt.Sprintf(`{"schema_version":2,"models_dir":%q,"candidates":[{"path":%q,"rel":"stale.bin","size_bytes":4,"category":"asset","kind":"file"}],"protected":[],"total_bytes":4,"plan_id":%q}`,
+					dir, filepath.Join(dir, "stale.bin"), planID)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stubPersonas(t, nil, nil)
+			stubStdoutTTY(t, false)
+			cfg := &config.Config{STTProvider: "none", TTSProvider: "none", VADEnabled: true}
+			dir, stale := cleanFixtureDir(t)
+			flag, stdin := tc.build(t, dir, currentPlanID(t, cfg, dir))
+
+			out, err := runCleanOpts(t, cfg, dir, cleanOptions{Unused: true, Yes: true, JSON: true, Plan: flag}, stdin)
+			if err != nil {
+				t.Fatalf("runModelsClean() error = %v\n%s", err, out)
+			}
+			var result config.CleanApplyResult
+			if jsonErr := json.Unmarshal([]byte(out), &result); jsonErr != nil {
+				t.Fatalf("apply output is not JSON: %v\n%s", jsonErr, out)
+			}
+			if result.SchemaVersion != config.CleanPlanSchemaVersion {
+				t.Errorf("schema_version = %d, want %d", result.SchemaVersion, config.CleanPlanSchemaVersion)
+			}
+			if len(result.Deleted) != 1 || result.Deleted[0].Rel != "stale.bin" || result.BytesFreed != 4 {
+				t.Fatalf("result = %+v, want the reviewed leftover deleted", result)
+			}
+			if len(result.Skipped) != 0 {
+				t.Errorf("skipped = %+v, want none", result.Skipped)
+			}
+			if _, statErr := os.Stat(stale); !os.IsNotExist(statErr) {
+				t.Error("the reviewed candidate should be gone")
+			}
+			if _, statErr := os.Stat(filepath.Join(dir, "silero_vad.onnx")); statErr != nil {
+				t.Errorf("a required asset must survive an apply: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestModelsCleanRejectsAnUnreadablePlan(t *testing.T) {
+	stubPersonas(t, nil, nil)
+	stubStdoutTTY(t, false)
+	cfg := &config.Config{STTProvider: "none", TTSProvider: "none", VADEnabled: true}
+	dir, stale := cleanFixtureDir(t)
+
+	cases := []struct {
+		name    string
+		plan    string
+		stdin   string
+		wantErr string
+	}{
+		{name: "missing file", plan: filepath.Join(dir, "nope.json"), wantErr: "clean: reading plan"},
+		{name: "not a plan", plan: "-", stdin: "yes please", wantErr: "neither a dry-run document nor a plan id"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := runCleanOpts(t, cfg, dir, cleanOptions{Unused: true, Yes: true, JSON: true, Plan: tc.plan}, tc.stdin)
+			if err == nil || !contains(err.Error(), tc.wantErr) {
+				t.Fatalf("clean error = %v, want it to mention %q", err, tc.wantErr)
+			}
+			if _, statErr := os.Stat(stale); statErr != nil {
+				t.Fatalf("an unreadable plan must delete nothing: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestModelsCleanApplyStillWorksInteractively(t *testing.T) {
+	// A human who just read the printed list keeps the old one-command flow.
+	stubPersonas(t, nil, nil)
+	cfg := &config.Config{STTProvider: "none", TTSProvider: "none", VADEnabled: true}
+	dir, stale := cleanFixtureDir(t)
+
+	out, err := runClean(t, cfg, dir, true, false, true, false)
+	if err != nil {
+		t.Fatalf("runModelsClean() error = %v", err)
+	}
+	if !contains(out, "Deleted 1 candidate(s)") {
+		t.Errorf("interactive apply output = %s", out)
+	}
+	if _, statErr := os.Stat(stale); !os.IsNotExist(statErr) {
+		t.Error("interactive apply should delete the reviewed candidate")
 	}
 }

@@ -183,7 +183,8 @@ samantha resume <session-id>            # Resume a saved session
 samantha continue                       # Continue the most recent session
 samantha doctor                         # Diagnose config, assets, and binaries (read-only)
 samantha models status                  # Which model assets are installed vs missing
-samantha models clean --unused --yes    # Delete model assets not required now
+samantha models clean --unused --dry-run # Review what would be deleted, and what is kept
+samantha models clean --unused --yes    # Delete the reviewed list (--plan when scripted)
 samantha prompts list                   # List embedded and user prompt documents
 samantha prompts show persona           # Show an assembled prompt document
 samantha render notes.txt --out a.wav   # Batch-render a document to audio
@@ -901,6 +902,38 @@ a temp file, size/checksum-verified when known, and atomically renamed; archives
 are extracted into a temp directory, verified, then promoted — so an interrupted
 or corrupt download never lands a partial asset, and **re-running
 `models ensure` cleanly recovers**.
+
+#### Cleaning unused assets
+
+`models clean` never removes anything it has not shown you, and never treats an
+asset your configuration or any persona references as unused — the required set
+is the union of the global config, every persona profile, and every config key
+that names an asset (including ones the active mode does not load, such as
+`sherpa_streaming_model` while `stt_mode: offline`). If that set cannot be
+resolved — an unreadable persona, an unsupported model name — the command exits
+non-zero and deletes nothing.
+
+```bash
+samantha models clean --unused --dry-run          # list candidates + "Kept (N)" with reasons
+samantha models clean --unused --dry-run --json > plan.json
+samantha models clean --unused --yes --plan plan.json --json
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--unused` | Required. Only unused-asset cleanup is supported. |
+| `--dry-run` | List what would be removed and what is kept, with reasons. Deletes nothing. |
+| `--yes` | Delete. Exactly one of `--dry-run` or `--yes` is required. |
+| `--plan <file\|->` | Apply exactly the reviewed plan: the `--dry-run --json` document, or its `plan_id`. Required with `--yes` when stdout is not a terminal. |
+| `--json` | Machine-readable output (`schema_version: 2`). |
+
+The dry-run JSON carries `candidates[]` (with `size_bytes`, `category:
+junk|asset`, `kind`), `protected[]` (each kept path with the persona or config
+key that keeps it), `total_bytes`, and `plan_id`. An apply recomputes the
+candidate set and refuses when it no longer matches the plan, printing
+`{"error":"plan_changed","plan_id":…,"current_plan_id":…}` and deleting
+nothing; re-run the dry run and review the new list. The result reports
+`deleted[]`, `skipped[]` (with a reason) and `bytes_freed`.
 
 Automated tests cover download/extraction reliability with fake HTTP servers (no
 network). To verify the **real** assets manually:

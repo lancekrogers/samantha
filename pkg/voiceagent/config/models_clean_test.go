@@ -307,7 +307,7 @@ func TestCleanCandidatesDoesNotFollowSymlinks(t *testing.T) {
 	}
 }
 
-func TestDeleteCleanCandidatesRemovesCandidatesOnly(t *testing.T) {
+func TestDeleteCleanPlanRemovesPlannedCandidatesOnly(t *testing.T) {
 	outside := t.TempDir()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outside, "target.bin"), []byte("outside"), 0o644); err != nil {
@@ -329,16 +329,17 @@ func TestDeleteCleanCandidatesRemovesCandidatesOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := DeleteCleanCandidates(context.Background(), dir, []CleanCandidate{
+	planned := []CleanCandidate{
 		{Path: file, Size: 4},
 		{Path: oldDir, Size: 6, Kind: CleanKindDir},
 		{Path: link, Size: 7},
-	})
-	if err != nil {
-		t.Fatalf("DeleteCleanCandidates() error = %v", err)
 	}
-	if len(result.Deleted) != 3 || result.Bytes != 17 {
-		t.Fatalf("result = %+v, want 3 deleted and 17 bytes", result)
+	result, err := DeleteCleanPlan(context.Background(), dir, planned, planned)
+	if err != nil {
+		t.Fatalf("DeleteCleanPlan() error = %v", err)
+	}
+	if len(result.Deleted) != 3 || result.BytesFreed != 17 || len(result.Skipped) != 0 {
+		t.Fatalf("result = %+v, want 3 deleted, 17 bytes freed, nothing skipped", result)
 	}
 	for _, p := range []string{file, oldDir, link} {
 		if _, err := os.Lstat(p); !os.IsNotExist(err) {
@@ -350,16 +351,17 @@ func TestDeleteCleanCandidatesRemovesCandidatesOnly(t *testing.T) {
 	}
 }
 
-func TestDeleteCleanCandidatesRejectsOutsidePath(t *testing.T) {
+func TestDeleteCleanPlanRejectsOutsidePath(t *testing.T) {
 	dir := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.bin")
 	if err := os.WriteFile(outside, []byte("data"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := DeleteCleanCandidates(context.Background(), dir, []CleanCandidate{{Path: outside}})
+	planned := []CleanCandidate{{Path: outside}}
+	_, err := DeleteCleanPlan(context.Background(), dir, planned, planned)
 	if err == nil {
-		t.Fatal("DeleteCleanCandidates() error = nil, want outside path rejection")
+		t.Fatal("DeleteCleanPlan() error = nil, want outside path rejection")
 	}
 	if !strings.Contains(err.Error(), "outside models dir") {
 		t.Fatalf("error = %q, want outside models dir", err)

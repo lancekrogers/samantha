@@ -2,13 +2,10 @@ package config
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -47,69 +44,6 @@ type CleanCandidate struct {
 // IsDir reports whether the candidate is a directory.
 func (c CleanCandidate) IsDir() bool { return c.Kind == CleanKindDir }
 
-// CleanApplyResult reports the candidates removed by an apply-mode cleanup.
-type CleanApplyResult struct {
-	Deleted []CleanCandidate `json:"deleted"`
-	Bytes   int64            `json:"bytes"`
-}
-
-// CleanPlanSchemaVersion is the version of the dry-run payload. Version 2
-// added per-candidate size/category, the protected list with reasons, and the
-// plan id that apply is gated on; version 1 was a bare candidate array.
-const CleanPlanSchemaVersion = 2
-
-// CleanPlan is the exact removal list a caller was shown, and the only thing
-// an apply is allowed to act on. PlanID pins the candidate set: if the set
-// changes between the dry run and the apply — a config edit, another instance,
-// a finished download — the ids differ and the apply refuses.
-type CleanPlan struct {
-	SchemaVersion int              `json:"schema_version"`
-	ModelsDir     string           `json:"models_dir"`
-	Candidates    []CleanCandidate `json:"candidates"`
-	Protected     []ProtectedPath  `json:"protected"`
-	TotalBytes    int64            `json:"total_bytes"`
-	PlanID        string           `json:"plan_id"`
-}
-
-// CleanPlan resolves the current candidates and packages them with the kept
-// list and a plan id.
-func (rs RequiredSet) CleanPlan(ctx context.Context) (CleanPlan, error) {
-	candidates, err := rs.CleanCandidates(ctx)
-	if err != nil {
-		return CleanPlan{}, err
-	}
-	protected := rs.Protected
-	if protected == nil {
-		protected = []ProtectedPath{}
-	}
-	var total int64
-	for _, c := range candidates {
-		total += c.Size
-	}
-	return CleanPlan{
-		SchemaVersion: CleanPlanSchemaVersion,
-		ModelsDir:     rs.ModelsDir,
-		Candidates:    candidates,
-		Protected:     protected,
-		TotalBytes:    total,
-		PlanID:        CleanPlanID(candidates),
-	}, nil
-}
-
-// CleanPlanID is the sha256 of the sorted models-dir-relative candidate paths.
-// Relative paths keep the id stable when the same install is inspected through
-// a different absolute root (and keep a captured fixture self-consistent);
-// what the id pins is which entries under the models dir would be deleted.
-func CleanPlanID(candidates []CleanCandidate) string {
-	rels := make([]string, 0, len(candidates))
-	for _, c := range candidates {
-		rels = append(rels, c.Rel)
-	}
-	sort.Strings(rels)
-	sum := sha256.Sum256([]byte(strings.Join(rels, "\n")))
-	return hex.EncodeToString(sum[:])
-}
-
 // CleanCandidates lists the paths under modelsDir that are not claimed by any
 // asset in the manifest, as removal candidates for `models clean`. It only
 // reads the filesystem — it never deletes, never follows symlinks, and never
@@ -131,32 +65,6 @@ func (m AssetManifest) CleanCandidates(ctx context.Context, modelsDir string) ([
 	modelsDir = filepath.Clean(modelsDir)
 	set := RequiredSet{ModelsDir: modelsDir, own: m.requiredPaths(modelsDir)}
 	return set.CleanCandidates(ctx)
-}
-
-// DeleteCleanCandidates removes the exact candidate paths after re-validating
-// path confinement under modelsDir. Symlinks are removed as links; their targets
-// are never followed.
-func DeleteCleanCandidates(ctx context.Context, modelsDir string, candidates []CleanCandidate) (CleanApplyResult, error) {
-	result := CleanApplyResult{}
-	for _, candidate := range candidates {
-		if err := ctx.Err(); err != nil {
-			return result, err
-		}
-		if err := validateCleanCandidatePath(modelsDir, candidate.Path); err != nil {
-			return result, err
-		}
-		if _, err := os.Lstat(candidate.Path); os.IsNotExist(err) {
-			continue
-		} else if err != nil {
-			return result, fmt.Errorf("models clean: stat %s: %w", candidate.Path, err)
-		}
-		if err := os.RemoveAll(candidate.Path); err != nil {
-			return result, fmt.Errorf("models clean: remove %s: %w", candidate.Path, err)
-		}
-		result.Deleted = append(result.Deleted, candidate)
-		result.Bytes += candidate.Size
-	}
-	return result, nil
 }
 
 func validateCleanCandidatePath(modelsDir, candidatePath string) error {
