@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -162,24 +163,16 @@ func writeKeyToFile(spec KeySpec, value any) (SetResult, error) {
 	defer fileWriteMu.Unlock()
 
 	path := ConfigFile()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return SetResult{}, writeFailed(spec.Key, "creating config dir", err)
-	}
-	release, err := acquireConfigLock(path)
+	release, err := openConfigForWrite(path, spec.Key)
 	if err != nil {
 		return SetResult{}, err
 	}
 	defer release()
 
-	data, existed, err := readOptionalFile(path)
+	data, existed, doc, err := readConfigDocument(path, spec.Key)
 	if err != nil {
-		return SetResult{}, &SetError{Code: CodeParseFailed, Key: spec.Key, Message: err.Error(), cause: err}
+		return SetResult{}, err
 	}
-	doc, err := migrationYAMLDocument(data)
-	if err != nil {
-		return SetResult{}, &SetError{Code: CodeParseFailed, Key: spec.Key, Message: err.Error(), cause: err}
-	}
-	preserveBlankLines(doc, data)
 	mapping := doc.Content[0]
 
 	segments := strings.Split(spec.Key, ".")
@@ -202,47 +195,109 @@ func writeKeyToFile(spec KeySpec, value any) (SetResult, error) {
 		return result, nil
 	}
 
-	backupPath, err := patchAndReplace(doc, mapping, segments, value, path, existed, spec.Key)
+	backupPath, err := patchAndReplace(data, doc, segments, value, path, existed, spec)
 	if err != nil {
 		return SetResult{}, err
 	}
-
-	// Refresh the in-process value from the patched document rather than from
-	// the Go value: a later Get in this process then sees exactly what a fresh
-	// Load would, including for structured keys whose Go type has no JSON tags.
-	refreshed := value
-	if roundTripped, ok := yamlValueAt(mapping, segments); ok {
-		refreshed = roundTripped
-	}
-	Set(spec.Key, refreshed)
 	result.BackupPath = backupPath
 	result.Changed = true
 	return result, nil
 }
 
-// patchAndReplace writes the patched document over path, keeping a backup of
+// patchAndReplace edits the source text, checks the edit landed, writes it, and
+// refreshes the in-process value.
+//
+// The refresh comes from the patched text rather than from the Go value, so a
+// later Get in this process sees exactly what a fresh Load would, including for
+// structured keys whose Go type has no JSON tags. That same read is the writer's
+// own check that what it produced still parses and still holds what it was asked
+// to write — a text edit that did not land is refused here instead of being
+// saved over the user's config.
+func patchAndReplace(data []byte, doc *yaml.Node, segments []string, value any, path string, existed bool, spec KeySpec) (string, error) {
+	patched, err := patchConfigSource(data, doc, segments, value)
+	if err != nil {
+		return "", writeOrShapeFailed(spec.Key, "updating config", err)
+	}
+	refreshed, err := verifyPatched(patched, segments, value)
+	if err != nil {
+		return "", writeFailed(spec.Key, "updating config", err)
+	}
+	backupPath, err := backupAndReplace(path, patched, existed, spec.Key)
+	if err != nil {
+		return "", err
+	}
+	Set(spec.Key, refreshed)
+	return backupPath, nil
+}
+
+// openConfigForWrite makes sure the install root exists and takes the advisory
+// lock both write verbs share, so two processes queue rather than interleave.
+func openConfigForWrite(path, key string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, writeFailed(key, "creating config dir", err)
+	}
+	return acquireConfigLock(path)
+}
+
+// readConfigDocument reads config.yaml and parses it, reporting whether the
+// file was there at all. A file that does not parse is a parse_failed error
+// naming the key the caller was trying to write, not a bare I/O message.
+func readConfigDocument(path, key string) ([]byte, bool, *yaml.Node, error) {
+	data, existed, err := readOptionalFile(path)
+	if err != nil {
+		return nil, false, nil, &SetError{Code: CodeParseFailed, Key: key, Message: err.Error(), cause: err}
+	}
+	doc, err := migrationYAMLDocument(data)
+	if err != nil {
+		return nil, false, nil, &SetError{Code: CodeParseFailed, Key: key, Message: err.Error(), cause: err}
+	}
+	return data, existed, doc, nil
+}
+
+// verifyPatched re-reads the patched text and returns the value it now holds at
+// the path. A patch that no longer parses, or that did not land the value, is
+// an error rather than something to write over a working config.
+func verifyPatched(patched []byte, segments []string, value any) (any, error) {
+	doc, err := migrationYAMLDocument(patched)
+	if err != nil {
+		return nil, err
+	}
+	got, ok := yamlValueAt(doc.Content[0], segments)
+	if !ok || !sameValue(got, value) {
+		return nil, fmt.Errorf("the edited config does not hold %s", strings.Join(segments, "."))
+	}
+	return got, nil
+}
+
+// backupAndReplace writes the patched document over path, keeping a backup of
 // what was there. The replacement is atomic, so a crash mid-write leaves the
 // old file intact rather than a truncated one.
-func patchAndReplace(doc, mapping *yaml.Node, segments []string, value any, path string, existed bool, key string) (string, error) {
-	if err := setYAMLValue(mapping, segments, value); err != nil {
-		return "", writeFailed(key, "updating config", err)
-	}
-	out, err := encodeYAMLDocument(doc)
-	if err != nil {
-		return "", writeFailed(key, "encoding config", err)
-	}
+func backupAndReplace(path string, patched []byte, existed bool, key string) (string, error) {
 	var backupPath string
 	if existed {
+		var err error
 		backupPath, err = backupFile(path)
 		if err != nil {
 			return "", writeFailed(key, "backing up config", err)
 		}
 		pruneBackups(path, keptBackups)
 	}
-	if err := writeFileAtomic(path, out); err != nil {
+	if err := writeFileAtomic(path, patched); err != nil {
 		return "", writeFailed(key, "replacing config", err)
 	}
 	return backupPath, nil
+}
+
+// writeOrShapeFailed keeps a failure caused by the document's own shape apart
+// from one caused by this process. A flow section, a duplicate key or a scalar
+// where a section belongs is something the user can fix in their editor, so it
+// gets parse_failed and its own message; anything else is write_failed.
+func writeOrShapeFailed(key, what string, cause error) error {
+	var shape *shapeError
+	if errors.As(cause, &shape) {
+		return &SetError{Code: CodeParseFailed, Key: key, Message: shape.message, cause: cause}
+	}
+	return writeFailed(key, what, cause)
 }
 
 func writeFailed(key, what string, cause error) error {

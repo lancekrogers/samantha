@@ -129,6 +129,6 @@ func maskSecret(key, value string) string {
 
 func init() {
 	configCmd.AddCommand(newConfigMigrateCmd(config.Load, config.ConfigFile))
-	configCmd.AddCommand(newConfigSchemaCmd(), newConfigGetCmd(), newConfigSetCmd())
+	configCmd.AddCommand(newConfigSchemaCmd(), newConfigGetCmd(), newConfigSetCmd(), newConfigUnsetCmd())
 	rootCmd.AddCommand(configCmd)
 }

@@ -169,6 +169,7 @@ samantha config schema --json           # Describe every key (types, bounds, hel
 samantha config get --json              # Every effective value with its source
 samantha config get tts_voice --json    # One value, its type, and its source
 samantha config set tts_voice af_bella --json   # Change one key, surgically
+samantha config unset stt_mode --json   # Remove a key so its default applies
 samantha config migrate --dry-run       # Preview explicit STT config migration
 samantha config migrate --write         # Apply STT config migration with backup
 samantha persona list                   # List voice agent personas
@@ -622,11 +623,30 @@ samantha config set skills_disabled '["pdf-fill","calibre"]'
 samantha config set skills_disabled '[]'
 ```
 
+`samantha config unset <key>` is the way back: it removes the key's lines from
+config.yaml — as surgically as `set` writes them — so the built-in default, or
+the key's environment variable, applies again and `config get` reports the
+value's source as `default`. Removing a key the file does not hold changes
+nothing and reports `changed: false`.
+
+Clearing a key is not the same as writing an empty value to it. `config set
+stt_mode ""` stores an empty string, which pins the key; `config unset
+stt_mode` removes it, so a future default change or an exported `STT_MODE` is
+free to take effect.
+
+`config schema` marks every key that accepts an empty value `allows_empty:
+true`: all the text keys, plus the enums whose own default is blank
+(`stt_mode`, `meeting.route.default`, `qwen_tts_mode`, …). A bool, a number, a
+list, or an enum with a real default (`tts_provider`) refuses one. For the
+enums, blank *is* the unset state, so writing it back returns the key to it —
+a front end offering an "(App default)" choice wants `allows_empty` together
+with an empty `default`.
+
 `config schema` and `config get` never write to the install root, and never
-fail on a config the loader would reject. Add `--json` to any of the three for
-a machine-readable payload; `config set` exits 0 on success, 1 when the
-operation fails (with an error `code` in the payload), and 2 when it is called
-with the wrong number of arguments.
+fail on a config the loader would reject. Add `--json` to any of them for a
+machine-readable payload; `config set` and `config unset` exit 0 on success, 1
+when the operation fails (with an error `code` in the payload), and 2 when
+called with the wrong number of arguments.
 
 Persona **profiles** live under `~/.obey/agents/voice/festival-voice/personas/<id>/persona.yaml`.
 On load, the active profile overlays `agent_name`, the persona prompt name, and per-persona TTS

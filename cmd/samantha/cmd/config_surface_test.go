@@ -649,3 +649,96 @@ func TestConfigGetWithAPersonaStillWritesNothing(t *testing.T) {
 			strings.Join(before, "\n"), strings.Join(after, "\n"))
 	}
 }
+
+// --- M7: `config unset` and the empty-enum value ---
+
+func TestConfigUnsetSurface(t *testing.T) {
+	t.Run("wrong argument count exits 2", func(t *testing.T) {
+		newSurfaceInstall(t, surfaceConfig)
+		for _, args := range [][]string{{}, {"a", "b"}} {
+			_, err := runConfigSubcommand(t, newConfigUnsetCmd, args...)
+			if err == nil {
+				t.Fatalf("config unset %v succeeded, want a usage error", args)
+			}
+			if got := ExitCode(err); got != exitUsage {
+				t.Errorf("config unset %v exit = %d, want %d", args, got, exitUsage)
+			}
+		}
+	})
+
+	t.Run("an unknown key is a coded JSON failure", func(t *testing.T) {
+		newSurfaceInstall(t, surfaceConfig)
+		out, err := runConfigSubcommand(t, newConfigUnsetCmd, "nope", "--json")
+		if err == nil {
+			t.Fatal("config unset nope succeeded")
+		}
+		if got := ExitCode(err); got != exitOperationFailed {
+			t.Errorf("exit = %d, want %d", got, exitOperationFailed)
+		}
+		payload := decodeJSON[configErrorPayload](t, out)
+		if payload.Error.Code != config.CodeUnknownKey {
+			t.Errorf("code = %q, want %q", payload.Error.Code, config.CodeUnknownKey)
+		}
+	})
+
+	t.Run("removing a key reports the default it falls back to", func(t *testing.T) {
+		newSurfaceInstall(t, surfaceConfig)
+		out, err := runConfigSubcommand(t, newConfigUnsetCmd, "vad_silence_duration", "--json")
+		if err != nil {
+			t.Fatalf("config unset vad_silence_duration --json: %v", err)
+		}
+		payload := decodeJSON[configUnsetPayload](t, out)
+		if payload.SchemaVersion != config.SchemaVersion {
+			t.Errorf("schema_version = %d, want %d", payload.SchemaVersion, config.SchemaVersion)
+		}
+		if payload.Key != "vad_silence_duration" || !payload.Changed {
+			t.Fatalf("payload = %+v, want the key reported as changed", payload)
+		}
+		if payload.OldValue != 0.8 {
+			t.Errorf("old_value = %v, want 0.8 (what the file held)", payload.OldValue)
+		}
+		if payload.Value != 0.5 {
+			t.Errorf("value = %v, want the 0.5 default", payload.Value)
+		}
+	})
+
+	t.Run("removing an absent key changes nothing", func(t *testing.T) {
+		newSurfaceInstall(t, surfaceConfig)
+		out, err := runConfigSubcommand(t, newConfigUnsetCmd, "agent_name", "--json")
+		if err != nil {
+			t.Fatalf("config unset agent_name --json: %v", err)
+		}
+		if payload := decodeJSON[configUnsetPayload](t, out); payload.Changed {
+			t.Errorf("changed = true for a key the file never held: %+v", payload)
+		}
+	})
+
+	t.Run("the schema publishes allows_empty", func(t *testing.T) {
+		newSurfaceInstall(t, surfaceConfig)
+		out, err := runConfigSubcommand(t, newConfigSchemaCmd, "--json")
+		if err != nil {
+			t.Fatalf("config schema --json: %v", err)
+		}
+		payload := decodeJSON[configSchemaPayload](t, out)
+		byKey := map[string]config.KeySpec{}
+		for _, spec := range payload.Keys {
+			byKey[spec.Key] = spec
+		}
+		if !byKey["stt_mode"].AllowsEmpty {
+			t.Error("stt_mode allows_empty = false; a front end cannot offer \"(App default)\" for it")
+		}
+		if byKey["tts_provider"].AllowsEmpty {
+			t.Error("tts_provider allows_empty = true, but its default is kokoro")
+		}
+	})
+
+	t.Run("set accepts an empty value only where the schema allows it", func(t *testing.T) {
+		newSurfaceInstall(t, "stt_mode: streaming\ntts_provider: qwen3-tts\n")
+		if _, err := runConfigSubcommand(t, newConfigSetCmd, "tts_provider", "", "--json"); err == nil {
+			t.Error("config set tts_provider \"\" succeeded, want it refused")
+		}
+		if _, err := runConfigSubcommand(t, newConfigSetCmd, "stt_mode", "", "--json"); err != nil {
+			t.Errorf("config set stt_mode \"\" = %v, want it accepted", err)
+		}
+	})
+}

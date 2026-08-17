@@ -306,8 +306,11 @@ func TestSetKeyFileCreatesNestedPaths(t *testing.T) {
 		newInstall(t, "speaker: yes\n")
 		_, err := SetKeyFile("speaker.live.window_ms", "2000")
 		setErr := setError(t, err)
-		if setErr.Code != CodeWriteFailed {
-			t.Fatalf("code = %q, want %q", setErr.Code, CodeWriteFailed)
+		// The document's shape is what refuses this, not a failure on our side:
+		// parse_failed tells a front end the user has something to fix, where
+		// write_failed reads as a server fault and invites an impossible retry.
+		if setErr.Code != CodeParseFailed {
+			t.Fatalf("code = %q, want %q", setErr.Code, CodeParseFailed)
 		}
 	})
 }

@@ -8,42 +8,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// setYAMLValue writes value at the dotted path, creating intermediate mappings
-// (speaker.live.window_ms -> speaker: {live: {window_ms: …}}), preserving the
-// document's comments and key order, and tagging the scalar by its Go type
-// (!!bool, !!int, !!float, !!str) or emitting a sequence for []string.
-//
-// The typed tag is the point: a writer that always emitted !!str turned
-// barge_in_enabled: true into the string "true" and vad_pre_roll_ms: 300 into
-// "300", which then failed to unmarshal back into the Config struct.
-func setYAMLValue(mapping *yaml.Node, path []string, value any) error {
-	if len(path) == 0 {
-		return fmt.Errorf("empty config key path")
-	}
-	node, err := yamlNodeFor(value)
-	if err != nil {
-		return err
-	}
-	parent := mapping
-	for _, segment := range path[:len(path)-1] {
-		parent, err = childMapping(parent, segment)
-		if err != nil {
-			return err
-		}
-	}
-	leaf := path[len(path)-1]
-	if existing := mappingValue(parent, leaf); existing != nil {
-		// Keep whatever the user wrote around the value they are changing.
-		node.HeadComment = existing.HeadComment
-		node.LineComment = existing.LineComment
-		node.FootComment = existing.FootComment
-		*existing = *node
-		return nil
-	}
-	parent.Content = append(parent.Content, keyNode(leaf), node)
-	return nil
-}
-
 // yamlValueAt decodes the value at the dotted path, reporting whether the
 // document holds it at all.
 func yamlValueAt(mapping *yaml.Node, path []string) (any, bool) {
@@ -66,31 +30,6 @@ func yamlValueAt(mapping *yaml.Node, path []string) (any, bool) {
 		node = child
 	}
 	return nil, false
-}
-
-// childMapping returns the mapping stored at key, creating an empty one when
-// the key is absent. An existing non-mapping value is an error rather than
-// something to overwrite: silently replacing a scalar with a map would discard
-// user config.
-func childMapping(parent *yaml.Node, key string) (*yaml.Node, error) {
-	if existing := mappingValue(parent, key); existing != nil {
-		// `speaker:` with nothing under it parses as null, not as a mapping.
-		// That is an empty section, so fill it in rather than refusing.
-		if existing.Tag == "!!null" && len(existing.Content) == 0 {
-			existing.Kind = yaml.MappingNode
-			existing.Tag = "!!map"
-			existing.Value = ""
-			existing.Style = 0
-			return existing, nil
-		}
-		if existing.Kind != yaml.MappingNode {
-			return nil, fmt.Errorf("config key %q is not a section", key)
-		}
-		return existing, nil
-	}
-	child := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-	parent.Content = append(parent.Content, keyNode(key), child)
-	return child, nil
 }
 
 // mappingValue finds a key case-insensitively, because viper lowercases every
@@ -157,56 +96,4 @@ func formatYAMLFloat(f float64) string {
 		text += ".0"
 	}
 	return text
-}
-
-// preserveBlankLines re-attaches the blank lines yaml.v3 drops when it
-// re-encodes a document. Without this, the first setting a front end writes
-// collapses every paragraph break in a hand-edited config — comments survive
-// but the file stops being readable.
-//
-// yaml.v3 emits a leading blank line for any head comment that starts with a
-// newline, so the source is consulted for where the breaks were and the head
-// comments are prefixed to match. Call before mutating: node line numbers refer
-// to the source that was parsed.
-func preserveBlankLines(node *yaml.Node, source []byte) {
-	if node == nil || len(source) == 0 {
-		return
-	}
-	lines := strings.Split(string(source), "\n")
-	var walk func(n *yaml.Node)
-	walk = func(n *yaml.Node) {
-		if n.Kind == yaml.DocumentNode {
-			for _, child := range n.Content {
-				walk(child)
-			}
-			return
-		}
-		if n.Kind == yaml.SequenceNode {
-			for _, item := range n.Content {
-				walk(item)
-			}
-			return
-		}
-		if n.Kind != yaml.MappingNode {
-			return
-		}
-		for i := 0; i+1 < len(n.Content); i += 2 {
-			key := n.Content[i]
-			if blankLineAbove(lines, key.Line) && !strings.HasPrefix(key.HeadComment, "\n") {
-				key.HeadComment = "\n" + key.HeadComment
-			}
-			walk(n.Content[i+1])
-		}
-	}
-	walk(node)
-}
-
-// blankLineAbove reports whether the source had an empty line above the node at
-// the given 1-based line, looking past the node's own comment block.
-func blankLineAbove(lines []string, line int) bool {
-	i := line - 2
-	for i >= 0 && strings.HasPrefix(strings.TrimSpace(lines[i]), "#") {
-		i--
-	}
-	return i >= 0 && strings.TrimSpace(lines[i]) == ""
 }

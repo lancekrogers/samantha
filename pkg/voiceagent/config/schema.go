@@ -61,23 +61,31 @@ func Groups() []string {
 // control for it, and for `config set` to validate a value without knowing
 // anything about the key.
 type KeySpec struct {
-	Key                string    `json:"key"`
-	Type               ValueType `json:"type"`
-	Default            any       `json:"default"`
-	Enum               []string  `json:"enum,omitempty"`
-	Group              string    `json:"group"`
-	Title              string    `json:"title"`
-	Help               string    `json:"help"`
-	Unit               string    `json:"unit,omitempty"`
-	Min                *float64  `json:"min,omitempty"`
-	Max                *float64  `json:"max,omitempty"`
-	RestartRequired    bool      `json:"restart_required"`
-	RestartVerified    bool      `json:"restart_verified"`
-	PersonaOverridable bool      `json:"persona_overridable"`
-	Env                string    `json:"env,omitempty"`
-	Editable           bool      `json:"editable"`
-	ManagedBy          string    `json:"managed_by,omitempty"`
-	Secret             bool      `json:"secret,omitempty"`
+	Key     string    `json:"key"`
+	Type    ValueType `json:"type"`
+	Default any       `json:"default"`
+	Enum    []string  `json:"enum,omitempty"`
+	// AllowsEmpty reports that `config set <key> ""` is accepted: every text
+	// key, plus the enums whose own default is the empty string. For those
+	// enums "" is the unset state, so writing it back is how a user returns
+	// the key to it — that is the pair a front end wants before offering an
+	// "(App default)" choice, and Default is the second half of the pair.
+	// Everything else (bool, number, list, opaque, and an enum with a real
+	// default) refuses an empty value.
+	AllowsEmpty        bool     `json:"allows_empty"`
+	Group              string   `json:"group"`
+	Title              string   `json:"title"`
+	Help               string   `json:"help"`
+	Unit               string   `json:"unit,omitempty"`
+	Min                *float64 `json:"min,omitempty"`
+	Max                *float64 `json:"max,omitempty"`
+	RestartRequired    bool     `json:"restart_required"`
+	RestartVerified    bool     `json:"restart_verified"`
+	PersonaOverridable bool     `json:"persona_overridable"`
+	Env                string   `json:"env,omitempty"`
+	Editable           bool     `json:"editable"`
+	ManagedBy          string   `json:"managed_by,omitempty"`
+	Secret             bool     `json:"secret,omitempty"`
 }
 
 // Schema returns every config key's spec in a stable order: group (render
@@ -103,8 +111,31 @@ func derive(spec KeySpec) KeySpec {
 	spec.RestartVerified = RestartVerified(spec.Key)
 	spec.Env = envBindings[spec.Key]
 	spec.Editable = spec.ManagedBy == ""
+	spec.AllowsEmpty = allowsEmpty(spec)
 	spec.Enum = copyStrings(spec.Enum)
 	return spec
+}
+
+// allowsEmpty answers what the coercer does, not what a second hand-kept list
+// says: a text key takes any string including the empty one, and an enum takes
+// "" only when "" is its own default — the unset state, which writing "" back
+// returns it to. stt_mode is the case that found this: it legitimately holds ""
+// and could not be cleared.
+//
+// It deliberately does not claim more than that. A first cut reported
+// allows_empty only for the empty-defaulted keys, which had the schema and the
+// README both claiming an empty value was an error everywhere else while
+// `config set agent_name ""` quietly succeeded. Found by adversarial review.
+func allowsEmpty(spec KeySpec) bool {
+	switch spec.Type {
+	case TypeString:
+		return true
+	case TypeEnum:
+		text, ok := spec.Default.(string)
+		return ok && text == ""
+	default:
+		return false
+	}
 }
 
 // SchemaFor is Schema with the enums that only a loaded config can fill.

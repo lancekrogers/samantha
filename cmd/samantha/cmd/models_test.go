@@ -106,22 +106,32 @@ func TestModelsStatusScoped(t *testing.T) {
 		want    []string
 		exclude []string
 	}{
+		// A TTS-covering scope also lists the two Qwen3-TTS tier rows (M6): a
+		// front end reads tier install state from `models status`. This config
+		// runs kokoro, so those two are offers, not gaps — they are listed and
+		// counted separately, and the missing count stays what it was.
 		{
 			name:    "tts excludes stt and vad",
 			scope:   scopeFlags{tts: true},
-			want:    []string{"kokoro-tts", "1 asset(s), 1 missing"},
+			want:    []string{"kokoro-tts", "3 asset(s), 1 missing (plus 2 optional Qwen3-TTS tier(s) not installed)"},
 			exclude: []string{"silero_vad.onnx", "whisper-base.en"},
 		},
 		{
 			name:    "tts and vad union",
 			scope:   scopeFlags{tts: true, vad: true},
-			want:    []string{"kokoro-tts", "silero_vad.onnx", "2 asset(s), 2 missing"},
+			want:    []string{"kokoro-tts", "silero_vad.onnx", "4 asset(s), 2 missing (plus 2 optional Qwen3-TTS tier(s) not installed)"},
 			exclude: []string{"whisper-base.en"},
 		},
 		{
 			name:  "no flags includes everything",
 			scope: scopeFlags{},
-			want:  []string{"kokoro-tts", "silero_vad.onnx", "whisper-base.en", "3 asset(s), 3 missing"},
+			want:  []string{"kokoro-tts", "silero_vad.onnx", "whisper-base.en", "5 asset(s), 3 missing (plus 2 optional Qwen3-TTS tier(s) not installed)"},
+		},
+		{
+			name:    "stt only leaves the tier rows out entirely",
+			scope:   scopeFlags{stt: true},
+			want:    []string{"whisper-base.en", "1 asset(s), 1 missing"},
+			exclude: []string{"Qwen3-TTS model tier", "kokoro-tts"},
 		},
 	}
 	for _, tc := range cases {
@@ -226,7 +236,7 @@ func TestModelsStatusListsMissingAssets(t *testing.T) {
 	dir := t.TempDir()
 
 	out := runStatus(t, fullCfg(), dir, false)
-	for _, want := range []string{"silero_vad.onnx", "kokoro-tts", "whisper-base.en", "missing", "3 asset(s), 3 missing"} {
+	for _, want := range []string{"silero_vad.onnx", "kokoro-tts", "whisper-base.en", "missing", "5 asset(s), 3 missing (plus 2 optional Qwen3-TTS tier(s) not installed)"} {
 		if !contains(out, want) {
 			t.Errorf("status output missing %q:\n%s", want, out)
 		}

@@ -1,0 +1,80 @@
+[
+  {
+    "id": "vad.silero.v1",
+    "name": "silero_vad.onnx",
+    "provider": "sherpa",
+    "kind": "vad",
+    "installed": false,
+    "missing": [
+      "/Users/lance/.cache/festival-voice/models/silero_vad.onnx"
+    ]
+  },
+  {
+    "id": "stt.sherpa.offline.whisper-small",
+    "name": "whisper-small",
+    "provider": "sherpa",
+    "mode": "offline",
+    "kind": "stt",
+    "installed": false,
+    "missing": [
+      "/Users/lance/.cache/festival-voice/models/small-encoder.onnx",
+      "/Users/lance/.cache/festival-voice/models/small-decoder.onnx"
+    ]
+  },
+  {
+    "id": "tts.kokoro.multi-lang-v1_0",
+    "name": "kokoro-tts",
+    "provider": "kokoro",
+    "kind": "tts",
+    "installed": false,
+    "missing": [
+      "/Users/lance/.cache/festival-voice/models/model.onnx",
+      "/Users/lance/.cache/festival-voice/models/voices.bin",
+      "/Users/lance/.cache/festival-voice/models/tokens.txt",
+      "/Users/lance/.cache/festival-voice/models/espeak-ng-data"
+    ]
+  },
+  {
+    "id": "speaker.segmentation.pyannote-3.0",
+    "name": "pyannote speaker segmentation",
+    "provider": "sherpa",
+    "kind": "speaker",
+    "installed": false,
+    "missing": [
+      "/Users/lance/.cache/festival-voice/models/speaker/pyannote-segmentation-3.0/model.int8.onnx"
+    ]
+  },
+  {
+    "id": "speaker.embedding.nemo-titanet-small",
+    "name": "NeMo TitaNet speaker embedding",
+    "provider": "sherpa",
+    "kind": "speaker",
+    "installed": false,
+    "missing": [
+      "/Users/lance/.cache/festival-voice/models/speaker/nemo_en_titanet_small.onnx"
+    ]
+  },
+  {
+    "id": "tts.qwen3.tier.0.6b",
+    "name": "Qwen3-TTS model tier 0.6b",
+    "provider": "qwen3-tts",
+    "mode": "customvoice",
+    "kind": "tts",
+    "installed": false,
+    "missing": [
+      "/Users/lance/.cache/festival-voice/models/qwen3-tts"
+    ]
+  },
+  {
+    "id": "tts.qwen3.tier.1.7b",
+    "name": "Qwen3-TTS model tier 1.7b",
+    "provider": "qwen3-tts",
+    "mode": "customvoice",
+    "kind": "tts",
+    "installed": false,
+    "missing": [
+      "/Users/lance/.cache/festival-voice/models/qwen3-tts"
+    ],
+    "detail": "not in the pinned release — set qwen_tts_native_url to a multi-tier tarball"
+  }
+]
