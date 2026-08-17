@@ -25,7 +25,8 @@ import (
 
 var (
 	benchmarkPrompts             []string
-	benchmarkJSONOutput          string
+	benchmarkJSON                benchmarkJSONFlag
+	benchmarkJSONFile            string
 	benchmarkIterations          int
 	benchmarkAudioFixtures       []string
 	benchmarkFullTurnFixtures    []string
@@ -66,13 +67,88 @@ type benchmarkErrorLog struct {
 	Message string `json:"message"`
 }
 
+// benchmarkJSONFlag backs --json (G38): every other --json in this CLI is a
+// bool, but this one used to be a string file path. It implements
+// pflag.Value directly (with NoOptDefVal "true") so bare --json still parses
+// as a bool while a path value is accepted for one release, deprecated in
+// favour of --json-file.
+type benchmarkJSONFlag struct {
+	stdout bool   // true: print the results array to stdout
+	path   string // non-empty: deprecated string-path form
+}
+
+func (f *benchmarkJSONFlag) String() string {
+	if f.path != "" {
+		return f.path
+	}
+	if f.stdout {
+		return "true"
+	}
+	return "false"
+}
+
+func (f *benchmarkJSONFlag) Set(v string) error {
+	switch strings.ToLower(v) {
+	case "true", "1", "":
+		f.stdout, f.path = true, ""
+	case "false", "0":
+		f.stdout, f.path = false, ""
+	default:
+		// Anything else is the deprecated path form: cobra/pflag reject an
+		// unparsable bool value outright for a real BoolVar, but this flag's
+		// whole point is accepting that value for one more release.
+		f.stdout, f.path = false, v
+	}
+	return nil
+}
+
+func (f *benchmarkJSONFlag) Type() string { return "string" }
+
+// resolveBenchmarkOutput reports whether results should be encoded to
+// stdout, which file (if any) they should be written to, and whether the
+// deprecated string form of --json was used (so the caller can warn on
+// stderr). An explicit --json-file always wins the file path when both are
+// set, so there is never ambiguity about which one is authoritative.
+//
+// leftoverArgs handles the space-separated legacy invocation specifically:
+// `--json <path>` was the *only* form the old StringVar ever accepted, but
+// pflag's NoOptDefVal (needed so bare --json parses as a bool) has no way to
+// bind a value from a separate token — `--json /tmp/out.json` parses as
+// bare --json (true) with "/tmp/out.json" left over as a positional
+// argument. benchmarkCmd defines no positional arguments of its own, so a
+// single leftover argument immediately following a bare --json can only be
+// this legacy form; treat it exactly like the deprecated --json=<path> form
+// rather than silently dropping it and switching to stdout JSON.
+func resolveBenchmarkOutput(jsonFlag benchmarkJSONFlag, jsonFile string, leftoverArgs []string) (stdout bool, file string, deprecated bool) {
+	if jsonFlag.stdout && jsonFlag.path == "" && len(leftoverArgs) == 1 {
+		jsonFlag = benchmarkJSONFlag{path: leftoverArgs[0]}
+	}
+	file = jsonFile
+	if jsonFlag.path != "" {
+		deprecated = true
+		if file == "" {
+			file = jsonFlag.path
+		}
+	}
+	return jsonFlag.stdout, file, deprecated
+}
+
 var benchmarkCmd = &cobra.Command{
 	Use:   "benchmark",
 	Short: "Run a local Samantha benchmark",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		cmd.SilenceUsage = true
 		cfg, err := config.Load()
 		if err != nil {
 			return err
+		}
+
+		// The deprecated string form of --json still writes a file — same
+		// as before — but a caller who also passed --json-file wins outright
+		// (no ambiguity about which path is authoritative).
+		stdout, jsonFile, deprecated := resolveBenchmarkOutput(benchmarkJSON, benchmarkJSONFile, args)
+		if deprecated {
+			fmt.Fprintln(os.Stderr, "--json <path> is deprecated; use --json-file <path>")
 		}
 
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -91,12 +167,18 @@ var benchmarkCmd = &cobra.Command{
 			return err
 		}
 
-		printBenchmarkSummary(results)
-		if benchmarkJSONOutput != "" {
-			if err := writeBenchmarkJSON(benchmarkJSONOutput, results); err != nil {
+		if stdout {
+			if err := encodeJSON(cmd, results); err != nil {
+				return fmt.Errorf("encode benchmark results: %w", err)
+			}
+		} else {
+			printBenchmarkSummary(results)
+		}
+		if jsonFile != "" {
+			if err := writeBenchmarkJSON(jsonFile, results); err != nil {
 				return err
 			}
-			fmt.Printf("\n  %s %s\n\n", okStyle.Render("Wrote benchmark JSON to"), benchmarkJSONOutput)
+			fmt.Printf("\n  %s %s\n\n", okStyle.Render("Wrote benchmark JSON to"), jsonFile)
 		}
 
 		return benchmarkExitErr(results)
@@ -105,7 +187,9 @@ var benchmarkCmd = &cobra.Command{
 
 func init() {
 	benchmarkCmd.Flags().StringArrayVar(&benchmarkPrompts, "prompt", nil, "Benchmark prompt (repeatable)")
-	benchmarkCmd.Flags().StringVar(&benchmarkJSONOutput, "json", "", "Write benchmark results to a JSON file")
+	benchmarkCmd.Flags().Var(&benchmarkJSON, "json", "Print benchmark results as a JSON array on stdout (a path value is deprecated — use --json-file)")
+	benchmarkCmd.Flags().Lookup("json").NoOptDefVal = "true"
+	benchmarkCmd.Flags().StringVar(&benchmarkJSONFile, "json-file", "", "Write benchmark results to a JSON file")
 	benchmarkCmd.Flags().IntVar(&benchmarkIterations, "iterations", 1, "Number of times to run each benchmark prompt")
 	benchmarkCmd.Flags().StringArrayVar(&benchmarkAudioFixtures, "audio-fixture", nil, "WAV fixture for STT benchmarking (repeatable)")
 	benchmarkCmd.Flags().StringArrayVar(&benchmarkFullTurnFixtures, "full-turn-fixture", nil, "WAV fixture driven through the full voice turn: capture, VAD, STT, brain, TTS (repeatable)")

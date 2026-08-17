@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,11 @@ import (
 	"github.com/lancekrogers/samantha/pkg/voiceagent/brain"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
+
+// ErrSessionNotFound is returned by Store.Delete when no session with the
+// given id exists, so both the CLI and the serve handler can map it (e.g. to
+// a 404) without string-matching an error message.
+var ErrSessionNotFound = errors.New("session: not found")
 
 // Session represents a saved conversation.
 type Session struct {
@@ -260,4 +266,44 @@ func (st *Store) Latest() *Session {
 	}
 	newest := sessions[0]
 	return &newest
+}
+
+// Delete removes the session file <id>.json and its pre-compact backup
+// (<id>.pre-compact.json, best-effort — its absence is not an error).
+// Returns ErrSessionNotFound when no session with that id exists. id is
+// validated before any filesystem call: a path separator or a ".." segment
+// is rejected outright, so a delete verb can never escape the store's
+// directory no matter what a caller passes.
+func (st *Store) Delete(id string) error {
+	if err := validateSessionID(id); err != nil {
+		return err
+	}
+
+	path := filepath.Join(st.dir, id+".json")
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return ErrSessionNotFound
+		}
+		return fmt.Errorf("delete session %s: %w", id, err)
+	}
+
+	backup := filepath.Join(st.dir, id+".pre-compact.json")
+	if err := os.Remove(backup); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete session %s backup: %w", id, err)
+	}
+	return nil
+}
+
+// validateSessionID rejects an id that could escape the store's directory
+// once joined into a path: empty, containing a path separator (either OS's,
+// regardless of the host), or containing ".." anywhere. Checked before any
+// filesystem call, not after.
+func validateSessionID(id string) error {
+	if id == "" {
+		return fmt.Errorf("session: empty id")
+	}
+	if strings.ContainsAny(id, `/\`) || strings.Contains(id, "..") {
+		return fmt.Errorf("session: invalid id %q", id)
+	}
+	return nil
 }

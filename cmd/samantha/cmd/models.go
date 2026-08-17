@@ -3,10 +3,12 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -19,6 +21,8 @@ var (
 	modelsStatusJSON  bool
 	modelsStatusScope scopeFlags
 	modelsEnsureScope scopeFlags
+	modelsEnsureJSON  bool
+	modelsEnsureTier  string
 	modelsCleanUnused bool
 	modelsCleanDryRun bool
 	modelsCleanYes    bool
@@ -68,6 +72,71 @@ var modelsStatusCmd = &cobra.Command{
 	},
 }
 
+// qwenTierStatusRows returns one additive AssetStatus row per known Qwen3-TTS
+// model tier (0.6b, 1.7b), reusing the already-computed native inspection so
+// the coarse "tts.qwen3.native" row and these per-tier rows never disagree.
+// A tier not in native.TiersReady is reported missing; when the package
+// itself is not installed at all (both TiersReady/TiersMissing empty), every
+// tier's Missing path falls back to the package root, matching the coarse
+// row's own behaviour. nativeURL is the configured qwen_tts_native_url, used
+// only to compute the fail-closed detail for a missing 1.7b tier.
+func qwenTierStatusRows(native managedqwen.NativeStatus, nativeURL string) []config.AssetStatus {
+	packageAbsent := len(native.TiersReady) == 0 && len(native.TiersMissing) == 0
+	tiers := []string{managedqwen.DefaultModelTier, managedqwen.Tier1_7B}
+
+	rows := make([]config.AssetStatus, 0, len(tiers))
+	for _, tier := range tiers {
+		installed := false
+		for _, ready := range native.TiersReady {
+			if ready == tier {
+				installed = true
+				break
+			}
+		}
+		row := config.AssetStatus{
+			ID:        "tts.qwen3.tier." + tier,
+			Name:      "Qwen3-TTS model tier " + tier,
+			Provider:  managedqwen.ProviderName,
+			Mode:      "customvoice",
+			Kind:      config.AssetKindTTS,
+			Installed: installed,
+		}
+		if !installed {
+			if packageAbsent {
+				row.Missing = []string{native.Root}
+			} else {
+				// Flat lab layout (qwen/native.go's tierReady fallback, the
+				// path every published release actually uses):
+				// <ModelDir>/qwen3-tts-<tier>-f16.gguf — never a per-tier
+				// subdirectory. A first cut of this row fabricated
+				// ModelDir/<tier>/, a path no layout has ever written to;
+				// found by adversarial review.
+				row.Missing = []string{filepath.Join(native.ModelDir, fmt.Sprintf("qwen3-tts-%s-f16.gguf", tier))}
+			}
+			row.Detail = qwenTierFailClosedDetail(nativeURL, tier)
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// qwenTierFailClosedDetail explains why a missing tier cannot simply be
+// re-fetched: today only the pinned default release is known to ship 0.6b
+// alone, so 1.7b fails closed unless a multi-tier tarball is configured
+// (mirrors the fail-fast check in qwen.EnsureNative). Every other case
+// returns "" — a plain "missing" is self-explanatory.
+func qwenTierFailClosedDetail(configuredURL, tier string) string {
+	if tier != managedqwen.Tier1_7B {
+		return ""
+	}
+	defaultURL, _ := managedqwen.DefaultNativeRelease()
+	effective := managedqwen.ResolveNativeURL(configuredURL)
+	if effective == "" || effective == defaultURL {
+		return "not in the pinned release — set qwen_tts_native_url to a multi-tier tarball"
+	}
+	return ""
+}
+
 // runModelsStatus resolves the asset manifest for cfg and req and reports each
 // asset's installed/missing state under modelsDir. It is read-only and never
 // downloads.
@@ -93,6 +162,7 @@ func runModelsStatus(cmd *cobra.Command, cfg *config.Config, modelsDir string, r
 			Provider: managedqwen.ProviderName, Mode: "customvoice", Kind: config.AssetKindTTS,
 			Installed: native.Installed, Missing: missing,
 		})
+		statuses = append(statuses, qwenTierStatusRows(native, cfg.QwenTTSNativeURL)...)
 	}
 
 	out := cmd.OutOrStdout()
@@ -138,13 +208,190 @@ var modelsEnsureCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runModelsEnsure(cmd, cfg, modelsEnsureScope.request(cfg), config.EnsureRuntimeAssets)
+		tier, err := resolveEnsureTier(modelsEnsureTier, modelsEnsureScope.tts)
+		if err != nil {
+			return err
+		}
+		req := modelsEnsureScope.request(cfg)
+
+		if modelsEnsureJSON {
+			return runModelsEnsureJSON(cmd, cfg, req, tier)
+		}
+
+		if err := runModelsEnsure(cmd, cfg, req, config.EnsureRuntimeAssets); err != nil {
+			return err
+		}
+		if tier == "" {
+			return nil
+		}
+		out := cmd.OutOrStdout()
+		started := map[string]bool{}
+		progress := func(name string, pct float64) {
+			if !started[name] {
+				started[name] = true
+				fmt.Fprintf(out, "  downloading %s ...\n", name)
+			}
+		}
+		if err := ensureQwenTierFn(cmd.Context(), cfg, tier, progress); err != nil {
+			return fmt.Errorf("models ensure (tier %s): %w", tier, err)
+		}
+		fmt.Fprintf(out, "  Tier %s ensured.\n", tier)
+		return nil
 	},
+}
+
+// resolveEnsureTier validates and normalizes the --tier flag. It is only
+// valid together with --tts (an explicit tier install without persisting it
+// to config, mirroring the TUI's install-then-save flow); empty means "no
+// explicit tier install requested".
+func resolveEnsureTier(tier string, ttsScope bool) (string, error) {
+	if strings.TrimSpace(tier) == "" {
+		return "", nil
+	}
+	if !ttsScope {
+		return "", fmt.Errorf("models ensure: --tier applies to --tts")
+	}
+	return managedqwen.NormalizeModelTier(tier), nil
 }
 
 // ensureAssetsFunc matches config.EnsureRuntimeAssets so tests can observe the
 // request without downloading.
 type ensureAssetsFunc func(ctx context.Context, cfg *config.Config, req config.AssetRequest, onProgress func(name string, pct float64)) error
+
+// ensureAssetsProgressFunc matches config.EnsureRuntimeAssetsProgress so
+// tests can observe per-phase progress without downloading.
+type ensureAssetsProgressFunc func(ctx context.Context, cfg *config.Config, req config.AssetRequest, onProgress func(config.AssetProgress)) error
+
+// ensureRuntimeAssetsProgressFn is the models-ensure --json seam; tests swap
+// it to observe AssetProgress ticks without downloading.
+var ensureRuntimeAssetsProgressFn ensureAssetsProgressFunc = config.EnsureRuntimeAssetsProgress
+
+// ensureQwenTierProgressFn is the AssetProgress-shaped sibling of
+// ensureQwenTierFn, used by the --json ensure path (both the persona-tier
+// loop and an explicit --tier install) so every tick lands on the same NDJSON
+// stream.
+var ensureQwenTierProgressFn = config.EnsureQwenTTSTierProgress
+
+// modelsEnsureDone is the single terminal NDJSON line models ensure --json
+// emits on success.
+type modelsEnsureDone struct {
+	Done      bool     `json:"done"`
+	Installed []string `json:"installed"`
+	Skipped   []string `json:"skipped"`
+	ModelsDir string   `json:"models_dir"`
+	ElapsedMs int64    `json:"elapsed_ms"`
+}
+
+// modelsEnsureFailed is the single terminal NDJSON line models ensure --json
+// emits on failure or cancellation.
+type modelsEnsureFailed struct {
+	Done  bool   `json:"done"`
+	Error string `json:"error"`
+	Asset string `json:"asset"`
+}
+
+// throttleDownloadTicks wraps onProgress so "download"-phase ticks are
+// forwarded only when pct has advanced at least one point or 250ms have
+// passed since the last tick emitted for that asset. Every other phase
+// (start/verify/extract/install/done/skipped) is always forwarded — which
+// already guarantees the first and last tick per asset are never dropped,
+// since those phases bookend every asset's download ticks.
+func throttleDownloadTicks(onProgress func(config.AssetProgress)) func(config.AssetProgress) {
+	type tickState struct {
+		pct float64
+		at  time.Time
+	}
+	last := map[string]tickState{}
+	return func(p config.AssetProgress) {
+		if p.Phase != "download" {
+			delete(last, p.Asset) // the asset's next download tick always fires
+			onProgress(p)
+			return
+		}
+		prev, seen := last[p.Asset]
+		if !seen || p.Pct-prev.pct >= 1 || time.Since(prev.at) >= 250*time.Millisecond {
+			last[p.Asset] = tickState{pct: p.Pct, at: time.Now()}
+			onProgress(p)
+		}
+	}
+}
+
+// runModelsEnsureJSON is the --json form of models ensure: NDJSON progress
+// ticks on stdout (nothing else), exactly one terminal summary line, and a
+// non-zero exit on failure. It mirrors runModelsEnsure's asset/persona-tier
+// flow, plus an explicit tier install when tier is non-empty.
+func runModelsEnsureJSON(cmd *cobra.Command, cfg *config.Config, req config.AssetRequest, tier string) error {
+	start := time.Now()
+	enc := json.NewEncoder(cmd.OutOrStdout())
+
+	var installedOrder, skippedOrder []string
+	seenInstalled := map[string]bool{}
+	seenSkipped := map[string]bool{}
+	var currentAsset string
+
+	track := func(p config.AssetProgress) {
+		_ = enc.Encode(p)
+		switch p.Phase {
+		case "start":
+			currentAsset = p.Asset
+		case "done":
+			currentAsset = ""
+			if !seenInstalled[p.Asset] {
+				seenInstalled[p.Asset] = true
+				installedOrder = append(installedOrder, p.Asset)
+			}
+		case "skipped":
+			currentAsset = ""
+			if !seenSkipped[p.Asset] {
+				seenSkipped[p.Asset] = true
+				skippedOrder = append(skippedOrder, p.Asset)
+			}
+		}
+	}
+	onProgress := throttleDownloadTicks(track)
+
+	ctx := cmd.Context()
+	runErr := ensureRuntimeAssetsProgressFn(ctx, cfg, req, onProgress)
+
+	if runErr == nil && req.NeedTTS {
+		for _, t := range qwenPersonaTiers(cfg) {
+			if err := ensureQwenTierProgressFn(ctx, cfg, t, onProgress); err != nil {
+				runErr = fmt.Errorf("qwen tier %s for personas: %w", t, err)
+				break
+			}
+		}
+	}
+
+	if runErr == nil && tier != "" {
+		runErr = ensureQwenTierProgressFn(ctx, cfg, tier, onProgress)
+	}
+
+	if runErr != nil {
+		errMsg := runErr.Error()
+		if errors.Is(runErr, context.Canceled) {
+			// A cancelled top-level context can surface wrapped in a "download
+			// <asset>: …" prefix depending on which step was in flight; the
+			// contract is the bare sentinel string regardless.
+			errMsg = context.Canceled.Error()
+		}
+		_ = enc.Encode(modelsEnsureFailed{Done: false, Error: errMsg, Asset: currentAsset})
+		return fmt.Errorf("models ensure: %w", runErr)
+	}
+
+	if installedOrder == nil {
+		installedOrder = []string{}
+	}
+	if skippedOrder == nil {
+		skippedOrder = []string{}
+	}
+	return enc.Encode(modelsEnsureDone{
+		Done:      true,
+		Installed: installedOrder,
+		Skipped:   skippedOrder,
+		ModelsDir: config.ModelsDirFrom(cfg),
+		ElapsedMs: time.Since(start).Milliseconds(),
+	})
+}
 
 // runModelsEnsure downloads the missing assets in req for cfg, reporting each
 // asset as it begins and a final status line. It returns an actionable error
@@ -324,6 +571,8 @@ func init() {
 	modelsStatusCmd.Flags().BoolVar(&modelsStatusJSON, "json", false, "Output machine-readable JSON")
 	modelsStatusScope.register(modelsStatusCmd)
 	modelsEnsureScope.register(modelsEnsureCmd)
+	modelsEnsureCmd.Flags().BoolVar(&modelsEnsureJSON, "json", false, "Stream NDJSON progress on stdout, one terminal summary line")
+	modelsEnsureCmd.Flags().StringVar(&modelsEnsureTier, "tier", "", "Install a Qwen3-TTS model tier (0.6b|1.7b) without writing config; requires --tts")
 	modelsCleanCmd.Flags().BoolVar(&modelsCleanUnused, "unused", false, "Select assets not required by the current configuration")
 	modelsCleanCmd.Flags().BoolVar(&modelsCleanDryRun, "dry-run", false, "Preview removable assets without deleting anything")
 	modelsCleanCmd.Flags().BoolVar(&modelsCleanYes, "yes", false, "Delete unused model assets without prompting")

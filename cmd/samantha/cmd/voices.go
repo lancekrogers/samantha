@@ -43,8 +43,12 @@ type voiceJSON struct {
 // with the voice that provider is currently configured to speak marked.
 type voicesJSON struct {
 	Provider    string      `json:"provider"`
+	Source      string      `json:"source"` // "provider" (constructed and queried live) | "static" (compile-time catalog, no provider construction)
 	ActiveVoice string      `json:"active_voice"`
 	Voices      []voiceJSON `json:"voices"`
+	// Languages lists qwen3-tts's supported synthesis languages (independent
+	// of which voice is selected); omitted for every other provider.
+	Languages []string `json:"languages,omitempty"`
 }
 
 func newVoicesCmd() *cobra.Command {
@@ -86,9 +90,25 @@ func voicesCatalog(cmd *cobra.Command) (*voicesJSON, error) {
 	if err != nil {
 		return nil, err
 	}
+	locale, _ := cmd.Flags().GetString("locale")
+	gender, _ := cmd.Flags().GetString("gender")
+
 	if err := requireTTSAssets(cfg); err != nil {
+		// qwen3-tts's 9 CustomVoice presets are model-native, not
+		// install-dependent (tts.StaticVoices), so a fresh machine can still
+		// browse them before running `models ensure --tts`. Every other
+		// provider keeps the original refuse-on-missing contract: --json
+		// must never download, and a live catalog it cannot safely list
+		// without a model on disk is not silently swapped for something
+		// incomplete.
+		if isQwenTTS(cfg.TTSProvider) {
+			if voices, staticErr := tts.StaticVoices(cfg.TTSProvider, locale, gender); staticErr == nil && len(voices) > 0 {
+				return buildVoicesJSON(cfg, voices, "static"), nil
+			}
+		}
 		return nil, err
 	}
+
 	provider, cleanup, err := voiceStack.newProvider(cfg)
 	if err != nil {
 		return nil, codedError(codeInvalidProvider, "init TTS: %v", err)
@@ -96,12 +116,16 @@ func voicesCatalog(cmd *cobra.Command) (*voicesJSON, error) {
 	if cleanup != nil {
 		defer cleanup()
 	}
+	return buildVoicesJSON(cfg, provider.ListVoices(locale, gender), "provider"), nil
+}
 
-	locale, _ := cmd.Flags().GetString("locale")
-	gender, _ := cmd.Flags().GetString("gender")
+// buildVoicesJSON assembles the voices --json body from an already-filtered
+// voice list and source ("provider" | "static"); Languages is populated for
+// qwen3-tts regardless of source, since it does not vary with it.
+func buildVoicesJSON(cfg *config.Config, voices []tts.Voice, source string) *voicesJSON {
 	active := activeVoiceFor(cfg)
-	out := &voicesJSON{Provider: cfg.TTSProvider, ActiveVoice: active, Voices: []voiceJSON{}}
-	for _, v := range provider.ListVoices(locale, gender) {
+	out := &voicesJSON{Provider: cfg.TTSProvider, Source: source, ActiveVoice: active, Voices: []voiceJSON{}}
+	for _, v := range voices {
 		out.Voices = append(out.Voices, voiceJSON{
 			Name:         v.Name,
 			FriendlyName: v.FriendlyName,
@@ -110,7 +134,10 @@ func voicesCatalog(cmd *cobra.Command) (*voicesJSON, error) {
 			Active:       strings.EqualFold(v.Name, active),
 		})
 	}
-	return out, nil
+	if isQwenTTS(cfg.TTSProvider) {
+		out.Languages = managedqwen.SupportedLanguages()
+	}
+	return out
 }
 
 // voicesConfig loads the config and applies --provider to a copy. Listing a

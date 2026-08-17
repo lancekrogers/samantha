@@ -94,6 +94,8 @@ func runSpeakerTest(ctx context.Context, cfg *config.Config) error {
 	return nil
 }
 
+var providersJSON bool
+
 var providersCmd = &cobra.Command{
 	Use:   "providers",
 	Short: "Show available TTS and STT providers",
@@ -102,58 +104,162 @@ var providersCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-
-		fmt.Println()
-		fmt.Printf("  %s\n", titleStyle.Render("Providers"))
-		fmt.Printf("  %s\n", sectionStyle.Render("Brain:"))
-		brainActive := strings.TrimSpace(cfg.BrainProvider)
-		if brainActive == "" {
-			brainActive = "ollama"
-		}
-		for _, spec := range brain.Providers() {
-			printProvider(brainActive == spec.Name, spec.Name, spec.Description)
-		}
-		if !brainImplemented(brainActive) {
-			fmt.Printf("    %s %s\n", dimStyle.Render("[config]"), dimStyle.Render(brainActive+" — configured but not implemented in this build"))
-		}
-
-		fmt.Println()
-		fmt.Printf("  %s\n", sectionStyle.Render("TTS (text-to-speech):"))
-		ttsActive := cfg.TTSProvider
-		if ttsActive == "" {
-			ttsActive = "kokoro"
-		}
-		for _, spec := range tts.Providers() {
-			printProvider(ttsActive == spec.Name, spec.Name, spec.Description)
-		}
-		if !ttsImplemented(ttsActive) {
-			fmt.Printf("    %s %s\n", dimStyle.Render("[config]"), dimStyle.Render(ttsActive+" — configured but not implemented in this build"))
-		}
-
-		fmt.Println()
-		fmt.Printf("  %s\n", sectionStyle.Render("STT (speech-to-text):"))
-		// Highlight the mode-resolved alias so sherpa + stt_mode=streaming
-		// marks the streaming row; a misconfigured pair falls back to the raw
-		// configured value (doctor reports the error).
-		sttActive := cfg.STTProvider
-		if norm, err := config.NormalizeSTTWithMode(cfg.STTProvider, cfg.STTMode); err == nil {
-			sttActive = norm.Alias
-			if sttActive == "" {
-				sttActive = norm.Provider
-			}
-		}
-		for _, spec := range stt.Providers() {
-			printProvider(sttActive == spec.Name, spec.Name, spec.Description)
-			if detail := sttSpecDetail(spec.Name); detail != "" {
-				fmt.Printf("      %s\n", dimStyle.Render(detail))
-			}
-		}
-		if !sttImplemented(sttActive) {
-			fmt.Printf("    %s %s\n", dimStyle.Render("[config]"), dimStyle.Render(sttActive+" — configured but not implemented in this build"))
-		}
-		fmt.Println()
-		return nil
+		return runProviders(cmd, cfg, providersJSON)
 	},
+}
+
+// providerEntryJSON is one provider row under providers --json.
+type providerEntryJSON struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Detail      string `json:"detail,omitempty"`
+	Active      bool   `json:"active"`
+	Implemented bool   `json:"implemented"`
+}
+
+// providersGroupJSON is the brain/tts group shape under providers --json.
+type providersGroupJSON struct {
+	Active    string              `json:"active"`
+	Providers []providerEntryJSON `json:"providers"`
+}
+
+// sttProvidersGroupJSON is the STT group shape: it additionally carries the
+// raw configured value and the mode-resolved alias's mode, alongside Active
+// (the mode-resolved alias itself) — the same resolution the human path uses.
+type sttProvidersGroupJSON struct {
+	Active     string              `json:"active"`
+	Configured string              `json:"configured"`
+	Mode       string              `json:"mode"`
+	Providers  []providerEntryJSON `json:"providers"`
+}
+
+// providersJSONDoc is the full providers --json document.
+type providersJSONDoc struct {
+	Brain providersGroupJSON    `json:"brain"`
+	TTS   providersGroupJSON    `json:"tts"`
+	STT   sttProvidersGroupJSON `json:"stt"`
+}
+
+// resolveSTTActive mirrors the human providers path: the mode-resolved alias
+// when NormalizeSTTWithMode succeeds (falling back to the bare provider when
+// the alias is empty, i.e. the default), otherwise the raw configured value
+// (doctor reports the underlying error).
+func resolveSTTActive(cfg *config.Config) (active, mode string) {
+	norm, err := config.NormalizeSTTWithMode(cfg.STTProvider, cfg.STTMode)
+	if err != nil {
+		return cfg.STTProvider, ""
+	}
+	active = norm.Alias
+	if active == "" {
+		active = norm.Provider
+	}
+	return active, norm.Mode
+}
+
+// buildProvidersJSON builds the providers --json document for cfg. It is
+// read-only and offline: every input comes from the compiled-in provider
+// spec tables and cfg, never from a constructed provider or a network call.
+func buildProvidersJSON(cfg *config.Config) providersJSONDoc {
+	brainActive := strings.TrimSpace(cfg.BrainProvider)
+	if brainActive == "" {
+		brainActive = "ollama"
+	}
+	brainEntries := make([]providerEntryJSON, 0, len(brain.Providers()))
+	for _, spec := range brain.Providers() {
+		brainEntries = append(brainEntries, providerEntryJSON{
+			Name: spec.Name, Description: spec.Description,
+			Active: spec.Name == brainActive, Implemented: brainImplemented(spec.Name),
+		})
+	}
+
+	ttsActive := cfg.TTSProvider
+	if ttsActive == "" {
+		ttsActive = "kokoro"
+	}
+	ttsEntries := make([]providerEntryJSON, 0, len(tts.Providers()))
+	for _, spec := range tts.Providers() {
+		ttsEntries = append(ttsEntries, providerEntryJSON{
+			Name: spec.Name, Description: spec.Description,
+			Active: spec.Name == ttsActive, Implemented: ttsImplemented(spec.Name),
+		})
+	}
+
+	sttActive, sttMode := resolveSTTActive(cfg)
+	sttEntries := make([]providerEntryJSON, 0, len(stt.Providers()))
+	for _, spec := range stt.Providers() {
+		sttEntries = append(sttEntries, providerEntryJSON{
+			Name: spec.Name, Description: spec.Description, Detail: sttSpecDetail(spec.Name),
+			Active: spec.Name == sttActive, Implemented: sttImplemented(spec.Name),
+		})
+	}
+
+	return providersJSONDoc{
+		Brain: providersGroupJSON{Active: brainActive, Providers: brainEntries},
+		TTS:   providersGroupJSON{Active: ttsActive, Providers: ttsEntries},
+		STT: sttProvidersGroupJSON{
+			Active: sttActive, Configured: cfg.STTProvider, Mode: sttMode, Providers: sttEntries,
+		},
+	}
+}
+
+// runProviders reports the brain/TTS/STT providers compiled into this build,
+// which is active, and (for STT) the mode-resolved alias — read-only and
+// offline in both output forms; --json never constructs a provider.
+func runProviders(cmd *cobra.Command, cfg *config.Config, asJSON bool) error {
+	if asJSON {
+		return encodeJSON(cmd, buildProvidersJSON(cfg))
+	}
+
+	fmt.Println()
+	fmt.Printf("  %s\n", titleStyle.Render("Providers"))
+	fmt.Printf("  %s\n", sectionStyle.Render("Brain:"))
+	brainActive := strings.TrimSpace(cfg.BrainProvider)
+	if brainActive == "" {
+		brainActive = "ollama"
+	}
+	for _, spec := range brain.Providers() {
+		printProvider(brainActive == spec.Name, spec.Name, spec.Description)
+	}
+	if !brainImplemented(brainActive) {
+		fmt.Printf("    %s %s\n", dimStyle.Render("[config]"), dimStyle.Render(brainActive+" — configured but not implemented in this build"))
+	}
+
+	fmt.Println()
+	fmt.Printf("  %s\n", sectionStyle.Render("TTS (text-to-speech):"))
+	ttsActive := cfg.TTSProvider
+	if ttsActive == "" {
+		ttsActive = "kokoro"
+	}
+	for _, spec := range tts.Providers() {
+		printProvider(ttsActive == spec.Name, spec.Name, spec.Description)
+	}
+	if !ttsImplemented(ttsActive) {
+		fmt.Printf("    %s %s\n", dimStyle.Render("[config]"), dimStyle.Render(ttsActive+" — configured but not implemented in this build"))
+	}
+
+	fmt.Println()
+	fmt.Printf("  %s\n", sectionStyle.Render("STT (speech-to-text):"))
+	// Highlight the mode-resolved alias so sherpa + stt_mode=streaming
+	// marks the streaming row; a misconfigured pair falls back to the raw
+	// configured value (doctor reports the error).
+	sttActive := cfg.STTProvider
+	if norm, err := config.NormalizeSTTWithMode(cfg.STTProvider, cfg.STTMode); err == nil {
+		sttActive = norm.Alias
+		if sttActive == "" {
+			sttActive = norm.Provider
+		}
+	}
+	for _, spec := range stt.Providers() {
+		printProvider(sttActive == spec.Name, spec.Name, spec.Description)
+		if detail := sttSpecDetail(spec.Name); detail != "" {
+			fmt.Printf("      %s\n", dimStyle.Render(detail))
+		}
+	}
+	if !sttImplemented(sttActive) {
+		fmt.Printf("    %s %s\n", dimStyle.Render("[config]"), dimStyle.Render(sttActive+" — configured but not implemented in this build"))
+	}
+	fmt.Println()
+	return nil
 }
 
 var resumeCmd = &cobra.Command{
@@ -338,6 +444,7 @@ func ttsVoiceCatalog(provider string) ([]string, error) {
 
 func init() {
 	personaVoiceCatalogFn = ttsVoiceCatalog
+	providersCmd.Flags().BoolVar(&providersJSON, "json", false, "Output machine-readable JSON")
 
 	rootCmd.AddCommand(testCmd)
 	rootCmd.AddCommand(newVoicesCmd())

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/lancekrogers/grok-go-sdk/pkg/grok"
 
@@ -117,7 +118,7 @@ func (g *GrokBrain) refreshPrompts(onWarn func(string)) {
 
 func (g *GrokBrain) ThinkStream(ctx context.Context, input string, streamOpts StreamOptions) (*Stream, error) {
 	g.refreshPrompts(streamOpts.OnPromptWarn)
-	g.history = append(g.history, Turn{Role: "user", Content: input, Speaker: streamOpts.Speaker})
+	g.history = append(g.history, Turn{Role: "user", Content: input, Speaker: streamOpts.Speaker, At: time.Now().UTC()})
 
 	out := make(chan string, 8)
 	done := make(chan StreamResult, 1)
@@ -147,7 +148,7 @@ func (g *GrokBrain) ThinkStream(ctx context.Context, input string, streamOpts St
 			done <- StreamResult{Err: finErr}
 			return
 		}
-		g.history = append(g.history, Turn{Role: "samantha", Content: response})
+		g.history = append(g.history, Turn{Role: "samantha", Content: response, At: time.Now().UTC()})
 		g.trimHistory()
 		done <- StreamResult{}
 	}()
@@ -224,7 +225,7 @@ func (g *GrokBrain) ThinkFull(ctx context.Context, input string, streamOpts Stre
 	// Same append-then-roll-back contract as Claude: the prompt comes from
 	// history, and a turn that never answered must not leave its input behind.
 	restore := len(g.history)
-	g.history = append(g.history, Turn{Role: "user", Content: input, Speaker: streamOpts.Speaker})
+	g.history = append(g.history, Turn{Role: "user", Content: input, Speaker: streamOpts.Speaker, At: time.Now().UTC()})
 
 	resuming := g.sessionID != ""
 	response, err := g.thinkFullAttempt(ctx, streamOpts)
@@ -241,7 +242,7 @@ func (g *GrokBrain) ThinkFull(ctx context.Context, input string, streamOpts Stre
 		return "", err
 	}
 
-	g.history = append(g.history, Turn{Role: "samantha", Content: response})
+	g.history = append(g.history, Turn{Role: "samantha", Content: response, At: time.Now().UTC()})
 	g.trimHistory()
 
 	return response, nil
