@@ -14,18 +14,31 @@ var configCmd = &cobra.Command{
 	Use:   "config [key] [value]",
 	Short: "View or set configuration values",
 	Args:  cobra.MaximumNArgs(2),
+	// Overrides the root hook on purpose, for every config subcommand: reading
+	// or writing a setting must not seed prompt files or run the persona
+	// migration that config.Load performs, both of which write to the install
+	// root. `config get` in particular is contractually read-only. On a load
+	// failure the built-in defaults are reported, with a warning on stderr so
+	// --json stdout stays a single clean object.
+	PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+		if _, err := config.LoadRaw(); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: config load failed, reporting defaults: %v\n", err)
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
+		out := cmd.OutOrStdout()
 		switch len(args) {
 		case 0:
 			// Show all config
-			fmt.Printf("\n  %s\n", titleStyle.Render("Samantha Configuration"))
-			fmt.Printf("  %s\n\n", dimStyle.Render("Config file: "+config.ConfigFile()))
+			fmt.Fprintf(out, "\n  %s\n", titleStyle.Render("Samantha Configuration"))
+			fmt.Fprintf(out, "  %s\n\n", dimStyle.Render("Config file: "+config.ConfigFile()))
 			for _, key := range config.AllKeys() {
 				val := config.Get(key)
 				display := maskSecret(key, fmt.Sprint(val))
-				fmt.Printf("  %s %s %s\n", keyStyle.Render(key), dimStyle.Render("="), valueStyle.Render(display))
+				fmt.Fprintf(out, "  %s %s %s\n", keyStyle.Render(key), dimStyle.Render("="), valueStyle.Render(display))
 			}
-			fmt.Println()
+			fmt.Fprintln(out)
 		case 1:
 			// Show one value
 			val := config.Get(args[0])
@@ -33,13 +46,13 @@ var configCmd = &cobra.Command{
 				return fmt.Errorf("unknown key: %s", args[0])
 			}
 			display := maskSecret(args[0], fmt.Sprint(val))
-			fmt.Printf("  %s %s %s\n", keyStyle.Render(args[0]), dimStyle.Render("="), valueStyle.Render(display))
+			fmt.Fprintf(out, "  %s %s %s\n", keyStyle.Render(args[0]), dimStyle.Render("="), valueStyle.Render(display))
 		case 2:
 			// Set value
 			if err := config.ValidateAndSet(args[0], args[1]); err != nil {
 				return err
 			}
-			fmt.Printf("  %s %s %s %s\n", dimStyle.Render("Set"), keyStyle.Render(args[0]), dimStyle.Render("="), valueStyle.Render(maskSecret(args[0], args[1])))
+			fmt.Fprintf(out, "  %s %s %s %s\n", dimStyle.Render("Set"), keyStyle.Render(args[0]), dimStyle.Render("="), valueStyle.Render(maskSecret(args[0], args[1])))
 		}
 		return nil
 	},
@@ -116,5 +129,6 @@ func maskSecret(key, value string) string {
 
 func init() {
 	configCmd.AddCommand(newConfigMigrateCmd(config.Load, config.ConfigFile))
+	configCmd.AddCommand(newConfigSchemaCmd(), newConfigGetCmd(), newConfigSetCmd())
 	rootCmd.AddCommand(configCmd)
 }

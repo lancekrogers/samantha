@@ -433,6 +433,38 @@ func (o *OllamaBrain) newChatRequest(messages []api.Message, tools api.Tools) *a
 	return req
 }
 
+// Think levels ollama_think accepts beyond the boolean forms.
+const (
+	thinkLow    = "low"
+	thinkMedium = "medium"
+	thinkHigh   = "high"
+	thinkMax    = "max"
+)
+
+// ThinkLevels are the canonical ollama_think values a picker should offer, in
+// increasing order of effort. The parser also accepts off/0/no and on/1/yes as
+// aliases of the two booleans; those are understood, not offered.
+//
+// It is the source of truth for the ollama_think setting: a level the parser
+// gains is invisible to Settings until it is listed here.
+func ThinkLevels() []string {
+	return []string{"false", "true", thinkLow, thinkMedium, thinkHigh, thinkMax}
+}
+
+// ThinkLevelAccepted reports whether ollamaThinkValue understands value. It
+// exists so the settings schema can offer only values the parser honors —
+// an unknown value silently disables thinking, which would be invisible in a
+// picker.
+func ThinkLevelAccepted(value string) bool {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "", "false", "off", "0", "no", "true", "on", "1", "yes",
+		thinkLow, thinkMedium, thinkHigh, thinkMax:
+		return true
+	default:
+		return false
+	}
+}
+
 // ollamaThinkValue maps config ollama_think onto the Ollama API Think field.
 // Voice defaults to false: thinking models (qwen3.x) often fill
 // message.thinking and leave message.content empty, which the harness turns
@@ -445,7 +477,7 @@ func ollamaThinkValue(raw string) *api.ThinkValue {
 		return &api.ThinkValue{Value: false}
 	case "true", "on", "1", "yes":
 		return &api.ThinkValue{Value: true}
-	case "low", "medium", "high", "max":
+	case thinkLow, thinkMedium, thinkHigh, thinkMax:
 		return &api.ThinkValue{Value: s}
 	default:
 		fmt.Fprintf(os.Stderr, "samantha: invalid ollama_think %q; using false (speakable content only)\n", raw)

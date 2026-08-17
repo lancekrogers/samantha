@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "error": {
+    "code": "invalid_value",
+    "message": "vad_silence_duration expects a number between 0.1 and 3, got \"fast\"",
+    "key": "vad_silence_duration"
+  }
+}

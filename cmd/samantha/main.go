@@ -12,8 +12,10 @@ import (
 )
 
 func main() {
-	// fang renders styled errors itself, so just exit non-zero.
+	// fang renders styled errors itself, so only the exit status is decided
+	// here. Commands that distinguish "called wrong" from "operation failed"
+	// (the config surface) carry their own status; everything else exits 1.
 	if err := cmd.Execute(); err != nil {
-		os.Exit(1)
+		os.Exit(cmd.ExitCode(err))
 	}
 }

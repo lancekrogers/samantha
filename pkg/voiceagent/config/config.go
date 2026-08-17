@@ -4,9 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -166,6 +163,10 @@ type Config struct {
 	// internal/skills.
 	SkillsEnabled bool   `mapstructure:"skills_enabled"`
 	SkillsDir     string `mapstructure:"skills_dir"`
+	// SkillsDisabled names skills the agent ignores even when discovery finds
+	// them. Declared here so the settings schema is complete; the screens that
+	// toggle skills own the enforcement path.
+	SkillsDisabled []string `mapstructure:"skills_disabled"`
 
 	// General
 	Language        string `mapstructure:"language"`
@@ -201,14 +202,19 @@ type MeetingRouteConfig struct {
 }
 
 // MeetingDestinationConfig is one named export target.
+//
+// The yaml tags matter only on the way out: `config set` writes a destination
+// list back through the YAML encoder, and without omitempty every entry would
+// carry the fields its type does not use (tags: [], path: "", folder: "") into
+// the user's file. Reading still goes through viper and the mapstructure tags.
 type MeetingDestinationConfig struct {
-	ID       string   `mapstructure:"id"`
-	Type     string   `mapstructure:"type"` // campaign | file | apple-notes
-	Campaign string   `mapstructure:"campaign"`
-	Capture  string   `mapstructure:"capture"` // meeting | intent | note (default meeting → import-meeting)
-	Tags     []string `mapstructure:"tags"`
-	Path     string   `mapstructure:"path"`
-	Folder   string   `mapstructure:"folder"`
+	ID       string   `mapstructure:"id" yaml:"id"`
+	Type     string   `mapstructure:"type" yaml:"type"` // campaign | file | apple-notes
+	Campaign string   `mapstructure:"campaign" yaml:"campaign,omitempty"`
+	Capture  string   `mapstructure:"capture" yaml:"capture,omitempty"` // meeting | intent | note (default meeting → import-meeting)
+	Tags     []string `mapstructure:"tags" yaml:"tags,omitempty"`
+	Path     string   `mapstructure:"path" yaml:"path,omitempty"`
+	Folder   string   `mapstructure:"folder" yaml:"folder,omitempty"`
 }
 
 // SpeakerConfig mirrors speaker.Config for viper unmarshal (keeps config package
@@ -374,6 +380,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("backchannel_enabled", false)
 	v.SetDefault("skills_enabled", true)
 	v.SetDefault("skills_dir", "")
+	v.SetDefault("skills_disabled", []string{})
 	v.SetDefault("models_dir", DefaultModelsDir())
 
 	v.SetDefault("language", "en-US")
@@ -458,6 +465,74 @@ func LoadRaw() (*Config, error) {
 	return loadLocked()
 }
 
+// envBindings is the only place a config key is bound to an environment
+// variable. Explicit bindings only — no AutomaticEnv, which would bind every
+// key to its bare upper-cased name and let unrelated vars like the standard
+// LANGUAGE leak into (and get persisted over) config values. The settings
+// schema reports a key's binding from this same map, so `config schema` can
+// never claim a binding the loader does not honor.
+var envBindings = map[string]string{
+	"tts_provider":                "TTS_PROVIDER",
+	"voice_fallback_provider":     "VOICE_FALLBACK_PROVIDER",
+	"tts_voice":                   "TTS_VOICE",
+	"qwen_tts_binary":             "QWEN_TTS_BINARY",
+	"qwen_tts_model":              "QWEN_TTS_MODEL",
+	"qwen_tts_timeout":            "QWEN_TTS_TIMEOUT",
+	"qwen_tts_mode":               "QWEN_TTS_MODE",
+	"qwen_tts_voice":              "QWEN_TTS_VOICE",
+	"qwen_tts_language":           "QWEN_TTS_LANGUAGE",
+	"qwen_tts_instruction":        "QWEN_TTS_INSTRUCTION",
+	"qwen_tts_reference_audio":    "QWEN_TTS_REFERENCE_AUDIO",
+	"qwen_tts_reference_text":     "QWEN_TTS_REFERENCE_TEXT",
+	"qwen_tts_consent":            "QWEN_TTS_CONSENT",
+	"qwen_tts_model_tier":         "QWEN_TTS_MODEL_TIER",
+	"qwen_tts_native_url":         "QWEN_TTS_NATIVE_URL",
+	"qwen_tts_native_sha256":      "QWEN_TTS_NATIVE_SHA256",
+	"output_device":               "OUTPUT_DEVICE",
+	"stt_provider":                "STT_PROVIDER",
+	"input_device":                "INPUT_DEVICE",
+	"stt_mode":                    "STT_MODE",
+	"sherpa_streaming_model":      "SHERPA_STREAMING_MODEL",
+	"whisper_model":               "WHISPER_MODEL",
+	"whispercpp_binary":           "WHISPERCPP_BINARY",
+	"whispercpp_model":            "WHISPERCPP_MODEL",
+	"whispercpp_model_path":       "WHISPERCPP_MODEL_PATH",
+	"models_dir":                  "MODELS_DIR",
+	"brain_provider":              "BRAIN_PROVIDER",
+	"grok_model":                  "GROK_MODEL",
+	"ollama_model":                "OLLAMA_MODEL",
+	"ollama_embedding_model":      "OLLAMA_EMBEDDING_MODEL",
+	"ollama_host":                 "OLLAMA_HOST",
+	"ollama_num_ctx":              "OLLAMA_NUM_CTX",
+	"ollama_keep_alive":           "OLLAMA_KEEP_ALIVE",
+	"ollama_think":                "OLLAMA_THINK",
+	"claude_max_session_tokens":   "CLAUDE_MAX_SESSION_TOKENS",
+	"claude_session_warn_tokens":  "CLAUDE_SESSION_WARN_TOKENS",
+	"voice_tools_enabled":         "VOICE_TOOLS_ENABLED",
+	"tool_command_timeout":        "TOOL_COMMAND_TIMEOUT",
+	"persona":                     "PERSONA",
+	"compact_prompt":              "COMPACT_PROMPT",
+	"active_persona":              "ACTIVE_PERSONA",
+	"prompts_dir":                 "PROMPTS_DIR",
+	"backchannel_enabled":         "BACKCHANNEL_ENABLED",
+	"skills_enabled":              "SKILLS_ENABLED",
+	"skills_dir":                  "SKILLS_DIR",
+	"barge_in_enabled":            "BARGE_IN_ENABLED",
+	"vad_threshold":               "VAD_THRESHOLD",
+	"vad_min_speech_duration":     "VAD_MIN_SPEECH_DURATION",
+	"vad_silence_duration":        "VAD_SILENCE_DURATION",
+	"environment_context_enabled": "ENVIRONMENT_CONTEXT_ENABLED",
+	"voice_frontend_enabled":      "VOICE_FRONTEND_ENABLED",
+	"tui_mouse_enabled":           "TUI_MOUSE_ENABLED",
+	"calibre_enabled":             "CALIBRE_ENABLED",
+	"calibre_library_path":        "CALIBRE_LIBRARY_PATH",
+	"calibredb_binary":            "CALIBREDB_BINARY",
+	"calibre_convert_binary":      "CALIBRE_CONVERT_BINARY",
+	"calibre_prefer_format":       "CALIBRE_PREFER_FORMAT",
+
+	"skills_similarity_threshold": "SKILLS_SIMILARITY_THRESHOLD",
+}
+
 // loadLocked reads and unmarshals config while holding mu.
 func loadLocked() (*Config, error) {
 	mu.Lock()
@@ -466,72 +541,9 @@ func loadLocked() (*Config, error) {
 	v.SetConfigFile(configFile)
 	v.SetConfigType("yaml")
 
-	// Explicit env bindings only — no AutomaticEnv, which would bind every
-	// key to its bare upper-cased name and let unrelated vars like the
-	// standard LANGUAGE leak into (and get persisted over) config values.
-	bindings := map[string]string{
-		"tts_provider":                "TTS_PROVIDER",
-		"voice_fallback_provider":     "VOICE_FALLBACK_PROVIDER",
-		"tts_voice":                   "TTS_VOICE",
-		"qwen_tts_binary":             "QWEN_TTS_BINARY",
-		"qwen_tts_model":              "QWEN_TTS_MODEL",
-		"qwen_tts_timeout":            "QWEN_TTS_TIMEOUT",
-		"qwen_tts_mode":               "QWEN_TTS_MODE",
-		"qwen_tts_voice":              "QWEN_TTS_VOICE",
-		"qwen_tts_language":           "QWEN_TTS_LANGUAGE",
-		"qwen_tts_instruction":        "QWEN_TTS_INSTRUCTION",
-		"qwen_tts_reference_audio":    "QWEN_TTS_REFERENCE_AUDIO",
-		"qwen_tts_reference_text":     "QWEN_TTS_REFERENCE_TEXT",
-		"qwen_tts_consent":            "QWEN_TTS_CONSENT",
-		"qwen_tts_model_tier":         "QWEN_TTS_MODEL_TIER",
-		"qwen_tts_native_url":         "QWEN_TTS_NATIVE_URL",
-		"qwen_tts_native_sha256":      "QWEN_TTS_NATIVE_SHA256",
-		"output_device":               "OUTPUT_DEVICE",
-		"stt_provider":                "STT_PROVIDER",
-		"input_device":                "INPUT_DEVICE",
-		"stt_mode":                    "STT_MODE",
-		"sherpa_streaming_model":      "SHERPA_STREAMING_MODEL",
-		"whisper_model":               "WHISPER_MODEL",
-		"whispercpp_binary":           "WHISPERCPP_BINARY",
-		"whispercpp_model":            "WHISPERCPP_MODEL",
-		"whispercpp_model_path":       "WHISPERCPP_MODEL_PATH",
-		"models_dir":                  "MODELS_DIR",
-		"brain_provider":              "BRAIN_PROVIDER",
-		"grok_model":                  "GROK_MODEL",
-		"ollama_model":                "OLLAMA_MODEL",
-		"ollama_embedding_model":      "OLLAMA_EMBEDDING_MODEL",
-		"ollama_host":                 "OLLAMA_HOST",
-		"ollama_num_ctx":              "OLLAMA_NUM_CTX",
-		"ollama_keep_alive":           "OLLAMA_KEEP_ALIVE",
-		"ollama_think":                "OLLAMA_THINK",
-		"claude_max_session_tokens":   "CLAUDE_MAX_SESSION_TOKENS",
-		"claude_session_warn_tokens":  "CLAUDE_SESSION_WARN_TOKENS",
-		"voice_tools_enabled":         "VOICE_TOOLS_ENABLED",
-		"tool_command_timeout":        "TOOL_COMMAND_TIMEOUT",
-		"persona":                     "PERSONA",
-		"compact_prompt":              "COMPACT_PROMPT",
-		"active_persona":              "ACTIVE_PERSONA",
-		"prompts_dir":                 "PROMPTS_DIR",
-		"backchannel_enabled":         "BACKCHANNEL_ENABLED",
-		"skills_enabled":              "SKILLS_ENABLED",
-		"skills_dir":                  "SKILLS_DIR",
-		"barge_in_enabled":            "BARGE_IN_ENABLED",
-		"vad_threshold":               "VAD_THRESHOLD",
-		"vad_min_speech_duration":     "VAD_MIN_SPEECH_DURATION",
-		"vad_silence_duration":        "VAD_SILENCE_DURATION",
-		"environment_context_enabled": "ENVIRONMENT_CONTEXT_ENABLED",
-		"voice_frontend_enabled":      "VOICE_FRONTEND_ENABLED",
-		"tui_mouse_enabled":           "TUI_MOUSE_ENABLED",
-		"calibre_enabled":             "CALIBRE_ENABLED",
-		"calibre_library_path":        "CALIBRE_LIBRARY_PATH",
-		"calibredb_binary":            "CALIBREDB_BINARY",
-		"calibre_convert_binary":      "CALIBRE_CONVERT_BINARY",
-		"calibre_prefer_format":       "CALIBRE_PREFER_FORMAT",
-	}
-	for key, env := range bindings {
+	for key, env := range envBindings {
 		_ = v.BindEnv(key, env)
 	}
-	_ = v.BindEnv("skills_similarity_threshold", "SKILLS_SIMILARITY_THRESHOLD")
 
 	// Read config file (missing file is OK — use defaults)
 	if err := v.ReadInConfig(); err != nil {
@@ -700,55 +712,22 @@ func save() error {
 	return v.WriteConfigAs(configFile)
 }
 
-// SetAndSave updates a value and persists to disk.
+// SetAndSave updates one already-typed value and persists it.
+//
+// It is a thin wrapper over SetKeyFile so the TUI writes through the same
+// surgical writer as the CLI and the Mac app: only the changed key's line is
+// rewritten, and comments and key order survive.
 func SetAndSave(key string, value any) error {
-	mu.Lock()
-	defer mu.Unlock()
-	v.Set(key, value)
-	return save()
+	_, err := SetKeyFileValue(key, value)
+	return err
 }
 
-// ValidateAndSet coerces raw to the type of key's current effective value and
-// persists it, rejecting unknown keys so a typo can't corrupt the config file.
+// ValidateAndSet coerces raw by key's schema type and persists it, rejecting
+// unknown keys so a typo can't corrupt the config file. The name is kept for
+// the callers that already use it; the behaviour is SetKeyFile's.
 func ValidateAndSet(key, raw string) error {
-	key = strings.ToLower(key)
-	keys := AllKeys()
-	if !slices.Contains(keys, key) {
-		sort.Strings(keys)
-		return fmt.Errorf("unknown config key %q (valid keys: %s)", key, strings.Join(keys, ", "))
-	}
-	value, err := coerceValue(Get(key), raw)
-	if err != nil {
-		return fmt.Errorf("invalid value for %s: %w", key, err)
-	}
-	return SetAndSave(key, value)
-}
-
-// coerceValue converts raw to the type of current so persisted values keep
-// unmarshalling into Config.
-func coerceValue(current any, raw string) (any, error) {
-	switch current.(type) {
-	case bool:
-		b, err := strconv.ParseBool(raw)
-		if err != nil {
-			return nil, fmt.Errorf("expected true or false, got %q", raw)
-		}
-		return b, nil
-	case int, int64:
-		n, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("expected an integer, got %q", raw)
-		}
-		return n, nil
-	case float64:
-		f, err := strconv.ParseFloat(raw, 64)
-		if err != nil {
-			return nil, fmt.Errorf("expected a number, got %q", raw)
-		}
-		return f, nil
-	default:
-		return raw, nil
-	}
+	_, err := SetKeyFile(key, raw)
+	return err
 }
 
 // AllSettings returns all config as a map.

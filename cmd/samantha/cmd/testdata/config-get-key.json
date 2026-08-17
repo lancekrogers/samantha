@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "key": "vad_silence_duration",
+  "value": 0.8,
+  "type": "float",
+  "source": "file",
+  "restart_required": true,
+  "overridden_by_persona": false
+}
