@@ -3,7 +3,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -212,73 +211,4 @@ func printPersonaShow(cmd *cobra.Command, r *personaResultJSON) {
 		}
 	}
 	fmt.Fprintln(out)
-}
-
-func personaUseCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "use <id>",
-		Short: "Set the active persona and persist it",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load()
-			if err != nil {
-				return err
-			}
-			if err := persona.Use(cfg, args[0]); err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "  Active persona: %s (%s)\n", cfg.ActivePersona, cfg.AgentName)
-			if cfg.TTSProvider != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "  TTS provider:   %s\n", cfg.TTSProvider)
-			}
-			voice := cfg.TTSVoice
-			if strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), "qwen3-tts") && cfg.QwenTTSVoice != "" {
-				voice = cfg.QwenTTSVoice
-			}
-			if voice != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "  Voice:          %s\n", voice)
-			}
-			return nil
-		},
-	}
-	return cmd
-}
-
-func personaCreateCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "create <display-name>",
-		Short: "Create a new persona and make it active",
-		Long: `Create a user persona under personas/<id>/persona.yaml.
-
-The id is derived from the display name (kebab-case). TTS provider/voice are
-cloned from the current config. Pass --prompt to write a custom system prompt
-document under prompts/persona/<id>.yaml (supports {agent_name}).`,
-		Args: cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load()
-			if err != nil {
-				return err
-			}
-			name := strings.TrimSpace(strings.Join(args, " "))
-			prompt, _ := cmd.Flags().GetString("prompt")
-			p, err := persona.CreateAndUseWithOpts(cfg, persona.CreateOpts{
-				DisplayName:  name,
-				SystemPrompt: prompt,
-			})
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "  Created persona: %s (%s)\n", p.DisplayName, p.ID)
-			if p.TTS.Provider != "" || p.TTS.Voice != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "  TTS: %s %s\n", p.TTS.Provider, p.TTS.Voice)
-			}
-			if strings.TrimSpace(prompt) != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "  System prompt: prompts/persona/%s.yaml\n", p.ID)
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "  Active now. Edit in TUI (Personas → e) or under %s\n", persona.Dir())
-			return nil
-		},
-	}
-	cmd.Flags().String("prompt", "", "Custom system prompt body (writes prompts/persona/<id>.yaml)")
-	return cmd
 }

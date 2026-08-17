@@ -115,6 +115,16 @@ type personaResultJSON struct {
 	Applies appliesJSON      `json:"applies"`
 }
 
+// personaUseJSON is the body of `persona use --json`. Its brain/tts values are
+// the effective config after the switch, not the profile's own fields, so a
+// caller sees what the agent will actually run with.
+type personaUseJSON struct {
+	ActivePersona string        `json:"active_persona"`
+	DisplayName   string        `json:"display_name"`
+	Brain         persona.Brain `json:"brain"`
+	TTS           persona.TTS   `json:"tts"`
+}
+
 // personaDeleteJSON is the body of `persona delete --json`.
 type personaDeleteJSON struct {
 	Deleted string   `json:"deleted"`

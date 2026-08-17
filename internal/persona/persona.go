@@ -366,6 +366,14 @@ func applyBrain(cfg *config.Config, b Brain) {
 	}
 }
 
+// ModelForProvider reads the app-level model key a brain provider routes to.
+// Exported because every surface that reports a persona's effective stack
+// (persona use --json, GET /v1/personas) needs the same provider→key mapping
+// Apply uses, and claude deliberately has no key at all.
+func ModelForProvider(cfg *config.Config, provider string) string {
+	return modelForProvider(cfg, provider)
+}
+
 // modelForProvider reads the app-level model key for a brain provider.
 func modelForProvider(cfg *config.Config, provider string) string {
 	if cfg == nil {
