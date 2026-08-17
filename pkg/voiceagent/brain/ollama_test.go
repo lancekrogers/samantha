@@ -217,6 +217,42 @@ func TestWarmupFiresMinimalRequest(t *testing.T) {
 	if !bytes.Contains(body, []byte(`"num_predict":1`)) {
 		t.Errorf("warmup must cap generation with num_predict; body=%s", body)
 	}
+	if !bytes.Contains(body, []byte(`"num_ctx":8192`)) {
+		t.Errorf("warmup must pin a safe num_ctx, not the model default; body=%s", body)
+	}
+}
+
+func TestWarmupUsesConfiguredNumCtx(t *testing.T) {
+	var count int
+	var bodies [][]byte
+	o := &OllamaBrain{
+		client: recordingStub(t, &count, &bodies),
+		model:  "kimi-k2.6-distilled:IQ4_XS",
+		cfg:    &config.Config{OllamaNumCtx: 4096, OllamaThink: "false"},
+	}
+
+	o.Warmup(context.Background())
+
+	if count != 1 {
+		t.Fatalf("want 1 warmup request, got %d", count)
+	}
+	if !bytes.Contains(bodies[0], []byte(`"num_ctx":4096`)) {
+		t.Fatalf("warmup num_ctx = %s, want 4096", bodies[0])
+	}
+}
+
+func TestWarmupSkipsWhenContextCanceled(t *testing.T) {
+	var count int
+	var bodies [][]byte
+	o := &OllamaBrain{client: recordingStub(t, &count, &bodies), model: "m"}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	o.Warmup(ctx)
+
+	if count != 0 {
+		t.Fatalf("canceled warmup must not hit Ollama, got %d requests", count)
+	}
 }
 
 // TestSystemPrefixStableAcrossTurns guards the KV-cache reuse property: the

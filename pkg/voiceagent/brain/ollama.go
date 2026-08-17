@@ -471,22 +471,48 @@ func modelRejectedTools(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "does not support tools")
 }
 
+// defaultWarmupNumCtx is used when ollama_num_ctx is unset (0). Omitting
+// num_ctx lets Ollama size the runner to the model's advertised window —
+// 262144 on qwen3.8 / kimi — and a supervisor restart loop pins those
+// runners until keep_alive expires. That is not a leak; it is a reload.
+const defaultWarmupNumCtx = 8192
+
+func (o *OllamaBrain) warmupNumCtx() int {
+	if o.cfg != nil && o.cfg.OllamaNumCtx > 0 {
+		return o.cfg.OllamaNumCtx
+	}
+	return defaultWarmupNumCtx
+}
+
 // Warmup preloads the model into memory with a minimal request so the user's
 // first real turn doesn't pay the cold-start (model-load) cost. Best-effort:
 // it caps generation, sends no tools, and ignores all errors so it can never
 // block or disrupt startup.
+//
+// Always send an explicit num_ctx. A "hi" with no options inherits the
+// model default (262k on current qwen/kimi tags) and is what filled RAM
+// when serve was being respawned.
 func (o *OllamaBrain) Warmup(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
 	stream := false
 	think := "false"
 	if o.cfg != nil {
 		think = o.cfg.OllamaThink
 	}
+	numCtx := o.warmupNumCtx()
+	fmt.Fprintf(os.Stderr, "samantha: warmup model=%s num_ctx=%d\n", o.model, numCtx)
 	req := &api.ChatRequest{
-		Model:    o.model,
-		Messages: []api.Message{{Role: "user", Content: "hi"}},
-		Stream:   &stream,
-		Think:    ollamaThinkValue(think),
-		Options:  map[string]any{"num_predict": 1},
+		Model:     o.model,
+		Messages:  []api.Message{{Role: "user", Content: "hi"}},
+		Stream:    &stream,
+		Think:     ollamaThinkValue(think),
+		KeepAlive: o.keepAlive,
+		Options: map[string]any{
+			"num_predict": 1,
+			"num_ctx":     numCtx,
+		},
 	}
 	_ = o.client.Chat(ctx, req, func(api.ChatResponse) error { return nil })
 }

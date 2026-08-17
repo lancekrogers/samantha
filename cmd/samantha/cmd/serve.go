@@ -240,10 +240,6 @@ func runServe(cfg *config.Config) error {
 	// Keep pipeline streaming options in lockstep with the serve policy.
 	p.VoiceToolsEnabled = cfg.RemoteToolsEnabled
 
-	if w, ok := p.Brain.(brain.Warmer); ok {
-		go w.Warmup(ctx)
-	}
-
 	ref := &sessionRef{sess: session.New(cfg.BrainProvider, serveModelName(cfg))}
 	p.OnTurn = func() {
 		if err := ref.save(p.Brain.History()); err != nil {
@@ -359,6 +355,12 @@ func runServe(cfg *config.Config) error {
 				if len(extras) > 0 {
 					fmt.Fprintln(serveHumanOut, dimStyle.Render("  Also listening: https://"+strings.Join(extras, "  https://")))
 				}
+			}
+			// Warm after the listener is up so a bind/config failure cannot
+			// pin an Ollama runner, and a supervisor waiting on the ready
+			// banner does not SIGTERM a warmup that already started.
+			if w, ok := p.Brain.(brain.Warmer); ok {
+				go w.Warmup(ctx)
 			}
 			if !serveNoMDNS {
 				if disc, err := netapi.StartDiscovery(listenAddr, creds.Fingerprint, cfg.AgentName); err != nil {

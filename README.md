@@ -293,7 +293,10 @@ the turn is reported as `completed (degraded)` rather than dropped silently.
 
 For Ollama, Activity records per-request `prefill N tok · gen M tok`. Prefill
 tracks the size of your new turn, not the whole transcript, and is bounded by
-`ollama_num_ctx` (default `8192`); `ollama_keep_alive` (default `10m`) keeps the
+`ollama_num_ctx` (default `8192`). Startup warmup sends that same `num_ctx` —
+omitting it lets Ollama allocate the model's full window (262k on qwen3/kimi)
+and a serve restart loop will pin a runner per spawn. `ollama_keep_alive`
+(default `10m`) keeps the
 model resident between turns; `ollama_think` (default `false`) disables
 chain-of-thought on thinking models so voice turns get speakable `content`
 instead of empty replies after a private think block.
