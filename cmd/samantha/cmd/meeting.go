@@ -33,6 +33,8 @@ func newMeetingCmd() *cobra.Command {
 		Short: "Record meeting transcripts (STT only, no assistant)",
 	}
 	cmd.AddCommand(newMeetingRecordCmd())
+	cmd.AddCommand(newMeetingListCmd())
+	cmd.AddCommand(newMeetingShowCmd())
 	cmd.AddCommand(newMeetingRouteCmd())
 	cmd.AddCommand(newMeetingAnalyzeCmd())
 	return cmd
