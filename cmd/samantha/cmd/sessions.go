@@ -125,12 +125,25 @@ type sessionTranscriptJSON struct {
 func sessionTranscriptFrom(sess *session.Session) sessionTranscriptJSON {
 	turns := make([]sessionTurnJSON, 0, len(sess.Turns))
 	for _, t := range sess.Turns {
-		turns = append(turns, sessionTurnJSON{Role: t.Role, Text: t.Content, Speaker: t.Speaker})
+		turns = append(turns, sessionTurnJSON{Role: t.Role, Text: t.Content, At: turnAtJSON(t.At), Speaker: t.Speaker})
 	}
 	return sessionTranscriptJSON{
 		Schema: sessionSchemaV1, ID: sess.ID, CreatedAt: sess.CreatedAt, UpdatedAt: sess.UpdatedAt,
 		Provider: sess.Provider, Model: sess.Model, Summary: sess.Summary, Turns: turns,
 	}
+}
+
+// turnAtJSON converts a brain.Turn's At into the show --json "at" value: nil
+// (JSON null) for the zero time — every turn that predates SES-A5's per-turn
+// stamping, or came from a provider that does not stamp it yet — otherwise
+// its RFC3339 UTC string. Explicit rather than relying on At's own
+// `omitempty` tag, which encoding/json never honours for a zero struct.
+func turnAtJSON(at time.Time) *string {
+	if at.IsZero() {
+		return nil
+	}
+	s := at.UTC().Format(time.RFC3339)
+	return &s
 }
 
 func runSessionsShow(cmd *cobra.Command, args []string) error {

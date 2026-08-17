@@ -207,6 +207,38 @@ func TestSessionsShowJSONAtKeyAlwaysPresent(t *testing.T) {
 	}
 }
 
+// A turn stamped by SES-A5 (brain.Turn.At) must show up as a real RFC3339
+// string, not null — null is only for turns that predate stamping.
+func TestSessionsShowJSONEmitsRealTimestampForStampedTurns(t *testing.T) {
+	dir := sessionsEnv(t)
+	stamped := time.Date(2026, 8, 16, 23, 14, 55, 0, time.UTC)
+	writeSessionFile(t, dir, session.Session{
+		ID: "20260101-000000-aaaa", UpdatedAt: time.Now(),
+		Turns: []brain.Turn{
+			{Role: "user", Content: "hi", At: stamped},
+			{Role: "assistant", Content: "hello"}, // predates stamping: At is zero
+		},
+	})
+
+	out, err := runSessionsCmd(t, "show", "20260101-000000-aaaa", "--json")
+	if err != nil {
+		t.Fatalf("sessions show --json error = %v (out %s)", err, out)
+	}
+	var got sessionTranscriptJSON
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decoding %q: %v", out, err)
+	}
+	if len(got.Turns) != 2 {
+		t.Fatalf("turns = %+v, want 2", got.Turns)
+	}
+	if got.Turns[0].At == nil || *got.Turns[0].At != "2026-08-16T23:14:55Z" {
+		t.Errorf("turn[0].at = %v, want the stamped RFC3339 string", got.Turns[0].At)
+	}
+	if got.Turns[1].At != nil {
+		t.Errorf("turn[1].at = %v, want null (unstamped turn)", got.Turns[1].At)
+	}
+}
+
 func TestSessionsShowUnknownIDJSON(t *testing.T) {
 	sessionsEnv(t)
 

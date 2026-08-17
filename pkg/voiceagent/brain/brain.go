@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/lancekrogers/claude-code-go/pkg/claude"
@@ -86,6 +87,14 @@ type Turn struct {
 	// assistant turns and unlabeled single-user chat. Optional on disk so
 	// older sessions load unchanged.
 	Speaker string `json:"speaker,omitempty"`
+	// At is when this turn was appended to history, stamped at every
+	// append site in this provider and in grok.go. It is the zero value
+	// (and so does not survive a round-trip through this field's own
+	// omitempty — encoding/json never omits a zero struct) for every turn
+	// that predates this field or came from a provider that does not stamp
+	// it (ollama, for now); session.go's own JSON consumers treat a zero
+	// time as "no timestamp" explicitly rather than trusting omitempty here.
+	At time.Time `json:"at,omitempty"`
 }
 
 // New creates a Brain instance.
@@ -187,7 +196,7 @@ func (b *Brain) refreshPrompts(onWarn func(string)) {
 
 func (b *Brain) ThinkStream(ctx context.Context, input string, streamOpts StreamOptions) (*Stream, error) {
 	b.refreshPrompts(streamOpts.OnPromptWarn)
-	b.history = append(b.history, Turn{Role: "user", Content: input, Speaker: streamOpts.Speaker})
+	b.history = append(b.history, Turn{Role: "user", Content: input, Speaker: streamOpts.Speaker, At: time.Now().UTC()})
 
 	out := make(chan string, 8)
 	done := make(chan StreamResult, 1)
@@ -217,7 +226,7 @@ func (b *Brain) ThinkStream(ctx context.Context, input string, streamOpts Stream
 			done <- StreamResult{Err: finErr}
 			return
 		}
-		b.history = append(b.history, Turn{Role: "samantha", Content: response})
+		b.history = append(b.history, Turn{Role: "samantha", Content: response, At: time.Now().UTC()})
 		b.trimHistory()
 		// Checked after the turn lands so a reset never costs the turn in flight.
 		b.enforceSessionBudget()
@@ -415,7 +424,7 @@ func (b *Brain) ThinkFull(ctx context.Context, input string, streamOpts StreamOp
 	// the call — and rolled back if the turn never produced an answer, or the
 	// unanswered prompt stays in the transcript as a user turn.
 	restore := len(b.history)
-	b.history = append(b.history, Turn{Role: "user", Content: input, Speaker: streamOpts.Speaker})
+	b.history = append(b.history, Turn{Role: "user", Content: input, Speaker: streamOpts.Speaker, At: time.Now().UTC()})
 
 	resuming := b.sessionID != ""
 	response, err := b.thinkFullAttempt(ctx, streamOpts)
@@ -432,7 +441,7 @@ func (b *Brain) ThinkFull(ctx context.Context, input string, streamOpts StreamOp
 		return "", err
 	}
 
-	b.history = append(b.history, Turn{Role: "samantha", Content: response})
+	b.history = append(b.history, Turn{Role: "samantha", Content: response, At: time.Now().UTC()})
 	b.trimHistory()
 	// ClaudeResult has no usage fields, so estimate the replayed session size
 	// from local history and enforce the same cap as ThinkStream. Stream turns

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/lancekrogers/claude-code-go/pkg/claude"
 	"github.com/lancekrogers/grok-go-sdk/pkg/grok"
@@ -30,14 +31,40 @@ func seededHistory() []Turn {
 	}
 }
 
+// assertHistory checks Role/Content/Speaker only: rollback correctness is
+// this helper's job, not per-turn timestamp behavior (SES-A5 stamps At on
+// every fresh append, so a newly-appended turn's At never equals a bare
+// Turn{} literal's zero value — that is covered separately, in the one
+// subtest where new turns actually land).
 func assertHistory(t *testing.T, got, want []Turn, context string) {
 	t.Helper()
 	if len(got) != len(want) {
 		t.Fatalf("%s: history = %+v, want %+v", context, got, want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		g, w := got[i], want[i]
+		g.At, w.At = time.Time{}, time.Time{}
+		if g != w {
 			t.Fatalf("%s: history[%d] = %+v, want %+v", context, i, got[i], want[i])
+		}
+	}
+}
+
+// assertFreshlyStamped checks that history[from:to] all carry a non-zero,
+// recent At — the direct SES-A5 assertion assertHistory deliberately skips.
+func assertFreshlyStamped(t *testing.T, history []Turn, from, to int) {
+	t.Helper()
+	if to > len(history) {
+		t.Fatalf("assertFreshlyStamped: to=%d exceeds history length %d", to, len(history))
+	}
+	for i := from; i < to; i++ {
+		at := history[i].At
+		if at.IsZero() {
+			t.Errorf("history[%d].At is zero, want it stamped", i)
+			continue
+		}
+		if age := time.Since(at); age < 0 || age > 5*time.Second {
+			t.Errorf("history[%d].At = %v, want a timestamp from just now", i, at)
 		}
 	}
 }
@@ -96,6 +123,7 @@ func TestThinkFullRollsBackHistoryOnError(t *testing.T) {
 			Turn{Role: "user", Content: "COMPACT"},
 			Turn{Role: "samantha", Content: "the summary"},
 		), "after successful ThinkFull")
+		assertFreshlyStamped(t, b.History(), 2, 4)
 	})
 }
 
@@ -134,6 +162,7 @@ func TestGrokThinkFullRollsBackHistoryOnError(t *testing.T) {
 			Turn{Role: "user", Content: "COMPACT"},
 			Turn{Role: "samantha", Content: "the summary"},
 		), "after successful ThinkFull")
+		assertFreshlyStamped(t, g.History(), 2, 4)
 	})
 }
 

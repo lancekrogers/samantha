@@ -309,3 +309,55 @@ func TestStoreDeleteIsomorphicWithListedID(t *testing.T) {
 		t.Fatalf("List() = %+v after Delete, want empty", got)
 	}
 }
+
+// --- brain.Turn.At round-trip (SES-A5) ---
+
+// A session file written before per-turn stamping landed has no "at" key at
+// all; it must still decode cleanly, with At left at its zero value.
+func TestLoadOldSessionWithoutAtKeyDecodes(t *testing.T) {
+	dir := t.TempDir()
+	const raw = `{
+  "id": "20260101-000000-aaaa",
+  "created_at": "2026-01-01T00:00:00Z",
+  "updated_at": "2026-01-01T00:00:05Z",
+  "provider": "ollama",
+  "model": "qwen3:8b",
+  "turns": [{"role":"user","content":"hi"},{"role":"assistant","content":"hello"}],
+  "summary": "hi"
+}`
+	if err := os.WriteFile(filepath.Join(dir, "20260101-000000-aaaa.json"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := NewStore(dir).Load("20260101-000000-aaaa")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(s.Turns) != 2 {
+		t.Fatalf("turns = %+v, want 2", s.Turns)
+	}
+	for i, turn := range s.Turns {
+		if !turn.At.IsZero() {
+			t.Errorf("turn[%d].At = %v, want the zero value (no \"at\" key on disk)", i, turn.At)
+		}
+	}
+}
+
+// A turn with a real At round-trips through Save/Load unchanged.
+func TestSaveLoadRoundTripPreservesAt(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	s := New("ollama", "qwen3:8b")
+	stamped := time.Date(2026, 8, 16, 23, 14, 55, 0, time.UTC)
+	if err := store.Save(s, []brain.Turn{{Role: "user", Content: "hi", At: stamped}}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := store.Load(s.ID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(loaded.Turns) != 1 || !loaded.Turns[0].At.Equal(stamped) {
+		t.Fatalf("loaded turns = %+v, want At = %v", loaded.Turns, stamped)
+	}
+}
