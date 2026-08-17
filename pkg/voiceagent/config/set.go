@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Error codes reported by the single-key writer. They are wire values: the CLI
@@ -160,22 +162,15 @@ func writeKeyToFile(spec KeySpec, value any) (SetResult, error) {
 	defer fileWriteMu.Unlock()
 
 	path := ConfigFile()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return SetResult{}, writeFailed(spec.Key, "creating config dir", err)
-	}
-	release, err := acquireConfigLock(path)
+	release, err := openConfigForWrite(path, spec.Key)
 	if err != nil {
 		return SetResult{}, err
 	}
 	defer release()
 
-	data, existed, err := readOptionalFile(path)
+	data, existed, doc, err := readConfigDocument(path, spec.Key)
 	if err != nil {
-		return SetResult{}, &SetError{Code: CodeParseFailed, Key: spec.Key, Message: err.Error(), cause: err}
-	}
-	doc, err := migrationYAMLDocument(data)
-	if err != nil {
-		return SetResult{}, &SetError{Code: CodeParseFailed, Key: spec.Key, Message: err.Error(), cause: err}
+		return SetResult{}, err
 	}
 	mapping := doc.Content[0]
 
@@ -199,28 +194,63 @@ func writeKeyToFile(spec KeySpec, value any) (SetResult, error) {
 		return result, nil
 	}
 
-	patched, err := patchConfigSource(data, doc, segments, value)
-	if err != nil {
-		return SetResult{}, writeFailed(spec.Key, "updating config", err)
-	}
-	// Refresh the in-process value from the patched text rather than from the Go
-	// value: a later Get in this process then sees exactly what a fresh Load
-	// would, including for structured keys whose Go type has no JSON tags. It is
-	// also the writer's own check that the edit it made still parses and still
-	// holds what it was asked to write — a text edit that did not land is
-	// refused here instead of being saved over the user's config.
-	refreshed, err := verifyPatched(patched, segments, value)
-	if err != nil {
-		return SetResult{}, writeFailed(spec.Key, "updating config", err)
-	}
-	backupPath, err := backupAndReplace(path, patched, existed, spec.Key)
+	backupPath, err := patchAndReplace(data, doc, segments, value, path, existed, spec)
 	if err != nil {
 		return SetResult{}, err
 	}
-	Set(spec.Key, refreshed)
 	result.BackupPath = backupPath
 	result.Changed = true
 	return result, nil
+}
+
+// patchAndReplace edits the source text, checks the edit landed, writes it, and
+// refreshes the in-process value.
+//
+// The refresh comes from the patched text rather than from the Go value, so a
+// later Get in this process sees exactly what a fresh Load would, including for
+// structured keys whose Go type has no JSON tags. That same read is the writer's
+// own check that what it produced still parses and still holds what it was asked
+// to write — a text edit that did not land is refused here instead of being
+// saved over the user's config.
+func patchAndReplace(data []byte, doc *yaml.Node, segments []string, value any, path string, existed bool, spec KeySpec) (string, error) {
+	patched, err := patchConfigSource(data, doc, segments, value)
+	if err != nil {
+		return "", writeFailed(spec.Key, "updating config", err)
+	}
+	refreshed, err := verifyPatched(patched, segments, value)
+	if err != nil {
+		return "", writeFailed(spec.Key, "updating config", err)
+	}
+	backupPath, err := backupAndReplace(path, patched, existed, spec.Key)
+	if err != nil {
+		return "", err
+	}
+	Set(spec.Key, refreshed)
+	return backupPath, nil
+}
+
+// openConfigForWrite makes sure the install root exists and takes the advisory
+// lock both write verbs share, so two processes queue rather than interleave.
+func openConfigForWrite(path, key string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, writeFailed(key, "creating config dir", err)
+	}
+	return acquireConfigLock(path)
+}
+
+// readConfigDocument reads config.yaml and parses it, reporting whether the
+// file was there at all. A file that does not parse is a parse_failed error
+// naming the key the caller was trying to write, not a bare I/O message.
+func readConfigDocument(path, key string) ([]byte, bool, *yaml.Node, error) {
+	data, existed, err := readOptionalFile(path)
+	if err != nil {
+		return nil, false, nil, &SetError{Code: CodeParseFailed, Key: key, Message: err.Error(), cause: err}
+	}
+	doc, err := migrationYAMLDocument(data)
+	if err != nil {
+		return nil, false, nil, &SetError{Code: CodeParseFailed, Key: key, Message: err.Error(), cause: err}
+	}
+	return data, existed, doc, nil
 }
 
 // verifyPatched re-reads the patched text and returns the value it now holds at

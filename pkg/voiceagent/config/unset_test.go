@@ -209,3 +209,39 @@ func TestSchemaAllowsEmptyMatchesTheDefault(t *testing.T) {
 		t.Error("stt_mode must be allows_empty — it is the key the acceptance run could not clear")
 	}
 }
+
+// `value` in the shared set/unset payload means "what this key holds now". For
+// a key with an environment binding that is the exported value, not the schema
+// default — reporting the default there would tell a front end the agent is
+// about to use something it is not.
+func TestUnsetKeyFileReportsTheEffectiveValueNotJustTheDefault(t *testing.T) {
+	t.Run("no environment binding set: the schema default", func(t *testing.T) {
+		newInstall(t, "stt_mode: cli\n")
+		result, err := UnsetKeyFile("stt_mode")
+		if err != nil {
+			t.Fatalf("UnsetKeyFile: %v", err)
+		}
+		if result.Value != "" {
+			t.Errorf("value = %v, want the empty default", result.Value)
+		}
+	})
+
+	t.Run("an exported binding wins", func(t *testing.T) {
+		t.Setenv("STT_MODE", "streaming")
+		newInstall(t, "stt_mode: cli\n")
+
+		result, err := UnsetKeyFile("stt_mode")
+		if err != nil {
+			t.Fatalf("UnsetKeyFile: %v", err)
+		}
+		if result.OldValue != "cli" {
+			t.Errorf("old_value = %v, want what the file held", result.OldValue)
+		}
+		if result.Value != "streaming" {
+			t.Errorf("value = %v, want the exported STT_MODE the key now resolves to", result.Value)
+		}
+		if got := Source("stt_mode"); got != SourceEnv {
+			t.Errorf("source = %q, want %q", got, SourceEnv)
+		}
+	})
+}

@@ -2,8 +2,6 @@ package config
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -35,22 +33,15 @@ func UnsetKeyFile(key string) (SetResult, error) {
 	defer fileWriteMu.Unlock()
 
 	path := ConfigFile()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return SetResult{}, writeFailed(spec.Key, "creating config dir", err)
-	}
-	release, err := acquireConfigLock(path)
+	release, err := openConfigForWrite(path, spec.Key)
 	if err != nil {
 		return SetResult{}, err
 	}
 	defer release()
 
-	data, existed, err := readOptionalFile(path)
+	data, existed, doc, err := readConfigDocument(path, spec.Key)
 	if err != nil {
-		return SetResult{}, &SetError{Code: CodeParseFailed, Key: spec.Key, Message: err.Error(), cause: err}
-	}
-	doc, err := migrationYAMLDocument(data)
-	if err != nil {
-		return SetResult{}, &SetError{Code: CodeParseFailed, Key: spec.Key, Message: err.Error(), cause: err}
+		return SetResult{}, err
 	}
 
 	segments := strings.Split(spec.Key, ".")
@@ -72,16 +63,26 @@ func UnsetKeyFile(key string) (SetResult, error) {
 	if err != nil {
 		return SetResult{}, err
 	}
-
-	// The file is the truth again, so it is re-read: a later Get or Source in
-	// this process then reports the default (or the env binding) rather than
-	// the value that was just removed. Best-effort — the write already
-	// succeeded, and the patched document was parsed before it was written.
-	_, _ = LoadRaw()
-
 	result.BackupPath = backupPath
 	result.Changed = true
+	result.Value = effectiveAfterUnset(spec)
 	return result, nil
+}
+
+// effectiveAfterUnset re-reads the file — the truth again, now that the key is
+// gone — and reports what the key resolves to. Usually that is the schema
+// default, but a key with an environment binding resolves to the exported
+// value, and reporting the default there would be a lie in a payload whose
+// `value` field means "what this key holds now".
+func effectiveAfterUnset(spec KeySpec) any {
+	if _, err := LoadRaw(); err != nil {
+		// The write already landed and the patched document was parsed before
+		// it was written, so a load failure here says something about the rest
+		// of the file, not about this key. The schema default is the honest
+		// answer when the file cannot be believed.
+		return spec.Default
+	}
+	return Get(spec.Key)
 }
 
 // removeKeyFromFile patches the source text, checks the key really is gone,

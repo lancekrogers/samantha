@@ -205,3 +205,90 @@ func lineAt(lines []string, i int) string {
 	}
 	return "<missing>"
 }
+
+// blockConfig holds a key whose value is a literal block. yaml.v3 reports such
+// a scalar's line as the line its `|` sits on and says nothing about the body,
+// so a writer that trusts the node's line strands the rest of the block in the
+// file. Found by self-review against the built binary.
+const blockConfig = `compact_prompt: |
+  line one
+  line two
+
+  # indented, so part of the block and not a comment
+tts_provider: kokoro
+speaker:
+    live:
+        window_ms: 1500
+`
+
+func TestSetKeyFileReplacesAMultiLineScalarWhole(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		raw  string
+		want string
+	}{
+		{
+			name: "the block itself is replaced, body and all",
+			key:  "compact_prompt",
+			raw:  "hello",
+			want: "compact_prompt: hello\ntts_provider: kokoro\nspeaker:\n    live:\n        window_ms: 1500\n",
+		},
+		{
+			name: "a key after the block is edited without disturbing it",
+			key:  "tts_provider",
+			raw:  "qwen3-tts",
+			want: strings.Replace(blockConfig, "tts_provider: kokoro", "tts_provider: qwen3-tts", 1),
+		},
+		{
+			name: "a key under the block is edited without disturbing it",
+			key:  "speaker.live.window_ms",
+			raw:  "2000",
+			want: strings.Replace(blockConfig, "        window_ms: 1500", "        window_ms: 2000", 1),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := newInstall(t, blockConfig)
+			if _, err := SetKeyFile(tt.key, tt.raw); err != nil {
+				t.Fatalf("SetKeyFile(%s, %s): %v", tt.key, tt.raw, err)
+			}
+			if got := readConfig(t, path); got != tt.want {
+				t.Fatalf("multi-line scalar mishandled:\n%s", diffReport(tt.want, got))
+			}
+		})
+	}
+}
+
+func TestUnsetKeyFileRemovesAMultiLineScalarWhole(t *testing.T) {
+	path := newInstall(t, blockConfig)
+
+	if _, err := UnsetKeyFile("compact_prompt"); err != nil {
+		t.Fatalf("UnsetKeyFile: %v", err)
+	}
+	want := "tts_provider: kokoro\nspeaker:\n    live:\n        window_ms: 1500\n"
+	if got := readConfig(t, path); got != want {
+		t.Fatalf("block body left behind by unset:\n%s", diffReport(want, got))
+	}
+}
+
+// A CRLF file keeps its line endings: the lines this writer does not touch keep
+// theirs because the split leaves the "\r" on them, and the line it writes has
+// to be given the same one or the file comes back with two kinds.
+func TestSetKeyFileKeepsTheFilesLineEndings(t *testing.T) {
+	source := "tts_provider: kokoro\r\nvad_silence_duration: 0.5\r\nspeaker:\r\n    live:\r\n        window_ms: 1500\r\n"
+	path := newInstall(t, source)
+
+	mustSet(t, "vad_silence_duration", "0.8")
+	mustSet(t, "speaker.live.threshold", "0.7")
+
+	got := readConfig(t, path)
+	if strings.Contains(strings.ReplaceAll(got, "\r\n", ""), "\n") {
+		t.Errorf("a bare LF line survived in a CRLF file:\n%q", got)
+	}
+	want := strings.Replace(source, "vad_silence_duration: 0.5", "vad_silence_duration: 0.8", 1)
+	want = strings.Replace(want, "        window_ms: 1500\r\n", "        window_ms: 1500\r\n        threshold: 0.7\r\n", 1)
+	if got != want {
+		t.Fatalf("CRLF document not preserved:\n%s", diffReport(want, got))
+	}
+}

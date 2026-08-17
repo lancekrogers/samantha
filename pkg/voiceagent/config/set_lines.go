@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 
@@ -17,6 +18,9 @@ import (
 // inline comment, and dropped every blank line unless they were faked back in
 // as head comments. The yaml.Node tree is still how the file is parsed,
 // validated and read back; it is no longer how the file is written.
+
+// nullTag is the tag yaml.v3 gives a key written with no value (`speaker:`).
+const nullTag = "!!null"
 
 // patchConfigSource returns source with the value at the dotted path written,
 // changing only the lines that hold that key. doc must be the tree parsed from
@@ -56,19 +60,27 @@ func deleteConfigKey(source []byte, doc *yaml.Node, path []string) ([]byte, bool
 	lines := make([]string, 0, len(src.lines))
 	lines = append(lines, src.lines[:start-1]...)
 	lines = append(lines, src.lines[end:]...)
-	return []byte(strings.Join(lines, "\n")), true, nil
+	return src.join(lines), true, nil
 }
 
 // sourceDoc is config.yaml as text plus the tree parsed from it.
 type sourceDoc struct {
 	lines []string
 	step  int        // the file's own indent width
+	crlf  bool       // the file's own line ending
 	root  *yaml.Node // the top-level mapping
 	nodes []*yaml.Node
 }
 
 func newSourceDoc(source []byte, doc *yaml.Node) *sourceDoc {
-	src := &sourceDoc{lines: strings.Split(string(source), "\n")}
+	src := &sourceDoc{
+		// Splitting on "\n" leaves a CRLF file's "\r" on the end of every line
+		// it keeps, so untouched lines are untouched. The lines this writer
+		// renders have to be given the same ending or the file comes back with
+		// two kinds.
+		lines: strings.Split(string(source), "\n"),
+		crlf:  bytes.Contains(source, []byte("\r\n")),
+	}
 	if doc != nil && len(doc.Content) > 0 {
 		src.root = doc.Content[0]
 	}
@@ -122,14 +134,14 @@ func (s *sourceDoc) locate(path []string) (entryTarget, error) {
 func (s *sourceDoc) replaceEntry(target entryTarget, value any) ([]byte, error) {
 	start, end := s.entrySpan(target.keyNode, target.valueNode)
 	indent := leadingSpace(s.lineAt(start))
-	rendered, err := renderEntry(target.leaf, target.remaining, value, indent, s.step)
+	rendered, err := s.render(target.leaf, target.remaining, value, indent)
 	if err != nil {
 		return nil, err
 	}
 	if len(rendered) == 1 && end == start {
 		rendered[0] += trailingComment(s.lineAt(start))
 	}
-	return []byte(strings.Join(splice(s.lines, start-1, end, rendered), "\n")), nil
+	return s.join(splice(s.lines, start-1, end, rendered)), nil
 }
 
 // insertEntry adds a new entry to a section that already has a body, directly
@@ -137,17 +149,17 @@ func (s *sourceDoc) replaceEntry(target entryTarget, value any) ([]byte, error) 
 // never at whatever indent width the encoder would have chosen.
 func (s *sourceDoc) insertEntry(target entryTarget, value any) ([]byte, error) {
 	at, indent := s.insertionPoint(target.section, target.sectionKey)
-	rendered, err := renderEntry(target.leaf, target.remaining, value, indent, s.step)
+	rendered, err := s.render(target.leaf, target.remaining, value, indent)
 	if err != nil {
 		return nil, err
 	}
-	return []byte(strings.Join(splice(s.lines, at, at, rendered), "\n")), nil
+	return s.join(splice(s.lines, at, at, rendered)), nil
 }
 
 // appendEntry writes into a document with no mapping at all: an empty file, or
 // one holding only comments.
 func (s *sourceDoc) appendEntry(path []string, value any) ([]byte, error) {
-	rendered, err := renderEntry(path[0], path[1:], value, "", s.step)
+	rendered, err := s.render(path[0], path[1:], value, "")
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +167,7 @@ func (s *sourceDoc) appendEntry(path []string, value any) ([]byte, error) {
 	for at > 0 && strings.TrimSpace(s.lines[at-1]) == "" {
 		at--
 	}
-	return []byte(strings.Join(splice(s.lines, at, at, rendered), "\n")), nil
+	return s.join(splice(s.lines, at, at, rendered)), nil
 }
 
 // insertionPoint returns the index to splice at and the indentation to write,
@@ -187,6 +199,11 @@ func (s *sourceDoc) insertionPoint(section, sectionKey *yaml.Node) (int, string)
 func (s *sourceDoc) entrySpan(key, value *yaml.Node) (int, int) {
 	start := key.Line
 	floor := maxLine(key, maxLine(value, start))
+	if value != nil && value.Kind == yaml.ScalarNode && value.Tag != nullTag {
+		// A null value has no body of its own: what follows an empty `speaker:`
+		// is the next key's comment block, which is not this entry's to replace.
+		floor = s.blockEnd(key.Column, floor)
+	}
 	inside := map[*yaml.Node]bool{}
 	markSubtree(key, inside)
 	markSubtree(value, inside)
@@ -204,6 +221,45 @@ func (s *sourceDoc) entrySpan(key, value *yaml.Node) (int, int) {
 		end--
 	}
 	return start, end
+}
+
+// render is renderEntry at this document's indent width and line ending.
+func (s *sourceDoc) render(key string, nested []string, value any, indent string) ([]string, error) {
+	lines, err := renderEntry(key, nested, value, indent, s.step)
+	if err != nil {
+		return nil, err
+	}
+	if s.crlf {
+		for i := range lines {
+			lines[i] += "\r"
+		}
+	}
+	return lines, nil
+}
+
+func (s *sourceDoc) join(lines []string) []byte {
+	return []byte(strings.Join(lines, "\n"))
+}
+
+// blockEnd extends a span over the body of a multi-line scalar. yaml.v3 reports
+// the line a block scalar's `|` sits on and nothing about the lines beneath it,
+// so the body has to be read off the source the way YAML delimits it: every
+// following line indented past the key, blank lines included. Without this the
+// span stopped at the key's own line and a `config set` on such a key left the
+// rest of the block stranded in the file.
+func (s *sourceDoc) blockEnd(keyColumn, from int) int {
+	end := from
+	for line := from + 1; line <= len(s.lines); line++ {
+		text := s.lines[line-1]
+		if strings.TrimSpace(text) == "" {
+			continue // a blank line inside a block does not end it
+		}
+		if len(leadingSpace(text)) < keyColumn {
+			break
+		}
+		end = line
+	}
+	return end
 }
 
 func (s *sourceDoc) lineAt(line int) string {
@@ -302,7 +358,7 @@ func mappingEntry(mapping *yaml.Node, key string) (*yaml.Node, *yaml.Node) {
 // emptySection reports a key with nothing under it: `speaker:`, `speaker: ~`
 // or `speaker: {}`.
 func emptySection(node *yaml.Node) bool {
-	return len(node.Content) == 0 && (node.Tag == "!!null" || node.Kind == yaml.MappingNode)
+	return len(node.Content) == 0 && (node.Tag == nullTag || node.Kind == yaml.MappingNode)
 }
 
 func collectNodes(node *yaml.Node, out []*yaml.Node) []*yaml.Node {
