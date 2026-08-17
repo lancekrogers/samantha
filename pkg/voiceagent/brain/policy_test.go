@@ -67,6 +67,21 @@ func TestSkillsMenuIsDeliberatelyOllamaOnly(t *testing.T) {
 	}
 }
 
+// TestSkillMenuAppliesExportedForCLI guards the exported rename
+// (skillMenuApplies -> SkillMenuApplies): `skills list --json` uses this
+// directly to report provider_supported rather than duplicating the
+// ollama-only rule.
+func TestSkillMenuAppliesExportedForCLI(t *testing.T) {
+	if !SkillMenuApplies(providerOllama) {
+		t.Error("SkillMenuApplies(ollama) = false, want true")
+	}
+	for _, provider := range []string{providerClaude, providerGrok, "unknown"} {
+		if SkillMenuApplies(provider) {
+			t.Errorf("SkillMenuApplies(%q) = true, want false", provider)
+		}
+	}
+}
+
 // Error case: environment grounding is opt-out, and opting out must remove it
 // everywhere rather than only where it happened to be wired.
 func TestEnvironmentContextCanBeDisabledUniformly(t *testing.T) {

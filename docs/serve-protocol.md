@@ -338,6 +338,11 @@ Connect: `wss://host:port/v1/stream?token=...` (or Bearer on non-browser clients
 - `response_ready`, `turn_metrics`, `error`, `info`, `conversation_cleared`
 - speech lifecycle: `generating_voice`, `speaking_started`, `speaking_complete`, …
 
+`user_input` fields: `text` (string) and `speaker` (string, optional) — the
+stable live label for the utterance (`speaker-1`, or the enrolled name once
+seeded). Absent for text turns and when live analysis produced no label; a
+client must not assume the key is present.
+
 **Audio** (only if `audio_output` mode is `stream`):
 
 | `type` | Fields |

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -267,6 +268,182 @@ func TestCatalogMultiDirPrecedence(t *testing.T) {
 	}
 	if _, ok := byName["only-system"]; !ok {
 		t.Error("missing only-system skill from second root")
+	}
+}
+
+func TestDiscoverFirstRootWinsReportsRootAndShadow(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	system := filepath.Join(root, "system")
+	writeSkill(t, filepath.Join(project, "shared"), "shared", "project wins", "project")
+	writeSkill(t, filepath.Join(system, "shared"), "shared", "system loses", "system")
+
+	got, err := Loader{Dirs: []string{project, system}}.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d entries, want 1", len(got))
+	}
+	entry := got[0]
+	if entry.Name != "shared" {
+		t.Fatalf("Name = %q, want shared", entry.Name)
+	}
+	if entry.Description != "project wins" {
+		t.Fatalf("Description = %q, want the winning root's description", entry.Description)
+	}
+	if entry.Root != project {
+		t.Fatalf("Root = %q, want %q (first root wins)", entry.Root, project)
+	}
+	wantShadow := filepath.Join(system, "shared")
+	if len(entry.Shadowed) != 1 || entry.Shadowed[0] != wantShadow {
+		t.Fatalf("Shadowed = %v, want [%q]", entry.Shadowed, wantShadow)
+	}
+}
+
+func TestDiscoverFollowsSkillDirectorySymlinks(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	writeSkill(t, real, "linked", "via symlink", "body")
+	link := filepath.Join(root, "linked")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	scan := t.TempDir()
+	if err := os.Symlink(link, filepath.Join(scan, "linked")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Loader{Dir: scan}.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "linked" {
+		t.Fatalf("Discover() = %v, want the symlinked skill dir accepted", got)
+	}
+}
+
+func TestDiscoverSkipsHiddenDirs(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeSkill(t, filepath.Join(dir, ".git"), "hidden", "must be skipped", "body")
+
+	got, err := Loader{Dir: dir}.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("Discover() = %v, want hidden dir skipped", got)
+	}
+}
+
+func TestDiscoverSkipsMalformedFrontmatter(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	broken := filepath.Join(dir, "broken")
+	if err := os.MkdirAll(broken, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(broken, "SKILL.md"), []byte("no frontmatter here\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeSkill(t, filepath.Join(dir, "ok"), "ok", "fine", "body")
+
+	got, err := Loader{Dir: dir}.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "ok" {
+		t.Fatalf("Discover() = %v, want only the well-formed skill", got)
+	}
+}
+
+func TestDiscoverMissingRootIsNotAnError(t *testing.T) {
+	t.Parallel()
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	got, err := Loader{Dir: missing}.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("missing root: unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("missing root: got %v, want none", got)
+	}
+}
+
+func TestDiscoverMarksDisabledCaseInsensitiveTrimmed(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeSkill(t, filepath.Join(dir, "calibre"), "calibre", "library search", "body")
+	writeSkill(t, filepath.Join(dir, "other"), "other", "unaffected", "body")
+
+	got, err := Loader{Dir: dir, Disabled: []string{"  Calibre  "}}.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+	byName := map[string]Discovered{}
+	for _, d := range got {
+		byName[d.Name] = d
+	}
+	if !byName["calibre"].Disabled {
+		t.Fatalf("calibre.Disabled = false, want true (case/whitespace-insensitive match)")
+	}
+	if byName["other"].Disabled {
+		t.Fatal("other.Disabled = true, want false (not in Disabled list)")
+	}
+}
+
+func TestCatalogOmitsDisabled(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeSkill(t, filepath.Join(dir, "calibre"), "calibre", "library search", "body")
+	writeSkill(t, filepath.Join(dir, "other"), "other", "unaffected", "body")
+
+	got, err := Loader{Dir: dir, Disabled: []string{"calibre"}}.Catalog(context.Background())
+	if err != nil {
+		t.Fatalf("Catalog() error = %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "other" {
+		t.Fatalf("Catalog() = %v, want only the non-disabled skill", names(got))
+	}
+}
+
+// TestCatalogEqualsDiscoverMinusProvenance guards the refactor's whole
+// point: Catalog is Discover reduced to the Skill field, nothing more.
+func TestCatalogEqualsDiscoverMinusProvenance(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	system := filepath.Join(root, "system")
+	writeSkill(t, filepath.Join(project, "shared"), "shared", "project wins", "project")
+	writeSkill(t, filepath.Join(system, "shared"), "shared", "system loses", "system")
+	writeSkill(t, filepath.Join(system, "only-system"), "only-system", "system only", "sys")
+
+	loader := Loader{Dirs: []string{project, system}}
+	discovered, err := loader.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+	catalog, err := loader.Catalog(context.Background())
+	if err != nil {
+		t.Fatalf("Catalog() error = %v", err)
+	}
+	if len(catalog) != len(discovered) {
+		t.Fatalf("Catalog() has %d entries, Discover() has %d", len(catalog), len(discovered))
+	}
+	for i, d := range discovered {
+		if !reflect.DeepEqual(catalog[i], d.Skill) {
+			t.Fatalf("Catalog()[%d] = %+v, want %+v", i, catalog[i], d.Skill)
+		}
 	}
 }
 

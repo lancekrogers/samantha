@@ -1683,3 +1683,34 @@ func TestSetPersonaAckSaysItAppliesToTheNextTurn(t *testing.T) {
 		t.Fatal("expected an ack envelope")
 	}
 }
+
+// TestEncodeEventUserInputSpeaker covers G10: a live-labeled turn carries
+// its speaker on the wire, and an unlabeled/text turn omits the key
+// entirely so existing clients see no shape change.
+func TestEncodeEventUserInputSpeaker(t *testing.T) {
+	labeled := encodeEvent(events.UserInput{Text: "hey", Speaker: "Lance"})
+	if labeled["text"] != "hey" {
+		t.Fatalf("labeled text = %v", labeled["text"])
+	}
+	if labeled["speaker"] != "Lance" {
+		t.Fatalf("labeled speaker = %v, want %q", labeled["speaker"], "Lance")
+	}
+
+	unlabeled := encodeEvent(events.UserInput{Text: "hey"})
+	if unlabeled["text"] != "hey" {
+		t.Fatalf("unlabeled text = %v", unlabeled["text"])
+	}
+	if _, ok := unlabeled["speaker"]; ok {
+		t.Fatalf("unlabeled envelope must omit speaker entirely, got %v", unlabeled)
+	}
+
+	// The omission must also hold through JSON encoding: no "speaker" key
+	// at all, not a null.
+	raw, err := marshalEvent(events.UserInput{Text: "hey"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "speaker") {
+		t.Fatalf("unlabeled wire envelope must not mention speaker: %s", raw)
+	}
+}

@@ -16,6 +16,26 @@ func (f fakeOfflineDiarizer) Process([]float32) []sherpa.OfflineSpeakerDiarizati
 	return f.segments
 }
 
+// TestExpectedLiveRevMatchesEmbeddingRev guards the drift ExpectedLiveRev
+// exists to prevent: listing profiles for staleness (ExpectedLiveRev) and
+// seeding an engine's own embeddings (EmbeddingRev) must always agree.
+func TestExpectedLiveRevMatchesEmbeddingRev(t *testing.T) {
+	cases := []Config{
+		{},
+		{Live: LiveConfig{WindowMS: 1000}},
+		{Live: LiveConfig{WindowMS: 1500}},
+		{Live: LiveConfig{WindowMS: 3000}},
+	}
+	for _, cfg := range cases {
+		sp := cfg.Normalize()
+		engine := &SherpaEngine{windowMS: sp.LiveWindowMS()}
+		want := ExpectedLiveRev(sp)
+		if got := engine.EmbeddingRev(); got != want {
+			t.Fatalf("EmbeddingRev() = %q, want ExpectedLiveRev(%+v) = %q", got, cfg, want)
+		}
+	}
+}
+
 func TestResolveSherpaModelPaths(t *testing.T) {
 	models := t.TempDir()
 	got := ResolveSherpaModelPaths(Config{}, models)

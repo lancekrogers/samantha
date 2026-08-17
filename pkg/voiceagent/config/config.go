@@ -168,6 +168,11 @@ type Config struct {
 	// toggle skills own the enforcement path.
 	SkillsDisabled []string `mapstructure:"skills_disabled"`
 
+	// SkillsDisabled lists skill names turned off by the owner; the loader
+	// omits them from the catalog at the single seam every delivery channel
+	// (prompt menu, semantic router, read_skill) shares.
+	SkillsDisabled []string `mapstructure:"skills_disabled"`
+
 	// General
 	Language        string `mapstructure:"language"`
 	MaxHistory      int    `mapstructure:"max_history"`

@@ -20,6 +20,9 @@ func encodeEvent(e events.Event) map[string]any {
 		env["elapsed_ms"] = ms(e.Elapsed)
 	case events.UserInput:
 		env["text"] = e.Text
+		if e.Speaker != "" {
+			env["speaker"] = e.Speaker
+		}
 	case events.TranscriptPartial:
 		env["text"] = e.Text
 	case events.ThinkingComplete:

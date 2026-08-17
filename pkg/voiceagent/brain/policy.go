@@ -43,20 +43,20 @@ const (
 //	across providers. Elements that adapt to a provider's native capabilities
 //	are not, and each such exception must state its reason.
 //
-// There is exactly one exception today — see skillMenuApplies.
+// There is exactly one exception today — see SkillMenuApplies.
 func SystemPromptPolicy(provider string, cfg *config.Config) []PromptElement {
 	elems := []PromptElement{ElemPersona}
 	if environmentContextEnabled(cfg) {
 		elems = append(elems, ElemEnvironment)
 	}
-	if skillMenuApplies(provider) {
+	if SkillMenuApplies(provider) {
 		elems = append(elems, ElemSkills)
 	}
 	elems = append(elems, ElemTurn)
 	return elems
 }
 
-// skillMenuApplies reports whether a provider receives samantha's skills menu.
+// SkillMenuApplies reports whether a provider receives samantha's skills menu.
 //
 // **Deliberate asymmetry, not an oversight.** Claude and Grok run their own tool
 // and skill routing; injecting samantha's progressive-disclosure catalog into
@@ -66,7 +66,7 @@ func SystemPromptPolicy(provider string, cfg *config.Config) []PromptElement {
 // is how skills reach it at all.
 //
 // If ollama's routing is ever replaced by native tool-calling, revisit this.
-func skillMenuApplies(provider string) bool {
+func SkillMenuApplies(provider string) bool {
 	return normalizeProvider(provider) == providerOllama
 }
 
