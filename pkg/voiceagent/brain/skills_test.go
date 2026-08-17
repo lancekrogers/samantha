@@ -264,6 +264,59 @@ func TestLoadSkillsCatalogIgnoresClaudeSkills(t *testing.T) {
 	}
 }
 
+// TestLoadSkillsCatalogOmitsDisabled proves the single-seam filter: a
+// disabled name never appears in the catalog loadSkillsCatalog returns,
+// and that same slice feeds the prompt menu (assembleSystemPrompt), the
+// semantic router, and read_skill (executeTool) — so filtering it once
+// here filters it everywhere, without a per-channel check.
+func TestLoadSkillsCatalogOmitsDisabled(t *testing.T) {
+	fakeHome := t.TempDir()
+	prev := skills.SetUserHomeDirForTest(func() (string, error) { return fakeHome, nil })
+	t.Cleanup(prev)
+
+	root := t.TempDir()
+	writeTestSkill(t, filepath.Join(root, ".agents", "skills", "calibre"), "calibre", "library search")
+	writeTestSkill(t, filepath.Join(root, ".agents", "skills", "kept"), "kept", "stays active")
+
+	catalog, err := loadSkillsCatalog(context.Background(), &config.Config{
+		SkillsEnabled:  true,
+		SkillsDisabled: []string{"  Calibre  "}, // case/whitespace-insensitive
+	}, root)
+	if err != nil {
+		t.Fatalf("loadSkillsCatalog: %v", err)
+	}
+	if len(catalog) != 1 || catalog[0].Name != "kept" {
+		t.Fatalf("catalog = %v, want only the non-disabled skill", catalog)
+	}
+
+	// Prompt menu: the disabled skill's name never appears.
+	sys := assembleSystemPrompt("You are Samantha.", root, catalog, "", nil)
+	if strings.Contains(sys, "calibre") {
+		t.Fatalf("system prompt must omit the disabled skill: %q", sys)
+	}
+	if !strings.Contains(sys, "- kept: stays active") {
+		t.Fatalf("system prompt missing the still-active skill: %q", sys)
+	}
+
+	// read_skill: the disabled name is unreachable — it was never in the
+	// catalog the tool was handed.
+	got := executeTool(context.Background(), root, skillCall("calibre"), catalog)
+	if !strings.Contains(got, "unknown skill") {
+		t.Fatalf("read_skill on a disabled name = %q, want unknown skill", got)
+	}
+}
+
+func writeTestSkill(t *testing.T, dir, name, desc string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: " + name + "\ndescription: " + desc + "\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReadSkillTool(t *testing.T) {
 	t.Parallel()
 

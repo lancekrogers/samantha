@@ -167,6 +167,11 @@ type Config struct {
 	SkillsEnabled bool   `mapstructure:"skills_enabled"`
 	SkillsDir     string `mapstructure:"skills_dir"`
 
+	// SkillsDisabled lists skill names turned off by the owner; the loader
+	// omits them from the catalog at the single seam every delivery channel
+	// (prompt menu, semantic router, read_skill) shares.
+	SkillsDisabled []string `mapstructure:"skills_disabled"`
+
 	// General
 	Language        string `mapstructure:"language"`
 	MaxHistory      int    `mapstructure:"max_history"`
@@ -374,6 +379,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("backchannel_enabled", false)
 	v.SetDefault("skills_enabled", true)
 	v.SetDefault("skills_dir", "")
+	v.SetDefault("skills_disabled", []string{})
 	v.SetDefault("models_dir", DefaultModelsDir())
 
 	v.SetDefault("language", "en-US")

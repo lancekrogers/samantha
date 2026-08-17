@@ -377,6 +377,45 @@ func TestDiscoverMissingRootIsNotAnError(t *testing.T) {
 	}
 }
 
+func TestDiscoverMarksDisabledCaseInsensitiveTrimmed(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeSkill(t, filepath.Join(dir, "calibre"), "calibre", "library search", "body")
+	writeSkill(t, filepath.Join(dir, "other"), "other", "unaffected", "body")
+
+	got, err := Loader{Dir: dir, Disabled: []string{"  Calibre  "}}.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+	byName := map[string]Discovered{}
+	for _, d := range got {
+		byName[d.Name] = d
+	}
+	if !byName["calibre"].Disabled {
+		t.Fatalf("calibre.Disabled = false, want true (case/whitespace-insensitive match)")
+	}
+	if byName["other"].Disabled {
+		t.Fatal("other.Disabled = true, want false (not in Disabled list)")
+	}
+}
+
+func TestCatalogOmitsDisabled(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeSkill(t, filepath.Join(dir, "calibre"), "calibre", "library search", "body")
+	writeSkill(t, filepath.Join(dir, "other"), "other", "unaffected", "body")
+
+	got, err := Loader{Dir: dir, Disabled: []string{"calibre"}}.Catalog(context.Background())
+	if err != nil {
+		t.Fatalf("Catalog() error = %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "other" {
+		t.Fatalf("Catalog() = %v, want only the non-disabled skill", names(got))
+	}
+}
+
 // TestCatalogEqualsDiscoverMinusProvenance guards the refactor's whole
 // point: Catalog is Discover reduced to the Skill field, nothing more.
 func TestCatalogEqualsDiscoverMinusProvenance(t *testing.T) {

@@ -186,7 +186,7 @@ func loadSkillsCatalog(ctx context.Context, cfg *config.Config, workDir string) 
 		configured = config.SkillsDir()
 	}
 	dirs := skills.DefaultSearchPaths(workDir, configured)
-	catalog, err := skills.Loader{Dirs: dirs}.Catalog(ctx)
+	catalog, err := skills.Loader{Dirs: dirs, Disabled: cfg.SkillsDisabled}.Catalog(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("loading skills: %w", err)
 	}

@@ -25,6 +25,13 @@ const MaxDescriptionRunes = 400
 type Loader struct {
 	Dir  string
 	Dirs []string
+
+	// Disabled lists skill names the owner turned off (config key
+	// skills_disabled). Matching is case-insensitive on the trimmed name.
+	// Discover marks matching entries; Catalog omits them — this is the
+	// single seam every delivery channel (prompt menu, semantic router,
+	// read_skill) shares, so one filter disables a skill everywhere.
+	Disabled []string
 }
 
 // frontmatter is the YAML block at the top of SKILL.md.
@@ -44,6 +51,7 @@ type Discovered struct {
 	Skill
 	Root     string   // the search root this skill was loaded from
 	Shadowed []string // skill dirs with the same name in later roots
+	Disabled bool     // true when Skill.Name is in Loader.Disabled
 }
 
 // Discover scans each search root for immediate child skill folders
@@ -72,6 +80,7 @@ func (l Loader) Discover(ctx context.Context) ([]Discovered, error) {
 	list := make([]Discovered, 0, len(byName))
 	for _, d := range byName {
 		sort.Strings(d.Shadowed)
+		d.Disabled = l.isDisabled(d.Name)
 		list = append(list, d)
 	}
 	sort.Slice(list, func(i, j int) bool {
@@ -80,10 +89,23 @@ func (l Loader) Discover(ctx context.Context) ([]Discovered, error) {
 	return list, nil
 }
 
+// isDisabled reports whether name matches an entry in l.Disabled,
+// case-insensitively on the trimmed name.
+func (l Loader) isDisabled(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, d := range l.Disabled {
+		if strings.ToLower(strings.TrimSpace(d)) == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Catalog scans each search root for immediate child skill folders and
-// returns the merged, first-root-wins catalog — Discover minus provenance.
-// Reimplemented on Discover so there is exactly one scan implementation and
-// first-root-wins cannot drift between the two.
+// returns the merged, first-root-wins catalog with disabled skills omitted
+// — Discover minus provenance minus Disabled. Reimplemented on Discover so
+// there is exactly one scan implementation and first-root-wins cannot
+// drift between the two.
 func (l Loader) Catalog(ctx context.Context) ([]Skill, error) {
 	discovered, err := l.Discover(ctx)
 	if err != nil {
@@ -91,6 +113,9 @@ func (l Loader) Catalog(ctx context.Context) ([]Skill, error) {
 	}
 	list := make([]Skill, 0, len(discovered))
 	for _, d := range discovered {
+		if d.Disabled {
+			continue
+		}
 		list = append(list, d.Skill)
 	}
 	return list, nil
