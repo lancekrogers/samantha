@@ -163,14 +163,10 @@ type Config struct {
 	// internal/skills.
 	SkillsEnabled bool   `mapstructure:"skills_enabled"`
 	SkillsDir     string `mapstructure:"skills_dir"`
-	// SkillsDisabled names skills the agent ignores even when discovery finds
-	// them. Declared here so the settings schema is complete; the screens that
-	// toggle skills own the enforcement path.
-	SkillsDisabled []string `mapstructure:"skills_disabled"`
-
 	// SkillsDisabled lists skill names turned off by the owner; the loader
 	// omits them from the catalog at the single seam every delivery channel
-	// (prompt menu, semantic router, read_skill) shares.
+	// (prompt menu, semantic router, read_skill) shares. The settings schema
+	// exposes it as skills_disabled.
 	SkillsDisabled []string `mapstructure:"skills_disabled"`
 
 	// General
