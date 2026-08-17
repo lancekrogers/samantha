@@ -95,12 +95,25 @@ func (o Options) normalize() Options {
 // shares no state with the dispatcher or the WebSocket hub.
 type Manager struct {
 	opts Options
+	// index reads finished bundles off disk. Sessions die with the process;
+	// bundles do not, which is the whole of this manager's restart story.
+	index *meeting.Cache
 
 	mu       sync.Mutex
 	sessions map[string]*Session
 }
 
+// BootIndexTimeout bounds the boot-time index warm. A meetings dir on a slow
+// or huge volume must not hold up serve's ready banner: whatever the warm
+// does not reach is parsed on the first request that needs it.
+const BootIndexTimeout = 5 * time.Second
+
 // NewManager prepares the meetings root and returns a ready manager.
+//
+// It also warms the bundle index over the newest meetings on disk, which is
+// what makes ids resolve again after a restart. Rehydration never creates live
+// sessions: a disk bundle can be read, documented, and routed, but it can
+// never accept segments or control events.
 func NewManager(opts Options) (*Manager, error) {
 	opts = opts.normalize()
 	if opts.Root == "" {
@@ -110,12 +123,26 @@ func NewManager(opts Options) (*Manager, error) {
 	if err := os.MkdirAll(opts.Root, 0o700); err != nil {
 		return nil, fmt.Errorf("meeting: create meetings dir: %w", err)
 	}
-	return &Manager{opts: opts, sessions: make(map[string]*Session)}, nil
+	m := &Manager{opts: opts, index: meeting.NewCache(), sessions: make(map[string]*Session)}
+	ctx, cancel := context.WithTimeout(context.Background(), BootIndexTimeout)
+	defer cancel()
+	// Best effort: an unreadable bundle is history the user still gets to see
+	// the rest of, and a slow warm is a cold first request, not a failed boot.
+	_ = m.index.Warm(ctx, opts.Root, meeting.DefaultIndexLimit)
+	return m, nil
 }
 
 // SegmentSeconds and OutboxCapSegments are the client-facing capture knobs.
 func (m *Manager) SegmentSeconds() int    { return m.opts.SegmentSeconds }
 func (m *Manager) OutboxCapSegments() int { return m.opts.OutboxCapSegments }
+
+// Root is the meetings directory every bundle lives in.
+func (m *Manager) Root() string { return m.opts.Root }
+
+// Index lists the meetings on disk, newest first, through the shared cache.
+func (m *Manager) Index(ctx context.Context, opts meeting.IndexOptions) ([]meeting.BundleEntry, bool, error) {
+	return m.index.Index(ctx, m.opts.Root, opts)
+}
 
 // Start creates a bundle and begins a meeting. It fails with ErrMeetingActive
 // while another meeting still holds an open bundle.
