@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -91,10 +92,37 @@ func (s *Server) handlePersonas(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"personas": personas})
 }
 
-func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
+// safeSessionIDPattern is the shape a session id may have before it is allowed
+// anywhere near a filesystem path: no separators, no leading dot, so neither
+// "../.." nor "/etc/passwd" nor a hidden name can survive it. Real ids are
+// "20060102-150405-<hex>", which matches.
+//
+// The session store keeps its own, independent check for the same reason a
+// front door and a safe both have locks: a caller that never went through HTTP
+// must not be able to escape the store either. This one exists so the wire
+// answers 400 ("you asked for something impossible") rather than 500 ("I
+// broke"), and so the id is refused before it reaches the store at all.
+var safeSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$`)
+
+// sessionIDFromPath reads {id} and refuses anything unsafe, writing the error
+// response itself when it does. Checked on shape, before any filesystem call —
+// the same rule resolveMeeting follows for meeting ids.
+func sessionIDFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {
 	id := r.PathValue("id")
 	if id == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing session id"})
+		return "", false
+	}
+	if !safeSessionIDPattern.MatchString(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session: invalid session id"})
+		return "", false
+	}
+	return id, true
+}
+
+func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
+	id, ok := sessionIDFromPath(w, r)
+	if !ok {
 		return
 	}
 	if err := s.dispatcher.ResumeSession(r.Context(), id); err != nil {
@@ -107,9 +135,8 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 // handleSessionDelete is only registered when Options.DeleteSession is set
 // (see ListenAndServe), so it never has to nil-check the callback itself.
 func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if id == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing session id"})
+	id, ok := sessionIDFromPath(w, r)
+	if !ok {
 		return
 	}
 	err := s.opts.DeleteSession(id)

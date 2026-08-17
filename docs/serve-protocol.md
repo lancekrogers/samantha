@@ -181,9 +181,15 @@ serve answers `404` rather than pretending. Errors:
 | Status | Body | When |
 |--------|------|------|
 | `400` | `{"error":"missing session id"}` | empty `{id}` |
+| `400` | `{"error":"session: invalid session id"}` | `{id}` is not a safe id — a separator, a `..` segment, a leading dot, whitespace (refused on shape, before the sessions directory is touched) |
 | `404` | `{"error":"…"}` | no session with that id (or the route is unregistered) |
 | `409` | `{"error":"session is active"}` | `id` is the session the pipeline is currently writing into |
 | `500` | `{"error":"…"}` | an unexpected store failure (permissions, disk I/O) — never mislabeled as 404 |
+
+The **400** shape check is the same rule `/v1/meeting/{id}` applies: an id that
+could escape the store's directory once joined onto a path is refused at the
+edge, so a traversal attempt is a client error and never a `500`. It applies to
+`POST /v1/sessions/{id}/resume` too.
 
 The **409** case is the live-session guard: deleting the file a running serve
 rewrites on every turn would just make it reappear, so the route refuses
