@@ -383,4 +383,5 @@ func init() {
 	rootCmd.AddCommand(newMeetingCmd())
 	rootCmd.AddCommand(newSpeakerCmd(config.Load))
 	rootCmd.AddCommand(newLibraryCmd(config.Load))
+	rootCmd.AddCommand(newSkillsCmd(config.Load))
 }
