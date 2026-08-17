@@ -34,7 +34,6 @@ func newInstall(t *testing.T, body string) string {
 			t.Fatalf("seeding config: %v", err)
 		}
 	}
-	resetViper(t)
 	return path
 }
 

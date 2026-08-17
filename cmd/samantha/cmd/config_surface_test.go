@@ -30,8 +30,9 @@ barge_in_enabled: true
 func newSurfaceInstall(t *testing.T, body string) string {
 	t.Helper()
 	dir := t.TempDir()
+	// SetConfigDirForTest also swaps in a fresh viper, so a value another
+	// test wrote through the writer cannot leak into this one.
 	config.SetConfigDirForTest(t, dir)
-	config.ResetForTest(t)
 	if body != "" {
 		if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o600); err != nil {
 			t.Fatalf("seeding config: %v", err)

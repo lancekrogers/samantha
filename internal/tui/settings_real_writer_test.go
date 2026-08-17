@@ -23,7 +23,6 @@ func realWriterInstall(t *testing.T, body string) string {
 	t.Helper()
 	dir := t.TempDir()
 	config.SetConfigDirForTest(t, dir)
-	config.ResetForTest(t)
 	path := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("seeding config: %v", err)
