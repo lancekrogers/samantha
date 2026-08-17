@@ -209,6 +209,69 @@ func (e *Enrollment) Remove(name string) error {
 	return e.saveLocked()
 }
 
+// Rename changes an enrolled profile's display name, moving its embedding
+// file when the storage slug changes. ModelRev, Dim, Samples, and CreatedAt
+// carry over unchanged — a rename must never restart the FRR clock.
+func (e *Enrollment) Rename(oldName, newName string) (Profile, error) {
+	oldSlug, err := profileSlug(oldName)
+	if err != nil {
+		return Profile{}, err
+	}
+	newSlug, err := profileSlug(newName)
+	if err != nil {
+		return Profile{}, err
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	prev, ok := e.profiles[oldSlug]
+	if !ok {
+		return Profile{}, fmt.Errorf("speaker: rename %q: %w", oldName, ErrNotEnrolled)
+	}
+
+	// A different-slug target that already has an occupant is always a
+	// distinct enrolled profile (Add already prevents two entries at the
+	// same slug from ever having different names) — never merge two
+	// enrolled voices by renaming one onto the other's name.
+	if newSlug != oldSlug {
+		if existing, ok := e.profiles[newSlug]; ok {
+			return Profile{}, fmt.Errorf("speaker: rename %q -> %q: collides with enrolled profile %q (both stored as %q)", oldName, newName, existing.Name, newSlug)
+		}
+	}
+
+	updated := prev
+	updated.Name = newName
+	updated.UpdatedAt = time.Now().UTC()
+
+	if newSlug == oldSlug {
+		// Case/spacing-only change: no file move needed.
+		e.profiles[oldSlug] = updated
+		if err := e.saveLocked(); err != nil {
+			e.profiles[oldSlug] = prev
+			return Profile{}, err
+		}
+		return updated, nil
+	}
+
+	if err := os.Rename(e.embeddingsPath(oldSlug), e.embeddingsPath(newSlug)); err != nil {
+		return Profile{}, fmt.Errorf("speaker: rename %q -> %q: move embedding: %w", oldName, newName, err)
+	}
+	delete(e.profiles, oldSlug)
+	e.profiles[newSlug] = updated
+	if err := e.saveLocked(); err != nil {
+		// Roll back the map and the file move so profiles.yaml and
+		// embeddings/ never disagree.
+		delete(e.profiles, newSlug)
+		e.profiles[oldSlug] = prev
+		if rbErr := os.Rename(e.embeddingsPath(newSlug), e.embeddingsPath(oldSlug)); rbErr != nil {
+			return Profile{}, fmt.Errorf("speaker: rename %q -> %q: save failed (%w) and rollback failed: %v", oldName, newName, err, rbErr)
+		}
+		return Profile{}, err
+	}
+	return updated, nil
+}
+
 // List returns all profiles sorted by name.
 func (e *Enrollment) List() []Profile {
 	e.mu.Lock()

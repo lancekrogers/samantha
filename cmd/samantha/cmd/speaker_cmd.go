@@ -17,17 +17,22 @@ import (
 
 // newSpeakerCmd builds the `samantha speaker` command group: durable, named
 // speaker enrollment consumed by the live indicator and meeting diarization.
-func newSpeakerCmd() *cobra.Command {
+func newSpeakerCmd(loadConfig configLoader) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "speaker",
-		Short: "Manage named speaker profiles (enroll, list, remove)",
+		Short: "Manage named speaker profiles (enroll, list, remove, rename)",
 		Long: `Enroll named speakers from short voice clips so live speaker labels and
 meeting diarization can say "Lance" instead of "speaker-1".
 
 Profiles persist under speaker.enrollment_dir (default: <config>/speakers)
 and are versioned with the embedding model that produced them.`,
 	}
-	cmd.AddCommand(newSpeakerEnrollCmd(), newSpeakerListCmd(), newSpeakerRemoveCmd())
+	cmd.AddCommand(
+		newSpeakerEnrollCmd(loadConfig),
+		newSpeakerListCmd(loadConfig),
+		newSpeakerRemoveCmd(loadConfig),
+		newSpeakerRenameCmd(loadConfig),
+	)
 	return cmd
 }
 
@@ -39,7 +44,7 @@ func speakerEnrollmentDir(cfg *config.Config) string {
 	return filepath.Join(config.ConfigDir(), "speakers")
 }
 
-func newSpeakerEnrollCmd() *cobra.Command {
+func newSpeakerEnrollCmd(loadConfig configLoader) *cobra.Command {
 	var (
 		name    string
 		wavs    []string
@@ -64,7 +69,7 @@ Record a clip on macOS (16 kHz mono):
 			if len(wavs) == 0 {
 				return fmt.Errorf("at least one --from-wav clip is required")
 			}
-			loaded, err := config.Load()
+			loaded, err := loadConfig()
 			if err != nil {
 				return err
 			}
@@ -114,7 +119,7 @@ Record a clip on macOS (16 kHz mono):
 	return cmd
 }
 
-func newSpeakerListCmd() *cobra.Command {
+func newSpeakerListCmd(loadConfig configLoader) *cobra.Command {
 	var jsonOut bool
 	cmd := &cobra.Command{
 		Use:           "list",
@@ -123,7 +128,7 @@ func newSpeakerListCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load()
+			cfg, err := loadConfig()
 			if err != nil {
 				return err
 			}
@@ -154,7 +159,7 @@ func newSpeakerListCmd() *cobra.Command {
 	return cmd
 }
 
-func newSpeakerRemoveCmd() *cobra.Command {
+func newSpeakerRemoveCmd(loadConfig configLoader) *cobra.Command {
 	return &cobra.Command{
 		Use:           "remove <name>",
 		Short:         "Remove an enrolled speaker and delete its stored embedding",
@@ -162,7 +167,7 @@ func newSpeakerRemoveCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load()
+			cfg, err := loadConfig()
 			if err != nil {
 				return err
 			}
@@ -180,6 +185,43 @@ func newSpeakerRemoveCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newSpeakerRenameCmd(loadConfig configLoader) *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:           "rename <old> <new>",
+		Short:         "Rename an enrolled speaker, moving its embedding when the storage key changes",
+		Args:          cobra.ExactArgs(2),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			store, err := speaker.OpenEnrollment(speakerEnrollmentDir(cfg))
+			if err != nil {
+				return err
+			}
+			profile, err := store.Rename(args[0], args[1])
+			if err != nil {
+				if errors.Is(err, speaker.ErrNotEnrolled) {
+					return fmt.Errorf("no speaker named %q is enrolled", args[0])
+				}
+				return err
+			}
+			if jsonOut {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(profile)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Renamed %q → %q (embedding moved)\n", args[0], args[1])
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the renamed profile as JSON")
+	return cmd
 }
 
 // seedEnrolledProfiles loads the durable enrollment store (when it exists)

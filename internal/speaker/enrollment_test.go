@@ -213,6 +213,209 @@ func TestEnrollmentCorruptEmbeddingFile(t *testing.T) {
 	}
 }
 
+func TestEnrollmentRenameUnknownName(t *testing.T) {
+	store, err := OpenEnrollment(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Rename("ghost", "someone"); !errors.Is(err, ErrNotEnrolled) {
+		t.Fatalf("rename unknown: %v, want ErrNotEnrolled", err)
+	}
+}
+
+func TestEnrollmentRenameInvalidNewName(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenEnrollment(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := store.Add(ctx, "Lance", "rev", [][]float32{{1, 2}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Rename("Lance", "speaker-3"); err == nil {
+		t.Fatal("rename to a reserved name must fail")
+	}
+	if _, err := store.Rename("Lance", "a/b"); err == nil {
+		t.Fatal("rename to a path-unsafe name must fail")
+	}
+}
+
+func TestEnrollmentRenameSameSlugNoFileMove(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenEnrollment(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	added, err := store.Add(ctx, "lance", "rev", [][]float32{{1, 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldPath := filepath.Join(dir, embeddingsDirName, "lance.f32")
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatalf("embedding file missing before rename: %v", err)
+	}
+
+	// Case/spacing-only change: same slug, no file move.
+	renamed, err := store.Rename("lance", "Lance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.Name != "Lance" {
+		t.Fatalf("renamed.Name = %q, want %q", renamed.Name, "Lance")
+	}
+	if !renamed.CreatedAt.Equal(added.CreatedAt) {
+		t.Fatalf("rename must preserve CreatedAt: got %v, want %v", renamed.CreatedAt, added.CreatedAt)
+	}
+	if renamed.ModelRev != added.ModelRev || renamed.Dim != added.Dim || renamed.Samples != added.Samples {
+		t.Fatalf("rename must preserve ModelRev/Dim/Samples, got %+v", renamed)
+	}
+	if !renamed.UpdatedAt.After(added.UpdatedAt) && !renamed.UpdatedAt.Equal(added.UpdatedAt) {
+		t.Fatalf("rename must bump UpdatedAt: got %v, was %v", renamed.UpdatedAt, added.UpdatedAt)
+	}
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatalf("embedding file must stay in place on a same-slug rename: %v", err)
+	}
+
+	reopened, err := OpenEnrollment(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := reopened.List()
+	if len(profiles) != 1 || profiles[0].Name != "Lance" {
+		t.Fatalf("profiles after reopen = %+v", profiles)
+	}
+}
+
+func TestEnrollmentRenameMovesEmbeddingFile(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenEnrollment(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	added, err := store.Add(ctx, "Lance", "rev", [][]float32{{1, 2, 3}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	renamed, err := store.Rename("Lance", "Lance R")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.Name != "Lance R" {
+		t.Fatalf("renamed.Name = %q, want %q", renamed.Name, "Lance R")
+	}
+	if !renamed.CreatedAt.Equal(added.CreatedAt) {
+		t.Fatalf("rename must preserve CreatedAt: got %v, want %v", renamed.CreatedAt, added.CreatedAt)
+	}
+
+	oldPath := filepath.Join(dir, embeddingsDirName, "lance.f32")
+	newPath := filepath.Join(dir, embeddingsDirName, "lance-r.f32")
+	if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old embedding file must be gone after rename, stat: %v", err)
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("new embedding file missing after rename: %v", err)
+	}
+
+	got, err := store.Embeddings("Lance R")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, [][]float32{{1, 2, 3}}) {
+		t.Fatalf("embeddings after rename = %v", got)
+	}
+
+	reopened, err := OpenEnrollment(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := reopened.List()
+	if len(profiles) != 1 || profiles[0].Name != "Lance R" {
+		t.Fatalf("profiles after reopen = %+v", profiles)
+	}
+}
+
+func TestEnrollmentRenameCollisionRefused(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenEnrollment(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := store.Add(ctx, "Lance", "rev", [][]float32{{1, 2}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Add(ctx, "Guest", "rev", [][]float32{{3, 4}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Rename("Lance", "Guest"); err == nil {
+		t.Fatal("rename onto an existing, differently-named profile must be refused")
+	}
+
+	// Neither profile changed.
+	profiles := store.List()
+	names := map[string]bool{}
+	for _, p := range profiles {
+		names[p.Name] = true
+	}
+	if !names["Lance"] || !names["Guest"] || len(profiles) != 2 {
+		t.Fatalf("profiles after refused collision = %+v", profiles)
+	}
+}
+
+func TestEnrollmentRenameRollsBackOnSaveFailure(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenEnrollment(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := store.Add(ctx, "Lance", "rev", [][]float32{{1, 2}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make the store dir read-only so saveLocked's atomic write of
+	// profiles.yaml fails after the embedding file has already moved.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(dir, 0o700) }()
+
+	if _, err := store.Rename("Lance", "Lance R"); err == nil {
+		t.Fatal("rename must fail when the profiles.yaml write fails")
+	}
+
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	oldPath := filepath.Join(dir, embeddingsDirName, "lance.f32")
+	newPath := filepath.Join(dir, embeddingsDirName, "lance-r.f32")
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatalf("rollback must restore the original embedding file: %v", err)
+	}
+	if _, err := os.Stat(newPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rollback must remove the moved embedding file, stat: %v", err)
+	}
+
+	profiles := store.List()
+	if len(profiles) != 1 || profiles[0].Name != "Lance" {
+		t.Fatalf("in-memory profiles after rollback = %+v", profiles)
+	}
+	reopened, err := OpenEnrollment(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopenedProfiles := reopened.List()
+	if len(reopenedProfiles) != 1 || reopenedProfiles[0].Name != "Lance" {
+		t.Fatalf("profiles.yaml after rollback = %+v", reopenedProfiles)
+	}
+}
+
 func TestEnrollFromWAVs(t *testing.T) {
 	dir := t.TempDir()
 	store, err := OpenEnrollment(dir)
