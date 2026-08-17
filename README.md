@@ -631,12 +631,16 @@ nothing and reports `changed: false`.
 
 Clearing a key is not the same as writing an empty value to it. `config set
 stt_mode ""` stores an empty string, which pins the key; `config unset
-stt_mode` removes it. An empty value is accepted only for the keys whose unset
-state *is* the empty string — `config schema` marks those `allows_empty: true`
-(`stt_mode`, `meeting.route.default`, `qwen_tts_mode` and the other keys whose
-default is blank), and a front end offering an "(App default)" choice for an
-enum should render it from that flag. For every other key an empty value is an
-error.
+stt_mode` removes it, so a future default change or an exported `STT_MODE` is
+free to take effect.
+
+`config schema` marks every key that accepts an empty value `allows_empty:
+true`: all the text keys, plus the enums whose own default is blank
+(`stt_mode`, `meeting.route.default`, `qwen_tts_mode`, …). A bool, a number, a
+list, or an enum with a real default (`tts_provider`) refuses one. For the
+enums, blank *is* the unset state, so writing it back returns the key to it —
+a front end offering an "(App default)" choice wants `allows_empty` together
+with an empty `default`.
 
 `config schema` and `config get` never write to the install root, and never
 fail on a config the loader would reject. Add `--json` to any of them for a

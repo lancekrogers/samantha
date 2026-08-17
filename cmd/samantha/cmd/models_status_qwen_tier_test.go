@@ -216,6 +216,31 @@ func TestModelsStatusKokoroFixtureStillCarriesTierRows(t *testing.T) {
 	if got := byID[qwenTierIDPrefix+"1.7b"].Detail; got == "" {
 		t.Error("1.7b row lost its fail-closed detail")
 	}
+
+	// The fixture on its own only proves what the binary emitted the day it was
+	// captured. Reverting the fix and keeping the file would leave this test
+	// green, so the same configuration is run through the command here and the
+	// row ids compared. Found by adversarial review.
+	cfg := &config.Config{
+		TTSProvider: "kokoro", ModelsDir: t.TempDir(),
+		VADEnabled: true, STTProvider: "sherpa",
+		Speaker: config.SpeakerConfig{Enabled: true, Meeting: config.SpeakerMeetingConfig{Enabled: true}},
+	}
+	var live []config.AssetStatus
+	if err := json.Unmarshal([]byte(runStatusScoped(t, cfg, scopeFlags{all: true}, cfg.ModelsDir, true)), &live); err != nil {
+		t.Fatalf("live --json output: %v", err)
+	}
+	liveByID := statusByID(live)
+	for id := range byID {
+		if _, ok := liveByID[id]; !ok {
+			t.Errorf("row %q is in the fixture but not in today's output — re-run testdata/capture-models-fixtures.sh", id)
+		}
+	}
+	for id := range liveByID {
+		if _, ok := byID[id]; !ok {
+			t.Errorf("row %q is in today's output but not in the fixture — re-run testdata/capture-models-fixtures.sh", id)
+		}
+	}
 }
 
 // The other end: a real native package carrying both tiers. installed comes
@@ -285,12 +310,14 @@ func TestModelsStatusTierRowsFollowTheTTSScope(t *testing.T) {
 
 // A bare `models ensure` installs the tier the config points at, so it would do
 // nothing for the other tier — and nothing at all for a kokoro user. The human
-// line has to name the flag that does work.
+// line has to name the flag that does work, and it must not read as a chore for
+// a tier this configuration would never load.
 func TestMissingHintNamesTheTierFlag(t *testing.T) {
 	tests := []struct {
-		name string
-		row  config.AssetStatus
-		want string
+		name         string
+		row          config.AssetStatus
+		requiredTier string
+		want         string
 	}{
 		{
 			name: "a detail always wins",
@@ -298,9 +325,21 @@ func TestMissingHintNamesTheTierFlag(t *testing.T) {
 			want: "not in the pinned release",
 		},
 		{
-			name: "a tier row names its own flag",
+			name:         "the tier this config would load is missing",
+			row:          config.AssetStatus{ID: qwenTierIDPrefix + "0.6b"},
+			requiredTier: "0.6b",
+			want:         "missing — run 'samantha models ensure --tts --tier 0.6b'",
+		},
+		{
+			name:         "a tier this config would not load is offered, not demanded",
+			row:          config.AssetStatus{ID: qwenTierIDPrefix + "1.7b"},
+			requiredTier: "0.6b",
+			want:         "not installed — available with 'samantha models ensure --tts --tier 1.7b'",
+		},
+		{
+			name: "no qwen tier is required at all",
 			row:  config.AssetStatus{ID: qwenTierIDPrefix + "0.6b"},
-			want: "missing — run 'samantha models ensure --tts --tier 0.6b'",
+			want: "not installed — available with 'samantha models ensure --tts --tier 0.6b'",
 		},
 		{
 			name: "any other row keeps the plain hint",
@@ -310,8 +349,44 @@ func TestMissingHintNamesTheTierFlag(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := missingHint(tt.row); got != tt.want {
+			if got := missingHint(tt.row, tt.requiredTier); got != tt.want {
 				t.Errorf("missingHint(%s) = %q, want %q", tt.row.ID, got, tt.want)
+			}
+		})
+	}
+}
+
+// The count a qwen user reads has to be reachable. Only the tier the agent
+// would load counts as missing; the other one cannot be installed from the
+// pinned release at all, so counting it meant "N missing" could never fall to
+// zero. Found by adversarial review.
+func TestModelsStatusCountsOnlyTheTierTheConfigWouldLoad(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		want     string
+	}{
+		{
+			name:     "a qwen user is asked for one tier, and offered the other",
+			provider: "qwen3-tts",
+			want:     "7 asset(s), 6 missing (plus 1 optional Qwen3-TTS tier(s) not installed).",
+		},
+		{
+			name:     "a kokoro user is asked for neither",
+			provider: "kokoro",
+			want:     "7 asset(s), 5 missing (plus 2 optional Qwen3-TTS tier(s) not installed).",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{
+				TTSProvider: tt.provider, ModelsDir: t.TempDir(), QwenTTSModelTier: "0.6b",
+				VADEnabled: true, STTProvider: "sherpa",
+				Speaker: config.SpeakerConfig{Enabled: true, Meeting: config.SpeakerMeetingConfig{Enabled: true}},
+			}
+			out := runStatusScoped(t, cfg, scopeFlags{all: true}, cfg.ModelsDir, false)
+			if !contains(out, tt.want) {
+				t.Errorf("summary line missing %q:\n%s", tt.want, out)
 			}
 		})
 	}

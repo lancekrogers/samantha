@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -215,7 +216,7 @@ func writeKeyToFile(spec KeySpec, value any) (SetResult, error) {
 func patchAndReplace(data []byte, doc *yaml.Node, segments []string, value any, path string, existed bool, spec KeySpec) (string, error) {
 	patched, err := patchConfigSource(data, doc, segments, value)
 	if err != nil {
-		return "", writeFailed(spec.Key, "updating config", err)
+		return "", writeOrShapeFailed(spec.Key, "updating config", err)
 	}
 	refreshed, err := verifyPatched(patched, segments, value)
 	if err != nil {
@@ -285,6 +286,18 @@ func backupAndReplace(path string, patched []byte, existed bool, key string) (st
 		return "", writeFailed(key, "replacing config", err)
 	}
 	return backupPath, nil
+}
+
+// writeOrShapeFailed keeps a failure caused by the document's own shape apart
+// from one caused by this process. A flow section, a duplicate key or a scalar
+// where a section belongs is something the user can fix in their editor, so it
+// gets parse_failed and its own message; anything else is write_failed.
+func writeOrShapeFailed(key, what string, cause error) error {
+	var shape *shapeError
+	if errors.As(cause, &shape) {
+		return &SetError{Code: CodeParseFailed, Key: key, Message: shape.message, cause: cause}
+	}
+	return writeFailed(key, what, cause)
 }
 
 func writeFailed(key, what string, cause error) error {

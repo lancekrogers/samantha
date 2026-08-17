@@ -77,10 +77,10 @@ func runModelsStatus(cmd *cobra.Command, cfg *config.Config, modelsDir string, r
 		return err
 	}
 	statuses := manifest.Status(modelsDir)
-	qwenActive := false
+	requiredTier := ""
 	if req.NeedTTS {
 		var qwenRows []config.AssetStatus
-		qwenRows, qwenActive = qwenStatusRows(cfg, modelsDir)
+		qwenRows, requiredTier = qwenStatusRows(cfg, modelsDir)
 		statuses = append(statuses, qwenRows...)
 	}
 
@@ -90,16 +90,16 @@ func runModelsStatus(cmd *cobra.Command, cfg *config.Config, modelsDir string, r
 		enc.SetIndent("", "  ")
 		return enc.Encode(statuses)
 	}
-	printModelStatuses(out, modelsDir, statuses, qwenActive)
+	printModelStatuses(out, modelsDir, statuses, requiredTier)
 	return nil
 }
 
-// printModelStatuses renders the human table. A Qwen tier row belonging to a
-// configuration that does not select qwen is listed but kept out of the missing
-// count: it is install state the Models screen asks for, not an asset this
-// configuration needs, and counting it would tell a kokoro user their install
-// is incomplete no matter what they install.
-func printModelStatuses(out io.Writer, modelsDir string, statuses []config.AssetStatus, qwenActive bool) {
+// printModelStatuses renders the human table. A Qwen tier row this
+// configuration would not load is listed but kept out of the missing count: it
+// is install state the Models screen asks for, not an asset this configuration
+// needs, and counting it would report an install as incomplete no matter what
+// the user installs.
+func printModelStatuses(out io.Writer, modelsDir string, statuses []config.AssetStatus, requiredTier string) {
 	fmt.Fprintf(out, "\n  Model assets (models dir: %s)\n\n", modelsDir)
 	if len(statuses) == 0 {
 		fmt.Fprintln(out, "  No model assets required for the current configuration.")
@@ -111,8 +111,8 @@ func printModelStatuses(out io.Writer, modelsDir string, statuses []config.Asset
 	for _, s := range statuses {
 		state := "installed"
 		if !s.Installed {
-			state = missingHint(s)
-			if !qwenActive && strings.HasPrefix(s.ID, qwenTierIDPrefix) {
+			state = missingHint(s, requiredTier)
+			if offeredRow(s, requiredTier) {
 				offered++
 			} else {
 				missing++

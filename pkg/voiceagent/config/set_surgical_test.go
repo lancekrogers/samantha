@@ -306,8 +306,8 @@ func TestSetKeyFileAndFlowStyle(t *testing.T) {
 
 		_, err := SetKeyFile("speaker.live.window_ms", "2000")
 		setErr := setError(t, err)
-		if setErr.Code != CodeWriteFailed {
-			t.Fatalf("code = %q, want %q", setErr.Code, CodeWriteFailed)
+		if setErr.Code != CodeParseFailed {
+			t.Fatalf("code = %q, want %q (the document's shape refuses this, not this process)", setErr.Code, CodeParseFailed)
 		}
 		if !strings.Contains(setErr.Message, "flow style") || !strings.Contains(setErr.Message, "block style") {
 			t.Errorf("message %q does not name the problem and the fix", setErr.Message)
@@ -341,4 +341,84 @@ func TestSetKeyFileAndFlowStyle(t *testing.T) {
 			t.Errorf("indent step taken from a flow collection:\n%q", got)
 		}
 	})
+}
+
+// A comment a user indented under an ordinary key is theirs, not part of the
+// value. An earlier cut of the multi-line-scalar span swallowed every following
+// line indented past the key, which deleted exactly those comments on both set
+// and unset. Found by adversarial review.
+func TestSetKeyFileKeepsIndentedCommentsUnderAScalar(t *testing.T) {
+	const commented = `vad_silence_duration: 0.5
+    # an indented note about the value above
+
+    # and a second one after a blank line
+speaker:
+    enabled: true
+`
+	t.Run("set keeps them", func(t *testing.T) {
+		path := newInstall(t, commented)
+		mustSet(t, "vad_silence_duration", "0.8")
+
+		want := strings.Replace(commented, "vad_silence_duration: 0.5", "vad_silence_duration: 0.8", 1)
+		if got := readConfig(t, path); got != want {
+			t.Fatalf("indented comments disturbed:\n%s", diffReport(want, got))
+		}
+	})
+
+	t.Run("unset keeps them", func(t *testing.T) {
+		path := newInstall(t, commented)
+		if _, err := UnsetKeyFile("vad_silence_duration"); err != nil {
+			t.Fatalf("UnsetKeyFile: %v", err)
+		}
+		want := strings.Replace(commented, "vad_silence_duration: 0.5\n", "", 1)
+		if got := readConfig(t, path); got != want {
+			t.Fatalf("indented comments disturbed:\n%s", diffReport(want, got))
+		}
+	})
+}
+
+// A span with no node after it used to run to the end of the file, which
+// swallowed a document terminator or a whole second document. Found by
+// adversarial review.
+func TestSetKeyFileStopsAtADocumentBreak(t *testing.T) {
+	const terminated = "tts_provider: kokoro\nvad_silence_duration: 0.5\n...\n"
+	path := newInstall(t, terminated)
+
+	mustSet(t, "vad_silence_duration", "0.8")
+
+	want := strings.Replace(terminated, "vad_silence_duration: 0.5", "vad_silence_duration: 0.8", 1)
+	if got := readConfig(t, path); got != want {
+		t.Fatalf("document terminator not preserved:\n%s", diffReport(want, got))
+	}
+}
+
+// YAML and viper read the last of a repeated key; a writer walking the document
+// in order patches the first. Editing one and reporting success while the
+// effective value never moved is worse than refusing. Found by adversarial
+// review.
+func TestSetKeyFileRefusesADuplicateKey(t *testing.T) {
+	const duplicated = "vad_silence_duration: 0.5\ntts_provider: kokoro\nvad_silence_duration: 0.7\n"
+
+	for _, tc := range []struct {
+		name string
+		run  func() error
+	}{
+		{name: "set", run: func() error { _, err := SetKeyFile("vad_silence_duration", "0.8"); return err }},
+		{name: "unset", run: func() error { _, err := UnsetKeyFile("vad_silence_duration"); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := newInstall(t, duplicated)
+
+			setErr := setError(t, tc.run())
+			if setErr.Code != CodeParseFailed {
+				t.Fatalf("code = %q, want %q", setErr.Code, CodeParseFailed)
+			}
+			if !strings.Contains(setErr.Message, "more than once") {
+				t.Errorf("message %q does not name the duplicate", setErr.Message)
+			}
+			if got := readConfig(t, path); got != duplicated {
+				t.Errorf("a refused write rewrote the file:\n%s", got)
+			}
+		})
+	}
 }

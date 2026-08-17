@@ -614,41 +614,54 @@ func ApplyOllamaDefaults(cfg *Config) {
 	applyOllamaDefaults(cfg, v, true)
 }
 
-// SetAndSaveBrainProvider changes the brain provider and persists any
-// provider defaults that were applied to cfg. This keeps the next Load in
-// sync with the live TUI state when switching to Ollama: Viper defaults are
-// written to config.yaml by WriteConfigAs, so auto-enabled capabilities must
-// be set before saving. Explicit config and environment values still win.
+// SetAndSaveBrainProvider changes the brain provider and persists the provider
+// defaults that come with it. Switching TO Ollama turns tools and skills on
+// unless the environment explicitly forces them off (VOICE_TOOLS_ENABLED=false),
+// because full config dumps often baked voice_tools_enabled: false into the
+// file as a written default, which made InConfig true and left Ollama
+// tool-less.
+//
+// It writes through the surgical writer, one key at a time. It used to call
+// save() -> viper.WriteConfigAs, which replaced config.yaml with an
+// alphabetized dump of every setting viper knew: comments gone, blank lines
+// gone, every built-in default frozen into the file as if the user had chosen
+// it. That is the defect M1 was filed about, on the one config path the TUI's
+// Settings screen and the Mac app can both reach.
 func SetAndSaveBrainProvider(cfg *Config, provider string) error {
 	if cfg == nil {
 		return fmt.Errorf("config must not be nil")
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-
 	next := *cfg
 	next.BrainProvider = provider
+	mu.RLock()
 	applyOllamaDefaults(&next, v, true)
+	mu.RUnlock()
 
-	v.Set("brain_provider", provider)
+	writes := []struct {
+		key   string
+		value any
+	}{{key: "brain_provider", value: provider}}
 	if strings.EqualFold(strings.TrimSpace(provider), "ollama") {
-		// Full config dumps often bake voice_tools_enabled: false into yaml as a
-		// written default. That makes InConfig true and leaves Ollama tool-less.
-		// Switching TO Ollama in Settings should turn tools/skills on unless the
-		// environment explicitly forces them off (VOICE_TOOLS_ENABLED=false).
 		if !envForcesFalse("VOICE_TOOLS_ENABLED") {
-			v.Set("voice_tools_enabled", true)
+			writes = append(writes, struct {
+				key   string
+				value any
+			}{key: "voice_tools_enabled", value: true})
 			next.VoiceToolsEnabled = true
 		}
 		if !envForcesFalse("SKILLS_ENABLED") {
-			v.Set("skills_enabled", true)
+			writes = append(writes, struct {
+				key   string
+				value any
+			}{key: "skills_enabled", value: true})
 			next.SkillsEnabled = true
 		}
 	}
-
-	if err := save(); err != nil {
-		return err
+	for _, write := range writes {
+		if _, err := SetKeyFileValue(write.key, write.value); err != nil {
+			return err
+		}
 	}
 	*cfg = next
 	return nil

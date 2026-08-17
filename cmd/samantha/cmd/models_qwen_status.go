@@ -23,12 +23,17 @@ const qwenTierIDPrefix = "tts.qwen3.tier."
 // user switches tts_provider (spec 55-models §3.2 installs and verifies a tier,
 // then saves the key). Gating those on the active provider is what left
 // `models status --json --all` with no tier rows at all for a kokoro user.
-// The second return value reports whether this configuration actually selects
-// managed qwen, which is what tells the human view whether a missing tier is a
-// real gap or just an offer.
-func qwenStatusRows(cfg *config.Config, modelsDir string) ([]config.AssetStatus, bool) {
+// The second return value is the one tier this configuration would actually
+// speak with, or "" when it would not use qwen at all. That is what tells the
+// human view whether a missing tier row is a real gap or just an offer: only
+// the tier the agent is about to load counts as missing. A first cut counted
+// every tier whenever qwen was the provider, which left a qwen user with their
+// own tier installed reading "7 asset(s), 7 missing" forever, because the other
+// tier cannot be installed from the pinned release at all. Found by adversarial
+// review.
+func qwenStatusRows(cfg *config.Config, modelsDir string) ([]config.AssetStatus, string) {
 	if cfg == nil {
-		return nil, false
+		return nil, ""
 	}
 	native := managedqwen.InspectNative(modelsDir, cfg.QwenTTSModelTier)
 	active := strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), managedqwen.ProviderName) &&
@@ -49,7 +54,11 @@ func qwenStatusRows(cfg *config.Config, modelsDir string) ([]config.AssetStatus,
 			Installed: native.Installed, Missing: missing,
 		})
 	}
-	return append(rows, qwenTierStatusRows(native, cfg.QwenTTSNativeURL)...), active
+	requiredTier := ""
+	if active {
+		requiredTier = native.DefaultTier
+	}
+	return append(rows, qwenTierStatusRows(native, cfg.QwenTTSNativeURL)...), requiredTier
 }
 
 // qwenTierStatusRows returns one additive AssetStatus row per known Qwen3-TTS
@@ -120,13 +129,28 @@ func qwenTierFailClosedDetail(configuredURL, tier string) string {
 // missingHint is the human line for a row that is not installed. A Qwen tier
 // row names its own --tier flag: a bare `models ensure` installs the tier the
 // config points at, so it would silently do nothing for the other one — and
-// nothing at all when qwen is not the configured provider.
-func missingHint(s config.AssetStatus) string {
+// nothing at all when qwen is not the configured provider. A tier the
+// configuration would not load is offered rather than demanded, so its line
+// does not read as a chore.
+func missingHint(s config.AssetStatus, requiredTier string) string {
 	if d := strings.TrimSpace(s.Detail); d != "" {
 		return d
 	}
-	if tier, ok := strings.CutPrefix(s.ID, qwenTierIDPrefix); ok {
+	tier, isTier := strings.CutPrefix(s.ID, qwenTierIDPrefix)
+	switch {
+	case isTier && tier == requiredTier:
 		return "missing — run 'samantha models ensure --tts --tier " + tier + "'"
+	case isTier:
+		return "not installed — available with 'samantha models ensure --tts --tier " + tier + "'"
+	default:
+		return "missing — run 'samantha models ensure'"
 	}
-	return "missing — run 'samantha models ensure'"
+}
+
+// offeredRow reports a Qwen tier row this configuration would not load. Such a
+// row is listed, because a front end reads tier install state from here, but it
+// is counted apart from the assets the configuration actually needs.
+func offeredRow(s config.AssetStatus, requiredTier string) bool {
+	tier, isTier := strings.CutPrefix(s.ID, qwenTierIDPrefix)
+	return isTier && tier != requiredTier
 }

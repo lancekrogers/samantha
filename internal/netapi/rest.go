@@ -97,11 +97,16 @@ func (s *Server) handlePersonas(w http.ResponseWriter, r *http.Request) {
 // "../.." nor "/etc/passwd" nor a hidden name can survive it. Real ids are
 // "20060102-150405-<hex>", which matches.
 //
-// The session store keeps its own, independent check for the same reason a
-// front door and a safe both have locks: a caller that never went through HTTP
-// must not be able to escape the store either. This one exists so the wire
-// answers 400 ("you asked for something impossible") rather than 500 ("I
-// broke"), and so the id is refused before it reaches the store at all.
+// It is the same shape meeting.SafeMeetingID enforces, and deliberately its own
+// copy rather than a call into that package: meeting ids and session ids are
+// different namespaces owned by different stores, and one tightening its rule
+// for its own reasons must not silently narrow what the other accepts.
+//
+// The session store keeps its own, independent check as well, for the same
+// reason a front door and a safe both have locks: a caller that never went
+// through HTTP must not be able to escape the store either. This one exists so
+// the wire answers 400 ("you asked for something impossible") rather than 500
+// ("I broke"), and so the id is refused before it reaches the store at all.
 var safeSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$`)
 
 // sessionIDFromPath reads {id} and refuses anything unsafe, writing the error

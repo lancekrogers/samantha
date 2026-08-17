@@ -117,6 +117,45 @@ func TestUnsetKeyFileRemovesOnlyItsOwnLines(t *testing.T) {
 // The point of removing rather than blanking: the key stops being in the file,
 // so `config get` reports the default as the source and a future default (or an
 // env binding) is free to take effect.
+// The in-process half of the same question, and the one that was broken:
+// SetKeyFile installs a viper override, viper cannot remove one, and a later
+// ReadInConfig does not outrank it — so a process that set a key and then unset
+// it kept serving the deleted value while Source correctly reported "default".
+// A long-lived front end (the TUI, the Mac agent, serve) is exactly where that
+// bites. Found by adversarial review; the original test never called SetKeyFile
+// first, so it could not see it.
+func TestUnsetKeyFileClearsAValueThisProcessJustWrote(t *testing.T) {
+	newInstall(t, "tts_provider: kokoro\n")
+
+	if _, err := SetKeyFile("stt_mode", "streaming"); err != nil {
+		t.Fatalf("SetKeyFile: %v", err)
+	}
+	if got := Get("stt_mode"); got != "streaming" {
+		t.Fatalf("Get after set = %v, want streaming", got)
+	}
+
+	result, err := UnsetKeyFile("stt_mode")
+	if err != nil {
+		t.Fatalf("UnsetKeyFile: %v", err)
+	}
+	if result.Value != "" {
+		t.Errorf("value = %v, want the empty default — not the value just removed", result.Value)
+	}
+	if got := Get("stt_mode"); got != "" {
+		t.Errorf("Get after unset = %v, want the empty default (a stale viper override)", got)
+	}
+	if got := Source("stt_mode"); got != SourceDefault {
+		t.Errorf("source = %q, want %q", got, SourceDefault)
+	}
+	cfg, err := LoadRaw()
+	if err != nil {
+		t.Fatalf("LoadRaw: %v", err)
+	}
+	if cfg.STTMode != "" {
+		t.Errorf("stt_mode = %q after unset, want empty", cfg.STTMode)
+	}
+}
+
 func TestUnsetKeyFileRestoresTheDefault(t *testing.T) {
 	newInstall(t, "vad_silence_duration: 0.9\nstt_mode: streaming\n")
 
@@ -184,29 +223,55 @@ func TestSetKeyFileEmptyValueFollowsAllowsEmpty(t *testing.T) {
 	}
 }
 
-// allows_empty is derived, not listed: it is exactly the keys whose schema
-// default is the empty string. A second hand-maintained list is how a front end
-// ends up offering "(App default)" for a key that refuses it.
-func TestSchemaAllowsEmptyMatchesTheDefault(t *testing.T) {
-	var sawTrue, sawFalse bool
+// allows_empty must answer what the writer actually does. The first version of
+// this test re-derived its expectation with the same expression production used
+// ("the default is the empty string"), so it agreed with the code by
+// construction and could not see that `config set agent_name ""` succeeded
+// while the schema said it would not. This one drives the coercer instead —
+// the flag is wrong if it disagrees with a real write — and pins a fixed table
+// so the intent survives a refactor of the derivation.
+func TestSchemaAllowsEmptyMatchesWhatTheWriterAccepts(t *testing.T) {
+	tests := []struct {
+		key  string
+		want bool
+	}{
+		{key: "tts_provider"},              // enum, default kokoro
+		{key: "brain_provider"},            // enum, default ollama
+		{key: "calibre_prefer_format"},     // enum, default epub
+		{key: "vad_silence_duration"},      // float
+		{key: "vad_pre_roll_ms"},           // int
+		{key: "barge_in_enabled"},          // bool
+		{key: "skills_disabled"},           // list
+		{key: "stt_mode", want: true},      // enum whose unset state is ""
+		{key: "qwen_tts_mode", want: true}, // enum whose unset state is ""
+		{key: "meeting.route.default", want: true},
+		{key: "agent_name", want: true},    // text: "" is a value, not the default
+		{key: "output_device", want: true}, // text
+		{key: "ollama_host", want: true},   // text
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			spec, ok := SpecFor(tt.key)
+			if !ok {
+				t.Fatalf("no such key %q", tt.key)
+			}
+			if spec.AllowsEmpty != tt.want {
+				t.Errorf("allows_empty = %v, want %v", spec.AllowsEmpty, tt.want)
+			}
+		})
+	}
+
+	// And across the whole schema: the flag and the coercer must never
+	// disagree, whatever new keys arrive.
 	for _, spec := range Schema() {
-		text, isString := spec.Default.(string)
-		want := isString && text == ""
-		if spec.AllowsEmpty != want {
-			t.Errorf("%s: allows_empty = %v, want %v (default %#v)", spec.Key, spec.AllowsEmpty, want, spec.Default)
+		if !spec.Editable {
+			continue // `config set` refuses these before any value is read
 		}
-		if want {
-			sawTrue = true
-		} else {
-			sawFalse = true
+		_, err := coerceToSpec(spec, "")
+		if accepted := err == nil; accepted != spec.AllowsEmpty {
+			t.Errorf("%s: allows_empty = %v but an empty write is accepted = %v",
+				spec.Key, spec.AllowsEmpty, accepted)
 		}
-	}
-	if !sawTrue || !sawFalse {
-		t.Errorf("the schema no longer covers both cases (saw true: %v, saw false: %v)", sawTrue, sawFalse)
-	}
-	spec, ok := SpecFor("stt_mode")
-	if !ok || !spec.AllowsEmpty {
-		t.Error("stt_mode must be allows_empty — it is the key the acceptance run could not clear")
 	}
 }
 
@@ -242,6 +307,107 @@ func TestUnsetKeyFileReportsTheEffectiveValueNotJustTheDefault(t *testing.T) {
 		}
 		if got := Source("stt_mode"); got != SourceEnv {
 			t.Errorf("source = %q, want %q", got, SourceEnv)
+		}
+	})
+}
+
+// A flow document lives on one line, so removing a key from it by line would
+// take the whole document with it — and `verifyUnset` could not object, because
+// the key really was gone. `config unset agent_name` on `{agent_name: Sam,
+// vad_silence_duration: 0.5}` left a 0-byte file. Found by adversarial review;
+// the write path had this guard and the delete path did not.
+func TestUnsetKeyFileRefusesAFlowDocument(t *testing.T) {
+	const flowDoc = "{agent_name: Sam, vad_silence_duration: 0.5}\n"
+	path := newInstall(t, flowDoc)
+
+	_, err := UnsetKeyFile("agent_name")
+	setErr := setError(t, err)
+	if setErr.Code != CodeParseFailed {
+		t.Fatalf("code = %q, want %q", setErr.Code, CodeParseFailed)
+	}
+	if !strings.Contains(setErr.Message, "flow style") {
+		t.Errorf("message %q does not name the problem", setErr.Message)
+	}
+	if got := readConfig(t, path); got != flowDoc {
+		t.Fatalf("the document was destroyed by a refused unset: %q", got)
+	}
+}
+
+// The two remaining paths that replaced the whole config file. Both are how a
+// TUI or Mac-app user changes a setting, so M1's defect was still reachable
+// from a front end after `config set` was fixed. Found by adversarial review.
+func TestTheOtherWritersAreSurgicalToo(t *testing.T) {
+	const handEdited = `# Samantha settings — hand edited.
+brain_provider: claude
+
+# Voice activity detection.
+vad_silence_duration: 0.5   # snappier
+
+speaker:
+    live:
+        window_ms: 1500
+`
+
+	t.Run("SetAndSaveBrainProvider keeps the file it was given", func(t *testing.T) {
+		path := newInstall(t, handEdited)
+		cfg, err := LoadRaw()
+		if err != nil {
+			t.Fatalf("LoadRaw: %v", err)
+		}
+
+		if err := SetAndSaveBrainProvider(cfg, "ollama"); err != nil {
+			t.Fatalf("SetAndSaveBrainProvider: %v", err)
+		}
+
+		got := readConfig(t, path)
+		for _, want := range []string{
+			"# Samantha settings — hand edited.",
+			"# Voice activity detection.",
+			"vad_silence_duration: 0.5   # snappier",
+			"        window_ms: 1500",
+			"brain_provider: ollama",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("lost %q from the file:\n%s", want, got)
+			}
+		}
+		if strings.Contains(got, "agent_name:") {
+			t.Errorf("a built-in default was baked into the file:\n%s", got)
+		}
+		if cfg.BrainProvider != "ollama" {
+			t.Errorf("cfg.BrainProvider = %q, want ollama", cfg.BrainProvider)
+		}
+	})
+
+	t.Run("config migrate --write keeps the file it was given", func(t *testing.T) {
+		const legacy = `# Samantha settings — hand edited.
+stt_provider: sherpa-streaming
+
+speaker:
+    live:
+        window_ms: 1500
+`
+		path := newInstall(t, legacy)
+		cfg, err := LoadRaw()
+		if err != nil {
+			t.Fatalf("LoadRaw: %v", err)
+		}
+
+		result, err := WriteSTTConfigMigration(cfg, path)
+		if err != nil {
+			t.Fatalf("WriteSTTConfigMigration: %v", err)
+		}
+		if !result.Wrote {
+			t.Fatal("migration reported no write; the fixture should need one")
+		}
+
+		// stt_provider is edited where it sits; stt_mode is not in the file, so
+		// it joins the document at the end — the same rule any new top-level
+		// key follows. Everything else is byte-identical.
+		want := strings.Replace(legacy, "stt_provider: sherpa-streaming", "stt_provider: sherpa", 1) +
+			"stt_mode: streaming\n"
+		if got := readConfig(t, path); got != want {
+			t.Fatalf("the migration rewrote lines it was not asked to:\n%s", diffReport(want, got))
 		}
 	})
 }

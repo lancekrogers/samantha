@@ -65,10 +65,13 @@ type KeySpec struct {
 	Type    ValueType `json:"type"`
 	Default any       `json:"default"`
 	Enum    []string  `json:"enum,omitempty"`
-	// AllowsEmpty reports that "" is a value this key can hold and means
-	// "unset — use the built-in behaviour". A front end renders an
-	// "(App default)" choice for such a key and `config set <key> ""`
-	// is accepted for it; for every other key an empty value is an error.
+	// AllowsEmpty reports that `config set <key> ""` is accepted: every text
+	// key, plus the enums whose own default is the empty string. For those
+	// enums "" is the unset state, so writing it back is how a user returns
+	// the key to it — that is the pair a front end wants before offering an
+	// "(App default)" choice, and Default is the second half of the pair.
+	// Everything else (bool, number, list, opaque, and an enum with a real
+	// default) refuses an empty value.
 	AllowsEmpty        bool     `json:"allows_empty"`
 	Group              string   `json:"group"`
 	Title              string   `json:"title"`
@@ -113,14 +116,26 @@ func derive(spec KeySpec) KeySpec {
 	return spec
 }
 
-// allowsEmpty reads the answer off the schema rather than off a second list:
-// a key whose default is the empty string is one whose unset state *is* the
-// empty string, so writing "" back is how a user returns it to that state.
-// stt_mode is the case that found this — it legitimately holds "" (meaning
-// "whatever the provider defaults to") and could not be cleared.
+// allowsEmpty answers what the coercer does, not what a second hand-kept list
+// says: a text key takes any string including the empty one, and an enum takes
+// "" only when "" is its own default — the unset state, which writing "" back
+// returns it to. stt_mode is the case that found this: it legitimately holds ""
+// and could not be cleared.
+//
+// It deliberately does not claim more than that. A first cut reported
+// allows_empty only for the empty-defaulted keys, which had the schema and the
+// README both claiming an empty value was an error everywhere else while
+// `config set agent_name ""` quietly succeeded. Found by adversarial review.
 func allowsEmpty(spec KeySpec) bool {
-	text, ok := spec.Default.(string)
-	return ok && text == ""
+	switch spec.Type {
+	case TypeString:
+		return true
+	case TypeEnum:
+		text, ok := spec.Default.(string)
+		return ok && text == ""
+	default:
+		return false
+	}
 }
 
 // SchemaFor is Schema with the enums that only a loaded config can fill.

@@ -22,6 +22,20 @@ import (
 // nullTag is the tag yaml.v3 gives a key written with no value (`speaker:`).
 const nullTag = "!!null"
 
+// shapeError marks a failure caused by the document's own shape rather than by
+// the value being written: a flow section, a duplicate key, a scalar where a
+// section belongs. The write verbs map it to CodeParseFailed, so a front end
+// reports "your config file is shaped in a way I cannot edit" — something the
+// user can act on — instead of write_failed, which reads as a server fault and
+// invites a retry that cannot work.
+type shapeError struct{ message string }
+
+func (e *shapeError) Error() string { return e.message }
+
+func shapeErrorf(format string, args ...any) error {
+	return &shapeError{message: fmt.Sprintf(format, args...)}
+}
+
 // patchConfigSource returns source with the value at the dotted path written,
 // changing only the lines that hold that key. doc must be the tree parsed from
 // source and unmodified — every node's Line and Column are read as offsets into
@@ -34,7 +48,7 @@ func patchConfigSource(source []byte, doc *yaml.Node, path []string, value any) 
 	if src.root == nil || len(src.root.Content) == 0 && src.root.Line == 0 {
 		return src.appendEntry(path, value)
 	}
-	if err := refuseFlowSection(src.root, "the document"); err != nil {
+	if err := refuseFlowSection(src.root, "the config document"); err != nil {
 		return nil, err
 	}
 	target, err := src.locate(path)
@@ -55,6 +69,13 @@ func deleteConfigKey(source []byte, doc *yaml.Node, path []string) ([]byte, bool
 		return nil, false, fmt.Errorf("empty config key path")
 	}
 	src := newSourceDoc(source, doc)
+	if err := refuseFlowSection(src.root, "the config document"); err != nil {
+		// Without this, removing a key from `{a: 1, b: 2}` replaced the one line
+		// the whole document lives on and left an empty file behind — and the
+		// key really was gone afterwards, so verifyUnset had nothing to object
+		// to. Found by adversarial review.
+		return nil, false, err
+	}
 	target, err := src.locate(path)
 	if err != nil || target.keyNode == nil || len(target.remaining) > 0 {
 		return source, false, err
@@ -76,11 +97,11 @@ func deleteConfigKey(source []byte, doc *yaml.Node, path []string) ([]byte, bool
 // one value. Refusing, with the fix named, is the honest answer: the file is
 // left alone and the user is told what to change. A flow *value* is fine —
 // `skills_disabled: []` is replaced whole like any other value.
-func refuseFlowSection(mapping *yaml.Node, name string) error {
+func refuseFlowSection(mapping *yaml.Node, subject string) error {
 	if mapping == nil || mapping.Style&yaml.FlowStyle == 0 {
 		return nil
 	}
-	return fmt.Errorf("config key %q is written in flow style ({...}); rewrite that section in block style to edit keys under it", name)
+	return shapeErrorf("%s is written in flow style ({...}); rewrite it in block style to edit keys in it", subject)
 }
 
 // sourceDoc is config.yaml as text plus the tree parsed from it.
@@ -130,6 +151,13 @@ type entryTarget struct {
 func (s *sourceDoc) locate(path []string) (entryTarget, error) {
 	mapping, mappingKey := s.root, (*yaml.Node)(nil)
 	for i, segment := range path {
+		if countEntries(mapping, segment) > 1 {
+			// YAML and viper read the last of a repeated key; a writer walking
+			// the document in order patches the first. Editing one and
+			// reporting success while the effective value never moved is worse
+			// than refusing. Found by adversarial review.
+			return entryTarget{}, shapeErrorf("config key %q appears more than once; remove the duplicate and try again", segment)
+		}
 		value, key := mappingEntry(mapping, segment)
 		if value == nil {
 			return entryTarget{section: mapping, sectionKey: mappingKey, leaf: segment, remaining: path[i+1:]}, nil
@@ -141,9 +169,9 @@ func (s *sourceDoc) locate(path []string) (entryTarget, error) {
 			return entryTarget{keyNode: key, valueNode: value, leaf: segment, remaining: path[i+1:]}, nil
 		}
 		if value.Kind != yaml.MappingNode {
-			return entryTarget{}, fmt.Errorf("config key %q is not a section", segment)
+			return entryTarget{}, shapeErrorf("config key %q is not a section", segment)
 		}
-		if err := refuseFlowSection(value, segment); err != nil {
+		if err := refuseFlowSection(value, fmt.Sprintf("config key %q", segment)); err != nil {
 			return entryTarget{}, err
 		}
 		mapping, mappingKey = value, key
@@ -225,7 +253,7 @@ func (s *sourceDoc) entrySpan(key, value *yaml.Node) (int, int) {
 	if value != nil && value.Kind == yaml.ScalarNode && value.Tag != nullTag {
 		// A null value has no body of its own: what follows an empty `speaker:`
 		// is the next key's comment block, which is not this entry's to replace.
-		floor = s.blockEnd(key.Column, floor)
+		floor = s.blockEnd(key.Column, floor, literalScalar(value))
 	}
 	inside := map[*yaml.Node]bool{}
 	markSubtree(key, inside)
@@ -238,6 +266,12 @@ func (s *sourceDoc) entrySpan(key, value *yaml.Node) (int, int) {
 		}
 		if node.Line-1 < end {
 			end = node.Line - 1
+		}
+	}
+	for line := floor + 1; line <= end; line++ {
+		if documentBreak(s.lineAt(line)) {
+			end = line - 1
+			break
 		}
 	}
 	for end > floor && isBlankOrComment(s.lineAt(end)) {
@@ -266,23 +300,49 @@ func (s *sourceDoc) join(lines []string) []byte {
 
 // blockEnd extends a span over the body of a multi-line scalar. yaml.v3 reports
 // the line a block scalar's `|` sits on and nothing about the lines beneath it,
-// so the body has to be read off the source the way YAML delimits it: every
-// following line indented past the key, blank lines included. Without this the
-// span stopped at the key's own line and a `config set` on such a key left the
-// rest of the block stranded in the file.
-func (s *sourceDoc) blockEnd(keyColumn, from int) int {
+// so the body has to be read off the source the way YAML delimits it: the
+// following lines indented past the key.
+//
+// literal decides how greedy that is, and it has to be exact in both
+// directions. A `|` or `>` block swallows blank lines and lines that start with
+// `#` — they are its text, not structure — so stopping at either would strand
+// them. Every other scalar ends at the first blank or comment line, and running
+// past one deleted an indented comment a user had written under an ordinary
+// key. Both mistakes were made here; only the second one survived to review.
+func (s *sourceDoc) blockEnd(keyColumn, from int, literal bool) int {
 	end := from
 	for line := from + 1; line <= len(s.lines); line++ {
 		text := s.lines[line-1]
 		if strings.TrimSpace(text) == "" {
-			continue // a blank line inside a block does not end it
+			if literal {
+				continue // a blank line inside a block does not end it
+			}
+			break
 		}
 		if len(leadingSpace(text)) < keyColumn {
+			break
+		}
+		if !literal && strings.HasPrefix(strings.TrimSpace(text), "#") {
 			break
 		}
 		end = line
 	}
 	return end
+}
+
+// literalScalar reports a `|` or `>` block, whose body lives on the lines after
+// the key and belongs to the entry.
+func literalScalar(node *yaml.Node) bool {
+	return node != nil && node.Kind == yaml.ScalarNode &&
+		node.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0
+}
+
+// documentBreak reports a line that ends the document this writer is editing.
+// A span with no node after it otherwise runs to the end of the file and would
+// swallow a `...` terminator or a whole second `---` document.
+func documentBreak(line string) bool {
+	trimmed := strings.TrimRight(line, " \t\r")
+	return trimmed == "---" || trimmed == "..." || strings.HasPrefix(trimmed, "--- ")
 }
 
 func (s *sourceDoc) lineAt(line int) string {
@@ -390,6 +450,21 @@ func mappingEntry(mapping *yaml.Node, key string) (*yaml.Node, *yaml.Node) {
 
 // emptySection reports a key with nothing under it: `speaker:`, `speaker: ~`
 // or `speaker: {}`.
+// countEntries reports how many times a mapping holds a key, matched the way
+// mappingEntry matches it.
+func countEntries(mapping *yaml.Node, key string) int {
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return 0
+	}
+	n := 0
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if strings.EqualFold(mapping.Content[i].Value, key) {
+			n++
+		}
+	}
+	return n
+}
+
 func emptySection(node *yaml.Node) bool {
 	return len(node.Content) == 0 && (node.Tag == nullTag || node.Kind == yaml.MappingNode)
 }

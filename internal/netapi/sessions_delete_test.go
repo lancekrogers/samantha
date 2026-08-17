@@ -287,9 +287,6 @@ func TestSessionDeleteTraversalIsNotAServerError(t *testing.T) {
 	})
 
 	status, body := deleteSession(t, addr, creds.Token, "..%2Fetc%2Fpasswd")
-	if status != http.StatusInternalServerError && status != http.StatusBadRequest {
-		t.Fatalf("unexpected status %d", status)
-	}
 	if status != http.StatusBadRequest {
 		t.Fatalf("DELETE /v1/sessions/..%%2Fetc%%2Fpasswd = %d, want 400 (M2 of the acceptance run: it was 500)", status)
 	}

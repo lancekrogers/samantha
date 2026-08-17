@@ -162,14 +162,7 @@ func WriteSTTConfigMigration(cfg *Config, configPath string) (STTConfigMigration
 	if err != nil {
 		return STTConfigMigrationResult{}, err
 	}
-	doc, err := migrationYAMLDocument(data)
-	if err != nil {
-		return STTConfigMigrationResult{}, err
-	}
-	setYAMLScalar(doc.Content[0], "stt_provider", proposal.ProposedProvider)
-	setYAMLScalar(doc.Content[0], "stt_mode", proposal.ProposedMode)
-
-	out, err := encodeYAMLDocument(doc)
+	out, err := migrateSTTScalars(data, proposal)
 	if err != nil {
 		return STTConfigMigrationResult{}, err
 	}
@@ -188,6 +181,29 @@ func WriteSTTConfigMigration(cfg *Config, configPath string) (STTConfigMigration
 	}
 	result.Wrote = true
 	return result, nil
+}
+
+// migrateSTTScalars writes the two STT keys through the surgical writer, one at
+// a time, re-parsing between them because the line numbers the writer reads
+// come from the text it was given. Before this it re-encoded the whole
+// document, which rewrote a 4-space file to 2-space and dropped its blank lines
+// — the M1 defect on a second verb.
+func migrateSTTScalars(data []byte, proposal STTConfigMigrationProposal) ([]byte, error) {
+	out := data
+	for _, write := range []struct{ key, value string }{
+		{key: "stt_provider", value: proposal.ProposedProvider},
+		{key: "stt_mode", value: proposal.ProposedMode},
+	} {
+		doc, err := migrationYAMLDocument(out)
+		if err != nil {
+			return nil, err
+		}
+		out, err = patchConfigSource(out, doc, []string{write.key}, write.value)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 func readOptionalFile(path string) ([]byte, bool, error) {
@@ -216,17 +232,6 @@ func migrationYAMLDocument(data []byte) (*yaml.Node, error) {
 		return nil, fmt.Errorf("config file must contain a YAML mapping")
 	}
 	return &doc, nil
-}
-
-// setYAMLScalar writes a top-level string key. It is setYAMLValue narrowed to
-// the STT migration's shape (one segment, always a string), so both writers
-// share one implementation.
-func setYAMLScalar(mapping *yaml.Node, key, value string) {
-	_ = setYAMLValue(mapping, []string{key}, value)
-}
-
-func encodeYAMLDocument(doc *yaml.Node) ([]byte, error) {
-	return encodeYAMLDocumentIndent(doc, 2)
 }
 
 // encodeYAMLDocumentIndent renders a document at a chosen nesting width. The

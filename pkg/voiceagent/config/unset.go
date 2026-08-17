@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -74,15 +75,35 @@ func UnsetKeyFile(key string) (SetResult, error) {
 // default, but a key with an environment binding resolves to the exported
 // value, and reporting the default there would be a lie in a payload whose
 // `value` field means "what this key holds now".
+//
+// It cannot ask viper for the answer. SetKeyFile installs a viper override for
+// every key it writes, and viper has no way to remove one — a later
+// ReadInConfig cannot outrank it. So a long-lived process (the TUI, the Mac
+// agent, serve) that set a key and then unset it kept reading the value that
+// had just been deleted from the file, while Source correctly said "default".
+// The value is therefore computed from the file, the environment and the
+// schema, and the stale override is overwritten with it. Found by adversarial
+// review.
 func effectiveAfterUnset(spec KeySpec) any {
 	if _, err := LoadRaw(); err != nil {
 		// The write already landed and the patched document was parsed before
 		// it was written, so a load failure here says something about the rest
 		// of the file, not about this key. The schema default is the honest
 		// answer when the file cannot be believed.
+		Set(spec.Key, spec.Default)
 		return spec.Default
 	}
-	return Get(spec.Key)
+	value := spec.Default
+	if env := envBindings[spec.Key]; env != "" {
+		if raw, ok := os.LookupEnv(env); ok {
+			value = raw
+			if coerced, err := coerceToSpec(spec, raw); err == nil {
+				value = coerced
+			}
+		}
+	}
+	Set(spec.Key, value)
+	return value
 }
 
 // removeKeyFromFile patches the source text, checks the key really is gone,
@@ -90,7 +111,7 @@ func effectiveAfterUnset(spec KeySpec) any {
 func removeKeyFromFile(data []byte, doc *yaml.Node, segments []string, path, key string) (string, error) {
 	patched, removed, err := deleteConfigKey(data, doc, segments)
 	if err != nil {
-		return "", writeFailed(key, "updating config", err)
+		return "", writeOrShapeFailed(key, "updating config", err)
 	}
 	if !removed {
 		return "", writeFailed(key, "updating config", fmt.Errorf("%s was not found in the document", key))
