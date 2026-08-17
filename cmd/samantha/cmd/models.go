@@ -72,6 +72,65 @@ var modelsStatusCmd = &cobra.Command{
 	},
 }
 
+// qwenTierStatusRows returns one additive AssetStatus row per known Qwen3-TTS
+// model tier (0.6b, 1.7b), reusing the already-computed native inspection so
+// the coarse "tts.qwen3.native" row and these per-tier rows never disagree.
+// A tier not in native.TiersReady is reported missing; when the package
+// itself is not installed at all (both TiersReady/TiersMissing empty), every
+// tier's Missing path falls back to the package root, matching the coarse
+// row's own behaviour. nativeURL is the configured qwen_tts_native_url, used
+// only to compute the fail-closed detail for a missing 1.7b tier.
+func qwenTierStatusRows(native managedqwen.NativeStatus, nativeURL string) []config.AssetStatus {
+	packageAbsent := len(native.TiersReady) == 0 && len(native.TiersMissing) == 0
+	tiers := []string{managedqwen.DefaultModelTier, managedqwen.Tier1_7B}
+
+	rows := make([]config.AssetStatus, 0, len(tiers))
+	for _, tier := range tiers {
+		installed := false
+		for _, ready := range native.TiersReady {
+			if ready == tier {
+				installed = true
+				break
+			}
+		}
+		row := config.AssetStatus{
+			ID:        "tts.qwen3.tier." + tier,
+			Name:      "Qwen3-TTS model tier " + tier,
+			Provider:  managedqwen.ProviderName,
+			Mode:      "customvoice",
+			Kind:      config.AssetKindTTS,
+			Installed: installed,
+		}
+		if !installed {
+			if packageAbsent {
+				row.Missing = []string{native.Root}
+			} else {
+				row.Missing = []string{filepath.Join(native.ModelDir, tier)}
+			}
+			row.Detail = qwenTierFailClosedDetail(nativeURL, tier)
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// qwenTierFailClosedDetail explains why a missing tier cannot simply be
+// re-fetched: today only the pinned default release is known to ship 0.6b
+// alone, so 1.7b fails closed unless a multi-tier tarball is configured
+// (mirrors the fail-fast check in qwen.EnsureNative). Every other case
+// returns "" — a plain "missing" is self-explanatory.
+func qwenTierFailClosedDetail(configuredURL, tier string) string {
+	if tier != managedqwen.Tier1_7B {
+		return ""
+	}
+	defaultURL, _ := managedqwen.DefaultNativeRelease()
+	effective := managedqwen.ResolveNativeURL(configuredURL)
+	if effective == "" || effective == defaultURL {
+		return "not in the pinned release — set qwen_tts_native_url to a multi-tier tarball"
+	}
+	return ""
+}
+
 // runModelsStatus resolves the asset manifest for cfg and req and reports each
 // asset's installed/missing state under modelsDir. It is read-only and never
 // downloads.
@@ -97,6 +156,7 @@ func runModelsStatus(cmd *cobra.Command, cfg *config.Config, modelsDir string, r
 			Provider: managedqwen.ProviderName, Mode: "customvoice", Kind: config.AssetKindTTS,
 			Installed: native.Installed, Missing: missing,
 		})
+		statuses = append(statuses, qwenTierStatusRows(native, cfg.QwenTTSNativeURL)...)
 	}
 
 	out := cmd.OutOrStdout()
