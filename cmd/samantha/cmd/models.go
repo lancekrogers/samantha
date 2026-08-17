@@ -437,7 +437,7 @@ var ensureQwenTierFn = config.EnsureQwenTTSTier
 // qwenPersonaTiers returns the distinct native tiers persona profiles route
 // speech through. Profiles without a pinned tier need the app-level one.
 func qwenPersonaTiers(cfg *config.Config) []string {
-	profiles, err := persona.List()
+	profiles, err := personaProfilesFn()
 	if err != nil {
 		return nil
 	}
@@ -459,6 +459,49 @@ func qwenPersonaTiers(cfg *config.Config) []string {
 	}
 	sort.Strings(tiers)
 	return tiers
+}
+
+// personaProfilesFn lists persona profiles; tests swap it so no test ever
+// reads the real install root.
+var personaProfilesFn = persona.List
+
+// requiredAssets resolves everything the install references — the global
+// config, every persona, and every config-referenced asset — as the set clean
+// must never touch.
+//
+// It fails closed: a persona that cannot be listed or resolved aborts the
+// clean rather than shrinking the required set. Before this existed, "required"
+// meant the global manifest alone, so personas pinned to a provider the global
+// config did not select had their models classified as unused.
+func requiredAssets(ctx context.Context, cfg *config.Config, modelsDir string) (config.RequiredSet, error) {
+	personas, err := cleanPersonaSources(cfg)
+	if err != nil {
+		return config.RequiredSet{}, err
+	}
+	return config.RequiredAssetPaths(ctx, cfg, modelsDir, personas)
+}
+
+// cleanPersonaSources derives each persona's effective config through
+// persona.Apply, the same overlay the running agent uses, so the assets a
+// persona speaks through are exactly the ones protected.
+//
+// Each persona gets its own copy of cfg. Apply only writes scalar fields, so
+// the shallow copy never mutates the caller's config.
+func cleanPersonaSources(cfg *config.Config) ([]config.PersonaAssets, error) {
+	profiles, err := personaProfilesFn()
+	if err != nil {
+		return nil, err
+	}
+	sources := make([]config.PersonaAssets, 0, len(profiles))
+	for _, profile := range profiles {
+		if profile == nil {
+			return nil, fmt.Errorf("persona profile could not be resolved")
+		}
+		derived := *cfg
+		persona.Apply(&derived, profile)
+		sources = append(sources, config.PersonaAssets{ID: profile.ID, Cfg: &derived})
+	}
+	return sources, nil
 }
 
 var modelsCleanCmd = &cobra.Command{
@@ -484,30 +527,13 @@ func runModelsClean(cmd *cobra.Command, cfg *config.Config, modelsDir string, un
 		return fmt.Errorf("models clean: choose exactly one of --dry-run or --yes")
 	}
 
-	manifest, err := config.ManifestFor(cfg, config.DefaultAssetRequest(cfg))
+	required, err := requiredAssets(cmd.Context(), cfg, modelsDir)
+	if err != nil {
+		return fmt.Errorf("clean: cannot determine required assets: %w", err)
+	}
+	candidates, err := required.CleanCandidates(cmd.Context())
 	if err != nil {
 		return err
-	}
-	candidates, err := manifest.CleanCandidates(cmd.Context(), modelsDir)
-	if err != nil {
-		return err
-	}
-	if cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), managedqwen.ProviderName) &&
-		managedqwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
-		// Preserve models/qwen3-tts when a native package is installed (the whole
-		// tree is one clean candidate). Delete that directory by hand if junk remains.
-		qwenRoot := managedqwen.NativeInstallPaths(modelsDir).Root
-		nativeOK := managedqwen.InspectNative(modelsDir, cfg.QwenTTSModelTier).Installed
-		kept := candidates[:0]
-		for _, candidate := range candidates {
-			rel, relErr := filepath.Rel(qwenRoot, candidate.Path)
-			underQwen := relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-			if underQwen && nativeOK {
-				continue
-			}
-			kept = append(kept, candidate)
-		}
-		candidates = kept
 	}
 
 	out := cmd.OutOrStdout()

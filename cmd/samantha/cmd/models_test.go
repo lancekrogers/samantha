@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/lancekrogers/samantha/internal/persona"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 )
 
@@ -316,8 +317,33 @@ func TestModelsEnsureReportsAllPresentWhenNothingNeeded(t *testing.T) {
 	}
 }
 
+// stubPersonas swaps the persona lister for the duration of t so no test ever
+// reads the real install root, and so a test can pin the exact persona set the
+// required-asset computation sees.
+func stubPersonas(t *testing.T, profiles []*persona.Profile, err error) {
+	t.Helper()
+	original := personaProfilesFn
+	personaProfilesFn = func() ([]*persona.Profile, error) { return profiles, err }
+	t.Cleanup(func() { personaProfilesFn = original })
+}
+
+// qwenPersonaProfile is a profile that speaks through the native Qwen3-TTS
+// package at tier, whatever the app-level provider is.
+func qwenPersonaProfile(id, tier string) *persona.Profile {
+	return &persona.Profile{
+		Schema:      persona.Schema,
+		ID:          id,
+		DisplayName: id,
+		TTS:         persona.TTS{Provider: "qwen3-tts", Tier: tier},
+		Prompts:     persona.PromptRefs{Persona: id},
+	}
+}
+
 func runClean(t *testing.T, cfg *config.Config, modelsDir string, unused, dryRun, yes, asJSON bool) (string, error) {
 	t.Helper()
+	if personaProfilesFn == nil {
+		t.Fatal("persona lister is not stubbed")
+	}
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	var buf bytes.Buffer
@@ -327,6 +353,7 @@ func runClean(t *testing.T, cfg *config.Config, modelsDir string, unused, dryRun
 }
 
 func TestModelsCleanFlagValidation(t *testing.T) {
+	stubPersonas(t, nil, nil)
 	cases := []struct {
 		name    string
 		unused  bool
@@ -353,6 +380,7 @@ func TestModelsCleanFlagValidation(t *testing.T) {
 }
 
 func TestModelsCleanDryRunReportsOnlyExtras(t *testing.T) {
+	stubPersonas(t, nil, nil)
 	// VAD-only config: silero_vad.onnx is required, everything else is extra.
 	cfg := &config.Config{STTProvider: "none", TTSProvider: "none", VADEnabled: true}
 	dir := t.TempDir()
@@ -380,6 +408,7 @@ func TestModelsCleanDryRunReportsOnlyExtras(t *testing.T) {
 }
 
 func TestModelsCleanDryRunReportsNoCandidates(t *testing.T) {
+	stubPersonas(t, nil, nil)
 	cfg := &config.Config{STTProvider: "none", TTSProvider: "none", VADEnabled: false}
 
 	out, err := runClean(t, cfg, t.TempDir(), true, true, false, false)
@@ -392,6 +421,7 @@ func TestModelsCleanDryRunReportsNoCandidates(t *testing.T) {
 }
 
 func TestModelsCleanJSONIsMachineReadable(t *testing.T) {
+	stubPersonas(t, nil, nil)
 	cfg := &config.Config{STTProvider: "none", TTSProvider: "none", VADEnabled: false}
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "stale.bin"), []byte("data"), 0o644); err != nil {
@@ -412,6 +442,7 @@ func TestModelsCleanJSONIsMachineReadable(t *testing.T) {
 }
 
 func TestModelsCleanYesDeletesOnlyExtras(t *testing.T) {
+	stubPersonas(t, nil, nil)
 	cfg := &config.Config{STTProvider: "none", TTSProvider: "none", VADEnabled: true}
 	dir := t.TempDir()
 	required := filepath.Join(dir, "silero_vad.onnx")
@@ -450,6 +481,7 @@ func TestModelsCleanYesDeletesOnlyExtras(t *testing.T) {
 }
 
 func TestModelsCleanYesJSONReportsDeletedCandidates(t *testing.T) {
+	stubPersonas(t, nil, nil)
 	cfg := &config.Config{STTProvider: "none", TTSProvider: "none", VADEnabled: false}
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "stale.bin"), []byte("data"), 0o644); err != nil {
@@ -479,4 +511,61 @@ func TestModelsCleanCommandRegistersFlags(t *testing.T) {
 
 func contains(s, sub string) bool {
 	return bytes.Contains([]byte(s), []byte(sub))
+}
+
+func TestModelsCleanFailsClosedWhenPersonasCannotBeListed(t *testing.T) {
+	// A required set that cannot see every persona is a required set that
+	// classifies a persona's models as unused. Refuse instead.
+	stubPersonas(t, nil, errors.New("personas/veronica/persona.yaml: unreadable"))
+	dir := t.TempDir()
+	stale := filepath.Join(dir, "stale.bin")
+	if err := os.WriteFile(stale, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, yes := range []bool{false, true} {
+		out, err := runClean(t, fullCfg(), dir, true, !yes, yes, false)
+		if err == nil || !contains(err.Error(), "clean: cannot determine required assets") {
+			t.Fatalf("clean error = %v, want it to refuse with an unresolved required set", err)
+		}
+		if contains(out, "candidate") {
+			t.Errorf("a refused clean must list nothing:\n%s", out)
+		}
+		if _, statErr := os.Stat(stale); statErr != nil {
+			t.Fatalf("a refused clean must delete nothing: %v", statErr)
+		}
+	}
+}
+
+func TestModelsCleanKeepsPersonaPinnedQwenPackage(t *testing.T) {
+	// The 2026-08-17 incident: global TTS is kokoro, six personas speak
+	// through the native qwen package, and clean deleted 6 GB of it.
+	stubPersonas(t, []*persona.Profile{qwenPersonaProfile("veronica", "0.6b")}, nil)
+	cfg := &config.Config{STTProvider: "none", TTSProvider: "kokoro", VADEnabled: false}
+	dir := t.TempDir()
+	worker := filepath.Join(dir, "qwen3-tts", "bin", "qwen3-tts-worker")
+	if err := os.MkdirAll(filepath.Dir(worker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(worker, []byte("worker"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(dir, "stale.bin")
+	if err := os.WriteFile(stale, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runClean(t, cfg, dir, true, false, true, false)
+	if err != nil {
+		t.Fatalf("runModelsClean() error = %v", err)
+	}
+	if _, statErr := os.Stat(worker); statErr != nil {
+		t.Fatalf("persona-pinned qwen package was deleted: %v", statErr)
+	}
+	if contains(out, "qwen3-tts") {
+		t.Errorf("qwen package must never be offered as a candidate:\n%s", out)
+	}
+	if _, statErr := os.Stat(stale); !os.IsNotExist(statErr) {
+		t.Errorf("clean --yes should still remove real leftovers")
+	}
 }

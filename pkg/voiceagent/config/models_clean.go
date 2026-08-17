@@ -36,16 +36,15 @@ type CleanApplyResult struct {
 // its whole extraction footprint (every file it extracts), never just the small
 // CheckFiles subset, so a currently-selected archive's files are never reported
 // as removable — see requiredPaths.
+//
+// It sees only the global configuration. Prefer RequiredAssetPaths plus
+// RequiredSet.CleanCandidates: a manifest alone knows nothing about persona
+// profiles or config keys the current mode does not load, which is how the
+// 2026-08-17 clean deleted six personas' TTS runtime.
 func (m AssetManifest) CleanCandidates(ctx context.Context, modelsDir string) ([]CleanCandidate, error) {
 	modelsDir = filepath.Clean(modelsDir)
-	own := m.requiredPaths(modelsDir)
-
-	candidates := []CleanCandidate{}
-	err := collectCandidates(ctx, modelsDir, own, own.suppressRoot, &candidates)
-	if err != nil {
-		return nil, err
-	}
-	return candidates, nil
+	set := RequiredSet{ModelsDir: modelsDir, own: m.requiredPaths(modelsDir)}
+	return set.CleanCandidates(ctx)
 }
 
 // DeleteCleanCandidates removes the exact candidate paths after re-validating
@@ -117,42 +116,60 @@ type ownership struct {
 //     can't be enumerated, so suppressRoot conservatively hides all top-level
 //     entries instead of risking a false positive.
 func (m AssetManifest) requiredPaths(modelsDir string) ownership {
-	own := ownership{required: map[string]bool{}, parents: map[string]bool{}}
-	add := func(p string) {
-		own.required[p] = true
-		for dir := filepath.Dir(p); len(dir) > len(modelsDir); dir = filepath.Dir(dir) {
-			own.parents[dir] = true
-		}
-	}
+	own := newOwnership()
 	for _, a := range m.Assets {
-		if a.IsArchive() && a.TargetDir != "" {
-			// Own the whole extraction target; ancestors are marked as parents so
-			// a nested target dir is still reached.
-			add(filepath.Join(modelsDir, a.TargetDir))
-			continue
+		paths, suppressRoot := a.ownedPaths(modelsDir)
+		for _, p := range paths {
+			own.add(p, modelsDir)
 		}
-		for _, p := range a.installPaths(modelsDir) {
-			add(p)
-		}
-		if !a.IsArchive() {
-			continue
-		}
-		// Root-extracting archive.
-		if a.Archive.SHA256 != "" {
-			add(archiveInstallMarkerPath(modelsDir, a.ID))
-		}
-		files, hasMarker := archiveMarkerFiles(modelsDir, a.ID)
-		switch {
-		case len(files) > 0:
-			for _, f := range files {
-				add(filepath.Join(modelsDir, f))
-			}
-		case hasMarker || archiveExtracted(modelsDir, a.CheckFiles):
-			// Installed but footprint unknown: be conservative.
-			own.suppressRoot = true
-		}
+		own.suppressRoot = own.suppressRoot || suppressRoot
 	}
 	return own
+}
+
+// newOwnership returns an empty ownership map set.
+func newOwnership() ownership {
+	return ownership{required: map[string]bool{}, parents: map[string]bool{}}
+}
+
+// add records p as owned and every directory between it and modelsDir as a
+// parent, so a required file never hides its whole containing directory.
+func (o *ownership) add(p, modelsDir string) {
+	o.required[p] = true
+	for dir := filepath.Dir(p); len(dir) > len(modelsDir); dir = filepath.Dir(dir) {
+		o.parents[dir] = true
+	}
+}
+
+// ownedPaths resolves the paths one asset owns under modelsDir, following the
+// ownership-by-shape rules documented on requiredPaths. suppressRoot reports a
+// root-extracting archive that is installed but whose footprint cannot be
+// enumerated, so no top-level entry may be reported at all.
+func (a Asset) ownedPaths(modelsDir string) (paths []string, suppressRoot bool) {
+	if a.IsArchive() && a.TargetDir != "" {
+		// Own the whole extraction target; ancestors are marked as parents so
+		// a nested target dir is still reached.
+		return []string{filepath.Join(modelsDir, a.TargetDir)}, false
+	}
+	paths = append(paths, a.installPaths(modelsDir)...)
+	if !a.IsArchive() {
+		return paths, false
+	}
+	// Root-extracting archive.
+	if a.Archive.SHA256 != "" {
+		paths = append(paths, archiveInstallMarkerPath(modelsDir, a.ID))
+	}
+	files, hasMarker := archiveMarkerFiles(modelsDir, a.ID)
+	switch {
+	case len(files) > 0:
+		for _, f := range files {
+			paths = append(paths, filepath.Join(modelsDir, f))
+		}
+	case hasMarker || archiveExtracted(modelsDir, a.CheckFiles):
+		// Installed but footprint unknown: be conservative.
+		suppressRoot = true
+	}
+	return paths, suppressRoot
 }
 
 // collectCandidates walks dir without following symlinks. Entries that are
