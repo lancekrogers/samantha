@@ -115,6 +115,17 @@ type personaResultJSON struct {
 	Applies appliesJSON      `json:"applies"`
 }
 
+// personaDeleteJSON is the body of `persona delete --json`.
+type personaDeleteJSON struct {
+	Deleted string   `json:"deleted"`
+	Removed []string `json:"removed"`
+	// Kept names documents another persona owns, so a UI can explain why the
+	// directory did not disappear whole.
+	Kept          []string `json:"kept"`
+	ActivePersona string   `json:"active_persona"`
+	Reactivated   bool     `json:"reactivated"`
+}
+
 // personaCreateJSON is the body of `persona create --json`.
 type personaCreateJSON struct {
 	Persona   *persona.Profile `json:"persona"`

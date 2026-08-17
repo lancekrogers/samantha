@@ -27,6 +27,7 @@ func newPersonaCmd() *cobra.Command {
 	cmd.AddCommand(personaUseCmd())
 	cmd.AddCommand(personaCreateCmd())
 	cmd.AddCommand(personaEditCmd())
+	cmd.AddCommand(personaDeleteCmd())
 	return cmd
 }
 
