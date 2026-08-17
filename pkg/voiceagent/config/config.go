@@ -4,9 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -710,55 +707,22 @@ func save() error {
 	return v.WriteConfigAs(configFile)
 }
 
-// SetAndSave updates a value and persists to disk.
+// SetAndSave updates one already-typed value and persists it.
+//
+// It is a thin wrapper over SetKeyFile so the TUI writes through the same
+// surgical writer as the CLI and the Mac app: only the changed key's line is
+// rewritten, and comments and key order survive.
 func SetAndSave(key string, value any) error {
-	mu.Lock()
-	defer mu.Unlock()
-	v.Set(key, value)
-	return save()
+	_, err := SetKeyFileValue(key, value)
+	return err
 }
 
-// ValidateAndSet coerces raw to the type of key's current effective value and
-// persists it, rejecting unknown keys so a typo can't corrupt the config file.
+// ValidateAndSet coerces raw by key's schema type and persists it, rejecting
+// unknown keys so a typo can't corrupt the config file. The name is kept for
+// the callers that already use it; the behaviour is SetKeyFile's.
 func ValidateAndSet(key, raw string) error {
-	key = strings.ToLower(key)
-	keys := AllKeys()
-	if !slices.Contains(keys, key) {
-		sort.Strings(keys)
-		return fmt.Errorf("unknown config key %q (valid keys: %s)", key, strings.Join(keys, ", "))
-	}
-	value, err := coerceValue(Get(key), raw)
-	if err != nil {
-		return fmt.Errorf("invalid value for %s: %w", key, err)
-	}
-	return SetAndSave(key, value)
-}
-
-// coerceValue converts raw to the type of current so persisted values keep
-// unmarshalling into Config.
-func coerceValue(current any, raw string) (any, error) {
-	switch current.(type) {
-	case bool:
-		b, err := strconv.ParseBool(raw)
-		if err != nil {
-			return nil, fmt.Errorf("expected true or false, got %q", raw)
-		}
-		return b, nil
-	case int, int64:
-		n, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("expected an integer, got %q", raw)
-		}
-		return n, nil
-	case float64:
-		f, err := strconv.ParseFloat(raw, 64)
-		if err != nil {
-			return nil, fmt.Errorf("expected a number, got %q", raw)
-		}
-		return f, nil
-	default:
-		return raw, nil
-	}
+	_, err := SetKeyFile(key, raw)
+	return err
 }
 
 // AllSettings returns all config as a map.

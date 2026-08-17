@@ -772,9 +772,9 @@ func TestValidateAndSetRejects(t *testing.T) {
 		wantErr string
 	}{
 		{"unknown key", "vad_treshold", "0.5", "unknown config key"},
-		{"bad bool", "vad_enabled", "high", "expected true or false"},
-		{"bad int", "max_history", "many", "expected an integer"},
-		{"bad float", "vad_threshold", "high", "expected a number"},
+		{"bad bool", "vad_enabled", "high", "vad_enabled expects true or false"},
+		{"bad int", "max_history", "many", "max_history expects a whole number between 1 and 100"},
+		{"bad float", "vad_threshold", "high", "vad_threshold expects a number between 0 and 1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -218,17 +218,11 @@ func migrationYAMLDocument(data []byte) (*yaml.Node, error) {
 	return &doc, nil
 }
 
+// setYAMLScalar writes a top-level string key. It is setYAMLValue narrowed to
+// the STT migration's shape (one segment, always a string), so both writers
+// share one implementation.
 func setYAMLScalar(mapping *yaml.Node, key, value string) {
-	for i := 0; i+1 < len(mapping.Content); i += 2 {
-		if mapping.Content[i].Value == key {
-			mapping.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
-			return
-		}
-	}
-	mapping.Content = append(mapping.Content,
-		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
-		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
-	)
+	_ = setYAMLValue(mapping, []string{key}, value)
 }
 
 func encodeYAMLDocument(doc *yaml.Node) ([]byte, error) {
