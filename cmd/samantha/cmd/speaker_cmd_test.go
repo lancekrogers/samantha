@@ -95,6 +95,63 @@ func TestSpeakerListJSONCarriesStaleness(t *testing.T) {
 	}
 }
 
+func TestSpeakerRemoveJSONPrintsConfirmation(t *testing.T) {
+	dir := t.TempDir()
+	store, err := speaker.OpenEnrollment(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Add(context.Background(), "Lance", "rev", [][]float32{{1, 2}}); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newSpeakerCmd(speakerTestConfig(dir))
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"remove", "Lance", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("speaker remove --json: %v", err)
+	}
+
+	var got struct {
+		Removed string `json:"removed"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode confirmation: %v\noutput: %s", err, out.String())
+	}
+	if got.Removed != "Lance" {
+		t.Fatalf("removed = %q, want %q", got.Removed, "Lance")
+	}
+
+	reopened, err := speaker.OpenEnrollment(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reopened.List()) != 0 {
+		t.Fatalf("profile still enrolled after remove: %+v", reopened.List())
+	}
+}
+
+func TestSpeakerRemoveJSONUnknownNameErrorsWithoutJSONOnStdout(t *testing.T) {
+	dir := t.TempDir()
+	cmd := newSpeakerCmd(speakerTestConfig(dir))
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"remove", "ghost", "--json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("remove of an unknown speaker must fail")
+	}
+	if !strings.Contains(err.Error(), `no speaker named "ghost" is enrolled`) {
+		t.Fatalf("error = %q, want the standard not-enrolled message", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("stdout must stay empty on error, got %q", out.String())
+	}
+}
+
 func TestSpeakerRenameJSONPrintsProfile(t *testing.T) {
 	dir := t.TempDir()
 	store, err := speaker.OpenEnrollment(dir)

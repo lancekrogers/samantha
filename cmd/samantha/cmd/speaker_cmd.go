@@ -187,7 +187,8 @@ func newSpeakerListCmd(loadConfig configLoader) *cobra.Command {
 }
 
 func newSpeakerRemoveCmd(loadConfig configLoader) *cobra.Command {
-	return &cobra.Command{
+	var jsonOut bool
+	cmd := &cobra.Command{
 		Use:           "remove <name>",
 		Short:         "Remove an enrolled speaker and delete its stored embedding",
 		Args:          cobra.ExactArgs(1),
@@ -208,10 +209,19 @@ func newSpeakerRemoveCmd(loadConfig configLoader) *cobra.Command {
 				}
 				return err
 			}
+			if jsonOut {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(struct {
+					Removed string `json:"removed"`
+				}{Removed: args[0]})
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Removed %q (embedding deleted from disk)\n", args[0])
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print a decodable confirmation as JSON")
+	return cmd
 }
 
 func newSpeakerRenameCmd(loadConfig configLoader) *cobra.Command {
