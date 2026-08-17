@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -67,6 +68,49 @@ var modelsStatusCmd = &cobra.Command{
 	},
 }
 
+// qwenTierIDPrefix is the id namespace of the per-tier rows. Shared by the row
+// builder and the human printer so the two cannot drift.
+const qwenTierIDPrefix = "tts.qwen3.tier."
+
+// qwenStatusRows returns the Qwen3-TTS rows for a TTS-covering status request.
+//
+// The two kinds of row answer different questions and so have different gates.
+// The coarse "tts.qwen3.native" row answers "does the configuration I am
+// running need this package, and is it here?" — it belongs to a config that
+// actually selects managed qwen. The per-tier rows answer "which model tiers
+// are on this disk?", which the Mac app's tier picker has to know *before* the
+// user switches tts_provider (spec 55-models §3.2 installs and verifies a tier,
+// then saves the key). Gating those on the active provider is what left
+// `models status --json --all` with no tier rows at all for a kokoro user.
+// The second return value reports whether this configuration actually selects
+// managed qwen, which is what tells the human view whether a missing tier is a
+// real gap or just an offer.
+func qwenStatusRows(cfg *config.Config, modelsDir string) ([]config.AssetStatus, bool) {
+	if cfg == nil {
+		return nil, false
+	}
+	native := managedqwen.InspectNative(modelsDir, cfg.QwenTTSModelTier)
+	active := strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), managedqwen.ProviderName) &&
+		managedqwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel)
+	var rows []config.AssetStatus
+	if active {
+		missing := []string(nil)
+		if !native.Installed {
+			missing = []string{native.Root}
+		}
+		name := "Qwen3-TTS native package"
+		if native.DefaultTier != "" {
+			name += " (" + native.DefaultTier + ")"
+		}
+		rows = append(rows, config.AssetStatus{
+			ID: "tts.qwen3.native", Name: name,
+			Provider: managedqwen.ProviderName, Mode: "customvoice", Kind: config.AssetKindTTS,
+			Installed: native.Installed, Missing: missing,
+		})
+	}
+	return append(rows, qwenTierStatusRows(native, cfg.QwenTTSNativeURL)...), active
+}
+
 // qwenTierStatusRows returns one additive AssetStatus row per known Qwen3-TTS
 // model tier (0.6b, 1.7b), reusing the already-computed native inspection so
 // the coarse "tts.qwen3.native" row and these per-tier rows never disagree.
@@ -89,7 +133,7 @@ func qwenTierStatusRows(native managedqwen.NativeStatus, nativeURL string) []con
 			}
 		}
 		row := config.AssetStatus{
-			ID:        "tts.qwen3.tier." + tier,
+			ID:        qwenTierIDPrefix + tier,
 			Name:      "Qwen3-TTS model tier " + tier,
 			Provider:  managedqwen.ProviderName,
 			Mode:      "customvoice",
@@ -132,6 +176,20 @@ func qwenTierFailClosedDetail(configuredURL, tier string) string {
 	return ""
 }
 
+// missingHint is the human line for a row that is not installed. A Qwen tier
+// row names its own --tier flag: a bare `models ensure` installs the tier the
+// config points at, so it would silently do nothing for the other one — and
+// nothing at all when qwen is not the configured provider.
+func missingHint(s config.AssetStatus) string {
+	if d := strings.TrimSpace(s.Detail); d != "" {
+		return d
+	}
+	if tier, ok := strings.CutPrefix(s.ID, qwenTierIDPrefix); ok {
+		return "missing — run 'samantha models ensure --tts --tier " + tier + "'"
+	}
+	return "missing — run 'samantha models ensure'"
+}
+
 // runModelsStatus resolves the asset manifest for cfg and req and reports each
 // asset's installed/missing state under modelsDir. It is read-only and never
 // downloads.
@@ -141,23 +199,11 @@ func runModelsStatus(cmd *cobra.Command, cfg *config.Config, modelsDir string, r
 		return err
 	}
 	statuses := manifest.Status(modelsDir)
-	if req.NeedTTS && cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), managedqwen.ProviderName) &&
-		managedqwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
-		native := managedqwen.InspectNative(modelsDir, cfg.QwenTTSModelTier)
-		missing := []string(nil)
-		if !native.Installed {
-			missing = []string{native.Root}
-		}
-		name := "Qwen3-TTS native package"
-		if native.DefaultTier != "" {
-			name += " (" + native.DefaultTier + ")"
-		}
-		statuses = append(statuses, config.AssetStatus{
-			ID: "tts.qwen3.native", Name: name,
-			Provider: managedqwen.ProviderName, Mode: "customvoice", Kind: config.AssetKindTTS,
-			Installed: native.Installed, Missing: missing,
-		})
-		statuses = append(statuses, qwenTierStatusRows(native, cfg.QwenTTSNativeURL)...)
+	qwenActive := false
+	if req.NeedTTS {
+		var qwenRows []config.AssetStatus
+		qwenRows, qwenActive = qwenStatusRows(cfg, modelsDir)
+		statuses = append(statuses, qwenRows...)
 	}
 
 	out := cmd.OutOrStdout()
@@ -166,24 +212,33 @@ func runModelsStatus(cmd *cobra.Command, cfg *config.Config, modelsDir string, r
 		enc.SetIndent("", "  ")
 		return enc.Encode(statuses)
 	}
+	printModelStatuses(out, modelsDir, statuses, qwenActive)
+	return nil
+}
 
+// printModelStatuses renders the human table. A Qwen tier row belonging to a
+// configuration that does not select qwen is listed but kept out of the missing
+// count: it is install state the Models screen asks for, not an asset this
+// configuration needs, and counting it would tell a kokoro user their install
+// is incomplete no matter what they install.
+func printModelStatuses(out io.Writer, modelsDir string, statuses []config.AssetStatus, qwenActive bool) {
 	fmt.Fprintf(out, "\n  Model assets (models dir: %s)\n\n", modelsDir)
 	if len(statuses) == 0 {
 		fmt.Fprintln(out, "  No model assets required for the current configuration.")
 		fmt.Fprintln(out)
-		return nil
+		return
 	}
 
-	missing := 0
+	missing, offered := 0, 0
 	for _, s := range statuses {
 		state := "installed"
 		if !s.Installed {
-			if d := strings.TrimSpace(s.Detail); d != "" {
-				state = d
+			state = missingHint(s)
+			if !qwenActive && strings.HasPrefix(s.ID, qwenTierIDPrefix) {
+				offered++
 			} else {
-				state = "missing — run 'samantha models ensure'"
+				missing++
 			}
-			missing++
 		}
 		mode := ""
 		if s.Mode != "" {
@@ -191,8 +246,12 @@ func runModelsStatus(cmd *cobra.Command, cfg *config.Config, modelsDir string, r
 		}
 		fmt.Fprintf(out, "  [%s] %s (%s%s) — %s\n", s.Kind, s.Name, s.Provider, mode, state)
 	}
+	if offered > 0 {
+		fmt.Fprintf(out, "\n  %d asset(s), %d missing (plus %d optional Qwen3-TTS tier(s) not installed).\n\n",
+			len(statuses), missing, offered)
+		return
+	}
 	fmt.Fprintf(out, "\n  %d asset(s), %d missing.\n\n", len(statuses), missing)
-	return nil
 }
 
 var modelsEnsureCmd = &cobra.Command{

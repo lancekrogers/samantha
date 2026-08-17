@@ -153,3 +153,166 @@ func TestModelsStatusJSONIncludesQwenTierRows(t *testing.T) {
 		t.Errorf("missing per-tier rows, got statuses %+v", statuses)
 	}
 }
+
+// --- M6: the tier rows are reported for any TTS-covering request ---
+
+// modelsStatusFixture decodes a captured `models status --json --all` payload
+// and proves the fixture is byte-for-byte what []config.AssetStatus encodes —
+// a field added to the type without re-capturing fails here rather than in the
+// Mac app.
+func modelsStatusFixture(t *testing.T, name string) []config.AssetStatus {
+	t.Helper()
+	raw := readFixture(t, name)
+
+	var statuses []config.AssetStatus
+	if err := json.Unmarshal([]byte(raw), &statuses); err != nil {
+		t.Fatalf("fixture %s is not a []config.AssetStatus: %v", name, err)
+	}
+	encoded, err := json.MarshalIndent(statuses, "", "  ")
+	if err != nil {
+		t.Fatalf("re-encoding %s: %v", name, err)
+	}
+	if string(encoded)+"\n" != raw {
+		t.Errorf("fixture %s does not round-trip — re-run testdata/capture-models-fixtures.sh\n--- want ---\n%s\n--- got ---\n%s",
+			name, raw, string(encoded)+"\n")
+	}
+	return statuses
+}
+
+func statusByID(statuses []config.AssetStatus) map[string]config.AssetStatus {
+	byID := make(map[string]config.AssetStatus, len(statuses))
+	for _, s := range statuses {
+		byID[s.ID] = s
+	}
+	return byID
+}
+
+// The acceptance run's own configuration: tts_provider kokoro, nothing
+// installed. It reported five rows and no tier rows at all, so the Mac app had
+// no way to show tier install state (defect M6). The tier rows must be there —
+// missing, but there — because the app's tier picker runs before the user
+// switches provider.
+func TestModelsStatusKokoroFixtureStillCarriesTierRows(t *testing.T) {
+	byID := statusByID(modelsStatusFixture(t, "models-status-kokoro-no-tiers.json"))
+
+	if _, ok := byID["tts.qwen3.native"]; ok {
+		t.Error("coarse tts.qwen3.native row present for a kokoro config; it describes an asset this config does not need")
+	}
+	for _, tier := range []string{"0.6b", "1.7b"} {
+		row, ok := byID[qwenTierIDPrefix+tier]
+		if !ok {
+			t.Fatalf("no %s%s row — this is defect M6", qwenTierIDPrefix, tier)
+		}
+		if row.Installed {
+			t.Errorf("%s installed = true, want false (nothing is installed in this fixture)", row.ID)
+		}
+		if len(row.Missing) == 0 {
+			t.Errorf("%s carries no missing path", row.ID)
+		}
+		if row.Kind != config.AssetKindTTS || row.Provider != managedqwen.ProviderName || row.Mode != "customvoice" {
+			t.Errorf("%s = %+v, want kind tts / provider %s / mode customvoice", row.ID, row, managedqwen.ProviderName)
+		}
+	}
+	if got := byID[qwenTierIDPrefix+"1.7b"].Detail; got == "" {
+		t.Error("1.7b row lost its fail-closed detail")
+	}
+}
+
+// The other end: a real native package carrying both tiers. installed comes
+// from InspectNative's TiersReady, and the coarse row is back because this
+// config does select managed qwen.
+func TestModelsStatusQwenFixtureReportsInstalledTiers(t *testing.T) {
+	byID := statusByID(modelsStatusFixture(t, "models-status-qwen-both-tiers.json"))
+
+	coarse, ok := byID["tts.qwen3.native"]
+	if !ok || !coarse.Installed {
+		t.Fatalf("coarse row = %+v, want it present and installed", coarse)
+	}
+	for _, tier := range []string{"0.6b", "1.7b"} {
+		row, ok := byID[qwenTierIDPrefix+tier]
+		if !ok {
+			t.Fatalf("no %s%s row", qwenTierIDPrefix, tier)
+		}
+		if !row.Installed {
+			t.Errorf("%s installed = false, want true (the package holds this tier)", row.ID)
+		}
+		if len(row.Missing) != 0 || row.Detail != "" {
+			t.Errorf("%s = %+v, want no missing paths and no detail once installed", row.ID, row)
+		}
+	}
+}
+
+// The gate is the request's TTS scope, not the configured provider.
+func TestModelsStatusTierRowsFollowTheTTSScope(t *testing.T) {
+	tests := []struct {
+		name       string
+		provider   string
+		scope      scopeFlags
+		wantTiers  bool
+		wantCoarse bool
+	}{
+		{name: "stt only asks for nothing qwen", provider: "kokoro", scope: scopeFlags{stt: true}},
+		{name: "vad only asks for nothing qwen", provider: "qwen3-tts", scope: scopeFlags{vad: true}},
+		{name: "kokoro with --all still reports tiers", provider: "kokoro", scope: scopeFlags{all: true}, wantTiers: true},
+		{name: "kokoro with --tts still reports tiers", provider: "kokoro", scope: scopeFlags{tts: true}, wantTiers: true},
+		// NeedTTS is ScopedAssetRequest's own answer (scope.TTS && ManagedTTS):
+		// with no TTS provider there is no TTS request at all, so there is
+		// nothing for the tier rows to ride on either.
+		{name: "no TTS provider means no TTS request", provider: "", scope: scopeFlags{all: true}},
+		{name: "qwen reports tiers and the coarse row", provider: "qwen3-tts", scope: scopeFlags{tts: true}, wantTiers: true, wantCoarse: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{TTSProvider: tt.provider, ModelsDir: t.TempDir()}
+			out := runStatusScoped(t, cfg, tt.scope, cfg.ModelsDir, true)
+
+			var statuses []config.AssetStatus
+			if err := json.Unmarshal([]byte(out), &statuses); err != nil {
+				t.Fatalf("--json output is not a []config.AssetStatus: %v\n%s", err, out)
+			}
+			byID := statusByID(statuses)
+			_, saw06 := byID[qwenTierIDPrefix+"0.6b"]
+			_, saw17 := byID[qwenTierIDPrefix+"1.7b"]
+			if saw06 != tt.wantTiers || saw17 != tt.wantTiers {
+				t.Errorf("tier rows present = %v/%v, want %v", saw06, saw17, tt.wantTiers)
+			}
+			if _, sawCoarse := byID["tts.qwen3.native"]; sawCoarse != tt.wantCoarse {
+				t.Errorf("coarse row present = %v, want %v", sawCoarse, tt.wantCoarse)
+			}
+		})
+	}
+}
+
+// A bare `models ensure` installs the tier the config points at, so it would do
+// nothing for the other tier — and nothing at all for a kokoro user. The human
+// line has to name the flag that does work.
+func TestMissingHintNamesTheTierFlag(t *testing.T) {
+	tests := []struct {
+		name string
+		row  config.AssetStatus
+		want string
+	}{
+		{
+			name: "a detail always wins",
+			row:  config.AssetStatus{ID: qwenTierIDPrefix + "1.7b", Detail: "not in the pinned release"},
+			want: "not in the pinned release",
+		},
+		{
+			name: "a tier row names its own flag",
+			row:  config.AssetStatus{ID: qwenTierIDPrefix + "0.6b"},
+			want: "missing — run 'samantha models ensure --tts --tier 0.6b'",
+		},
+		{
+			name: "any other row keeps the plain hint",
+			row:  config.AssetStatus{ID: "vad.silero.v1"},
+			want: "missing — run 'samantha models ensure'",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := missingHint(tt.row); got != tt.want {
+				t.Errorf("missingHint(%s) = %q, want %q", tt.row.ID, got, tt.want)
+			}
+		})
+	}
+}
