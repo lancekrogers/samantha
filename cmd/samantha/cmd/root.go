@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/fang"
-	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
 	"github.com/lancekrogers/samantha/internal/app"
@@ -133,18 +132,6 @@ func attachTranscriptLog(bus *events.Bus) (func(), error) {
 // Execute runs the root command.
 func Execute() error {
 	return fang.Execute(context.Background(), rootCmd)
-}
-
-func stdinIsTerminal() bool {
-	fd := os.Stdin.Fd()
-	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
-}
-
-// stdoutIsTerminal reports whether a human is watching stdout. Destructive
-// commands use it to refuse a confirmation nobody could have read.
-func stdoutIsTerminal() bool {
-	fd := os.Stdout.Fd()
-	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
 }
 
 func modelName(cfg *config.Config) string {

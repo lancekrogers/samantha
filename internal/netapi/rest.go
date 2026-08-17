@@ -7,15 +7,14 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/lancekrogers/samantha/internal/netapi/wire"
 )
 
-// SessionSummary is one row of GET /v1/sessions.
-type SessionSummary struct {
-	ID        string    `json:"id"`
-	Summary   string    `json:"summary"`
-	Turns     int       `json:"turns"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
+// SessionSummary is one row of GET /v1/sessions. It aliases wire.SessionSummary
+// so cmd/samantha/cmd can depend on the shape without pulling in netapi's
+// cgo-heavy transitive imports under -tags integration.
+type SessionSummary = wire.SessionSummary
 
 // PersonaSummary is one row of GET /v1/personas.
 //
