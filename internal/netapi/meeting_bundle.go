@@ -23,11 +23,22 @@ import (
 type meetingTarget struct {
 	session *remote.Session
 	manager *remote.Manager
-	// bundle is set only when the id named a finished meeting on disk.
+	// bundle is set only when the id named a meeting on disk.
 	bundle meeting.BundleEntry
+	// byBundleID records that the path named the bundle rather than the live
+	// session. Reads and routes then follow whatever the bundle is — including
+	// a session still recording into it — but audio and control never do: a
+	// segment belongs to the recording that produced it, and that recording is
+	// addressed by its live id.
+	byBundleID bool
 }
 
+// isLive reports that a session is answering for this id, whether the client
+// named the live id or the bundle this process is still recording.
 func (t meetingTarget) isLive() bool { return t.session != nil }
+
+// acceptsCapture reports whether audio and control events may be appended.
+func (t meetingTarget) acceptsCapture() bool { return t.session != nil && !t.byBundleID }
 
 // resolveMeeting turns the path's id into a live session or a finished bundle,
 // writing the error response itself when it can be neither.
@@ -48,7 +59,15 @@ func (s *Server) resolveMeeting(w http.ResponseWriter, r *http.Request) (meeting
 		return meetingTarget{session: session, manager: manager}, true
 	}
 	if entry, ok := manager.Bundle(r.Context(), id); ok {
-		return meetingTarget{manager: manager, bundle: entry}, true
+		target := meetingTarget{manager: manager, bundle: entry, byBundleID: true}
+		// A bundle this process is still recording only looks finished on
+		// disk: no trailer, no notes, no summary. Answer from the session so a
+		// client that only kept the bundle id cannot read or route a meeting
+		// that has not happened yet.
+		if session, live := manager.SessionForBundle(entry.Bundle); live {
+			target.session = session
+		}
+		return target, true
 	}
 	// A live id from before a restart lands here: the session died with the
 	// process, and the client's recovery is the bundle id it stored.

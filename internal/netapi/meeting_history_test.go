@@ -91,6 +91,24 @@ func TestMeetingIndexListsFinishedAndLiveMeetings(t *testing.T) {
 	}
 }
 
+// TestMeetingIndexRequiresAuth pins that history is behind the bearer token
+// like every other /v1 route: a meetings list names people and topics.
+func TestMeetingIndexRequiresAuth(t *testing.T) {
+	h := newMeetingHarness(t, remote.Options{})
+	req, err := http.NewRequest(http.MethodGet, "https://"+h.addr+"/v1/meetings", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := h.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 without a token", resp.StatusCode)
+	}
+}
+
 func TestMeetingIndexRejectsUnusableQueries(t *testing.T) {
 	h := newMeetingHarness(t, remote.Options{})
 	tests := []struct {
@@ -380,5 +398,46 @@ func TestProtocolVersionAdvertisesHistory(t *testing.T) {
 	decodeJSON(t, resp, &status)
 	if status["protocol_version"] != float64(3) {
 		t.Fatalf("protocol_version = %v, want 3", status["protocol_version"])
+	}
+}
+
+// TestBundleIDOfARecordingMeetingAnswersFromTheSession closes the hole a
+// bundle id opens while a meeting is in flight: on disk it looks like an
+// interrupted, finished meeting, so reading or routing it by bundle id would
+// otherwise report — and file — notes that do not exist yet.
+func TestBundleIDOfARecordingMeetingAnswersFromTheSession(t *testing.T) {
+	root := t.TempDir()
+	routed := 0
+	route := func(ctx context.Context, summary meetinglog.Summary, campaign, capture string) (remote.RouteReceipt, error) {
+		routed++
+		return remote.RouteReceipt{Outcome: meeting.OutcomeRouted}, nil
+	}
+	h := newRoutedMeetingHarness(t, remote.Options{Root: root}, route)
+	live := h.startMeeting(t)
+	bundleID := filepath.Base(mustSession(t, h, live.MeetingID).BundlePath())
+
+	var status remote.Status
+	resp := h.do(t, http.MethodGet, "/v1/meeting/"+bundleID, nil, "")
+	decodeJSON(t, resp, &status)
+	if status.State != remote.StateRecording {
+		t.Fatalf("state = %q, want recording — the bundle has no trailer yet", status.State)
+	}
+
+	resp = h.do(t, http.MethodPost, "/v1/meeting/"+bundleID+"/route",
+		strings.NewReader(`{"campaign":"blockhead"}`), "application/json")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("route while recording = %d, want 409 (body %s)", resp.StatusCode, raw)
+	}
+	if routed != 0 {
+		t.Fatalf("a meeting still recording was filed %d time(s)", routed)
+	}
+
+	// Capture still belongs to the live id: a bundle id never takes audio.
+	resp = h.do(t, http.MethodPut, "/v1/meeting/"+bundleID+"/segments/0", segmentBody(80), "application/octet-stream")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("segment by bundle id = %d, want 409", resp.StatusCode)
 	}
 }

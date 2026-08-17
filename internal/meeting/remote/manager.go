@@ -175,18 +175,9 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (*Session, error)
 	if err != nil {
 		return nil, err
 	}
-	bundlePath, writer, err := createBundle(m.opts.Root, title, m.opts.STTLabel, source, id, now)
+	bundlePath, writer, err := m.openBundle(title, source, id, plan, now)
 	if err != nil {
 		return nil, err
-	}
-	// Before the first segment, so a meeting that dies mid-recording still
-	// leaves a plan the sweep can deliver — the crash-safe ordering the
-	// desktop recorder already has.
-	if plan.destID != "" {
-		if err := writer.WriteRoutePlan(plan.destID, plan.body); err != nil {
-			_, _ = writer.Close()
-			return nil, err
-		}
 	}
 	segments, err := newSegmentStore(bundlePath, m.opts.SegmentSeconds)
 	if err != nil {
@@ -229,6 +220,43 @@ func (m *Manager) Bundle(ctx context.Context, id string) (meeting.BundleEntry, b
 // Sessions snapshots the in-memory meetings so a caller can overlay live state
 // onto the disk index.
 func (m *Manager) Sessions() []*Session { return m.snapshot() }
+
+// SessionForBundle finds the in-memory meeting writing to a bundle path. A
+// bundle this process is still recording is not the finished artifact it looks
+// like on disk — it has no trailer, no notes, and no summary yet — so a caller
+// that resolved it by bundle id needs the session's answer, not the file's.
+func (m *Manager) SessionForBundle(path string) (*Session, bool) {
+	if path == "" {
+		return nil, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, session := range m.sessions {
+		if session.BundlePath() == path {
+			return session, true
+		}
+	}
+	return nil, false
+}
+
+// openBundle creates the meeting directory and records the route plan into it
+// before anything else can be appended — the plan lands ahead of the first
+// segment, so a meeting that dies mid-recording still leaves a filing intent
+// the sweep can deliver. That is the same crash-safe ordering the desktop
+// recorder has.
+func (m *Manager) openBundle(title, source, id string, plan routePlan, now time.Time) (string, *meetinglog.Writer, error) {
+	bundlePath, writer, err := createBundle(m.opts.Root, title, m.opts.STTLabel, source, id, now)
+	if err != nil {
+		return "", nil, err
+	}
+	if plan.destID != "" {
+		if err := writer.WriteRoutePlan(plan.destID, plan.body); err != nil {
+			_, _ = writer.Close()
+			return "", nil, err
+		}
+	}
+	return bundlePath, writer, nil
+}
 
 // Session looks one meeting up by id.
 func (m *Manager) Session(id string) (*Session, error) {

@@ -422,7 +422,12 @@ is joined onto a path.
 | `GET /v1/meeting/{id}` | unchanged | `200` with `state: ready\|interrupted`, `bundle`, `title`, `started_at`, and `result` rebuilt from the bundle; no `missing_seqs`, no `step` |
 | `GET /v1/meeting/{id}/document` | unchanged | `200 text/markdown`; `409` `{"error":"meeting: notes are not ready yet"}` when the document is not written |
 | `POST /v1/meeting/{id}/route` | unchanged | allowed; `409` `{"error":"meeting: meeting was already routed to <dest>"}` when the bundle already carries a `routed` event |
-| `PUT …/segments/{seq}`, `POST …/control`, `POST …/stop` | unchanged | `409` — a finished bundle never takes audio or control again |
+| `PUT …/segments/{seq}`, `POST …/control`, `POST …/stop` | unchanged | `409` — a finished bundle never takes audio or control again, and a bundle id is never a substitute for the live id of a recording in flight |
+
+A bundle id that names a meeting **this serve is still recording** reads and
+routes as the live meeting does — `state: recording`, `409` on route until the
+notes exist — because on disk it only looks finished: no trailer, no notes, no
+summary yet.
 
 **Mid-meeting idea capture** reuses `POST /v1/intent` unchanged (typed text,
 optionally carrying `context: {meeting_id, offset_ms}`); spoken ideas are

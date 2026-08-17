@@ -14,9 +14,11 @@
 // Restart contract: sessions live in memory for the life of the serve
 // process. Resilience covers *network* interruptions (client outbox +
 // idempotent re-push + the janitor's interrupted path), not serve restarts —
-// after a restart every meeting id answers 404. Bundles are closed on
-// shutdown, so audio already delivered is preserved on disk and finishes
-// through the desktop tooling (`samantha meeting route` / reprocess).
+// after a restart every *live* id answers 404 and no recording resumes.
+// Bundles are closed on shutdown, so audio already delivered is preserved on
+// disk, and the Manager reads it back: a meeting stays listable, readable, and
+// routable by its bundle id, and finishes through the desktop tooling
+// (`samantha meeting route` / `meeting sweep` / reprocess).
 package remote
 
 import (

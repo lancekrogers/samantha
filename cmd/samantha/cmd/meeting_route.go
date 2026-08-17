@@ -237,6 +237,76 @@ func writeRouteReceipt(w io.Writer, bundle, body string, result routeResult) err
 	return nil
 }
 
+// meetingRouteFlags carries one `meeting route` invocation.
+type meetingRouteFlags struct {
+	To    string
+	Body  string
+	NoTUI bool
+	JSON  bool
+}
+
+func runMeetingRoute(cmd *cobra.Command, fileArg string, flags meetingRouteFlags) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	routeCfg := meeting.FromConfig(cfg)
+	if flags.Body != "" {
+		routeCfg.Body = flags.Body
+	}
+	jsonl, err := meeting.ResolveMeetingFile(config.MeetingsDirFrom(cfg), fileArg)
+	if err != nil {
+		return err
+	}
+	summary, err := meeting.LoadSummaryFromJSONL(jsonl)
+	if err != nil {
+		return err
+	}
+	router := meeting.NewDefaultRouter(routeCfg)
+	ctx, cancel := context.WithTimeout(context.Background(), meeting.DiscoverTimeout)
+	expanded, dests, discoverErr := router.ExpandForRouting(ctx)
+	cancel()
+	router.Cfg = expanded
+
+	destID, skipped, err := resolveRouteDestination(cmd, routeCfg, dests, discoverErr, flags)
+	if err != nil || skipped {
+		return err
+	}
+	result, err := routeAndReport(cmd, router, summary, expanded.Body, destID, flags.JSON)
+	if err != nil || !flags.JSON {
+		return err
+	}
+	return writeRouteReceipt(cmd.OutOrStdout(), summary.Bundle, expanded.Body, result)
+}
+
+// resolveRouteDestination picks where the notes go: --to wins, then the
+// configured default in any non-interactive mode, then a prompt. skipped is
+// the user choosing to keep the meeting local, which is a clean exit.
+func resolveRouteDestination(cmd *cobra.Command, routeCfg meeting.Config, dests []meeting.Destination,
+	discoverErr error, flags meetingRouteFlags) (destID string, skipped bool, err error) {
+	if destID = strings.TrimSpace(flags.To); destID != "" {
+		return destID, false, nil
+	}
+	if flags.NoTUI || flags.JSON || !isatty.IsTerminal(os.Stdout.Fd()) {
+		if routeCfg.Default == "" {
+			return "", false, fmt.Errorf("meeting route: pass --to <destination-id> (or set meeting.route.default)")
+		}
+		return routeCfg.Default, false, nil
+	}
+	if len(dests) == 0 {
+		if discoverErr != nil {
+			return "", false, fmt.Errorf("meeting route: no destinations available (camp list: %w)", discoverErr)
+		}
+		return "", false, fmt.Errorf("meeting route: no destinations configured")
+	}
+	destID, skipped, err = promptRouteDestination(cmd, dests, routeCfg.Default)
+	if err != nil || !skipped {
+		return destID, skipped, err
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), meeting.BannerLine(meeting.Receipt{Outcome: meeting.OutcomeSkipped}))
+	return "", true, nil
+}
+
 func newMeetingRouteCmd() *cobra.Command {
 	var (
 		to      string
@@ -279,66 +349,13 @@ Examples:
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load()
-			if err != nil {
-				return err
-			}
-			routeCfg := meeting.FromConfig(cfg)
-			if body != "" {
-				routeCfg.Body = body
-			}
-			meetingsDir := config.MeetingsDirFrom(cfg)
 			fileArg := ""
 			if len(args) == 1 {
 				fileArg = args[0]
 			}
-			jsonl, err := meeting.ResolveMeetingFile(meetingsDir, fileArg)
-			if err != nil {
-				return err
-			}
-			summary, err := meeting.LoadSummaryFromJSONL(jsonl)
-			if err != nil {
-				return err
-			}
-			router := meeting.NewDefaultRouter(routeCfg)
-			ctx, cancel := context.WithTimeout(context.Background(), meeting.DiscoverTimeout)
-			expanded, dests, discoverErr := router.ExpandForRouting(ctx)
-			cancel()
-			router.Cfg = expanded
-
-			destID := strings.TrimSpace(to)
-			if destID == "" {
-				if noTUI || jsonOut || !isatty.IsTerminal(os.Stdout.Fd()) {
-					if routeCfg.Default == "" {
-						return fmt.Errorf("meeting route: pass --to <destination-id> (or set meeting.route.default)")
-					}
-					destID = routeCfg.Default
-				} else {
-					if len(dests) == 0 {
-						if discoverErr != nil {
-							return fmt.Errorf("meeting route: no destinations available (camp list: %w)", discoverErr)
-						}
-						return fmt.Errorf("meeting route: no destinations configured")
-					}
-					var skipped bool
-					destID, skipped, err = promptRouteDestination(cmd, dests, routeCfg.Default)
-					if err != nil {
-						return err
-					}
-					if skipped {
-						fmt.Fprintln(cmd.OutOrStdout(), meeting.BannerLine(meeting.Receipt{Outcome: meeting.OutcomeSkipped}))
-						return nil
-					}
-				}
-			}
-			result, err := routeAndReport(cmd, router, summary, expanded.Body, destID, jsonOut)
-			if err != nil {
-				return err
-			}
-			if !jsonOut {
-				return nil
-			}
-			return writeRouteReceipt(cmd.OutOrStdout(), summary.Bundle, expanded.Body, result)
+			return runMeetingRoute(cmd, fileArg, meetingRouteFlags{
+				To: to, Body: body, NoTUI: noTUI, JSON: jsonOut,
+			})
 		},
 	}
 	cmd.Flags().StringVar(&to, "to", "", "Destination id from meeting.route.destinations or camp:<name>")

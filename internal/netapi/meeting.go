@@ -135,7 +135,9 @@ func (s *Server) handleMeetingStatus(w http.ResponseWriter, r *http.Request) {
 // handleMeetingRoute files a finished meeting into a campaign's
 // notes/meetings via the CI0009 importer. Retrying the same campaign answers
 // from the session's receipt cache: the importer does not dedupe, and a
-// timed-out response must not turn into a second filed note.
+// timed-out response must not turn into a second filed note. A meeting whose
+// session is gone (a restart, or a bundle recorded elsewhere) routes from
+// disk instead, deduped by its own routed event.
 func (s *Server) handleMeetingRoute(w http.ResponseWriter, r *http.Request) {
 	target, ok := s.resolveMeeting(w, r)
 	if !ok {
@@ -190,7 +192,14 @@ func (s *Server) meetingSession(w http.ResponseWriter, r *http.Request) (*remote
 	if !ok {
 		return nil, nil, false
 	}
-	if !target.isLive() {
+	if !target.acceptsCapture() {
+		if target.isLive() {
+			// The meeting is recording — the client just addressed it by the
+			// wrong id. Saying "no longer recording" here would be a lie.
+			writeJSON(w, http.StatusConflict,
+				map[string]string{"error": "meeting: audio and control require the live meeting id"})
+			return nil, nil, false
+		}
 		writeMeetingError(w, remote.ErrNotRecording)
 		return nil, nil, false
 	}
