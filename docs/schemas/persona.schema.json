@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/lancekrogers/samantha/docs/schemas/persona.schema.json",
   "title": "festival-voice.persona.v1",
+  "description": "One voice agent persona: a name, prompt, brain-model, and TTS overlay. A persona carries no STT, VAD, tools, skills, meeting, or speaker settings; those are always inherited from app config. Generated from internal/persona.Profile and kept in step by TestPersonaSchemaMatchesProfile.",
   "type": "object",
   "required": ["schema", "id", "display_name", "prompts"],
   "additionalProperties": false,
@@ -11,14 +12,32 @@
     },
     "id": {
       "type": "string",
-      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "description": "Kebab-case id. Must match the containing directory name and names the persona's prompt document."
     },
     "display_name": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "description": "Becomes agent_name when this persona is active."
     },
     "builtin": {
-      "type": "boolean"
+      "type": "boolean",
+      "description": "True only for the shipped samantha persona, which cannot be deleted."
+    },
+    "brain": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-persona model routing. Empty fields inherit the app-level brain keys, so profiles written before this field existed behave exactly as before.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Brain backend (ollama, claude, grok). Empty keeps app-level brain_provider."
+        },
+        "model": {
+          "type": "string",
+          "description": "Provider-specific model id, routed to ollama_model or grok_model. Claude has no app-level model key, so a persona-level Claude model is recorded but not routed."
+        }
+      }
     },
     "tts": {
       "type": "object",
@@ -32,6 +51,11 @@
         "voice": {
           "type": "string",
           "description": "Speaker id for the effective provider (Kokoro voice or Qwen CustomVoice preset)."
+        },
+        "tier": {
+          "type": "string",
+          "enum": ["", "0.6b", "1.7b"],
+          "description": "Native Qwen3-TTS model tier: 0.6b for latency, 1.7b for quality. Only read when the effective provider is qwen3-tts; empty inherits qwen_tts_model_tier. Canonicalized on persist, so 1.7 is stored as 1.7b."
         }
       }
     },
