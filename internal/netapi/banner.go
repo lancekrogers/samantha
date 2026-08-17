@@ -24,10 +24,15 @@ type ReadyBanner struct {
 	MDNS            bool   `json:"mdns"`
 	Tailscale       bool   `json:"tailscale"`
 	PID             int    `json:"pid"`
-	// Binds lists every bound host:port (primary first) when serve listens
-	// on more than one interface (e.g. LAN + loopback). Absent on
-	// single-bind serves so older consumers see an unchanged shape.
+	// Binds lists every bound host:port, primary first. It is always present
+	// on a serve that reached OnListening, including single-bind serves, so a
+	// client picks a reachable address instead of inferring one from URL
+	// (ADR-008). URL stays the address remote clients should open.
 	Binds []string `json:"binds,omitempty"`
+	// ClientSetupURL is present only in limited client-access mode (a Tailscale
+	// serve that could not mint a trusted cert). Its presence means "limited";
+	// its absence means full access.
+	ClientSetupURL string `json:"client_setup_url,omitempty"`
 }
 
 // PairingCodeBanner is written to stdout whenever serve mints a pairing code

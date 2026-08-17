@@ -3,8 +3,12 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
 	"reflect"
 	"testing"
+
+	"github.com/lancekrogers/samantha/internal/netapi"
 )
 
 func TestResolveServeBindHostsExplicit(t *testing.T) {
@@ -56,4 +60,162 @@ func TestResolveServeBindHostsDefaultIncludesLoopback(t *testing.T) {
 			t.Fatalf("bind %q: loopback-only machine must not duplicate loopback: %v", bind, hosts)
 		}
 	}
+}
+
+// G35 / ADR-008: the host app is always a loopback client, so a tailnet serve
+// must keep 127.0.0.1 reachable without ever promoting it above the tailnet
+// address remote clients are told to open.
+func TestResolveServeBindHostsTailscaleAppendsLoopback(t *testing.T) {
+	withServeBindState(t)
+
+	serveTailscale = true
+	serveBind = "100.64.0.7"
+
+	want := []string{"100.64.0.7", "127.0.0.1"}
+	if got := resolveServeBindHosts(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("resolveServeBindHosts() = %v, want %v", got, want)
+	}
+}
+
+func TestResolveServeBindHostsAlreadyLoopbackIsNotDuplicated(t *testing.T) {
+	withServeBindState(t)
+	serveTailscale = true
+
+	cases := []struct {
+		name string
+		bind string
+		want []string
+	}{
+		{"ipv4 loopback", "100.64.0.7,127.0.0.1", []string{"100.64.0.7", "127.0.0.1"}},
+		{"other ipv4 loopback", "100.64.0.7,127.0.0.2", []string{"100.64.0.7", "127.0.0.2"}},
+		{"ipv6 loopback", "100.64.0.7,::1", []string{"100.64.0.7", "::1"}},
+		{"hostname", "100.64.0.7,localhost", []string{"100.64.0.7", "localhost"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			serveBind = tc.bind
+			if got := resolveServeBindHosts(); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("resolveServeBindHosts(%q) = %v, want %v", tc.bind, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveServeBindHostsNonTailscaleUnchanged(t *testing.T) {
+	withServeBindState(t)
+	serveTailscale = false
+
+	cases := []struct {
+		name string
+		bind string
+		want []string
+	}{
+		{"explicit lan stays single", "192.168.1.5", []string{"192.168.1.5"}},
+		{"explicit loopback stays single", "127.0.0.1", []string{"127.0.0.1"}},
+		{"explicit list verbatim", "192.168.1.5,10.0.0.4", []string{"192.168.1.5", "10.0.0.4"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			serveBind = tc.bind
+			if got := resolveServeBindHosts(); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("resolveServeBindHosts(%q) = %v, want %v", tc.bind, got, tc.want)
+			}
+		})
+	}
+}
+
+// G17: clients read binds[] to choose a reachable address, so a single-bind
+// serve must still advertise one rather than making them parse url.
+func TestEmitServeBannerJSONAlwaysCarriesBinds(t *testing.T) {
+	withServeBindState(t)
+
+	cases := []struct {
+		name     string
+		binds    []string
+		wantJSON []string
+	}{
+		{"single bind", []string{"192.168.1.5:7262"}, []string{"192.168.1.5:7262"}},
+		{"dual bind", []string{"100.64.0.7:7262", "127.0.0.1:7262"}, []string{"100.64.0.7:7262", "127.0.0.1:7262"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			banner := captureReadyBanner(t, tc.binds[0], tc.binds)
+			if !reflect.DeepEqual(banner.Binds, tc.wantJSON) {
+				t.Fatalf("binds = %v, want %v", banner.Binds, tc.wantJSON)
+			}
+		})
+	}
+}
+
+// The presence of client_setup_url is the wire signal for limited access, so
+// a trusted-cert serve must omit the key entirely rather than send it empty.
+func TestEmitServeBannerJSONCarriesClientSetupURLOnlyInLimitedMode(t *testing.T) {
+	withServeBindState(t)
+
+	cases := []struct {
+		name     string
+		setupURL string
+		wantKey  bool
+	}{
+		{"full access omits key", "", false},
+		{"limited access carries key", netapi.ClientSetupURL, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			serveClientSetupURL = tc.setupURL
+
+			raw := captureBannerLine(t, "127.0.0.1:7262", []string{"127.0.0.1:7262"})
+			var keys map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &keys); err != nil {
+				t.Fatalf("decode banner: %v", err)
+			}
+			if _, ok := keys["client_setup_url"]; ok != tc.wantKey {
+				t.Fatalf("client_setup_url present = %v, want %v (line %s)", ok, tc.wantKey, raw)
+			}
+
+			var banner netapi.ReadyBanner
+			if err := json.Unmarshal(raw, &banner); err != nil {
+				t.Fatalf("decode ready banner: %v", err)
+			}
+			if banner.ClientSetupURL != tc.setupURL {
+				t.Fatalf("client_setup_url = %q, want %q", banner.ClientSetupURL, tc.setupURL)
+			}
+		})
+	}
+}
+
+// withServeBindState isolates the package-level serve flags this file mutates.
+func withServeBindState(t *testing.T) {
+	t.Helper()
+	bind, tailscale := serveBind, serveTailscale
+	setup, host, out := serveClientSetupURL, servePublicHost, serveBannerOut
+	t.Cleanup(func() {
+		serveBind, serveTailscale = bind, tailscale
+		serveClientSetupURL, servePublicHost, serveBannerOut = setup, host, out
+	})
+	serveBind, serveTailscale = "", false
+	serveClientSetupURL, servePublicHost = "", ""
+}
+
+// captureBannerLine runs the real emitter and returns the ready line it wrote.
+func captureBannerLine(t *testing.T, listenAddr string, binds []string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	serveBannerOut = &buf
+	emitServeBannerJSON(listenAddr, binds, &netapi.Credentials{Token: "tok", Fingerprint: "9f3c"})
+
+	line, _, found := bytes.Cut(bytes.TrimSpace(buf.Bytes()), []byte("\n"))
+	if !found && len(line) == 0 {
+		t.Fatalf("emitServeBannerJSON wrote nothing")
+	}
+	return line
+}
+
+func captureReadyBanner(t *testing.T, listenAddr string, binds []string) netapi.ReadyBanner {
+	t.Helper()
+	var banner netapi.ReadyBanner
+	if err := json.Unmarshal(captureBannerLine(t, listenAddr, binds), &banner); err != nil {
+		t.Fatalf("decode ready banner: %v", err)
+	}
+	return banner
 }

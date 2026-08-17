@@ -58,6 +58,41 @@ UX is “any device on this network,” not a single OS.
 
 Requires for `--tailscale`: Tailscale CLI logged in and MagicDNS on.
 
+`--tailscale` also binds `127.0.0.1` alongside the tailnet address, so a
+same-machine client (the Mac app, `samantha connect`) keeps a route to the
+agent while the tailnet is exposed. The tailnet address stays primary — it is
+what `url`, mDNS, and the QR pairing payload advertise.
+
+### Ready banner (`--banner-json`)
+
+With `--banner-json`, stdout carries one JSON object per line and all human
+output moves to stderr. The first line is `ready`, written once the listener is
+bound:
+
+```json
+{"event":"ready","protocol_version":2,"url":"https://mac.tailnet.ts.net:7262","port":7262,"fingerprint":"9f3c…","token":"…","mdns":false,"tailscale":true,"pid":41233,"binds":["100.64.0.7:7262","127.0.0.1:7262"],"client_setup_url":"https://login.tailscale.com/admin/dns"}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `url` | What **remote** clients should open (MagicDNS host in tailscale mode) |
+| `port` | Listening port |
+| `fingerprint` | SHA-256 of the leaf cert DER, hex — pin this |
+| `token` | Bearer token for `/v1/*` |
+| `mdns` / `tailscale` | Discovery + network mode |
+| `pid` | Serve process id |
+| `binds` | Every bound `host:port`, **primary first**. Always present. Dial the loopback entry when one exists rather than resolving `url` |
+| `client_setup_url` | Present **only** in limited client access. Its presence means limited; its absence means full |
+
+LAN mode with a trusted or self-signed cert omits `client_setup_url` entirely:
+
+```json
+{"event":"ready","protocol_version":2,"url":"https://192.168.1.24:7262","port":7262,"fingerprint":"9f3c…","token":"…","mdns":true,"tailscale":false,"pid":41233,"binds":["192.168.1.24:7262","127.0.0.1:7262"]}
+```
+
+A `pairing_code` line (`{"event":"pairing_code","code":"…","expires_at":"…"}`)
+follows whenever serve mints a code.
+
 ## Auth
 
 | Mechanism | Where |
