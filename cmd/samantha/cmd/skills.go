@@ -127,11 +127,11 @@ process is the samantha binary's directory, not the caller's cwd.`,
 				row := skillsRootRow{Path: dir}
 				if info, statErr := os.Stat(dir); statErr == nil && info.IsDir() {
 					row.Exists = true
-					n, err := skills.Loader{Dir: dir}.Catalog(cmd.Context())
+					rootCatalog, err := skills.Loader{Dir: dir}.Catalog(cmd.Context())
 					if err != nil {
 						return err
 					}
-					row.Skills = len(n)
+					row.Skills = len(rootCatalog)
 				}
 				roots = append(roots, row)
 			}
