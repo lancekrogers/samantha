@@ -314,6 +314,16 @@ func (m *settingsModel) buildVoiceItems() {
 		m.voiceItems = append(m.voiceItems, qwenPresetVoices(m.cfg, m.nativeStatus)...)
 		return
 	}
+	// A managed qwen3-tts selection that isn't installed falls through to
+	// here (qwenUsesPresets is false until native.Installed): tts.StaticVoices
+	// now publishes the CustomVoice preset catalog unconditionally (it exists
+	// whether or not the package is on disk, per MDL-A5), but this section
+	// must still show its "not installed" guidance instead of a voice list
+	// nothing can speak yet — that guidance is what qwenUsesPresets==false
+	// otherwise signals.
+	if strings.EqualFold(activeTTSProvider(m.cfg), managedqwen.ProviderName) {
+		return
+	}
 	voices, err := tts.StaticVoices(m.cfg.TTSProvider, "", "")
 	if err != nil {
 		return

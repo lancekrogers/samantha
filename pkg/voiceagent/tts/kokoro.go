@@ -250,31 +250,12 @@ func (k *KokoroTTS) Available() bool {
 	return k.alive.Load()
 }
 
-// ListVoices returns available Kokoro voices with optional filtering.
+// ListVoices returns available Kokoro voices with optional filtering. It
+// delegates to StaticVoices so the live and static catalogs can never drift
+// (kokoro's voice list is compile-time data either way — nothing here reads
+// the installed model).
 func (k *KokoroTTS) ListVoices(locale, gender string) []Voice {
-	var voices []Voice
-	for _, name := range voiceNames {
-		if len(name) < 3 || !strings.Contains(name, "_") {
-			continue
-		}
-		vLocale := langMap[name[0]]
-		vGender := genderMap[name[1]]
-		vName := strings.SplitN(name, "_", 2)[1]
-
-		if locale != "" && !strings.HasPrefix(vLocale, locale) {
-			continue
-		}
-		if gender != "" && !strings.EqualFold(vGender, gender) {
-			continue
-		}
-
-		voices = append(voices, Voice{
-			Name:         name,
-			FriendlyName: fmt.Sprintf("Kokoro %s (%s)", titleCase(vName), vLocale),
-			Gender:       vGender,
-			Locale:       vLocale,
-		})
-	}
+	voices, _ := StaticVoices(kokoroProviderName, locale, gender)
 	return voices
 }
 
