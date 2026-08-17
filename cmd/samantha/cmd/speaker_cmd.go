@@ -119,6 +119,16 @@ Record a clip on macOS (16 kHz mono):
 	return cmd
 }
 
+// speakerListRow adds staleness fields (computed at list time, never
+// stored) to the persisted Profile shape so `speaker list --json` supports
+// the Mac app's re-enroll CTA without loading the ONNX model.
+type speakerListRow struct {
+	speaker.Profile
+	Stale                 bool   `json:"stale"`
+	ExpectedModelRevision string `json:"expected_model_revision"`
+	WindowMS              int    `json:"window_ms"`
+}
+
 func newSpeakerListCmd(loadConfig configLoader) *cobra.Command {
 	var jsonOut bool
 	cmd := &cobra.Command{
@@ -137,10 +147,23 @@ func newSpeakerListCmd(loadConfig configLoader) *cobra.Command {
 				return err
 			}
 			profiles := store.List()
+			sp := speaker.FromAppConfig(cfg)
+			expectedRev := speaker.ExpectedLiveRev(sp)
+			windowMS := sp.LiveWindowMS()
+
 			if jsonOut {
+				rows := make([]speakerListRow, 0, len(profiles))
+				for _, p := range profiles {
+					rows = append(rows, speakerListRow{
+						Profile:               p,
+						Stale:                 p.ModelRev != expectedRev,
+						ExpectedModelRevision: expectedRev,
+						WindowMS:              windowMS,
+					})
+				}
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
-				return enc.Encode(profiles)
+				return enc.Encode(rows)
 			}
 			if len(profiles) == 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "No speakers enrolled (store: %s)\n", store.Dir())
@@ -150,7 +173,11 @@ func newSpeakerListCmd(loadConfig configLoader) *cobra.Command {
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprintln(w, "NAME\tCLIPS\tMODEL\tUPDATED")
 			for _, p := range profiles {
-				fmt.Fprintf(w, "%s\t%d\t%s\t%s\n", p.Name, p.Samples, p.ModelRev, p.UpdatedAt.Local().Format("2006-01-02 15:04"))
+				marker := ""
+				if p.ModelRev != expectedRev {
+					marker = " (re-enroll to refresh)"
+				}
+				fmt.Fprintf(w, "%s\t%d\t%s\t%s%s\n", p.Name, p.Samples, p.ModelRev, p.UpdatedAt.Local().Format("2006-01-02 15:04"), marker)
 			}
 			return w.Flush()
 		},

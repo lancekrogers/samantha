@@ -150,13 +150,22 @@ func NewSherpaLiveEngine(cfg Config, modelsDir string) (*SherpaEngine, error) {
 	return engine, nil
 }
 
+// ExpectedLiveRev computes the embedding revision string a live engine
+// built from sp would report, without loading the ONNX model — so listing
+// stored profiles for staleness never has to construct a SherpaEngine.
+// EmbeddingRev calls this so the two recipes can never drift.
+func ExpectedLiveRev(sp Config) string {
+	return fmt.Sprintf("%s-w%d", sherpaLiveRev, sp.LiveWindowMS())
+}
+
 // EmbeddingRev identifies the enrollment recipe: embedding model plus the
 // live analysis window it embeds at. Embeddings are only comparable when
 // both match — the same model at mismatched durations measured FRR 0.80
 // (tests/ownerverify) — so changing speaker.live.window_ms marks stored
 // profiles stale and SeedFromStore skips them with re-enroll messaging.
+// Delegates to ExpectedLiveRev so the two recipes can never drift.
 func (e *SherpaEngine) EmbeddingRev() string {
-	return fmt.Sprintf("%s-w%d", sherpaLiveRev, e.windowMS)
+	return ExpectedLiveRev(Config{Live: LiveConfig{WindowMS: e.windowMS}})
 }
 
 // SeedEnrolled registers a durable profile's embeddings into the manager so
