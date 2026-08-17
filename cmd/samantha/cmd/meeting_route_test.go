@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -220,4 +221,95 @@ func TestRouteAndPrintJSONDoesNotCorruptJSONStream(t *testing.T) {
 	if !strings.Contains(stderr.String(), "Meeting notes routed") {
 		t.Fatalf("banner missing on stderr: %q", stderr.String())
 	}
+}
+
+// TestRouteReceiptJSONLandsOnStdout is G36: `meeting route --json` used to
+// print nothing machine-readable, so a client could not tell where the notes
+// went. The receipt is now the payload and the banner stays on stderr.
+func TestRouteReceiptJSONLandsOnStdout(t *testing.T) {
+	dir := t.TempDir()
+	export := filepath.Join(dir, "export")
+	summary := finishedMeeting(t, dir, "Receipt")
+
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	cmd := routeTestCmd(stdout, stderr)
+	router := &meeting.Router{
+		Cfg: meeting.Config{
+			Body:         meeting.BodyFull,
+			Destinations: []meeting.Destination{{ID: "docs", Type: meeting.TypeFile, Path: export}},
+		},
+		LookPath: func(string) (string, error) { return "", os.ErrNotExist },
+	}
+	result, err := routeAndReport(cmd, router, summary, meeting.BodyFull, "docs", true)
+	if err != nil {
+		t.Fatalf("routeAndReport() error = %v", err)
+	}
+	if err := writeRouteReceipt(stdout, summary.Bundle, meeting.BodyFull, result); err != nil {
+		t.Fatal(err)
+	}
+
+	var receipt meetingRouteReceipt
+	if err := json.Unmarshal([]byte(lastJSONLine(t, stdout.String())), &receipt); err != nil {
+		t.Fatalf("stdout does not end in a JSON receipt: %v (%s)", err, stdout)
+	}
+	if receipt.Outcome != meeting.OutcomeRouted || receipt.Error != "" {
+		t.Errorf("receipt = %+v, want a clean route", receipt)
+	}
+	if receipt.DestinationID != "docs" || receipt.Type != meeting.TypeFile {
+		t.Errorf("receipt = %+v, want the docs file destination", receipt)
+	}
+	if receipt.Bundle != summary.Bundle || receipt.ID != filepath.Base(summary.Bundle) {
+		t.Errorf("receipt = %+v, want the bundle and its id", receipt)
+	}
+	if receipt.Body != meeting.BodyFull || receipt.Detail == "" || receipt.At.IsZero() {
+		t.Errorf("receipt = %+v, want body, detail and a timestamp", receipt)
+	}
+	if !strings.Contains(stderr.String(), "routed to docs") {
+		t.Errorf("stderr = %q, want the human banner", stderr)
+	}
+}
+
+// TestRouteReceiptJSONCarriesTheFailure keeps the lossless contract: an export
+// that could not be delivered is a receipt with a reason, not a lost meeting.
+func TestRouteReceiptJSONCarriesTheFailure(t *testing.T) {
+	dir := t.TempDir()
+	summary := finishedMeeting(t, dir, "Doomed")
+
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	cmd := routeTestCmd(stdout, stderr)
+	router := &meeting.Router{
+		Cfg:      meeting.Config{Body: meeting.BodyNotes},
+		LookPath: func(string) (string, error) { return "", os.ErrNotExist },
+	}
+	result, err := routeAndReport(cmd, router, summary, meeting.BodyNotes, "nowhere", true)
+	if err != nil {
+		t.Fatalf("routeAndReport() error = %v, want the failure reported not raised", err)
+	}
+	if err := writeRouteReceipt(stdout, summary.Bundle, meeting.BodyNotes, result); err != nil {
+		t.Fatal(err)
+	}
+
+	var receipt meetingRouteReceipt
+	if err := json.Unmarshal([]byte(lastJSONLine(t, stdout.String())), &receipt); err != nil {
+		t.Fatalf("stdout does not end in a JSON receipt: %v (%s)", err, stdout)
+	}
+	if receipt.Outcome != meeting.OutcomeFailed {
+		t.Errorf("outcome = %q, want failed", receipt.Outcome)
+	}
+	if !strings.Contains(receipt.Error, "nowhere") {
+		t.Errorf("error = %q, want it to name the unknown destination", receipt.Error)
+	}
+	if receipt.DestinationID != "nowhere" {
+		t.Errorf("destination_id = %q, want the id that was attempted", receipt.DestinationID)
+	}
+}
+
+// lastJSONLine returns the final non-empty line, which is the receipt.
+func lastJSONLine(t *testing.T, out string) string {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) == 0 {
+		t.Fatalf("no output to decode")
+	}
+	return lines[len(lines)-1]
 }
