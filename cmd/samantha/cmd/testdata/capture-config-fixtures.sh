@@ -37,6 +37,24 @@ speaker:
     window_ms: 1500
 YAML
 
+# An active persona, so config-get.json carries a real persona block: the Mac
+# app's badge decoding must be tested against one samantha actually emits.
+mkdir -p "$root/personas/ada"
+cat >"$root/personas/ada/persona.yaml" <<'YAML'
+schema: festival-voice.persona.v1
+id: ada
+display_name: Ada
+brain:
+  provider: ollama
+  model: llama3.1
+tts:
+  provider: kokoro
+  voice: af_sky
+prompts:
+  persona: ada
+YAML
+printf 'active_persona: ada\n' >>"$root/config.yaml"
+
 canonical='/Users/lance/.obey/agents/voice/festival-voice'
 normalize() { sed "s#$root#$canonical#g"; }
 

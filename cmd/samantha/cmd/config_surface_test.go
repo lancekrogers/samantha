@@ -472,6 +472,28 @@ func TestCapturedFixturesMatchTheCurrentPayloads(t *testing.T) {
 		}
 	})
 
+	t.Run("config-get", func(t *testing.T) {
+		root := newSurfaceInstall(t, surfaceConfig)
+		seedPersona(t, root, "ada", adaProfile)
+		out, err := runConfigSubcommand(t, newConfigGetCmd, "--json")
+		if err != nil {
+			t.Fatalf("config get --json: %v", err)
+		}
+		live := decodeJSON[configValuesPayload](t, out)
+		fixture := decodeJSON[configValuesPayload](t, readFixture(t, "config-get.json"))
+		if fixture.Persona == nil {
+			t.Fatal("the captured fixture has no persona block — re-run testdata/capture-config-fixtures.sh")
+		}
+		if !reflect.DeepEqual(live.Persona.Overrides, fixture.Persona.Overrides) {
+			t.Errorf("persona overrides drifted from the fixture:\n live: %v\nfixture: %v",
+				live.Persona.Overrides, fixture.Persona.Overrides)
+		}
+		if len(live.Values) != len(fixture.Values) {
+			t.Errorf("fixture has %d values, the binary emits %d — re-run testdata/capture-config-fixtures.sh",
+				len(fixture.Values), len(live.Values))
+		}
+	})
+
 	t.Run("config-set-error", func(t *testing.T) {
 		out, _ := runConfigSubcommand(t, newConfigSetCmd, "vad_silence_duration", "fast", "--json")
 		live := decodeJSON[configErrorPayload](t, out)
@@ -489,4 +511,140 @@ func readFixture(t *testing.T, name string) string {
 		t.Fatalf("reading fixture %s: %v", name, err)
 	}
 	return string(data)
+}
+
+const adaProfile = `schema: festival-voice.persona.v1
+id: ada
+display_name: Ada
+brain:
+  provider: ollama
+  model: llama3.1
+tts:
+  provider: kokoro
+  voice: af_sky
+prompts:
+  persona: ada
+`
+
+// seedPersona writes a persona profile into the current install root and makes
+// it active in the config file.
+func seedPersona(t *testing.T, root, id, profile string) {
+	t.Helper()
+	dir := filepath.Join(root, "personas", id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("creating persona dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "persona.yaml"), []byte(profile), 0o600); err != nil {
+		t.Fatalf("writing persona: %v", err)
+	}
+	configPath := filepath.Join(root, "config.yaml")
+	existing, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("reading config: %v", err)
+	}
+	if err := os.WriteFile(configPath, append(existing, []byte("active_persona: "+id+"\n")...), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+	if _, err := config.LoadRaw(); err != nil {
+		t.Fatalf("LoadRaw: %v", err)
+	}
+}
+
+func TestConfigGetReportsPersonaOverrides(t *testing.T) {
+	root := newSurfaceInstall(t, surfaceConfig)
+	seedPersona(t, root, "ada", adaProfile)
+
+	out, err := runConfigSubcommand(t, newConfigGetCmd, "--json")
+	if err != nil {
+		t.Fatalf("config get --json: %v", err)
+	}
+	payload := decodeJSON[configValuesPayload](t, out)
+	if payload.Persona == nil {
+		t.Fatal("no persona block for an active persona with overrides")
+	}
+	if payload.Persona.ID != "ada" || payload.Persona.DisplayName != "Ada" {
+		t.Errorf("persona = %+v", payload.Persona)
+	}
+	want := "agent_name,persona,active_persona,brain_provider,ollama_model,tts_provider,tts_voice"
+	if got := strings.Join(payload.Persona.Overrides, ","); got != want {
+		t.Errorf("overrides = %s, want %s", got, want)
+	}
+
+	// The values themselves stay app-level: the badge says the persona wins,
+	// it does not rewrite what the file holds.
+	if got := payload.Values["tts_provider"].Value; got != "kokoro" {
+		t.Errorf("tts_provider = %v, want the file's value", got)
+	}
+
+	// The single-key form carries the same truth.
+	out, err = runConfigSubcommand(t, newConfigGetCmd, "tts_voice", "--json")
+	if err != nil {
+		t.Fatalf("config get tts_voice --json: %v", err)
+	}
+	if !decodeJSON[configValuePayload](t, out).OverriddenByPersona {
+		t.Error("overridden_by_persona = false for a key the persona sets")
+	}
+	out, err = runConfigSubcommand(t, newConfigGetCmd, "vad_silence_duration", "--json")
+	if err != nil {
+		t.Fatalf("config get vad_silence_duration --json: %v", err)
+	}
+	if decodeJSON[configValuePayload](t, out).OverriddenByPersona {
+		t.Error("overridden_by_persona = true for a key no persona touches")
+	}
+}
+
+func TestConfigGetOmitsPersonaBlockWhenTheProfileIsMissingOrBroken(t *testing.T) {
+	tests := []struct {
+		name    string
+		profile string
+		write   bool
+	}{
+		{name: "no profile on disk", write: false},
+		{name: "unparseable profile", profile: "schema: [unclosed\n", write: true},
+		{name: "empty profile", profile: "", write: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := newSurfaceInstall(t, surfaceConfig)
+			if tt.write {
+				seedPersona(t, root, "ada", tt.profile)
+			} else {
+				configPath := filepath.Join(root, "config.yaml")
+				existing, err := os.ReadFile(configPath)
+				if err != nil {
+					t.Fatalf("reading config: %v", err)
+				}
+				if err := os.WriteFile(configPath, append(existing, []byte("active_persona: ada\n")...), 0o600); err != nil {
+					t.Fatalf("writing config: %v", err)
+				}
+				if _, err := config.LoadRaw(); err != nil {
+					t.Fatalf("LoadRaw: %v", err)
+				}
+			}
+
+			out, err := runConfigSubcommand(t, newConfigGetCmd, "--json")
+			if err != nil {
+				t.Fatalf("a broken persona must not fail config get: %v", err)
+			}
+			if payload := decodeJSON[configValuesPayload](t, out); payload.Persona != nil {
+				t.Errorf("persona block reported for a %s: %+v", tt.name, payload.Persona)
+			}
+		})
+	}
+}
+
+func TestConfigGetWithAPersonaStillWritesNothing(t *testing.T) {
+	// Loading a persona profile must not migrate it. This is landmine 1 again,
+	// now with a profile actually present.
+	root := newSurfaceInstall(t, surfaceConfig)
+	seedPersona(t, root, "ada", adaProfile)
+	before := snapshotTree(t, root)
+
+	if _, err := runConfigSubcommand(t, newConfigGetCmd, "--json"); err != nil {
+		t.Fatalf("config get --json: %v", err)
+	}
+	if after := snapshotTree(t, root); strings.Join(before, "\n") != strings.Join(after, "\n") {
+		t.Errorf("the install root changed:\nbefore:\n%s\nafter:\n%s",
+			strings.Join(before, "\n"), strings.Join(after, "\n"))
+	}
 }
