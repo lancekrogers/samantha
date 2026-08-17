@@ -52,12 +52,20 @@ var (
 	// serveTLSFallbackNote is set when --tailscale could not obtain a real
 	// HTTPS cert and fell back to self-signed (still reachable over the tailnet).
 	serveTLSFallbackNote string
+	// serveClientSetupURL is netapi.ClientSetupURL while serve runs in limited
+	// client-access mode, empty otherwise. It is the machine-readable half of
+	// the "Client setup:" human line and reaches clients on the ready banner.
+	serveClientSetupURL string
 )
 
 // serveHumanOut receives all human-readable banner and log output. With
 // --banner-json it is redirected to stderr so stdout carries only the
 // machine-readable JSON event lines a supervisor parses.
 var serveHumanOut io.Writer = os.Stdout
+
+// serveBannerOut receives the machine-readable JSON event lines. Always stdout
+// in production; tests swap it to capture the exact wire bytes.
+var serveBannerOut io.Writer = os.Stdout
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
@@ -146,6 +154,7 @@ func init() {
 // self-signed TOFU path as LAN serve so any device on the tailnet can still
 // reach MagicDNS (browsers accept the warning; samantha connect pins the cert).
 func applyServeTailscaleDefaults(cmd *cobra.Command) error {
+	serveClientSetupURL = ""
 	if !serveTailscale {
 		return nil
 	}
@@ -174,10 +183,13 @@ func applyServeTailscaleDefaults(cmd *cobra.Command) error {
 		cert, key, err := ensureTailscaleCert(tlsDir, id.DNSName)
 		if err != nil {
 			serveTLSFallbackNote = summarizeTailscaleCertError(err)
+			// G17: limited mode is the only mode with a setup link, so the
+			// banner field and the human line are set from one place.
+			serveClientSetupURL = netapi.ClientSetupURL
 			// Stable labels for the TUI (and readable for CLI users).
 			// Product outcomes only — any device, not iOS-specific.
 			fmt.Fprintf(serveHumanOut, "  %s %s\n", failStyle.Render(netapi.LabelClientAccess), netapi.AccessLimited)
-			fmt.Fprintf(serveHumanOut, "  %s %s\n", keyStyle.Render(netapi.LabelClientSetup), netapi.ClientSetupURL)
+			fmt.Fprintf(serveHumanOut, "  %s %s\n", keyStyle.Render(netapi.LabelClientSetup), serveClientSetupURL)
 			fmt.Fprintln(serveHumanOut, dimStyle.Render("  Most desktop browsers work after one warning. Full mic support on"))
 			fmt.Fprintln(serveHumanOut, dimStyle.Render("  every device: open Client setup → turn on HTTPS Certificates → restart."))
 			if serveTLSFallbackNote != "" {
@@ -344,10 +356,9 @@ func runServe(cfg *config.Config) error {
 					extras = append(extras, a.String())
 				}
 			}
-			allBinds := []string(nil)
-			if len(extras) > 0 {
-				allBinds = append([]string{listenAddr}, extras...)
-			}
+			// G17 / ADR-008: binds is unconditional — a single-bind serve still
+			// tells clients where it listens instead of leaving them to parse url.
+			allBinds := append([]string{listenAddr}, extras...)
 			if serveBannerJSON {
 				emitServeBannerJSON(listenAddr, allBinds, creds)
 			} else {
@@ -666,6 +677,7 @@ func emitServeBannerJSON(listenAddr string, allBinds []string, creds *netapi.Cre
 		Tailscale:       serveTailscale,
 		PID:             os.Getpid(),
 		Binds:           allBinds,
+		ClientSetupURL:  serveClientSetupURL,
 	})
 
 	if creds.Pairing != nil {
@@ -697,7 +709,7 @@ func emitBannerLine(v any) {
 		fmt.Fprintf(os.Stderr, "  warning: encode serve banner: %v\n", err)
 		return
 	}
-	fmt.Fprintf(os.Stdout, "%s\n", data)
+	fmt.Fprintf(serveBannerOut, "%s\n", data)
 }
 
 // serveModelProgress mirrors modelProgress but writes to serveHumanOut so
@@ -781,13 +793,24 @@ func defaultServeBind() string {
 	return "127.0.0.1"
 }
 
-// resolveServeBindHosts returns the hosts this serve binds: the comma-
-// separated --bind list verbatim when set (tailscale mode sets it to the
-// tailnet IP), else the auto-detected private LAN address plus loopback so
-// local clients (the Mac app, same-machine tools) and LAN devices reach one
-// serve. The first host is primary: it feeds the banner URL, mDNS, and QR
-// pairing payloads.
+// resolveServeBindHosts returns the hosts this serve binds. The first host is
+// primary: it feeds the banner URL, mDNS, and QR pairing payloads. Loopback is
+// appended in tailscale mode (G35 / ADR-008) so the host app on this machine
+// keeps a route to its own agent — never promoted, so the tailnet address
+// stays the one remote clients are told to open.
 func resolveServeBindHosts() []string {
+	hosts := explicitOrAutoBindHosts()
+	if serveTailscale && !bindsReachLoopback(hosts) {
+		hosts = append(hosts, "127.0.0.1")
+	}
+	return hosts
+}
+
+// explicitOrAutoBindHosts returns the comma-separated --bind list verbatim when
+// set (tailscale mode sets it to the tailnet IP), else the auto-detected
+// private LAN address plus loopback so local clients (the Mac app,
+// same-machine tools) and LAN devices reach one serve.
+func explicitOrAutoBindHosts() []string {
 	if serveBind != "" {
 		hosts := make([]string, 0, 2)
 		for h := range strings.SplitSeq(serveBind, ",") {
@@ -800,10 +823,33 @@ func resolveServeBindHosts() []string {
 		}
 	}
 	hosts := []string{defaultServeBind()}
-	if hosts[0] != "127.0.0.1" {
+	if !bindsReachLoopback(hosts) {
 		hosts = append(hosts, "127.0.0.1")
 	}
 	return hosts
+}
+
+// bindsReachLoopback reports whether this host list already answers on the
+// machine's own loopback — named explicitly ("127.0.0.1", "::1", "localhost"),
+// or covered by an unspecified bind ("0.0.0.0", "::") that takes every
+// interface. Adding a second loopback listener in either case gains no
+// reachability, and against an unspecified bind it would fail the port is
+// already taken.
+func bindsReachLoopback(hosts []string) bool {
+	for _, h := range hosts {
+		h = strings.Trim(strings.TrimSpace(h), "[]")
+		if strings.EqualFold(h, "localhost") {
+			return true
+		}
+		ip := net.ParseIP(h)
+		if ip == nil {
+			continue
+		}
+		if ip.IsLoopback() || ip.IsUnspecified() {
+			return true
+		}
+	}
+	return false
 }
 
 // sessionRef holds the session remote turns save into; resume swaps it while
