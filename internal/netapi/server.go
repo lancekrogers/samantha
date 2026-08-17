@@ -98,9 +98,17 @@ type RouteMeetingFunc func(ctx context.Context, summary meetinglog.Summary, camp
 
 // ErrSessionActive is the sentinel Options.DeleteSession must return when
 // asked to delete the session the pipeline is currently writing into.
-// handleSessionDelete maps it to 409; every other non-nil error is reported
-// as 404, so this package never has to know the caller's own error types.
+// handleSessionDelete maps it to 409.
 var ErrSessionActive = errors.New("session is active")
+
+// ErrSessionNotFound is the sentinel Options.DeleteSession must return when
+// no session with the given id exists. handleSessionDelete maps it to 404;
+// any other non-nil error is reported as 500 with its own message, so an
+// unexpected failure (permissions, disk I/O) is never mislabeled as "not
+// found" — the same distinction handleDeviceDelete already makes for device
+// tokens, via a typed ok bool there and this sentinel here (Options.DeleteSession's
+// single-error signature has no room for a second return value).
+var ErrSessionNotFound = errors.New("session not found")
 
 // Server is the LAN-facing HTTPS + WebSocket surface around one pipeline.
 // PersonaAck describes the persona a set_persona request selected.

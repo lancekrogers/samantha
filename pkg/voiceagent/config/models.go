@@ -175,6 +175,44 @@ func newAssetProgress(asset, phase string, bytes, total int64) AssetProgress {
 	return AssetProgress{Asset: asset, Phase: phase, Bytes: bytes, Total: total, Pct: pct}
 }
 
+// throttleDownloadTicks wraps onProgress so "download"-phase ticks are
+// forwarded only when Pct has advanced at least one point or 250ms have
+// passed since the last tick emitted for that asset. Every other phase
+// (start/verify/extract/install/done/skipped) is always forwarded, which
+// already guarantees the first and last tick per asset are never dropped —
+// those phases bookend every asset's download ticks. A nil onProgress
+// passes through as nil so callers keep their existing "no callback" fast
+// path.
+//
+// This is the single place per-chunk download ticks are rate-limited before
+// reaching any consumer: both EnsureRuntimeAssetsProgress's callers (the
+// --json NDJSON path and the legacy (name, pct) adapter) get a throttled
+// stream, never a raw per-32KB-chunk flood — that matters most exactly when
+// Total is unknown (no Content-Length), where every tick's Pct is 0 and a
+// naive forward would fire once per chunk indefinitely.
+func throttleDownloadTicks(onProgress func(AssetProgress)) func(AssetProgress) {
+	if onProgress == nil {
+		return nil
+	}
+	type tickState struct {
+		pct float64
+		at  time.Time
+	}
+	last := map[string]tickState{}
+	return func(p AssetProgress) {
+		if p.Phase != assetPhaseDownload {
+			delete(last, p.Asset) // the asset's next download tick always fires
+			onProgress(p)
+			return
+		}
+		prev, seen := last[p.Asset]
+		if !seen || p.Pct-prev.pct >= 1 || time.Since(prev.at) >= 250*time.Millisecond {
+			last[p.Asset] = tickState{pct: p.Pct, at: time.Now()}
+			onProgress(p)
+		}
+	}
+}
+
 // EnsureRuntimeAssetsProgress downloads any missing model files and archives
 // needed for this run, reporting fine-grained per-asset progress (phase, byte
 // counts, and a clamped percentage). The required asset set is resolved once
@@ -183,6 +221,17 @@ func newAssetProgress(asset, phase string, bytes, total int64) AssetProgress {
 // downloads. ctx cancels in-flight downloads (Ctrl-C during startup or render
 // asset setup).
 func EnsureRuntimeAssetsProgress(ctx context.Context, cfg *Config, req AssetRequest, onProgress func(AssetProgress)) error {
+	// Throttled once, here, at the single point every AssetProgress tick
+	// this function produces passes through — not just for the --json NDJSON
+	// path, but for every consumer, including the legacy (name, pct) adapter
+	// (EnsureRuntimeAssets) that TUI/CLI human-progress printers still use.
+	// Without this, a download whose response has no Content-Length (Total
+	// <= 0, so every tick's Pct is 0) fires onProgress once per 32KB chunk,
+	// and callers like serveModelProgress/modelProgress treat Pct == 0 as a
+	// "just started" sentinel that reprints "Downloading <name>..." on every
+	// single tick instead of once.
+	onProgress = throttleDownloadTicks(onProgress)
+
 	manifest, err := ManifestFor(cfg, req)
 	if err != nil {
 		return err
@@ -383,11 +432,57 @@ func ensureQwenTTSAssetsProgress(ctx context.Context, cfg *Config, onProgress fu
 		URL: url, SHA256: sha, Tier: tier,
 	}, func(stage string, pct float64) {
 		if onProgress != nil {
-			onProgress(AssetProgress{Asset: qwenNativeAssetName, Phase: stage, Pct: clampPct(pct)})
+			onProgress(AssetProgress{Asset: qwenNativeAssetName, Phase: qwenPhaseFor(stage), Pct: clampPct(pct)})
 		}
 	})
 	return err
 }
+
+// qwenPhaseFor maps qwen.EnsureNative's own stage vocabulary ("native
+// Qwen3-TTS package" during download, "... extract", "... verify", and
+// "native Qwen3-TTS" at completion — see qwen/native.go) onto the canonical
+// AssetProgress phase vocabulary, rather than passing the raw stage text
+// straight through as Phase.
+//
+// This is a deliberate deviation from this row's spec, which said to map
+// the raw stage string directly onto Phase: doing that literally means no
+// qwen tick is ever Phase "download" (so throttleDownloadTicks, which keys
+// on that exact string, never throttles a multi-hundred-MB archive's
+// per-chunk ticks) and none is ever Phase "done" (so a caller tracking
+// "done" ticks to build an installed-assets list, the way `models ensure
+// --json`'s terminal summary does, never counts the qwen native package as
+// installed). Both are real, not hypothetical: the download loop calls its
+// progress callback once per 256KB chunk. Mapping onto the canonical
+// vocabulary here fixes both without the caller needing to know qwen's
+// stage text at all — an asset from the manifest path and the qwen path now
+// look identical on the wire.
+func qwenPhaseFor(stage string) string {
+	switch {
+	case strings.Contains(stage, "extract"):
+		return assetPhaseExtract
+	case strings.Contains(stage, "verify"):
+		return assetPhaseVerify
+	case stage == qwenNativeStageDone:
+		// EnsureNative's own already-installed shortcut and its real
+		// end-of-install call both use this exact stage string (see
+		// native.go); either way, from the caller's perspective the asset
+		// is now ready.
+		return assetPhaseDone
+	default:
+		// Everything else, including the initial 5% marker, is part of the
+		// download: EnsureNative reuses the same "... package" stage string
+		// for both.
+		return assetPhaseDownload
+	}
+}
+
+// qwenNativeStageDone is the exact stage string qwen.EnsureNative's own
+// progress callback uses to signal completion (native.go:561,656) — both
+// for its already-installed shortcut and a real end-of-install. Deliberately
+// distinct from qwenNativeAssetName ("Qwen3-TTS native package", the Asset
+// field this package reports): the two strings are unrelated, and comparing
+// against the wrong one would silently make this phase mapping dead code.
+const qwenNativeStageDone = "native Qwen3-TTS"
 
 // archiveExtracted checks if all expected files/dirs exist.
 func archiveExtracted(dir string, checkFiles []string) bool {

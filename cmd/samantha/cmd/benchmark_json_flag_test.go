@@ -87,24 +87,48 @@ func TestBenchmarkJSONFlagParsesEqualsPath(t *testing.T) {
 	}
 }
 
+// Real pflag round-trip for the space-separated legacy form: --json parses
+// as bare true (via NoOptDefVal) and the path becomes a leftover positional
+// — resolveBenchmarkOutput, not the flag itself, is what has to recover it.
+func TestBenchmarkJSONFlagSpaceSeparatedPathBecomesLeftoverArg(t *testing.T) {
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	var f benchmarkJSONFlag
+	fs.Var(&f, "json", "usage")
+	fs.Lookup("json").NoOptDefVal = "true"
+
+	if err := fs.Parse([]string{"--json", "/tmp/results.json"}); err != nil {
+		t.Fatalf("Parse(--json <path>) error = %v", err)
+	}
+	if !f.stdout || f.path != "" {
+		t.Fatalf("flag = %+v, want the bare-true parse pflag actually produces", f)
+	}
+	if got := fs.Args(); len(got) != 1 || got[0] != "/tmp/results.json" {
+		t.Fatalf("leftover args = %v, want [\"/tmp/results.json\"]", got)
+	}
+	stdout, file, deprecated := resolveBenchmarkOutput(f, "", fs.Args())
+	if stdout || file != "/tmp/results.json" || !deprecated {
+		t.Fatalf("resolveBenchmarkOutput() = stdout=%v file=%q deprecated=%v, want the legacy path recovered", stdout, file, deprecated)
+	}
+}
+
 // --- resolveBenchmarkOutput ---
 
 func TestResolveBenchmarkOutputBareJSON(t *testing.T) {
-	stdout, file, deprecated := resolveBenchmarkOutput(benchmarkJSONFlag{stdout: true}, "")
+	stdout, file, deprecated := resolveBenchmarkOutput(benchmarkJSONFlag{stdout: true}, "", nil)
 	if !stdout || file != "" || deprecated {
 		t.Fatalf("got stdout=%v file=%q deprecated=%v, want stdout=true file=\"\" deprecated=false", stdout, file, deprecated)
 	}
 }
 
 func TestResolveBenchmarkOutputJSONFile(t *testing.T) {
-	stdout, file, deprecated := resolveBenchmarkOutput(benchmarkJSONFlag{}, "/tmp/out.json")
+	stdout, file, deprecated := resolveBenchmarkOutput(benchmarkJSONFlag{}, "/tmp/out.json", nil)
 	if stdout || file != "/tmp/out.json" || deprecated {
 		t.Fatalf("got stdout=%v file=%q deprecated=%v, want the file preserved and no deprecation", stdout, file, deprecated)
 	}
 }
 
 func TestResolveBenchmarkOutputDeprecatedPathWarns(t *testing.T) {
-	stdout, file, deprecated := resolveBenchmarkOutput(benchmarkJSONFlag{path: "/tmp/legacy.json"}, "")
+	stdout, file, deprecated := resolveBenchmarkOutput(benchmarkJSONFlag{path: "/tmp/legacy.json"}, "", nil)
 	if stdout || file != "/tmp/legacy.json" || !deprecated {
 		t.Fatalf("got stdout=%v file=%q deprecated=%v, want the legacy path honoured and flagged deprecated", stdout, file, deprecated)
 	}
@@ -113,9 +137,49 @@ func TestResolveBenchmarkOutputDeprecatedPathWarns(t *testing.T) {
 // --json-file must win when both are somehow set, so there is never
 // ambiguity about which path is authoritative.
 func TestResolveBenchmarkOutputJSONFileWinsOverDeprecatedPath(t *testing.T) {
-	stdout, file, deprecated := resolveBenchmarkOutput(benchmarkJSONFlag{path: "/tmp/legacy.json"}, "/tmp/explicit.json")
+	stdout, file, deprecated := resolveBenchmarkOutput(benchmarkJSONFlag{path: "/tmp/legacy.json"}, "/tmp/explicit.json", nil)
 	if stdout || file != "/tmp/explicit.json" || !deprecated {
 		t.Fatalf("got stdout=%v file=%q deprecated=%v, want --json-file's path to win (still flagged deprecated)", stdout, file, deprecated)
+	}
+}
+
+// The space-separated legacy form (`--json /tmp/out.json`, the only form
+// the old StringVar ever supported) parses as bare --json (via
+// NoOptDefVal) with the path left over as a positional argument — pflag
+// cannot bind a value to a NoOptDefVal flag from a separate token. This
+// must still be honoured as the deprecated path form, not silently
+// switched to stdout JSON (found by adversarial review; reproduced via a
+// real pflag.FlagSet before this fix: value="true", args=["/tmp/results.json"]).
+func TestResolveBenchmarkOutputLegacySpaceSeparatedForm(t *testing.T) {
+	stdout, file, deprecated := resolveBenchmarkOutput(benchmarkJSONFlag{stdout: true}, "", []string{"/tmp/legacy.json"})
+	if stdout || file != "/tmp/legacy.json" || !deprecated {
+		t.Fatalf("got stdout=%v file=%q deprecated=%v, want the leftover positional honoured as the deprecated path form", stdout, file, deprecated)
+	}
+}
+
+func TestResolveBenchmarkOutputLegacySpaceSeparatedFormJSONFileWins(t *testing.T) {
+	stdout, file, deprecated := resolveBenchmarkOutput(benchmarkJSONFlag{stdout: true}, "/tmp/explicit.json", []string{"/tmp/legacy.json"})
+	if stdout || file != "/tmp/explicit.json" || !deprecated {
+		t.Fatalf("got stdout=%v file=%q deprecated=%v, want --json-file's path to win over the legacy positional", stdout, file, deprecated)
+	}
+}
+
+// A genuinely bare --json (explicit stdout mode, no stray argument) must not
+// be reinterpreted just because some other unrelated command someday grows
+// positional arguments; two or more leftover args are never the legacy form.
+func TestResolveBenchmarkOutputBareJSONWithMultipleLeftoverArgsStaysStdout(t *testing.T) {
+	stdout, file, deprecated := resolveBenchmarkOutput(benchmarkJSONFlag{stdout: true}, "", []string{"a", "b"})
+	if !stdout || file != "" || deprecated {
+		t.Fatalf("got stdout=%v file=%q deprecated=%v, want stdout mode preserved with 2+ leftover args", stdout, file, deprecated)
+	}
+}
+
+func TestResolveBenchmarkOutputExplicitFalseJSONWithLeftoverArgIgnoresIt(t *testing.T) {
+	// --json=false plus a stray arg is not the legacy form (bare --json
+	// specifically triggers the heuristic) — the stray arg is left alone.
+	stdout, file, deprecated := resolveBenchmarkOutput(benchmarkJSONFlag{stdout: false}, "", []string{"/tmp/legacy.json"})
+	if stdout || file != "" || deprecated {
+		t.Fatalf("got stdout=%v file=%q deprecated=%v, want no output changed", stdout, file, deprecated)
 	}
 }
 

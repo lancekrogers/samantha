@@ -109,7 +109,20 @@ func (f *benchmarkJSONFlag) Type() string { return "string" }
 // deprecated string form of --json was used (so the caller can warn on
 // stderr). An explicit --json-file always wins the file path when both are
 // set, so there is never ambiguity about which one is authoritative.
-func resolveBenchmarkOutput(jsonFlag benchmarkJSONFlag, jsonFile string) (stdout bool, file string, deprecated bool) {
+//
+// leftoverArgs handles the space-separated legacy invocation specifically:
+// `--json <path>` was the *only* form the old StringVar ever accepted, but
+// pflag's NoOptDefVal (needed so bare --json parses as a bool) has no way to
+// bind a value from a separate token — `--json /tmp/out.json` parses as
+// bare --json (true) with "/tmp/out.json" left over as a positional
+// argument. benchmarkCmd defines no positional arguments of its own, so a
+// single leftover argument immediately following a bare --json can only be
+// this legacy form; treat it exactly like the deprecated --json=<path> form
+// rather than silently dropping it and switching to stdout JSON.
+func resolveBenchmarkOutput(jsonFlag benchmarkJSONFlag, jsonFile string, leftoverArgs []string) (stdout bool, file string, deprecated bool) {
+	if jsonFlag.stdout && jsonFlag.path == "" && len(leftoverArgs) == 1 {
+		jsonFlag = benchmarkJSONFlag{path: leftoverArgs[0]}
+	}
 	file = jsonFile
 	if jsonFlag.path != "" {
 		deprecated = true
@@ -124,6 +137,7 @@ var benchmarkCmd = &cobra.Command{
 	Use:   "benchmark",
 	Short: "Run a local Samantha benchmark",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		cmd.SilenceUsage = true
 		cfg, err := config.Load()
 		if err != nil {
 			return err
@@ -132,7 +146,7 @@ var benchmarkCmd = &cobra.Command{
 		// The deprecated string form of --json still writes a file — same
 		// as before — but a caller who also passed --json-file wins outright
 		// (no ambiguity about which path is authoritative).
-		stdout, jsonFile, deprecated := resolveBenchmarkOutput(benchmarkJSON, benchmarkJSONFile)
+		stdout, jsonFile, deprecated := resolveBenchmarkOutput(benchmarkJSON, benchmarkJSONFile, args)
 		if deprecated {
 			fmt.Fprintln(os.Stderr, "--json <path> is deprecated; use --json-file <path>")
 		}
@@ -154,9 +168,7 @@ var benchmarkCmd = &cobra.Command{
 		}
 
 		if stdout {
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			if err := enc.Encode(results); err != nil {
+			if err := encodeJSON(cmd, results); err != nil {
 				return fmt.Errorf("encode benchmark results: %w", err)
 			}
 		} else {

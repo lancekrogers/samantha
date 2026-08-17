@@ -105,7 +105,13 @@ func qwenTierStatusRows(native managedqwen.NativeStatus, nativeURL string) []con
 			if packageAbsent {
 				row.Missing = []string{native.Root}
 			} else {
-				row.Missing = []string{filepath.Join(native.ModelDir, tier)}
+				// Flat lab layout (qwen/native.go's tierReady fallback, the
+				// path every published release actually uses):
+				// <ModelDir>/qwen3-tts-<tier>-f16.gguf — never a per-tier
+				// subdirectory. A first cut of this row fabricated
+				// ModelDir/<tier>/, a path no layout has ever written to;
+				// found by adversarial review.
+				row.Missing = []string{filepath.Join(native.ModelDir, fmt.Sprintf("qwen3-tts-%s-f16.gguf", tier))}
 			}
 			row.Detail = qwenTierFailClosedDetail(nativeURL, tier)
 		}

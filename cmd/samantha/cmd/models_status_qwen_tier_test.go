@@ -97,9 +97,13 @@ func TestQwenTierStatusRowsReadyTierHasNoMissingOrDetail(t *testing.T) {
 	if missing.Installed {
 		t.Error("1.7b installed = true, want false (in TiersMissing)")
 	}
-	// The package itself is present (TiersReady is non-empty), so the missing
-	// path is the tier's own model-dir location, not the bare package root.
-	wantPath := filepath.Join(native.ModelDir, "1.7b")
+	// The package itself is present (TiersReady is non-empty), so the
+	// missing path is the tier's real flat-layout filename — qwen/native.go's
+	// tierReady checks <ModelDir>/qwen3-tts-<tier>-f16.gguf, never a
+	// per-tier subdirectory (no release layout has ever used one; an
+	// earlier draft of this row fabricated ModelDir/<tier>/, caught by
+	// adversarial review).
+	wantPath := filepath.Join(native.ModelDir, "qwen3-tts-1.7b-f16.gguf")
 	if len(missing.Missing) != 1 || missing.Missing[0] != wantPath {
 		t.Errorf("1.7b missing = %v, want [%s]", missing.Missing, wantPath)
 	}

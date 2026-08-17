@@ -118,8 +118,13 @@ func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"deleted": id})
 	case errors.Is(err, ErrSessionActive):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "session is active"})
-	default:
+	case errors.Is(err, ErrSessionNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	default:
+		// An unexpected failure (permissions, disk I/O, a malformed id) is
+		// not "not found" — mislabeling it as 404 would tell a client to
+		// stop asking when the real problem is on this end.
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 }
 

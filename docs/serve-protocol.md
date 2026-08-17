@@ -183,6 +183,7 @@ serve answers `404` rather than pretending. Errors:
 | `400` | `{"error":"missing session id"}` | empty `{id}` |
 | `404` | `{"error":"…"}` | no session with that id (or the route is unregistered) |
 | `409` | `{"error":"session is active"}` | `id` is the session the pipeline is currently writing into |
+| `500` | `{"error":"…"}` | an unexpected store failure (permissions, disk I/O) — never mislabeled as 404 |
 
 The **409** case is the live-session guard: deleting the file a running serve
 rewrites on every turn would just make it reappear, so the route refuses

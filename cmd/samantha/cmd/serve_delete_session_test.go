@@ -65,9 +65,18 @@ func TestServeDeleteSessionUnknownIDReturnsSentinel(t *testing.T) {
 	ref := &sessionRef{sess: session.New("ollama", "qwen3:8b")}
 	del := serveDeleteSession(ref)
 
+	// The DELETE route's handler distinguishes "not found" (404) from an
+	// unexpected store failure (500) via netapi's own sentinel — it must
+	// never have to import the session package to do that — so
+	// serveDeleteSession translates session.ErrSessionNotFound into
+	// netapi.ErrSessionNotFound rather than passing the session package's
+	// sentinel straight through.
 	err := del("20260101-000000-dead")
-	if !errors.Is(err, session.ErrSessionNotFound) {
-		t.Fatalf("serveDeleteSession()(unknown id) = %v, want session.ErrSessionNotFound", err)
+	if !errors.Is(err, netapi.ErrSessionNotFound) {
+		t.Fatalf("serveDeleteSession()(unknown id) = %v, want netapi.ErrSessionNotFound", err)
+	}
+	if errors.Is(err, session.ErrSessionNotFound) {
+		t.Fatalf("serveDeleteSession()(unknown id) = %v, must not be session.ErrSessionNotFound directly (netapi must not depend on the session package's error types)", err)
 	}
 }
 
@@ -91,7 +100,7 @@ func TestServeDeleteSessionFollowsResume(t *testing.T) {
 	// The original (no longer live) id is now an ordinary session: it was
 	// never saved to disk in this test, so deleting it reports not-found
 	// rather than a false "active" guard.
-	if err := del(originalID); !errors.Is(err, session.ErrSessionNotFound) {
-		t.Fatalf("delete(original id) = %v, want ErrSessionNotFound (no longer the live session)", err)
+	if err := del(originalID); !errors.Is(err, netapi.ErrSessionNotFound) {
+		t.Fatalf("delete(original id) = %v, want netapi.ErrSessionNotFound (no longer the live session)", err)
 	}
 }

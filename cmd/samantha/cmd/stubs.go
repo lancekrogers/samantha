@@ -4,7 +4,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -208,9 +207,7 @@ func buildProvidersJSON(cfg *config.Config) providersJSONDoc {
 // offline in both output forms; --json never constructs a provider.
 func runProviders(cmd *cobra.Command, cfg *config.Config, asJSON bool) error {
 	if asJSON {
-		enc := json.NewEncoder(cmd.OutOrStdout())
-		enc.SetIndent("", "  ")
-		return enc.Encode(buildProvidersJSON(cfg))
+		return encodeJSON(cmd, buildProvidersJSON(cfg))
 	}
 
 	fmt.Println()

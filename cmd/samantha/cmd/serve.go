@@ -463,12 +463,19 @@ type servePersonaSwitcher struct {
 // with netapi.ErrSessionActive when id is the session ref currently holds
 // (this process rewrites that file on every turn, so deleting it would just
 // make it reappear), otherwise deletes it from the default session store.
+// session.ErrSessionNotFound is translated to netapi's own sentinel so
+// handleSessionDelete can tell "no such session" (404) apart from an
+// unexpected store failure (500) without importing the session package.
 func serveDeleteSession(ref *sessionRef) func(id string) error {
 	return func(id string) error {
 		if id == ref.id() {
 			return netapi.ErrSessionActive
 		}
-		return session.DefaultStore().Delete(id)
+		err := session.DefaultStore().Delete(id)
+		if errors.Is(err, session.ErrSessionNotFound) {
+			return netapi.ErrSessionNotFound
+		}
+		return err
 	}
 }
 

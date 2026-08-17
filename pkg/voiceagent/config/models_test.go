@@ -109,6 +109,49 @@ func TestEnsureRuntimeAssetsWarnsOnKokoroLexiconSanitizeFailure(t *testing.T) {
 
 // --- AssetProgress (MDL-A1) ---
 
+// --- throttleDownloadTicks (fix for a regression adversarial review found:
+// copyBodyVerified now calls onProgress on every chunk regardless of total,
+// which used to be gated on total>0 — a download with no Content-Length,
+// where every tick's Pct stays 0, would otherwise fire the legacy (name,
+// pct) adapter's callback once per 32KB chunk instead of once.) ---
+
+func TestThrottleDownloadTicksCollapsesRepeatedZeroPctTicks(t *testing.T) {
+	var forwarded []AssetProgress
+	track := throttleDownloadTicks(func(p AssetProgress) { forwarded = append(forwarded, p) })
+	for i := 0; i < 50; i++ {
+		// Every tick reports Pct 0 (no Content-Length known), exactly what
+		// an unknown-length download's chunk loop produces.
+		track(AssetProgress{Asset: "a", Phase: assetPhaseDownload, Bytes: int64(i * 1000), Total: 0, Pct: 0})
+	}
+	if len(forwarded) != 1 {
+		t.Fatalf("forwarded %d ticks for 50 same-instant zero-pct chunks, want 1 (only the first, before 250ms elapses)", len(forwarded))
+	}
+}
+
+func TestThrottleDownloadTicksNilIsNil(t *testing.T) {
+	if got := throttleDownloadTicks(nil); got != nil {
+		t.Fatal("throttleDownloadTicks(nil) returned a non-nil func, want nil (callers must keep their no-callback fast path)")
+	}
+}
+
+func TestThrottleDownloadTicksAlwaysForwardsNonDownloadPhases(t *testing.T) {
+	var forwarded []AssetProgress
+	track := throttleDownloadTicks(func(p AssetProgress) { forwarded = append(forwarded, p) })
+	track(AssetProgress{Asset: "a", Phase: assetPhaseStart})
+	track(AssetProgress{Asset: "a", Phase: assetPhaseDownload, Pct: 0})
+	track(AssetProgress{Asset: "a", Phase: assetPhaseDownload, Pct: 0})
+	track(AssetProgress{Asset: "a", Phase: assetPhaseVerify})
+	track(AssetProgress{Asset: "a", Phase: assetPhaseDone, Pct: 100})
+	var phases []string
+	for _, p := range forwarded {
+		phases = append(phases, p.Phase)
+	}
+	want := []string{assetPhaseStart, assetPhaseDownload, assetPhaseVerify, assetPhaseDone}
+	if strings.Join(phases, ",") != strings.Join(want, ",") {
+		t.Fatalf("forwarded phases = %v, want %v (one download tick collapsed, everything else always forwarded)", phases, want)
+	}
+}
+
 func TestClampPct(t *testing.T) {
 	cases := []struct {
 		in, want float64
@@ -383,6 +426,33 @@ func TestEnsureManifestLegacyAdapterReceivesNameAndClampedPct(t *testing.T) {
 // emitter (the third of the three emitters §6 asks to see clamped): a real
 // install through the real EnsureNative, then a second call against the same
 // modelsDir hitting the already-installed shortcut.
+// TestQwenPhaseFor guards the qwen stage -> canonical phase mapping
+// directly, including the completion-string mixup a first draft of this fix
+// had: qwenNativeStageDone ("native Qwen3-TTS") is unrelated to
+// qwenNativeAssetName ("Qwen3-TTS native package"), and comparing against
+// the wrong one silently makes the "done" case dead code.
+func TestQwenPhaseFor(t *testing.T) {
+	cases := []struct {
+		stage string
+		want  string
+	}{
+		{"native Qwen3-TTS package", assetPhaseDownload},
+		{"native Qwen3-TTS extract", assetPhaseExtract},
+		{"native Qwen3-TTS verify", assetPhaseVerify},
+		{"native Qwen3-TTS", assetPhaseDone},
+	}
+	for _, tc := range cases {
+		if got := qwenPhaseFor(tc.stage); got != tc.want {
+			t.Errorf("qwenPhaseFor(%q) = %q, want %q", tc.stage, got, tc.want)
+		}
+	}
+	// The two "Qwen3-TTS native package" strings (Asset field vs. the raw
+	// qwen stage that signals completion) must stay distinct.
+	if qwenNativeStageDone == qwenNativeAssetName {
+		t.Fatalf("qwenNativeStageDone (%q) must not equal qwenNativeAssetName (%q) — they label different things", qwenNativeStageDone, qwenNativeAssetName)
+	}
+}
+
 func TestEnsureQwenTTSAssetsProgressTicksAndShortcut(t *testing.T) {
 	modelsDir := t.TempDir()
 	cfg := &Config{
@@ -414,6 +484,25 @@ func TestEnsureQwenTTSAssetsProgressTicksAndShortcut(t *testing.T) {
 	}
 	if last := first[len(first)-1]; last.Pct != 100 {
 		t.Errorf("final tick pct = %v, want 100", last.Pct)
+	}
+	// Regression guard (found by adversarial review): ensureQwenTTSAssetsProgress
+	// used to pass qwen's raw stage strings straight through as Phase, and
+	// none of them is ever literally "done" or "download" — so a caller
+	// tracking "done" ticks (the way runModelsEnsureJSON's terminal summary
+	// does) never counted the qwen native package as installed, and a
+	// caller throttling on Phase=="download" (throttleDownloadTicks) never
+	// throttled its per-chunk ticks.
+	if last := first[len(first)-1]; last.Phase != assetPhaseDone {
+		t.Errorf("final tick phase = %q, want %q", last.Phase, assetPhaseDone)
+	}
+	var sawDownload bool
+	for _, p := range first {
+		if p.Phase == assetPhaseDownload {
+			sawDownload = true
+		}
+	}
+	if !sawDownload {
+		t.Errorf("no tick had phase %q; ticks = %+v", assetPhaseDownload, first)
 	}
 
 	var second []AssetProgress

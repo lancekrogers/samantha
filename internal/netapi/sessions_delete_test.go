@@ -92,15 +92,34 @@ func TestSessionDeleteSucceeds(t *testing.T) {
 
 func TestSessionDeleteNotFound(t *testing.T) {
 	addr, creds := startSessionDeleteServer(t, func(id string) error {
-		return errors.New("session: not found")
+		return ErrSessionNotFound
 	})
 
 	status, body := deleteSession(t, addr, creds.Token, "does-not-exist")
 	if status != http.StatusNotFound {
 		t.Fatalf("DELETE /v1/sessions/{id} = %d, want 404", status)
 	}
-	if body["error"] != "session: not found" {
-		t.Fatalf("error = %v, want the callback's message", body["error"])
+	if body["error"] != ErrSessionNotFound.Error() {
+		t.Fatalf("error = %v, want the sentinel's message", body["error"])
+	}
+}
+
+// An unexpected failure (permissions, disk I/O, a malformed id — anything
+// that is not ErrSessionActive or ErrSessionNotFound) must not be
+// mislabeled as 404: a client would stop asking when the real problem is
+// server-side. Found by adversarial review: the first cut of this handler
+// mapped every non-active error to 404, including this case.
+func TestSessionDeleteUnexpectedErrorIsServerError(t *testing.T) {
+	addr, creds := startSessionDeleteServer(t, func(id string) error {
+		return errors.New("delete session foo: remove /var/.../foo.json: permission denied")
+	})
+
+	status, body := deleteSession(t, addr, creds.Token, "20260816-231455-a3f9")
+	if status != http.StatusInternalServerError {
+		t.Fatalf("DELETE /v1/sessions/{id} = %d, want 500 for an unexpected callback error", status)
+	}
+	if body["error"] != "delete session foo: remove /var/.../foo.json: permission denied" {
+		t.Fatalf("error = %v, want the callback's message surfaced", body["error"])
 	}
 }
 
