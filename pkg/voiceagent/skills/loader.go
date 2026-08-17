@@ -36,33 +36,63 @@ type frontmatter struct {
 	AllowedTools any    `yaml:"allowed-tools"`
 }
 
-// Catalog scans each search root for immediate child skill folders
-// (<root>/<name>/SKILL.md), parses each skill, and returns the merged catalog.
-// Missing or empty roots yield no skills (not an error). Malformed skills are
-// skipped. When the same name appears in more than one root, the first root in
-// Dirs/Dir order wins (project over system). Nested trees are not walked.
-func (l Loader) Catalog(ctx context.Context) ([]Skill, error) {
+// Discovered is one catalog entry plus where it came from: which search
+// root won it, and which lower-precedence root(s) had a same-named skill
+// dir that lost to it. Front ends use this to render an honest provenance
+// badge instead of guessing from the path.
+type Discovered struct {
+	Skill
+	Root     string   // the search root this skill was loaded from
+	Shadowed []string // skill dirs with the same name in later roots
+}
+
+// Discover scans each search root for immediate child skill folders
+// (<root>/<name>/SKILL.md), parses each skill, and returns one entry per
+// distinct name plus its provenance. Missing or empty roots yield no
+// skills (not an error). Malformed skills are skipped — a skipped skill
+// never shadows anything, since its name was never established. When the
+// same name appears in more than one root, the first root in Dirs/Dir
+// order wins (project over system) and every later root's dir is recorded
+// in Shadowed. Nested trees are not walked. Results are sorted by name.
+func (l Loader) Discover(ctx context.Context) ([]Discovered, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	byName := map[string]Skill{}
+	byName := map[string]Discovered{}
 	for _, dir := range l.searchDirs() {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if err := catalogDir(ctx, dir, byName); err != nil {
+		if err := discoverDir(ctx, dir, byName); err != nil {
 			return nil, err
 		}
 	}
 
-	list := make([]Skill, 0, len(byName))
-	for _, s := range byName {
-		list = append(list, s)
+	list := make([]Discovered, 0, len(byName))
+	for _, d := range byName {
+		sort.Strings(d.Shadowed)
+		list = append(list, d)
 	}
 	sort.Slice(list, func(i, j int) bool {
 		return list[i].Name < list[j].Name
 	})
+	return list, nil
+}
+
+// Catalog scans each search root for immediate child skill folders and
+// returns the merged, first-root-wins catalog — Discover minus provenance.
+// Reimplemented on Discover so there is exactly one scan implementation and
+// first-root-wins cannot drift between the two.
+func (l Loader) Catalog(ctx context.Context) ([]Skill, error) {
+	discovered, err := l.Discover(ctx)
+	if err != nil {
+		return nil, err
+	}
+	list := make([]Skill, 0, len(discovered))
+	for _, d := range discovered {
+		list = append(list, d.Skill)
+	}
 	return list, nil
 }
 
@@ -82,9 +112,10 @@ func (l Loader) searchDirs() []string {
 	return nil
 }
 
-// catalogDir loads skills from immediate children of dir only:
-// <dir>/<skill-name>/SKILL.md. First-wins: existing names are not overwritten.
-func catalogDir(ctx context.Context, dir string, byName map[string]Skill) error {
+// discoverDir loads skills from immediate children of dir only:
+// <dir>/<skill-name>/SKILL.md. First-wins: existing names are recorded as
+// won already and the later dir is appended to that entry's Shadowed list.
+func discoverDir(ctx context.Context, dir string, byName map[string]Discovered) error {
 	if dir == "" {
 		return nil
 	}
@@ -116,10 +147,13 @@ func catalogDir(ctx context.Context, dir string, byName map[string]Skill) error 
 			// Fail-safe: skip missing/malformed skills rather than failing the catalog.
 			continue
 		}
-		if _, exists := byName[skill.Name]; exists {
+		existing, exists := byName[skill.Name]
+		if !exists {
+			byName[skill.Name] = Discovered{Skill: skill, Root: dir}
 			continue
 		}
-		byName[skill.Name] = skill
+		existing.Shadowed = append(existing.Shadowed, skill.Dir)
+		byName[skill.Name] = existing
 	}
 	return nil
 }
