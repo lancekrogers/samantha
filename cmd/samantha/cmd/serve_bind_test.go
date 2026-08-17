@@ -67,13 +67,26 @@ func TestResolveServeBindHostsDefaultIncludesLoopback(t *testing.T) {
 // address remote clients are told to open.
 func TestResolveServeBindHostsTailscaleAppendsLoopback(t *testing.T) {
 	withServeBindState(t)
-
 	serveTailscale = true
-	serveBind = "100.64.0.7"
 
-	want := []string{"100.64.0.7", "127.0.0.1"}
-	if got := resolveServeBindHosts(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("resolveServeBindHosts() = %v, want %v", got, want)
+	cases := []struct {
+		name string
+		bind string
+		want []string
+	}{
+		// An unresolvable --bind is the caller's error to hit at listen time,
+		// but it must not cost the host its loopback route on the way there.
+		{"unparseable host still gains loopback", "not-a-host", []string{"not-a-host", "127.0.0.1"}},
+		{"tailnet address", "100.64.0.7", []string{"100.64.0.7", "127.0.0.1"}},
+		{"magicdns name", "mac-studio.tail37114b.ts.net", []string{"mac-studio.tail37114b.ts.net", "127.0.0.1"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			serveBind = tc.bind
+			if got := resolveServeBindHosts(); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("resolveServeBindHosts(%q) = %v, want %v", tc.bind, got, tc.want)
+			}
+		})
 	}
 }
 
