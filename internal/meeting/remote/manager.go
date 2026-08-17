@@ -204,6 +204,32 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (*Session, error)
 	return session, nil
 }
 
+// Bundle resolves a finished meeting by its bundle id — the directory name,
+// which unlike a live id survives a restart. The id is re-checked here rather
+// than trusted from the caller: this is the last gate before a client-supplied
+// string becomes a filesystem path.
+func (m *Manager) Bundle(ctx context.Context, id string) (meeting.BundleEntry, bool) {
+	if ctx.Err() != nil {
+		return meeting.BundleEntry{}, false
+	}
+	if !meeting.ValidBundleID(id) {
+		return meeting.BundleEntry{}, false
+	}
+	path := filepath.Join(m.opts.Root, id)
+	if filepath.Dir(path) != filepath.Clean(m.opts.Root) {
+		return meeting.BundleEntry{}, false
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return meeting.BundleEntry{}, false
+	}
+	return m.index.Entry(ctx, path)
+}
+
+// Sessions snapshots the in-memory meetings so a caller can overlay live state
+// onto the disk index.
+func (m *Manager) Sessions() []*Session { return m.snapshot() }
+
 // Session looks one meeting up by id.
 func (m *Manager) Session(id string) (*Session, error) {
 	m.mu.Lock()

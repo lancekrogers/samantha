@@ -87,6 +87,29 @@ type RouteStatus struct {
 	Retryable bool `json:"retryable"`
 }
 
+// Summary projects the entry back onto the shape every routing and rendering
+// path already speaks, so a finished bundle can be routed or reported without
+// re-reading its event stream.
+func (e BundleEntry) Summary() meetinglog.Summary {
+	return meetinglog.Summary{
+		Description:         e.Description,
+		Bundle:              e.Bundle,
+		File:                e.Document,
+		JSONLFile:           e.EventsFile,
+		StartedAt:           e.StartedAt,
+		EndedAt:             e.EndedAt,
+		DurationSeconds:     e.DurationSeconds,
+		Utterances:          e.Utterances,
+		Notes:               e.Notes,
+		Bookmarks:           e.Bookmarks,
+		Errors:              e.Errors,
+		SpeakerStatus:       e.SpeakerStatus,
+		SpeakerCount:        e.SpeakerCount,
+		SpeakerAnalysisFile: e.SpeakerAnalysisFile,
+		AudioFile:           e.AudioFile,
+	}
+}
+
 // IndexOptions bounds one index read.
 type IndexOptions struct {
 	// Limit caps the returned entries, newest first. Zero means

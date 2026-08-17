@@ -121,11 +121,15 @@ func (s *Server) handleMeetingStop(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMeetingStatus(w http.ResponseWriter, r *http.Request) {
-	session, _, ok := s.meetingSession(w, r)
+	target, ok := s.resolveMeeting(w, r)
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, session.Status())
+	if !target.isLive() {
+		writeJSON(w, http.StatusOK, bundleStatus(target.bundle))
+		return
+	}
+	writeJSON(w, http.StatusOK, target.session.Status())
 }
 
 // handleMeetingRoute files a finished meeting into a campaign's
@@ -133,7 +137,7 @@ func (s *Server) handleMeetingStatus(w http.ResponseWriter, r *http.Request) {
 // from the session's receipt cache: the importer does not dedupe, and a
 // timed-out response must not turn into a second filed note.
 func (s *Server) handleMeetingRoute(w http.ResponseWriter, r *http.Request) {
-	session, _, ok := s.meetingSession(w, r)
+	target, ok := s.resolveMeeting(w, r)
 	if !ok {
 		return
 	}
@@ -151,6 +155,11 @@ func (s *Server) handleMeetingRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "campaign is required"})
 		return
 	}
+	if !target.isLive() {
+		s.routeBundle(w, r, target.bundle, req, campaign)
+		return
+	}
+	session := target.session
 	summary, err := session.Summary()
 	if err != nil {
 		writeMeetingError(w, err)
@@ -172,20 +181,20 @@ func (s *Server) handleMeetingRoute(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, receipt)
 }
 
-// meetingSession resolves the path's meeting id, writing the error response
-// itself when it cannot.
+// meetingSession resolves the path's meeting id for a write path, writing the
+// error response itself when it cannot. A finished bundle is a legitimate id
+// that can never take audio or control events again, so it answers 409 rather
+// than pretending not to exist.
 func (s *Server) meetingSession(w http.ResponseWriter, r *http.Request) (*remote.Session, *remote.Manager, bool) {
-	manager := s.meetings
-	if manager == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "meeting capture is not configured"})
+	target, ok := s.resolveMeeting(w, r)
+	if !ok {
 		return nil, nil, false
 	}
-	session, err := manager.Session(r.PathValue("id"))
-	if err != nil {
-		writeMeetingError(w, err)
+	if !target.isLive() {
+		writeMeetingError(w, remote.ErrNotRecording)
 		return nil, nil, false
 	}
-	return session, manager, true
+	return target.session, target.manager, true
 }
 
 // isBinaryContentType accepts the octet-stream family a raw PCM upload should
@@ -241,10 +250,15 @@ func writeMeetingProblem(w http.ResponseWriter, status int, err error) {
 // wire projection: the document the Mac wrote — sections, speaker labels,
 // notes — is the format, and inventing a second one would drift from it.
 func (s *Server) handleMeetingDocument(w http.ResponseWriter, r *http.Request) {
-	session, _, ok := s.meetingSession(w, r)
+	target, ok := s.resolveMeeting(w, r)
 	if !ok {
 		return
 	}
+	if !target.isLive() {
+		writeBundleDocument(w, target.bundle)
+		return
+	}
+	session := target.session
 	if _, err := session.Summary(); err != nil {
 		writeMeetingError(w, err)
 		return

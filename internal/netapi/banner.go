@@ -4,10 +4,13 @@ package netapi
 // machine-readable ready banner so clients can gate features against a stable
 // contract version.
 //
-// 2 adds the /v1/meeting capture surface (PROTOCOL_DELTAS D6). Clients should
-// still prefer the per-feature capability flags in GET /v1/status over the
-// version number, since serve can be built or configured without a feature.
-const ProtocolVersion = 2
+// 2 adds the /v1/meeting capture surface (PROTOCOL_DELTAS D6); 3 adds meeting
+// history (GET /v1/meetings, bundle-id resolution), the note control action,
+// and route_plan at start (D7). Clients should still prefer the per-feature
+// capability flags in GET /v1/status over the version number, since serve can
+// be built or configured without a feature: capture needs meetings == true and
+// protocol_version >= 2, history needs protocol_version >= 3.
+const ProtocolVersion = 3
 
 // ReadyBanner is the single JSON line `serve --banner-json` writes to stdout
 // once the listener is bound. A supervising process reads this line to learn
