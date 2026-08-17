@@ -70,7 +70,7 @@ output moves to stderr. The first line is `ready`, written once the listener is
 bound:
 
 ```json
-{"event":"ready","protocol_version":2,"url":"https://mac.tailnet.ts.net:7262","port":7262,"fingerprint":"9f3c…","token":"…","mdns":false,"tailscale":true,"pid":41233,"binds":["100.64.0.7:7262","127.0.0.1:7262"],"client_setup_url":"https://login.tailscale.com/admin/dns"}
+{"event":"ready","protocol_version":3,"url":"https://mac.tailnet.ts.net:7262","port":7262,"fingerprint":"9f3c…","token":"…","mdns":false,"tailscale":true,"pid":41233,"binds":["100.64.0.7:7262","127.0.0.1:7262"],"client_setup_url":"https://login.tailscale.com/admin/dns"}
 ```
 
 | Field | Meaning |
@@ -87,7 +87,7 @@ bound:
 LAN mode with a trusted or self-signed cert omits `client_setup_url` entirely:
 
 ```json
-{"event":"ready","protocol_version":2,"url":"https://192.168.1.24:7262","port":7262,"fingerprint":"9f3c…","token":"…","mdns":true,"tailscale":false,"pid":41233,"binds":["192.168.1.24:7262","127.0.0.1:7262"]}
+{"event":"ready","protocol_version":3,"url":"https://192.168.1.24:7262","port":7262,"fingerprint":"9f3c…","token":"…","mdns":true,"tailscale":false,"pid":41233,"binds":["192.168.1.24:7262","127.0.0.1:7262"]}
 ```
 
 A `pairing_code` line (`{"event":"pairing_code","code":"…","expires_at":"…"}`)
@@ -177,13 +177,15 @@ streams. Other devices and the primary token remain active.
 | `POST` | `/v1/intent` | yes | Capture intent (D3; file sink) |
 | `GET` | `/v1/intent/targets` | yes | Intent routing targets (D3) |
 
-## Meetings (draft — pending implementation)
+## Meetings
 
-> **Status: not implemented yet.** This section documents the agreed wire for
-> the `/v1/meeting` surface (Obey Voice delta D6, festival OV0003, workitem
-> `WI-f3c18a`) so clients and serve agree before code lands. Until the
-> handlers ship, `/v1/meeting/*` returns 404 and `GET /v1/status` does not
-> advertise the `meetings` capability.
+> **Capability gating.** The `/v1/meeting` surface exists only when serve is
+> built with meeting capture; otherwise every `/v1/meeting*` path is a 404 and
+> `GET /v1/status` reports `meetings: false`. Capture (D6) requires
+> `meetings == true` and `protocol_version >= 2`; **history** (D7 — `GET
+> /v1/meetings`, bundle-id resolution, the `note` control action, `route_plan`
+> at start) requires `protocol_version >= 3`. Read the version rather than
+> probing: an older serve degrades cleanly instead of 404-guessing.
 
 Phone-first meeting capture. The phone records with its own mic and ships
 audio to the Mac in **sequenced 5-second segments** of `pcm_s16le` 16 kHz mono
@@ -202,10 +204,13 @@ touches the audio queues.
 | `POST` | `/v1/meeting/{id}/stop` | yes | Verify contiguity, finalize audio, start the pipeline |
 | `GET` | `/v1/meeting/{id}` | yes | Poll state / results |
 | `POST` | `/v1/meeting/{id}/route` | yes | Route the finished note via `camp idea notes import-meeting` |
+| `GET` | `/v1/meeting/{id}/document` | yes | The finished `meeting.md` |
+| `GET` | `/v1/meetings` | yes | Meeting history from disk (D7) |
 
 ```http
 POST /v1/meeting/start
-{"title":"Standup","campaign":"mytools","source":"watch"}
+{"title":"Standup","campaign":"mytools","source":"watch",
+ "route_plan":{"destination_id":"camp:mytools","body":"full"}}
 ```
 
 ```json
@@ -216,6 +221,30 @@ POST /v1/meeting/start
 `watch` — and is recorded in the bundle's `session_start` event and as a
 `# Source:` header in `meeting.md`, so diarized exports say where the mic
 was. An unknown value is a `400`.
+
+`route_plan` (optional) chooses where the notes get filed **before** the
+recording starts. It is written to the bundle as a `route_plan` event
+immediately after creation — before the first segment — so a meeting that dies
+mid-capture still leaves a durable filing intent that `samantha meeting sweep`
+delivers later.
+
+- `destination_id` — a configured `meeting.route.destinations[]` id or
+  `camp:<campaign>`; the same vocabulary as `meeting route --to`. Required
+  when `route_plan` is present; empty is `400`
+  `{"error":"meeting: route_plan requires destination_id"}`.
+- `body` — `notes`, `full`, or absent for the configured `meeting.route.body`.
+  Anything else is `400`
+  `{"error":"meeting: route_plan body must be notes or full"}`. Both scopes
+  embed the full transcript.
+
+Whether the destination *exists* is not checked at start: discovery costs a
+subprocess on the request path, and an unresolvable id must fail loudly at
+delivery (a durable `route_failed` event the sweep retries) rather than block a
+recording. Delivery runs once when the meeting reaches `ready`, through the
+same single-flight gate as `POST /v1/meeting/{id}/route`, so a plan and a
+manual route of the same meeting can never both file it. `campaign` still
+names the phone's post-stop route target; when both are present `route_plan`
+owns the durable plan.
 
 Segment uploads are **idempotent per `(meeting_id, seq)`** and tolerate
 out-of-order arrival, so a client may retry freely. `seq` is monotonic from 0.
@@ -240,9 +269,27 @@ POST /v1/meeting/{id}/control
 {"action":"bookmark","offset_ms":91500,"text":"decision"}
 ```
 
-`action` is one of `pause`, `resume`, `bookmark`, `idea_start`, `idea_end`.
-Each becomes an event in the bundle's `.samantha/events.jsonl` using the same
-schema a desktop recording writes.
+Each control becomes an event in the bundle's `.samantha/events.jsonl` using
+the same schema a desktop recording writes.
+
+| `action` | `text` | `label` | Bundle event |
+|---|---|---|---|
+| `pause` | ignored | ignored | `pause` |
+| `resume` | ignored | ignored | `resume` |
+| `bookmark` | optional caption | optional (`important` when absent) | `bookmark`, counted in `Summary.bookmarks` |
+| `note` | **required** | ignored | `note`, counted in `Summary.notes` |
+| `idea_start` | optional | span id | `idea_start` |
+| `idea_end` | optional | span id | `idea_end` |
+
+```http
+POST /v1/meeting/{id}/control
+{"action":"note","offset_ms":184300,"text":"decide the pricing tier next week"}
+```
+
+A `note` is a timestamped line in `meeting.md` (`[HH:MM:SS] 📝 note: …`),
+identical to one typed in the TUI recorder. Empty or whitespace-only `text` is
+a `400` `{"error":"meeting: note requires text"}` — an empty note would bump
+the counter and leave a marker with nothing in it.
 
 ```http
 POST /v1/meeting/{id}/stop
@@ -297,12 +344,90 @@ recording and closes the bundle, leaving the state at `interrupted` so nobody
 mistakes it for a complete meeting. A pipeline failure leaves state `failed`
 with the bundle intact, re-runnable from the Mac.
 
-**Serve restart.** Meeting sessions are in-memory: after a serve restart,
-every existing meeting id answers `404`. This surface's resilience covers
-network interruptions, not process restarts. Bundles are closed at shutdown,
-so audio already delivered is preserved on the Mac and the meeting finishes
-through the desktop tooling (`samantha meeting route` / reprocess); the
-phone's outbox keeps its undelivered tail on disk.
+**Serve restart.** Meeting *sessions* are in-memory: after a restart every
+**live id** answers `404`, and a recording cannot be resumed. This surface's
+resilience covers network interruptions, not process restarts. Bundles are
+closed at shutdown, so audio already delivered is preserved on the Mac. What
+survives is the **bundle id** (D7): the meeting still lists in
+`GET /v1/meetings`, still answers `GET /v1/meeting/{bundle-id}` and
+`/document`, and can still be routed. The phone's outbox keeps its undelivered
+tail on disk, but a dead live id can never accept it — report the loss rather
+than retrying forever.
+
+### Meeting history (D7)
+
+```http
+GET /v1/meetings?limit=200&since=2026-08-01T00:00:00Z
+```
+
+```json
+{"meetings_dir":"/Users/lance/.obey/agents/voice/festival-voice/meetings",
+ "count":42,"truncated":false,
+ "meetings":[
+   {"id":"weekly-sync-20260816-101500.meeting",
+    "live_id":"9f2c4e1b77a30d55",
+    "bundle":"/…/weekly-sync-20260816-101500.meeting",
+    "document":"/…/meeting.md",
+    "events_file":"/…/.samantha/events.jsonl",
+    "description":"Weekly sync","source":"mac","state":"ready",
+    "started_at":"2026-08-16T10:15:00Z","ended_at":"2026-08-16T10:47:12Z",
+    "duration_seconds":1932,
+    "utterances":214,"notes":3,"bookmarks":2,"errors":0,
+    "speaker_status":"complete","speaker_count":3,
+    "speaker_analysis_file":"/…/.samantha/speaker-analysis.json",
+    "audio_file":"/…/audio.wav",
+    "route":{"status":"routed","destination_id":"camp:blockhead",
+             "type":"campaign","detail":"notes/meetings/weekly-sync-2026-08-16.md",
+             "at":"2026-08-16T10:48:02Z","attempts":0,"retryable":false}}]}
+```
+
+Entries are newest first, read from the bundles on disk — which is what makes
+history survive a restart. `limit` defaults to 200 and is capped at 1000;
+`truncated` says entries were dropped. `since` is RFC3339. A missing meetings
+dir is an empty list, not an error; a bad `limit` or `since` is a `400`
+(`{"error":"invalid limit"}` / `{"error":"invalid since"}`).
+
+`live_id` and a live `state` (`recording` | `processing`) are overlaid from
+this process's session map when it owns that bundle — disk cannot know a
+meeting is still recording, because the trailer is only written at the end.
+
+`audio_file` is present **only** when `speaker.meeting.record_audio` was on
+during the recording. Without it, speakers cannot be re-analyzed later; the
+transient working file is never reported.
+
+`route.retryable` is exactly the predicate `samantha meeting sweep` uses, so a
+client offering "retry pending routes" promises only what the sweep delivers.
+
+### Two ids, and which one to use
+
+| Id | Shape | Lifetime | Where it comes from |
+|---|---|---|---|
+| **live id** | 16 lowercase hex | in-memory, dies with the serve process | `POST /v1/meeting/start` → `meeting_id` |
+| **bundle id** | `<slug>-<YYYYMMDD-HHMMSS>[-<liveid>].meeting` | forever, unique in `meetings_dir` | `basename(Status.bundle)`; `id` in the index |
+
+Every `Status` carries `bundle` from the first poll after start, so a client
+learns its bundle id one request after starting — **persist it immediately**.
+Use the live id while recording (segments and control only ever accept a live
+session); use the bundle id for everything afterwards.
+
+`{id}` in every `/v1/meeting/{id}` path accepts either. Resolution is: the
+in-memory session first, then a `*.meeting` directory inside `meetings_dir`,
+then `404` `{"error":"meeting: unknown meeting id"}`. An id that could not
+name either — a path separator, a leading dot, anything over 121 characters —
+is `400` `{"error":"meeting: invalid meeting id"}`, refused on shape before it
+is joined onto a path.
+
+| Route | Live session | Bundle id |
+|---|---|---|
+| `GET /v1/meeting/{id}` | unchanged | `200` with `state: ready\|interrupted`, `bundle`, `title`, `started_at`, and `result` rebuilt from the bundle; no `missing_seqs`, no `step` |
+| `GET /v1/meeting/{id}/document` | unchanged | `200 text/markdown`; `409` `{"error":"meeting: notes are not ready yet"}` when the document is not written |
+| `POST /v1/meeting/{id}/route` | unchanged | allowed; `409` `{"error":"meeting: meeting was already routed to <dest>"}` when the bundle already carries a `routed` event |
+| `PUT …/segments/{seq}`, `POST …/control`, `POST …/stop` | unchanged | `409` — a finished bundle never takes audio or control again, and a bundle id is never a substitute for the live id of a recording in flight |
+
+A bundle id that names a meeting **this serve is still recording** reads and
+routes as the live meeting does — `state: recording`, `409` on route until the
+notes exist — because on disk it only looks finished: no trailer, no notes, no
+summary yet.
 
 **Mid-meeting idea capture** reuses `POST /v1/intent` unchanged (typed text,
 optionally carrying `context: {meeting_id, offset_ms}`); spoken ideas are

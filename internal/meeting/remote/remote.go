@@ -14,16 +14,21 @@
 // Restart contract: sessions live in memory for the life of the serve
 // process. Resilience covers *network* interruptions (client outbox +
 // idempotent re-push + the janitor's interrupted path), not serve restarts —
-// after a restart every meeting id answers 404. Bundles are closed on
-// shutdown, so audio already delivered is preserved on disk and finishes
-// through the desktop tooling (`samantha meeting route` / reprocess).
+// after a restart every *live* id answers 404 and no recording resumes.
+// Bundles are closed on shutdown, so audio already delivered is preserved on
+// disk, and the Manager reads it back: a meeting stays listable, readable, and
+// routable by its bundle id, and finishes through the desktop tooling
+// (`samantha meeting route` / `meeting sweep` / reprocess).
 package remote
 
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
+	"github.com/lancekrogers/samantha/internal/meeting"
 	meetinglog "github.com/lancekrogers/samantha/internal/meeting/log"
 )
 
@@ -87,8 +92,20 @@ var (
 	ErrBadSegment = errors.New("meeting: malformed audio segment")
 	// ErrBadControl is an unsupported control action.
 	ErrBadControl = errors.New("meeting: unsupported control action")
+	// ErrNoteText is a note control with no text. An empty note would still
+	// bump the bundle's note counter and leave a blank marker in the
+	// document, so it is refused instead of quietly recorded. Kept distinct
+	// from ErrBadControl so the client reads why, not just that.
+	ErrNoteText = errors.New("meeting: note requires text")
 	// ErrBadStart is a start request with an unknown capture source.
 	ErrBadStart = errors.New("meeting: unknown capture source")
+	// ErrRoutePlanDestination is a route_plan with no destination id. The
+	// plan is durable and drives an unattended delivery, so it must name
+	// where the notes go before the recording starts.
+	ErrRoutePlanDestination = errors.New("meeting: route_plan requires destination_id")
+	// ErrRoutePlanBody is a route_plan with a body scope that is neither
+	// notes nor full (empty means the configured meeting.route.body).
+	ErrRoutePlanBody = errors.New("meeting: route_plan body must be notes or full")
 	// ErrPipelineUnavailable means serve has no transcription pipeline
 	// configured; the recording is kept, only the results are missing.
 	ErrPipelineUnavailable = errors.New("meeting: no processing pipeline configured")
@@ -101,10 +118,25 @@ var (
 // capture surface (ios, mac, watch); empty means ios — phones were the only
 // clients before the field existed, so absence keeps meaning what it always
 // did.
+//
+// RoutePlan is the durable filing intent, written to the bundle before the
+// first segment so a crash mid-meeting still leaves a plan the sweep can
+// deliver. Campaign stays for the phone's post-stop route; when both are
+// present RoutePlan owns the plan and Campaign is only remembered on Status.
 type StartRequest struct {
-	Title    string `json:"title,omitempty"`
-	Campaign string `json:"campaign,omitempty"`
-	Source   string `json:"source,omitempty"`
+	Title     string     `json:"title,omitempty"`
+	Campaign  string     `json:"campaign,omitempty"`
+	Source    string     `json:"source,omitempty"`
+	RoutePlan *RoutePlan `json:"route_plan,omitempty"`
+}
+
+// RoutePlan names where a meeting's notes should be filed when it finishes.
+// DestinationID is a configured meeting.route.destinations[] id or
+// camp:<campaign> — the same vocabulary `meeting route --to` accepts. Body is
+// notes, full, or empty for the configured meeting.route.body.
+type RoutePlan struct {
+	DestinationID string `json:"destination_id"`
+	Body          string `json:"body,omitempty"`
 }
 
 // StartResponse tells the client how to chunk and buffer audio.
@@ -117,6 +149,8 @@ type StartResponse struct {
 // ControlRequest is the client's POST /v1/meeting/{id}/control body. OffsetMs
 // is meeting-relative and authoritative: the client knows when the moment
 // happened, the server only learns of it a network hop later.
+// Text is required for the note action and optional everywhere else; Label is
+// ignored for note.
 type ControlRequest struct {
 	Action   string `json:"action"`
 	OffsetMs int64  `json:"offset_ms"`
@@ -193,6 +227,11 @@ type Job struct {
 	Step func(string)
 }
 
+// RoutePlanFunc delivers a finished meeting to the destination its start
+// request planned. It is injected because routing needs camp discovery and
+// config, which this package deliberately does not own.
+type RoutePlanFunc func(ctx context.Context, summary meetinglog.Summary, destID, body string) (RouteReceipt, error)
+
 // PipelineFunc adapts a plain function to Pipeline.
 type PipelineFunc func(ctx context.Context, job Job) error
 
@@ -204,6 +243,62 @@ var controlActions = map[string]string{
 	"pause":      meetinglog.TypePause,
 	"resume":     meetinglog.TypeResume,
 	"bookmark":   meetinglog.TypeBookmark,
+	"note":       meetinglog.TypeNote,
 	"idea_start": meetinglog.TypeIdeaStart,
 	"idea_end":   meetinglog.TypeIdeaEnd,
+}
+
+// campRoutePrefix is the destination-id vocabulary for "a campaign by name",
+// shared with `meeting route --to` and the router's synthesized destinations.
+const campRoutePrefix = "camp:"
+
+// routePlanTimeout bounds one automatic plan delivery. Filing spawns camp (or
+// osascript) and runs after the client's request is long gone, so it needs a
+// deadline of its own — a wedged sink must not hold the session's goroutine
+// for the life of the process.
+const routePlanTimeout = 2 * time.Minute
+
+// CampaignRouteKey is the RouteOnce key for filing a meeting into a campaign.
+// The wire's POST /v1/meeting/{id}/route and a start-time route_plan naming
+// camp:<campaign> produce the same key, so the two paths share one execution
+// instead of filing the same notes twice — the importer does not dedupe.
+func CampaignRouteKey(capture, campaign string) string {
+	return meeting.NormalizeCampaignCapture(capture) + "\x00" + campaign
+}
+
+// routePlan is a validated start-time filing intent.
+type routePlan struct {
+	destID string
+	body   string
+}
+
+// key maps the plan onto the RouteOnce key space. A camp:<name> plan lands on
+// the same key a manual campaign route uses; anything else (file, apple-notes,
+// a configured id) is keyed by the destination id, which the wire cannot name.
+func (p routePlan) key() string {
+	if campaign, ok := strings.CutPrefix(p.destID, campRoutePrefix); ok {
+		return CampaignRouteKey("", campaign)
+	}
+	return "destination\x00" + p.destID
+}
+
+// normalizeRoutePlan validates a start request's plan. Shape only: whether the
+// destination exists is a delivery-time question, because discovering it costs
+// a camp subprocess on the request path and an unresolvable id must fail
+// loudly as route_failed rather than block a recording.
+func normalizeRoutePlan(plan *RoutePlan) (routePlan, error) {
+	if plan == nil {
+		return routePlan{}, nil
+	}
+	destID := strings.TrimSpace(plan.DestinationID)
+	if destID == "" {
+		return routePlan{}, ErrRoutePlanDestination
+	}
+	body := strings.TrimSpace(plan.Body)
+	switch body {
+	case "", meeting.BodyNotes, meeting.BodyFull:
+	default:
+		return routePlan{}, fmt.Errorf("%w (got %q)", ErrRoutePlanBody, body)
+	}
+	return routePlan{destID: destID, body: body}, nil
 }

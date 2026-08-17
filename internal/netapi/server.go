@@ -119,7 +119,10 @@ type Server struct {
 	// size-capped writes; the general abuse guard would throttle exactly the
 	// recovery path the meeting design exists for.
 	segmentLimiter *rateLimiter
-	started        time.Time
+	// bundleRoutes single-flights routes of finished bundles, which have no
+	// session to hold the receipt cache a live meeting uses.
+	bundleRoutes *routeGate
+	started      time.Time
 
 	mu    sync.Mutex
 	addr  net.Addr
@@ -144,6 +147,7 @@ func New(opts Options) *Server {
 		meetings:       opts.Meetings,
 		routeMeeting:   opts.RouteMeeting,
 		segmentLimiter: newRateLimiter(segmentRateLimit, 10*time.Second),
+		bundleRoutes:   newRouteGate(),
 	}
 }
 
@@ -206,6 +210,8 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	// PROTOCOL_DELTAS D6: phone-driven meeting capture. Registered only when
 	// configured, so a serve without it answers 404 rather than pretending.
 	if s.meetings != nil {
+		// D7: meeting history, read from disk so it survives a restart.
+		mux.HandleFunc("GET /v1/meetings", s.handleMeetingIndex)
 		mux.HandleFunc("POST /v1/meeting/start", s.handleMeetingStart)
 		mux.HandleFunc("PUT /v1/meeting/{id}/segments/{seq}", s.handleMeetingSegment)
 		mux.HandleFunc("POST /v1/meeting/{id}/control", s.handleMeetingControl)

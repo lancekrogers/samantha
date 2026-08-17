@@ -45,6 +45,10 @@ type Options struct {
 	// Pipeline runs transcription and diarization after a meeting stops.
 	// A nil Pipeline still records audio; results are reported as failed.
 	Pipeline Pipeline
+	// RoutePlan delivers a start-time route_plan once the meeting is ready.
+	// Nil is not an error: the plan is still written to the bundle, and
+	// `meeting sweep` delivers it later.
+	RoutePlan RoutePlanFunc
 	// STTLabel is recorded in the bundle header, matching what the desktop
 	// recorder writes.
 	STTLabel string
@@ -91,12 +95,25 @@ func (o Options) normalize() Options {
 // shares no state with the dispatcher or the WebSocket hub.
 type Manager struct {
 	opts Options
+	// index reads finished bundles off disk. Sessions die with the process;
+	// bundles do not, which is the whole of this manager's restart story.
+	index *meeting.Cache
 
 	mu       sync.Mutex
 	sessions map[string]*Session
 }
 
+// BootIndexTimeout bounds the boot-time index warm. A meetings dir on a slow
+// or huge volume must not hold up serve's ready banner: whatever the warm
+// does not reach is parsed on the first request that needs it.
+const BootIndexTimeout = 5 * time.Second
+
 // NewManager prepares the meetings root and returns a ready manager.
+//
+// It also warms the bundle index over the newest meetings on disk, which is
+// what makes ids resolve again after a restart. Rehydration never creates live
+// sessions: a disk bundle can be read, documented, and routed, but it can
+// never accept segments or control events.
 func NewManager(opts Options) (*Manager, error) {
 	opts = opts.normalize()
 	if opts.Root == "" {
@@ -106,12 +123,26 @@ func NewManager(opts Options) (*Manager, error) {
 	if err := os.MkdirAll(opts.Root, 0o700); err != nil {
 		return nil, fmt.Errorf("meeting: create meetings dir: %w", err)
 	}
-	return &Manager{opts: opts, sessions: make(map[string]*Session)}, nil
+	m := &Manager{opts: opts, index: meeting.NewCache(), sessions: make(map[string]*Session)}
+	ctx, cancel := context.WithTimeout(context.Background(), BootIndexTimeout)
+	defer cancel()
+	// Best effort: an unreadable bundle is history the user still gets to see
+	// the rest of, and a slow warm is a cold first request, not a failed boot.
+	_ = m.index.Warm(ctx, opts.Root, meeting.DefaultIndexLimit)
+	return m, nil
 }
 
 // SegmentSeconds and OutboxCapSegments are the client-facing capture knobs.
 func (m *Manager) SegmentSeconds() int    { return m.opts.SegmentSeconds }
 func (m *Manager) OutboxCapSegments() int { return m.opts.OutboxCapSegments }
+
+// Root is the meetings directory every bundle lives in.
+func (m *Manager) Root() string { return m.opts.Root }
+
+// Index lists the meetings on disk, newest first, through the shared cache.
+func (m *Manager) Index(ctx context.Context, opts meeting.IndexOptions) ([]meeting.BundleEntry, bool, error) {
+	return m.index.Index(ctx, m.opts.Root, opts)
+}
 
 // Start creates a bundle and begins a meeting. It fails with ErrMeetingActive
 // while another meeting still holds an open bundle.
@@ -134,11 +165,17 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (*Session, error)
 	if err != nil {
 		return nil, err
 	}
+	// Validate the plan before anything exists on disk: a malformed request
+	// must not leave an orphan bundle behind.
+	plan, err := normalizeRoutePlan(req.RoutePlan)
+	if err != nil {
+		return nil, err
+	}
 	id, err := newMeetingID()
 	if err != nil {
 		return nil, err
 	}
-	bundlePath, writer, err := createBundle(m.opts.Root, title, m.opts.STTLabel, source, id, now)
+	bundlePath, writer, err := m.openBundle(title, source, id, plan, now)
 	if err != nil {
 		return nil, err
 	}
@@ -152,9 +189,73 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (*Session, error)
 		startedAt: writer.StartedAt(), segments: segments, pipeline: m.opts.Pipeline,
 		now: m.opts.Now, processTimeout: m.opts.ProcessTimeout,
 		writer: writer, state: StateRecording, lastActivity: now, lastSeq: -1,
+		plan: plan, deliverPlanFn: m.opts.RoutePlan,
 	}
 	m.sessions[id] = session
 	return session, nil
+}
+
+// Bundle resolves a finished meeting by its bundle id — the directory name,
+// which unlike a live id survives a restart. The id is re-checked here rather
+// than trusted from the caller: this is the last gate before a client-supplied
+// string becomes a filesystem path.
+func (m *Manager) Bundle(ctx context.Context, id string) (meeting.BundleEntry, bool) {
+	if ctx.Err() != nil {
+		return meeting.BundleEntry{}, false
+	}
+	if !meeting.ValidBundleID(id) {
+		return meeting.BundleEntry{}, false
+	}
+	path := filepath.Join(m.opts.Root, id)
+	if filepath.Dir(path) != filepath.Clean(m.opts.Root) {
+		return meeting.BundleEntry{}, false
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return meeting.BundleEntry{}, false
+	}
+	return m.index.Entry(ctx, path)
+}
+
+// Sessions snapshots the in-memory meetings so a caller can overlay live state
+// onto the disk index.
+func (m *Manager) Sessions() []*Session { return m.snapshot() }
+
+// SessionForBundle finds the in-memory meeting writing to a bundle path. A
+// bundle this process is still recording is not the finished artifact it looks
+// like on disk — it has no trailer, no notes, and no summary yet — so a caller
+// that resolved it by bundle id needs the session's answer, not the file's.
+func (m *Manager) SessionForBundle(path string) (*Session, bool) {
+	if path == "" {
+		return nil, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, session := range m.sessions {
+		if session.BundlePath() == path {
+			return session, true
+		}
+	}
+	return nil, false
+}
+
+// openBundle creates the meeting directory and records the route plan into it
+// before anything else can be appended — the plan lands ahead of the first
+// segment, so a meeting that dies mid-recording still leaves a filing intent
+// the sweep can deliver. That is the same crash-safe ordering the desktop
+// recorder has.
+func (m *Manager) openBundle(title, source, id string, plan routePlan, now time.Time) (string, *meetinglog.Writer, error) {
+	bundlePath, writer, err := createBundle(m.opts.Root, title, m.opts.STTLabel, source, id, now)
+	if err != nil {
+		return "", nil, err
+	}
+	if plan.destID != "" {
+		if err := writer.WriteRoutePlan(plan.destID, plan.body); err != nil {
+			_, _ = writer.Close()
+			return "", nil, err
+		}
+	}
+	return bundlePath, writer, nil
 }
 
 // Session looks one meeting up by id.

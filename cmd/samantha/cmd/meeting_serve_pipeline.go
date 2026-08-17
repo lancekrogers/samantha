@@ -40,6 +40,7 @@ func newServeMeetingManager(cfg *config.Config) (*remote.Manager, error) {
 		Pipeline: remote.PipelineFunc(func(ctx context.Context, job remote.Job) error {
 			return runServeMeetingPipeline(ctx, &pipelineCfg, job)
 		}),
+		RoutePlan: newServeMeetingRoutePlanner(&pipelineCfg),
 	})
 }
 
@@ -353,6 +354,47 @@ func newServeMeetingRouter(cfg *config.Config) netapi.RouteMeetingFunc {
 			Outcome:     receipt.Outcome,
 			Detail:      receipt.Detail,
 			Destination: destination,
+		}, nil
+	}
+}
+
+// newServeMeetingRoutePlanner delivers the route_plan a client set at start,
+// once the meeting is ready. Unlike the wire's route (campaign only, §2.7),
+// a plan may name any configured destination — file and apple-notes included
+// — so it goes through the full router: ExpandForRouting resolves camp:<name>
+// ids, and RouteByID appends the durable routed / route_failed provenance
+// that keeps a failure visible in the meeting index and retryable by
+// `samantha meeting sweep`.
+func newServeMeetingRoutePlanner(cfg *config.Config) remote.RoutePlanFunc {
+	routeCfg := meeting.FromConfig(cfg)
+	return func(ctx context.Context, summary meetinglog.Summary, destID, body string) (remote.RouteReceipt, error) {
+		if err := ctx.Err(); err != nil {
+			return remote.RouteReceipt{}, err
+		}
+		if body == "" {
+			body = routeCfg.Body
+		}
+		note, err := meeting.Render(summary, body)
+		if err != nil {
+			return remote.RouteReceipt{}, fmt.Errorf("render meeting note: %w", err)
+		}
+		router := meeting.NewDefaultRouter(routeCfg)
+		// camp:<name> ids only exist after discovery, and discovery costs a
+		// camp subprocess — so pay for it only when the id is not configured.
+		if _, ok := router.Cfg.DestinationByID(destID); !ok {
+			dctx, cancel := context.WithTimeout(ctx, meeting.DiscoverTimeout)
+			expanded, _, _ := router.ExpandForRouting(dctx)
+			cancel()
+			router.Cfg = expanded
+		}
+		receipt, err := router.RouteByID(ctx, note, destID)
+		if err != nil {
+			return remote.RouteReceipt{}, err
+		}
+		return remote.RouteReceipt{
+			Outcome:     receipt.Outcome,
+			Detail:      receipt.Detail,
+			Destination: receipt.DestinationID,
 		}, nil
 	}
 }

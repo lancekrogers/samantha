@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +27,11 @@ type Session struct {
 	pipeline       Pipeline
 	now            func() time.Time
 	processTimeout time.Duration
+	// plan is the start-time filing intent, already on disk as a route_plan
+	// event; deliverPlanFn files it once the meeting is ready. A nil func
+	// leaves delivery to `meeting sweep`.
+	plan          routePlan
+	deliverPlanFn RoutePlanFunc
 
 	mu     sync.Mutex
 	writer *meetinglog.Writer
@@ -130,6 +136,15 @@ func (s *Session) Control(ctx context.Context, req ControlRequest, now time.Time
 	kind, ok := controlActions[req.Action]
 	if !ok {
 		return fmt.Errorf("%w %q", ErrBadControl, req.Action)
+	}
+	// A note is its text; an empty one would bump the counter and write a
+	// bare marker nobody can read back. A note carries no label either — the
+	// document renders one as a shouted prefix meant for bookmarks.
+	if kind == meetinglog.TypeNote {
+		if strings.TrimSpace(req.Text) == "" {
+			return ErrNoteText
+		}
+		req.Label = ""
 	}
 	s.mu.Lock()
 	writer := s.writer
@@ -382,59 +397,6 @@ func (s *Session) recordGaps(gaps []Gap) {
 			return
 		}
 	}
-}
-
-// publish closes the bundle (when this was a real stop) and records the
-// terminal state the client will poll.
-func (s *Session) publish(pipelineErr error) {
-	s.mu.Lock()
-	writer, interrupted := s.writer, s.interrupted
-	s.mu.Unlock()
-
-	var summary meetinglog.Summary
-	var closeErr error
-	if writer != nil {
-		summary, closeErr = writer.Close()
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.writer = nil
-	s.step = ""
-	s.summary, s.haveSummary = summary, closeErr == nil
-	s.finishedAt = s.now()
-	switch {
-	case pipelineErr != nil:
-		s.state, s.failure = StateFailed, pipelineErr.Error()
-	case closeErr != nil:
-		s.state, s.failure = StateFailed, closeErr.Error()
-	case interrupted:
-		s.state = StateInterrupted
-	default:
-		s.state = StateReady
-	}
-}
-
-// fail records a pre-pipeline failure without discarding anything on disk.
-func (s *Session) fail(err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.state, s.failure = StateFailed, err.Error()
-}
-
-// note appends a non-fatal problem to the session's error text: the meeting
-// still succeeded, but the client should be able to see what went sideways.
-func (s *Session) note(err error) {
-	if err == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.failure == "" {
-		s.failure = err.Error()
-		return
-	}
-	s.failure += "; " + err.Error()
 }
 
 func (s *Session) finishPass() {
