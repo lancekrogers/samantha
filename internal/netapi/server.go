@@ -96,6 +96,12 @@ type PersonaAck struct {
 	DisplayName string
 	// PromptHash identifies the assembled prompt, so a client can tell whether
 	// the model is seeing the document it expects.
+	//
+	// It is the first 12 hex characters of the sha256 of the assembled prompt
+	// text — a value that changes when the document changes. A document *name*
+	// here would be useless: it stays the same across every edit, which is
+	// exactly the question this field exists to answer. Empty means serve
+	// could not resolve the document.
 	PromptHash string
 }
 

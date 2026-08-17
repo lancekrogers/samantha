@@ -475,6 +475,14 @@ func (s *servePersonaSwitcher) apply(id string) (netapi.PersonaAck, error) {
 	if err != nil {
 		return netapi.PersonaAck{}, err
 	}
+	// The ack carries the hash of the identity text the next turn will see, so
+	// a client that just edited a prompt can tell whether the model picked it
+	// up. An unresolvable document leaves it empty rather than failing a switch
+	// whose brain and voice did install — the ack's other fields are still true.
+	promptHash, hashErr := persona.PromptHashFor(binding.PromptRef)
+	if hashErr != nil {
+		promptHash = ""
+	}
 	nextCfg := binding.Config()
 	nextBrain, err := s.newBrain(nextCfg)
 	if err != nil {
@@ -506,7 +514,7 @@ func (s *servePersonaSwitcher) apply(id string) (netapi.PersonaAck, error) {
 	return netapi.PersonaAck{
 		ID:          binding.PersonaID,
 		DisplayName: binding.DisplayName,
-		PromptHash:  binding.PromptRef,
+		PromptHash:  promptHash,
 	}, nil
 }
 

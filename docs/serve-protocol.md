@@ -385,6 +385,13 @@ Ack:
  "prompt_hash": "a1b2c3d4e5f6", "applies_to": "next_turn"}
 ```
 
+`prompt_hash` is the first 12 hex characters of the sha256 of the **assembled
+prompt text** (placeholders unresolved) — the same digest
+`samantha persona show --json --with-prompt` reports. It changes whenever the
+document changes, which is how a client tells "the prompt I just edited is the
+prompt the model now sees". It is not a document name and must not be compared
+to one. Empty means serve could not resolve the document.
+
 **`applies_to` is always `next_turn`, and that is a guarantee rather than a
 limitation.** A conversation binds its identity — persona, prompt, voice, brain
 routing — when it starts, and keeps it for its whole life. A switch therefore
