@@ -75,6 +75,10 @@ func (rs RequiredSet) CleanPlan(ctx context.Context) (CleanPlan, error) {
 // Relative paths keep the id stable when the same install is inspected through
 // a different absolute root (and keep a captured fixture self-consistent);
 // what the id pins is which entries under the models dir would be deleted.
+//
+// It therefore pins the list, not the install, which is why a plan is only
+// ever accepted as a whole document: the document carries models_dir and
+// absolute paths, and both are checked before anything is removed.
 func CleanPlanID(candidates []CleanCandidate) string {
 	rels := make([]string, 0, len(candidates))
 	for _, c := range candidates {
@@ -120,20 +124,20 @@ func shortPlanID(id string) string {
 // planIDPattern matches a CleanPlanID: a sha256 in lowercase hex.
 var planIDPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// ParseCleanPlan reads a caller-supplied plan: either the dry-run JSON
-// document or a bare plan id. Only the id gates the apply; any candidate list
-// the document carries is re-validated against the current one before anything
-// is removed.
+// ParseCleanPlan reads a caller-supplied plan: the dry-run JSON document,
+// whole. A bare plan id is deliberately not accepted — it names a candidate
+// list without naming the install it was captured from, and the same relative
+// entries under a different models dir would hash the same.
 func ParseCleanPlan(data []byte) (CleanPlan, error) {
 	trimmed := strings.TrimSpace(string(data))
 	if trimmed == "" {
 		return CleanPlan{}, fmt.Errorf("clean plan: empty")
 	}
 	if !strings.HasPrefix(trimmed, "{") {
-		if !planIDPattern.MatchString(trimmed) {
-			return CleanPlan{}, fmt.Errorf("clean plan: %q is neither a dry-run document nor a plan id", trimmed)
+		if planIDPattern.MatchString(trimmed) {
+			return CleanPlan{}, fmt.Errorf("clean plan: a bare plan_id does not name the models dir it was captured from; pass the whole --dry-run --json document")
 		}
-		return CleanPlan{PlanID: trimmed}, nil
+		return CleanPlan{}, fmt.Errorf("clean plan: %q is not a dry-run document", trimmed)
 	}
 	var plan CleanPlan
 	if err := json.Unmarshal([]byte(trimmed), &plan); err != nil {
@@ -141,6 +145,9 @@ func ParseCleanPlan(data []byte) (CleanPlan, error) {
 	}
 	if !planIDPattern.MatchString(plan.PlanID) {
 		return CleanPlan{}, fmt.Errorf("clean plan: missing plan_id")
+	}
+	if strings.TrimSpace(plan.ModelsDir) == "" {
+		return CleanPlan{}, fmt.Errorf("clean plan: missing models_dir")
 	}
 	// A document whose id does not describe its own list is not the list
 	// anybody reviewed. Refuse it rather than guess which half is true.
@@ -168,11 +175,15 @@ func DeleteCleanPlan(ctx context.Context, modelsDir string, planned, current []C
 		Deleted:       []CleanCandidate{},
 		Skipped:       []CleanSkip{},
 	}
+	// Confinement is checked for every planned path up front: finding a bad
+	// path halfway through would leave a partial deletion behind an error.
 	for _, want := range planned {
-		if err := ctx.Err(); err != nil {
+		if err := validateCleanCandidatePath(modelsDir, want.Path); err != nil {
 			return result, err
 		}
-		if err := validateCleanCandidatePath(modelsDir, want.Path); err != nil {
+	}
+	for _, want := range planned {
+		if err := ctx.Err(); err != nil {
 			return result, err
 		}
 		candidate, ok := removable[want.Path]

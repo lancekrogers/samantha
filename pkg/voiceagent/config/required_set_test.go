@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -168,6 +169,72 @@ func TestRequiredAssetPathsProtectsReferencedAssets(t *testing.T) {
 			wantCandidates: []string{"stale.bin"},
 		},
 		{
+			name: "persona-pinned kokoro keeps the v1.0 pack the app does not select",
+			cfg: func() *Config {
+				// The 2026-08-17 shape, one provider over: the app speaks
+				// qwen (and falls back to qwen), a persona speaks kokoro, and
+				// KokoroDir prefers the v1.0 pack no manifest asset owns.
+				cfg := liveCfg()
+				cfg.TTSProvider = "qwen3-tts"
+				cfg.TTSFallbackProvider = "qwen3-tts"
+				return cfg
+			},
+			personas: []PersonaAssets{{ID: "ada", Cfg: &Config{TTSProvider: "kokoro", STTProvider: "none"}}},
+			install: []string{
+				filepath.Join(KokoroV1Subdir, "model.onnx"),
+				filepath.Join(KokoroV1Subdir, "voices.bin"),
+				"stale.bin",
+			},
+			keptReasons:    map[string]string{KokoroV1Subdir: "persona ada: tts_provider kokoro (v1.0 pack)"},
+			wantCandidates: []string{"stale.bin"},
+		},
+		{
+			name: "voice_fallback_provider qwen3-tts keeps the native package",
+			cfg: func() *Config {
+				cfg := liveCfg()
+				cfg.TTSFallbackProvider = "qwen3-tts"
+				return cfg
+			},
+			install: []string{
+				filepath.Join(qwenRoot, "bin", "qwen3-tts-worker"),
+				"stale.bin",
+			},
+			keptReasons:    map[string]string{qwenRoot: "global voice_fallback_provider qwen3-tts"},
+			wantCandidates: []string{"stale.bin"},
+		},
+		{
+			name: "an external qwen worker named by config is kept",
+			cfg: func() *Config {
+				cfg := liveCfg()
+				cfg.TTSProvider = "qwen3-tts"
+				cfg.QwenTTSBinary = filepath.Join("qwen-custom", "bin", "qwen3-tts-cli")
+				return cfg
+			},
+			install: []string{
+				filepath.Join("qwen-custom", "bin", "qwen3-tts-cli"),
+				"stale.bin",
+			},
+			keptReasons:    map[string]string{filepath.Join("qwen-custom", "bin", "qwen3-tts-cli"): "config qwen_tts_binary"},
+			wantCandidates: []string{"stale.bin"},
+		},
+		{
+			name: "an empty tts_provider still means kokoro",
+			cfg: func() *Config {
+				// The TTS factory treats "" as kokoro; the pack must not
+				// become unused because the key was cleared.
+				cfg := liveCfg()
+				cfg.TTSProvider = ""
+				cfg.TTSFallbackProvider = "qwen3-tts"
+				return cfg
+			},
+			install: []string{
+				filepath.Join(KokoroV1Subdir, "model.onnx"),
+				"stale.bin",
+			},
+			keptReasons:    map[string]string{KokoroV1Subdir: "kokoro"},
+			wantCandidates: []string{"stale.bin"},
+		},
+		{
 			name: "junk is still a candidate",
 			cfg:  liveCfg,
 			install: []string{
@@ -230,6 +297,8 @@ func TestRequiredAssetPathsProtectsReferencedAssets(t *testing.T) {
 func TestRequiredAssetPathsKeepsProtectedPathsInsideModelsDir(t *testing.T) {
 	dir := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "elsewhere", "embedding.onnx")
+	touchFile(t, outside)
+	touchFile(t, filepath.Join(dir, "silero_vad.onnx"))
 	cfg := liveCfg()
 	cfg.Speaker.Models.Embedding = outside
 
@@ -237,9 +306,66 @@ func TestRequiredAssetPathsKeepsProtectedPathsInsideModelsDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RequiredAssetPaths() error = %v", err)
 	}
+	if len(set.Protected) == 0 {
+		t.Fatal("nothing protected: the assertion below would prove nothing")
+	}
 	for _, p := range set.Protected {
+		if p.Path == outside {
+			t.Errorf("kept list names %q, which is not under the models dir", p.Path)
+		}
 		if !strings.HasPrefix(p.Path, dir+string(filepath.Separator)) {
 			t.Errorf("protected path %q is outside the models dir %q", p.Path, dir)
+		}
+	}
+}
+
+func TestRequiredAssetPathsResolvesThroughASymlinkedModelsDir(t *testing.T) {
+	// macOS hands out /tmp for /private/tmp, and caches get moved to external
+	// volumes behind a symlink. A claim that does not line up with the walk
+	// protects nothing.
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "modelslink")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	embedding := filepath.Join(real, "speaker", "custom-embed.onnx")
+	touchFile(t, embedding)
+	cfg := liveCfg()
+	cfg.Speaker.Models.Embedding = embedding
+
+	set, err := RequiredAssetPaths(context.Background(), cfg, link, nil)
+	if err != nil {
+		t.Fatalf("RequiredAssetPaths() error = %v", err)
+	}
+	candidates, err := set.CleanCandidates(context.Background())
+	if err != nil {
+		t.Fatalf("CleanCandidates() error = %v", err)
+	}
+	if got := candidatePaths(t, link, candidates); len(got) != 0 {
+		t.Errorf("candidates = %v, want none: the configured model is the only file present", got)
+	}
+}
+
+func TestRequiredAssetPathsMatchesConfiguredPathsCaseInsensitively(t *testing.T) {
+	// APFS and NTFS load speaker/NeMo.onnx for a config that says
+	// speaker/nemo.onnx; an exact-string claim would leave the real file
+	// unprotected.
+	dir := t.TempDir()
+	touchFile(t, filepath.Join(dir, "speaker", "NeMo_Custom.onnx"))
+	cfg := liveCfg()
+	cfg.Speaker.Models.Embedding = filepath.Join("speaker", "nemo_custom.onnx")
+
+	set, err := RequiredAssetPaths(context.Background(), cfg, dir, nil)
+	if err != nil {
+		t.Fatalf("RequiredAssetPaths() error = %v", err)
+	}
+	candidates, err := set.CleanCandidates(context.Background())
+	if err != nil {
+		t.Fatalf("CleanCandidates() error = %v", err)
+	}
+	for _, c := range candidates {
+		if strings.EqualFold(c.Rel, filepath.Join("speaker", "nemo_custom.onnx")) {
+			t.Errorf("the configured embedding model is a candidate under a different spelling: %+v", c)
 		}
 	}
 }

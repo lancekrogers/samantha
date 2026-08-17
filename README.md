@@ -923,17 +923,20 @@ samantha models clean --unused --yes --plan plan.json --json
 | --- | --- |
 | `--unused` | Required. Only unused-asset cleanup is supported. |
 | `--dry-run` | List what would be removed and what is kept, with reasons. Deletes nothing. |
-| `--yes` | Delete. Exactly one of `--dry-run` or `--yes` is required. |
-| `--plan <file\|->` | Apply exactly the reviewed plan: the `--dry-run --json` document, or its `plan_id`. Required with `--yes` when stdout is not a terminal. |
+| `--yes` | Delete. Exactly one of `--dry-run` or `--yes` is required. At a terminal it prints the list and asks for confirmation. |
+| `--plan <file\|->` | Apply exactly the reviewed plan: the whole `--dry-run --json` document (a bare `plan_id` is refused — it does not name the install it came from). Required with `--yes` whenever there is no terminal to confirm at, and always with `--yes --json`. |
 | `--json` | Machine-readable output (`schema_version: 2`). |
 
 The dry-run JSON carries `candidates[]` (with `size_bytes`, `category:
 junk|asset`, `kind`), `protected[]` (each kept path with the persona or config
 key that keeps it), `total_bytes`, and `plan_id`. An apply recomputes the
-candidate set and refuses when it no longer matches the plan, printing
+candidate set and refuses when it no longer matches the plan — or when the plan
+was captured against a different `models_dir` — printing
 `{"error":"plan_changed","plan_id":…,"current_plan_id":…}` and deleting
-nothing; re-run the dry run and review the new list. The result reports
-`deleted[]`, `skipped[]` (with a reason) and `bytes_freed`.
+nothing; re-run the dry run and review the new list. A successful apply reports
+`deleted[]`, `skipped[]` (with a reason) and `bytes_freed`. Every other `--json`
+failure arrives on stdout as `{"error":"required_assets|plan_invalid|delete_failed",
+"message":…}`, so a front end never has to parse a banner off stderr.
 
 Automated tests cover download/extraction reliability with fake HTTP servers (no
 network). To verify the **real** assets manually:

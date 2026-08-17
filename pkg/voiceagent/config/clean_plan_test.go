@@ -18,14 +18,20 @@ func TestParseCleanPlanRejectsWhatItCannotTrust(t *testing.T) {
 		wantErr string
 	}{
 		{name: "empty", input: "   \n", wantErr: "empty"},
-		{name: "not a plan at all", input: "delete everything", wantErr: "neither a dry-run document nor a plan id"},
-		{name: "truncated plan id", input: "736e7bbb", wantErr: "neither a dry-run document nor a plan id"},
-		{name: "uppercase plan id", input: strings.ToUpper(testPlanID), wantErr: "neither a dry-run document nor a plan id"},
+		{name: "not a plan at all", input: "delete everything", wantErr: "is not a dry-run document"},
+		{name: "truncated plan id", input: "736e7bbb", wantErr: "is not a dry-run document"},
+		{name: "uppercase plan id", input: strings.ToUpper(testPlanID), wantErr: "is not a dry-run document"},
+		{name: "bare plan id names no install", input: "  " + testPlanID + "\n", wantErr: "does not name the models dir"},
+		{
+			name:    "document without a models dir",
+			input:   `{"schema_version":2,"candidates":[],"plan_id":"` + CleanPlanID(nil) + `"}`,
+			wantErr: "missing models_dir",
+		},
 		{name: "malformed json", input: `{"plan_id":`, wantErr: "clean plan"},
 		{name: "document without a plan id", input: `{"schema_version":2,"candidates":[]}`, wantErr: "missing plan_id"},
 		{
 			name:    "document whose id does not describe its own list",
-			input:   `{"schema_version":2,"candidates":[{"path":"/m/stale.bin","rel":"stale.bin"}],"plan_id":"` + testPlanID + `"}`,
+			input:   `{"schema_version":2,"models_dir":"/m","candidates":[{"path":"/m/stale.bin","rel":"stale.bin"}],"plan_id":"` + testPlanID + `"}`,
 			wantErr: "does not match its candidate list",
 		},
 	}
@@ -54,8 +60,13 @@ func TestParseCleanPlanAcceptsDocumentOrID(t *testing.T) {
 		input          string
 		wantCandidates int
 	}{
-		{name: "bare plan id", input: "  " + testPlanID + "\n", wantCandidates: 0},
 		{name: "dry-run document", input: document, wantCandidates: 1},
+		{
+			name: "dry-run document with nothing to remove",
+			input: `{"schema_version":2,"models_dir":"/m","candidates":[],"protected":[],"total_bytes":0,"plan_id":"` +
+				CleanPlanID(nil) + `"}`,
+			wantCandidates: 0,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

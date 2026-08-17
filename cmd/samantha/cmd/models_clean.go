@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -33,13 +34,20 @@ type cleanOptions struct {
 	Plan string
 }
 
-// stdoutIsTerminalFn reports whether a human is watching stdout; tests swap it
-// to exercise both sides of the interactive gate.
-var stdoutIsTerminalFn = stdoutIsTerminal
+// stdoutIsTerminalFn and stdinIsTerminalFn report whether a human is at the
+// other end; tests swap them to exercise both sides of the interactive gate.
+var (
+	stdoutIsTerminalFn = stdoutIsTerminal
+	stdinIsTerminalFn  = stdinIsTerminal
+)
 
 // personaProfilesFn lists persona profiles; tests swap it so no test ever
 // reads the real install root.
 var personaProfilesFn = persona.List
+
+// personaDirFn locates the personas directory; paired with personaProfilesFn
+// so a test can describe a whole install.
+var personaDirFn = persona.Dir
 
 // requiredAssets resolves everything the install references — the global
 // config, every persona, and every config-referenced asset — as the set clean
@@ -68,6 +76,9 @@ func cleanPersonaSources(cfg *config.Config) ([]config.PersonaAssets, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := allPersonasResolved(profiles); err != nil {
+		return nil, err
+	}
 	sources := make([]config.PersonaAssets, 0, len(profiles))
 	for _, profile := range profiles {
 		if profile == nil {
@@ -78,6 +89,32 @@ func cleanPersonaSources(cfg *config.Config) ([]config.PersonaAssets, error) {
 		sources = append(sources, config.PersonaAssets{ID: profile.ID, Cfg: &derived})
 	}
 	return sources, nil
+}
+
+// allPersonasResolved refuses when the personas directory holds more profiles
+// than were loaded. persona.List skips a directory whose name is not a valid
+// id rather than failing, and a persona clean cannot see is a persona whose
+// models clean would offer to delete.
+func allPersonasResolved(profiles []*persona.Profile) error {
+	dir := personaDirFn()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("reading personas dir %s: %w", dir, err)
+	}
+	onDisk := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			onDisk++
+		}
+	}
+	if onDisk > len(profiles) {
+		return fmt.Errorf("%d of %d persona directories under %s could not be loaded (a directory name must be lowercase kebab-case)",
+			onDisk-len(profiles), onDisk, dir)
+	}
+	return nil
 }
 
 var modelsCleanCmd = &cobra.Command{
@@ -91,11 +128,11 @@ load, such as sherpa_streaming_model while stt_mode is offline. If that set
 cannot be resolved, clean exits non-zero and removes nothing.
 
 --dry-run lists what would be removed and, under "Kept", every asset that is
-being preserved and why. --yes removes that list. When stdout is not a
-terminal, --yes also requires --plan: the --dry-run --json document (or its
-plan_id), so an apply can only ever delete a list its caller has seen. If the
-candidate set changed in between, clean reports plan_changed and removes
-nothing.`,
+being preserved and why. --yes removes that list, and only ever a list its
+caller has seen: at a terminal it prints the list and asks for confirmation,
+and anywhere else it requires --plan, the --dry-run --json document. If the
+candidate set or the models dir changed in between, clean reports plan_changed
+and removes nothing.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// LoadRaw, not Load: Load overlays the ACTIVE persona onto the
 		// returned config, which would hide the config file's own provider
@@ -107,7 +144,7 @@ nothing.`,
 		if err != nil {
 			return err
 		}
-		return runModelsClean(cmd, cfg, config.ModelsDir(), cleanOptions{
+		return runModelsClean(cmd, cfg, config.ModelsDirFrom(cfg), cleanOptions{
 			Unused: modelsCleanUnused,
 			DryRun: modelsCleanDryRun,
 			Yes:    modelsCleanYes,
@@ -120,27 +157,25 @@ nothing.`,
 // runModelsClean lists the paths under modelsDir that nothing the install
 // references claims, and deletes them when --yes is set.
 //
-// An apply only ever deletes the list the caller was shown: --plan pins that
-// list by id, and a non-interactive caller must supply one.
+// An apply only ever deletes a list its caller has seen: --plan pins that list
+// by id and by models dir, and an apply without one has to be confirmed at a
+// terminal after the list is printed.
 func runModelsClean(cmd *cobra.Command, cfg *config.Config, modelsDir string, opts cleanOptions) error {
-	if !opts.Unused {
-		return fmt.Errorf("models clean: --unused is required (only unused-asset cleanup is supported)")
-	}
-	if opts.DryRun == opts.Yes {
-		return fmt.Errorf("models clean: choose exactly one of --dry-run or --yes")
+	if err := opts.validate(); err != nil {
+		return err
 	}
 	requested, err := readCleanPlan(cmd, opts.Plan)
 	if err != nil {
-		return err
+		return failClean(cmd, opts, "plan_invalid", err)
 	}
 
 	required, err := requiredAssets(cmd.Context(), cfg, modelsDir)
 	if err != nil {
-		return fmt.Errorf("clean: cannot determine required assets: %w", err)
+		return failClean(cmd, opts, "required_assets", fmt.Errorf("clean: cannot determine required assets: %w", err))
 	}
 	plan, err := required.CleanPlan(cmd.Context())
 	if err != nil {
-		return err
+		return failClean(cmd, opts, "required_assets", err)
 	}
 
 	out := cmd.OutOrStdout()
@@ -151,15 +186,54 @@ func runModelsClean(cmd *cobra.Command, cfg *config.Config, modelsDir string, op
 		printCleanPlan(out, plan, true)
 		return nil
 	}
+	if !opts.JSON {
+		// Print before the gate: a caller without a plan is about to be asked
+		// to confirm this exact list.
+		printCleanPlan(out, plan, false)
+	}
 	if err := gateCleanApply(cmd, opts, requested, plan); err != nil {
 		return err
 	}
-	if !opts.JSON {
-		printCleanPlan(out, plan, false)
-	}
+	return applyCleanPlan(cmd, opts, modelsDir, requested, plan)
+}
 
+// validate rejects flag combinations that would leave what gets deleted, or
+// who reviewed it, ambiguous.
+func (opts cleanOptions) validate() error {
+	if !opts.Unused {
+		return fmt.Errorf("models clean: --unused is required (only unused-asset cleanup is supported)")
+	}
+	if opts.DryRun == opts.Yes {
+		return fmt.Errorf("models clean: choose exactly one of --dry-run or --yes")
+	}
+	if opts.DryRun && opts.Plan != "" {
+		// A dry run produces a plan; it never consumes one. Accepting the flag
+		// here would let a caller believe a list had been checked against
+		// something.
+		return fmt.Errorf("models clean: --plan applies to --yes, not --dry-run")
+	}
+	if opts.Yes && opts.JSON && opts.Plan == "" {
+		// --json is a program, and a program cannot be the human who read the
+		// list. There is no terminal to confirm at.
+		return &ExitCodeError{Code: exitUsage, Err: errors.New("clean: --plan is required with --yes --json")}
+	}
+	return nil
+}
+
+// applyCleanPlan removes the reviewed list and reports what happened. A
+// failure part-way through still reports what was already deleted: the caller
+// needs to know what left the disk.
+func applyCleanPlan(cmd *cobra.Command, opts cleanOptions, modelsDir string, requested, plan config.CleanPlan) error {
 	result, err := config.DeleteCleanPlan(cmd.Context(), modelsDir, plannedCandidates(requested, plan), plan.Candidates)
+	out := cmd.OutOrStdout()
 	if err != nil {
+		if opts.JSON {
+			if encodeErr := writeJSON(cmd, cleanFailure{Error: "delete_failed", Message: err.Error(), Result: &result}); encodeErr != nil {
+				return encodeErr
+			}
+			return &ExitCodeError{Code: exitOperationFailed, Err: err}
+		}
+		printCleanResult(out, result)
 		return err
 	}
 	if opts.JSON {
@@ -169,18 +243,36 @@ func runModelsClean(cmd *cobra.Command, cfg *config.Config, modelsDir string, op
 	return nil
 }
 
+// cleanFailure is the machine-readable failure shape. A --json caller must
+// never be left with an empty stdout and a banner on stderr it cannot parse.
+type cleanFailure struct {
+	Error   string                   `json:"error"`
+	Message string                   `json:"message"`
+	Result  *config.CleanApplyResult `json:"result,omitempty"`
+}
+
+// failClean reports err as JSON when the caller asked for it, and always exits
+// non-zero.
+func failClean(cmd *cobra.Command, opts cleanOptions, kind string, err error) error {
+	if !opts.JSON {
+		return err
+	}
+	if encodeErr := writeJSON(cmd, cleanFailure{Error: kind, Message: err.Error()}); encodeErr != nil {
+		return encodeErr
+	}
+	return &ExitCodeError{Code: exitOperationFailed, Err: err}
+}
+
 // gateCleanApply refuses any apply that is not pinned to a list the caller
-// actually saw: a stale plan deletes nothing, and a non-interactive caller
-// without a plan is refused outright. An interactive caller has just been
-// shown the list on the terminal.
+// actually saw: a stale plan deletes nothing, a plan captured against another
+// install is not this install's plan, and an apply without a plan must be
+// confirmed by a human at a terminal — isatty alone is not consent, so the
+// answer is read.
 func gateCleanApply(cmd *cobra.Command, opts cleanOptions, requested, current config.CleanPlan) error {
 	if opts.Plan == "" {
-		if !stdoutIsTerminalFn() {
-			return &ExitCodeError{Code: exitUsage, Err: errors.New("clean: --plan is required when not interactive")}
-		}
-		return nil
+		return confirmCleanApply(cmd, current)
 	}
-	if requested.PlanID == current.PlanID {
+	if requested.PlanID == current.PlanID && requested.ModelsDir == current.ModelsDir {
 		return nil
 	}
 	changed := config.NewPlanChangedError(requested.PlanID, current.PlanID)
@@ -192,10 +284,31 @@ func gateCleanApply(cmd *cobra.Command, opts cleanOptions, requested, current co
 	return &ExitCodeError{Code: exitOperationFailed, Err: changed}
 }
 
+// confirmCleanApply asks the human who just read the printed list to say yes.
+func confirmCleanApply(cmd *cobra.Command, plan config.CleanPlan) error {
+	if !stdoutIsTerminalFn() || !stdinIsTerminalFn() {
+		return &ExitCodeError{Code: exitUsage, Err: errors.New("clean: --plan is required when not interactive")}
+	}
+	if len(plan.Candidates) == 0 {
+		return nil
+	}
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "  Delete %d item(s), %s? [y/N] ", len(plan.Candidates), formatBytes(plan.TotalBytes))
+	answer, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+	if err != nil && strings.TrimSpace(answer) == "" {
+		return &ExitCodeError{Code: exitUsage, Err: fmt.Errorf("clean: reading confirmation: %w", err)}
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes":
+		return nil
+	default:
+		fmt.Fprintln(out, "  Nothing was deleted.")
+		return &ExitCodeError{Code: exitOperationFailed, Err: errors.New("clean: not confirmed")}
+	}
+}
+
 // plannedCandidates are the paths the apply may touch: the caller's list when
-// it carried one, otherwise the list just printed. The ids already match, so
-// these agree; iterating the caller's copy keeps the promise that only what
-// was shown gets deleted.
+// it carried one, otherwise the list just printed and confirmed.
 func plannedCandidates(requested, current config.CleanPlan) []config.CleanCandidate {
 	if len(requested.Candidates) > 0 {
 		return requested.Candidates
@@ -252,9 +365,12 @@ func printCleanPlan(out io.Writer, plan config.CleanPlan, dryRun bool) {
 	for _, c := range plan.Candidates {
 		fmt.Fprintf(out, "  %s (%s) [%s]\n", c.Path, formatBytes(c.Size), c.Category)
 	}
-	if len(plan.Candidates) > 0 && dryRun {
-		fmt.Fprintf(out, "\n  %d candidate(s), %s total. Nothing was deleted.\n",
-			len(plan.Candidates), formatBytes(plan.TotalBytes))
+	if len(plan.Candidates) > 0 {
+		fmt.Fprintf(out, "\n  %d candidate(s), %s total.", len(plan.Candidates), formatBytes(plan.TotalBytes))
+		if dryRun {
+			fmt.Fprint(out, " Nothing was deleted.")
+		}
+		fmt.Fprintln(out)
 	}
 	printCleanKept(out, plan.Protected)
 	fmt.Fprintln(out)
@@ -292,6 +408,6 @@ func init() {
 	modelsCleanCmd.Flags().BoolVar(&modelsCleanYes, "yes", false, "Delete unused model assets without prompting")
 	modelsCleanCmd.Flags().BoolVar(&modelsCleanJSON, "json", false, "Output machine-readable JSON")
 	modelsCleanCmd.Flags().StringVar(&modelsCleanPlan, "plan", "",
-		"Apply exactly the reviewed dry-run plan: a --dry-run --json file, \"-\" for stdin, or its plan_id. Required with --yes when stdout is not a terminal")
+		"Apply exactly the reviewed dry-run plan: the --dry-run --json document, as a file or \"-\" for stdin. Required with --yes unless a human confirms at a terminal")
 	modelsCmd.AddCommand(modelsCleanCmd)
 }

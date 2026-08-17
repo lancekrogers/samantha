@@ -40,6 +40,12 @@ type RequiredSet struct {
 	// per owner so the caller can show every one.
 	Protected []ProtectedPath
 
+	// realModelsDir is ModelsDir with symlinks resolved. A configured asset
+	// path is routinely spelled through the other one (macOS /tmp vs
+	// /private/tmp, a cache dir symlinked to an external volume), and a claim
+	// that does not line up with the walk is a claim that protects nothing.
+	realModelsDir string
+
 	own ownership
 }
 
@@ -77,7 +83,7 @@ func RequiredAssetPaths(ctx context.Context, cfg *Config, modelsDir string, pers
 		return RequiredSet{}, fmt.Errorf("required assets: nil config")
 	}
 	modelsDir = filepath.Clean(modelsDir)
-	set := RequiredSet{ModelsDir: modelsDir, own: newOwnership()}
+	set := RequiredSet{ModelsDir: modelsDir, realModelsDir: resolveSymlinks(modelsDir), own: newOwnership()}
 
 	global, err := ManifestFor(cfg, DefaultAssetRequest(cfg))
 	if err != nil {
@@ -93,16 +99,21 @@ func RequiredAssetPaths(ctx context.Context, cfg *Config, modelsDir string, pers
 		if err != nil {
 			return RequiredSet{}, fmt.Errorf("persona %q manifest: %w", p.ID, err)
 		}
-		set.addManifest(manifest, fmt.Sprintf("persona %s: ", p.ID))
+		prefix := fmt.Sprintf("persona %s: ", personaLabel(p.ID))
+		set.addManifest(manifest, prefix)
+		// A persona's voice keys name assets the manifest does not carry —
+		// the thewh1teagle kokoro pack KokoroDir prefers, an external qwen
+		// tree. Computing these from the global config alone is how a
+		// kokoro-speaking persona lost its pack while the app spoke qwen.
+		set.addAll(ttsConfigClaims(p.Cfg, modelsDir), prefix)
 	}
 
 	claims, err := configReferencedClaims(cfg, modelsDir)
 	if err != nil {
 		return RequiredSet{}, err
 	}
-	for _, c := range append(claims, qwenNativeClaims(cfg, personas, modelsDir)...) {
-		set.add(c)
-	}
+	set.addAll(claims, "config ")
+	set.addAll(qwenNativeClaims(cfg, personas, modelsDir), "")
 	set.sortProtected()
 	return set, nil
 }
@@ -135,6 +146,14 @@ func (rs *RequiredSet) addManifest(m AssetManifest, reasonPrefix string) {
 	}
 }
 
+// addAll records claims under one reason prefix ("config ", "persona ada: ").
+func (rs *RequiredSet) addAll(claims []assetClaim, reasonPrefix string) {
+	for _, c := range claims {
+		c.reason = reasonPrefix + c.reason
+		rs.add(c)
+	}
+}
+
 // add records a claim: its paths become un-deletable, and its display paths
 // become Protected rows. A path already protected by an earlier source is not
 // repeated unless the claim asks for it, so every persona sharing the global
@@ -145,11 +164,12 @@ func (rs *RequiredSet) addManifest(m AssetManifest, reasonPrefix string) {
 // listed as kept, because "Kept (N)" answers what this machine still has.
 func (rs *RequiredSet) add(c assetClaim) {
 	shown := map[string]bool{}
-	for _, p := range c.show {
-		if !rs.underModelsDir(p) || !pathExists(p) {
+	for _, raw := range c.show {
+		p, ok := rs.underModelsDir(raw)
+		if !ok || !pathExists(p) {
 			continue
 		}
-		if rs.own.required[p] && !c.alwaysShow {
+		if rs.own.has(p) && !c.alwaysShow {
 			continue
 		}
 		if shown[p] {
@@ -158,8 +178,9 @@ func (rs *RequiredSet) add(c assetClaim) {
 		shown[p] = true
 		rs.Protected = append(rs.Protected, ProtectedPath{Path: p, Reason: c.reason})
 	}
-	for _, p := range c.own {
-		if !rs.underModelsDir(p) {
+	for _, raw := range c.own {
+		p, ok := rs.underModelsDir(raw)
+		if !ok {
 			continue
 		}
 		rs.own.add(p, rs.ModelsDir)
@@ -167,15 +188,47 @@ func (rs *RequiredSet) add(c assetClaim) {
 	rs.own.suppressRoot = rs.own.suppressRoot || c.suppressRoot
 }
 
-// underModelsDir reports whether p sits inside the models dir. Paths outside
-// it (an absolute speaker model elsewhere on disk, say) are never candidates,
-// so protecting them would only add noise to the kept list.
-func (rs RequiredSet) underModelsDir(p string) bool {
-	rel, err := filepath.Rel(rs.ModelsDir, p)
-	if err != nil {
-		return false
+// underModelsDir reports whether p sits inside the models dir, and returns it
+// spelled the way the walk will spell it. A configured path may name the same
+// file through the models dir's symlink target, so both spellings are tried;
+// paths genuinely elsewhere on disk are never candidates, so protecting them
+// would only add noise to the kept list.
+func (rs RequiredSet) underModelsDir(p string) (string, bool) {
+	spellings := []string{p}
+	if resolved := resolveSymlinks(p); resolved != p {
+		spellings = append(spellings, resolved)
 	}
-	return rel != ".." && rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	for _, base := range []string{rs.ModelsDir, rs.realModelsDir} {
+		for _, spelling := range spellings {
+			if base == "" {
+				continue
+			}
+			rel, err := filepath.Rel(base, spelling)
+			if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				continue
+			}
+			return filepath.Join(rs.ModelsDir, rel), true
+		}
+	}
+	return "", false
+}
+
+// resolveSymlinks returns path with symlinks resolved. A path that does not
+// exist yet is resolved as far as its deepest existing ancestor, so a claim on
+// an asset still downloading still lines up with the walk.
+func resolveSymlinks(path string) string {
+	suffix := ""
+	for current := filepath.Clean(path); ; {
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			return filepath.Join(resolved, suffix)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return path
+		}
+		suffix = filepath.Join(filepath.Base(current), suffix)
+		current = parent
+	}
 }
 
 // sortProtected orders the kept list by path, then reason, so output is stable
@@ -197,6 +250,15 @@ func (a Asset) displayPaths(modelsDir string) []string {
 		return []string{filepath.Join(modelsDir, a.TargetDir)}
 	}
 	return a.installPaths(modelsDir)
+}
+
+// personaLabel keeps a reason readable when a caller supplies a persona with
+// no id (nothing on disk does, but a reason must never read "persona : …").
+func personaLabel(id string) string {
+	if strings.TrimSpace(id) == "" {
+		return "(unnamed)"
+	}
+	return id
 }
 
 // assetReason names the config keys that make one asset required, in the words

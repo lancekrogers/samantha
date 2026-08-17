@@ -18,7 +18,7 @@ func configReferencedClaims(cfg *Config, modelsDir string) ([]assetClaim, error)
 		return nil, err
 	}
 	claims := append(stt, ttsConfigClaims(cfg, modelsDir)...)
-	claims = append(claims, assetClaimFor(VADAsset(), modelsDir, "config vad model silero_vad.onnx"))
+	claims = append(claims, assetClaimFor(VADAsset(), modelsDir, "vad model silero_vad.onnx"))
 	return append(claims, speakerConfigClaims(cfg, modelsDir)...), nil
 }
 
@@ -31,23 +31,30 @@ func sttConfigClaims(cfg *Config, modelsDir string) ([]assetClaim, error) {
 		norm   NormalizedSTT
 		reason string
 	}{
-		{NormalizedSTT{Provider: STTProviderSherpa, Mode: STTModeStreaming}, "config sherpa_streaming_model"},
-		{NormalizedSTT{Provider: STTProviderSherpa, Mode: STTModeOffline}, "config whisper_model"},
-		{NormalizedSTT{Provider: STTProviderWhisperCPP, Mode: STTModeCLI}, "config whispercpp_model"},
+		{NormalizedSTT{Provider: STTProviderSherpa, Mode: STTModeStreaming}, "sherpa_streaming_model"},
+		{NormalizedSTT{Provider: STTProviderSherpa, Mode: STTModeOffline}, "whisper_model"},
+		{NormalizedSTT{Provider: STTProviderWhisperCPP, Mode: STTModeCLI}, "whispercpp_model"},
 	}
 	claims := make([]assetClaim, 0, len(variants)+1)
 	for _, variant := range variants {
 		asset, err := sttAsset(cfg, variant.norm)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", variant.reason, err)
+			// Reasons are prefixed by the caller; an error has to name the
+			// key on its own.
+			return nil, fmt.Errorf("config %s: %w", variant.reason, err)
 		}
 		if asset == nil {
 			continue
 		}
 		claims = append(claims, assetClaimFor(*asset, modelsDir, variant.reason))
 	}
-	if path := strings.TrimSpace(cfg.WhisperCPPModelPath); path != "" {
-		claims = append(claims, pathClaim(resolveUnder(modelsDir, path), "config whispercpp_model_path"))
+	for _, named := range []struct{ key, value string }{
+		{"whispercpp_model_path", cfg.WhisperCPPModelPath},
+		{"whispercpp_binary", cfg.WhisperCPPBinary},
+	} {
+		if value := strings.TrimSpace(named.value); value != "" {
+			claims = append(claims, pathClaim(resolveUnder(modelsDir, value), named.key))
+		}
 	}
 	return claims, nil
 }
@@ -60,15 +67,25 @@ func sttConfigClaims(cfg *Config, modelsDir string) ([]assetClaim, error) {
 func ttsConfigClaims(cfg *Config, modelsDir string) []assetClaim {
 	var claims []assetClaim
 	if usesKokoro(cfg.TTSProvider) || usesKokoro(cfg.TTSFallbackProvider) {
-		reason := "config tts_provider kokoro"
+		reason := "tts_provider kokoro"
 		if !usesKokoro(cfg.TTSProvider) {
-			reason = "config voice_fallback_provider kokoro"
+			reason = "voice_fallback_provider kokoro"
 		}
 		claims = append(claims, assetClaimFor(KokoroTTSAsset(), modelsDir, reason))
+		// KokoroDir prefers the thewh1teagle v1.0 pack whenever it is present,
+		// and no manifest asset owns it.
 		claims = append(claims, pathClaim(filepath.Join(modelsDir, KokoroV1Subdir), reason+" (v1.0 pack)"))
 	}
-	if model := strings.TrimSpace(cfg.QwenTTSModel); model != "" {
-		claims = append(claims, pathClaim(resolveUnder(modelsDir, model), "config qwen_tts_model"))
+	// An external qwen worker or model tree under the models dir is named by
+	// config alone; qwen.UseManaged treats both as a supported setup.
+	for _, named := range []struct{ key, value string }{
+		{"qwen_tts_model", cfg.QwenTTSModel},
+		{"qwen_tts_binary", cfg.QwenTTSBinary},
+		{"qwen_tts_reference_audio", cfg.QwenTTSReferenceAudio},
+	} {
+		if value := strings.TrimSpace(named.value); value != "" {
+			claims = append(claims, pathClaim(resolveUnder(modelsDir, value), named.key))
+		}
 	}
 	return claims
 }
@@ -79,16 +96,16 @@ func ttsConfigClaims(cfg *Config, modelsDir string) []assetClaim {
 func speakerConfigClaims(cfg *Config, modelsDir string) []assetClaim {
 	var claims []assetClaim
 	if path := strings.TrimSpace(cfg.Speaker.Models.Embedding); path != "" {
-		claims = append(claims, pathClaim(resolveUnder(modelsDir, path), "config speaker.models.embedding"))
+		claims = append(claims, pathClaim(resolveUnder(modelsDir, path), "speaker.models.embedding"))
 	}
 	if path := strings.TrimSpace(cfg.Speaker.Models.Segmentation); path != "" {
-		claims = append(claims, pathClaim(resolveUnder(modelsDir, path), "config speaker.models.segmentation"))
+		claims = append(claims, pathClaim(resolveUnder(modelsDir, path), "speaker.models.segmentation"))
 	}
 	if !cfg.Speaker.Enabled {
 		return claims
 	}
 	for _, asset := range []Asset{SpeakerEmbeddingAsset(), SpeakerSegmentationAsset()} {
-		claims = append(claims, assetClaimFor(asset, modelsDir, "config speaker.enabled"))
+		claims = append(claims, assetClaimFor(asset, modelsDir, "speaker.enabled"))
 	}
 	return claims
 }
@@ -110,12 +127,16 @@ func qwenNativeClaims(cfg *Config, personas []PersonaAssets, modelsDir string) [
 	var claims []assetClaim
 	if usesQwen(cfg) {
 		claims = append(claims, claim(fmt.Sprintf("global tts_provider qwen3-tts tier %s", qwenTier(cfg))))
+	} else if isQwen(cfg.TTSFallbackProvider) {
+		// The fallback provider is the voice the app reaches for when the
+		// primary one fails; its runtime is as required as the primary's.
+		claims = append(claims, claim(fmt.Sprintf("global voice_fallback_provider qwen3-tts tier %s", qwenTier(cfg))))
 	}
 	for _, p := range personas {
 		if !usesQwen(p.Cfg) {
 			continue
 		}
-		claims = append(claims, claim(fmt.Sprintf("persona %s: qwen3-tts tier %s", p.ID, qwenTier(p.Cfg))))
+		claims = append(claims, claim(fmt.Sprintf("persona %s: qwen3-tts tier %s", personaLabel(p.ID), qwenTier(p.Cfg))))
 	}
 	return claims
 }
@@ -143,7 +164,12 @@ func resolveUnder(modelsDir, path string) string {
 // usesQwen reports whether cfg routes speech through the native Qwen3-TTS
 // provider.
 func usesQwen(cfg *Config) bool {
-	return cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), qwen.ProviderName)
+	return cfg != nil && isQwen(cfg.TTSProvider)
+}
+
+// isQwen reports whether a provider key selects Qwen3-TTS.
+func isQwen(provider string) bool {
+	return strings.EqualFold(strings.TrimSpace(provider), qwen.ProviderName)
 }
 
 // qwenTier is the native model tier cfg speaks at.
@@ -154,7 +180,10 @@ func qwenTier(cfg *Config) string {
 	return qwen.NormalizeModelTier(cfg.QwenTTSModelTier)
 }
 
-// usesKokoro reports whether a provider key selects Kokoro.
+// usesKokoro reports whether a provider key selects Kokoro. An empty value
+// counts: the TTS factory treats "" as kokoro, so an install that clears the
+// key still speaks through the pack.
 func usesKokoro(provider string) bool {
-	return strings.EqualFold(strings.TrimSpace(provider), "kokoro")
+	provider = strings.TrimSpace(provider)
+	return provider == "" || strings.EqualFold(provider, "kokoro")
 }

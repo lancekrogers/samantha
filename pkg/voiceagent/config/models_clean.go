@@ -41,9 +41,6 @@ type CleanCandidate struct {
 	Kind     CleanKind     `json:"kind"`
 }
 
-// IsDir reports whether the candidate is a directory.
-func (c CleanCandidate) IsDir() bool { return c.Kind == CleanKindDir }
-
 // CleanCandidates lists the paths under modelsDir that are not claimed by any
 // asset in the manifest, as removal candidates for `models clean`. It only
 // reads the filesystem — it never deletes, never follows symlinks, and never
@@ -57,11 +54,11 @@ func (c CleanCandidate) IsDir() bool { return c.Kind == CleanKindDir }
 // CheckFiles subset, so a currently-selected archive's files are never reported
 // as removable — see requiredPaths.
 //
-// It sees only the global configuration. Prefer RequiredAssetPaths plus
-// RequiredSet.CleanCandidates: a manifest alone knows nothing about persona
-// profiles or config keys the current mode does not load, which is how the
-// 2026-08-17 clean deleted six personas' TTS runtime.
-func (m AssetManifest) CleanCandidates(ctx context.Context, modelsDir string) ([]CleanCandidate, error) {
+// It is unexported on purpose: a manifest alone sees only the global
+// configuration, knowing nothing about persona profiles or config keys the
+// current mode does not load, which is how the 2026-08-17 clean deleted six
+// personas' TTS runtime. Production callers go through RequiredAssetPaths.
+func (m AssetManifest) cleanCandidates(ctx context.Context, modelsDir string) ([]CleanCandidate, error) {
 	modelsDir = filepath.Clean(modelsDir)
 	set := RequiredSet{ModelsDir: modelsDir, own: m.requiredPaths(modelsDir)}
 	return set.CleanCandidates(ctx)
@@ -93,9 +90,26 @@ func validateCleanCandidatePath(modelsDir, candidatePath string) error {
 // (a legacy marker), so top-level entries must not be reported at all rather
 // than risk flagging a file the archive owns.
 type ownership struct {
-	required     map[string]bool
-	parents      map[string]bool
+	required map[string]bool
+	parents  map[string]bool
+	// requiredFold and parentsFold hold the same paths case-folded. samantha
+	// runs on case-insensitive filesystems (APFS, NTFS) where a config key
+	// spelled speaker/nemo.onnx loads speaker/NeMo.onnx perfectly well; an
+	// exact-string claim would leave the real file unprotected.
+	requiredFold map[string]bool
+	parentsFold  map[string]bool
 	suppressRoot bool
+}
+
+// has reports whether p is claimed by a required asset.
+func (o ownership) has(p string) bool {
+	return o.required[p] || o.requiredFold[strings.ToLower(p)]
+}
+
+// holdsRequired reports whether p is a directory on the way to a required
+// path, so it must be descended rather than reported.
+func (o ownership) holdsRequired(p string) bool {
+	return o.parents[p] || o.parentsFold[strings.ToLower(p)]
 }
 
 // requiredPaths resolves everything the manifest's assets own under modelsDir.
@@ -123,15 +137,20 @@ func (m AssetManifest) requiredPaths(modelsDir string) ownership {
 
 // newOwnership returns an empty ownership map set.
 func newOwnership() ownership {
-	return ownership{required: map[string]bool{}, parents: map[string]bool{}}
+	return ownership{
+		required: map[string]bool{}, parents: map[string]bool{},
+		requiredFold: map[string]bool{}, parentsFold: map[string]bool{},
+	}
 }
 
 // add records p as owned and every directory between it and modelsDir as a
 // parent, so a required file never hides its whole containing directory.
 func (o *ownership) add(p, modelsDir string) {
 	o.required[p] = true
+	o.requiredFold[strings.ToLower(p)] = true
 	for dir := filepath.Dir(p); len(dir) > len(modelsDir); dir = filepath.Dir(dir) {
 		o.parents[dir] = true
+		o.parentsFold[strings.ToLower(dir)] = true
 	}
 }
 
@@ -184,12 +203,12 @@ func collectCandidates(ctx context.Context, modelsDir, dir string, own ownership
 	}
 	for _, e := range entries {
 		p := filepath.Join(dir, e.Name())
-		if own.required[p] {
+		if own.has(p) {
 			continue
 		}
 		// e.IsDir() is false for symlinks, so a symlinked directory is never
 		// descended — it can only be a candidate itself.
-		if own.parents[p] && e.IsDir() {
+		if own.holdsRequired(p) && e.IsDir() {
 			if err := collectCandidates(ctx, modelsDir, p, own, false, out); err != nil {
 				return err
 			}

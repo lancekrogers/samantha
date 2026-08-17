@@ -95,7 +95,7 @@ func TestCleanCandidatesContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := cleanTestManifest().CleanCandidates(ctx, t.TempDir())
+	_, err := cleanTestManifest().cleanCandidates(ctx, t.TempDir())
 	if err == nil {
 		t.Fatal("CleanCandidates() with cancelled context should error")
 	}
@@ -144,7 +144,7 @@ func TestCleanCandidates(t *testing.T) {
 			dir := t.TempDir()
 			tc.setup(t, dir)
 
-			got, err := cleanTestManifest().CleanCandidates(context.Background(), dir)
+			got, err := cleanTestManifest().cleanCandidates(context.Background(), dir)
 			if err != nil {
 				t.Fatalf("CleanCandidates() error = %v", err)
 			}
@@ -174,7 +174,7 @@ func TestCleanCandidatesNeverReportsArchiveOwnedFiles(t *testing.T) {
 	// is not vacuously true.
 	touchFile(t, filepath.Join(dir, "stale.onnx"))
 
-	got, err := cleanTestManifest().CleanCandidates(context.Background(), dir)
+	got, err := cleanTestManifest().cleanCandidates(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("CleanCandidates() error = %v", err)
 	}
@@ -222,7 +222,7 @@ func TestCleanCandidatesQuantizationSwitch(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ManifestFor(quantized=%v) error = %v", quantized, err)
 		}
-		got, err := manifest.CleanCandidates(context.Background(), dir)
+		got, err := manifest.cleanCandidates(context.Background(), dir)
 		if err != nil {
 			t.Fatalf("CleanCandidates(quantized=%v) error = %v", quantized, err)
 		}
@@ -268,7 +268,7 @@ func TestCleanCandidatesLegacyMarkerSuppressesRoot(t *testing.T) {
 		t.Fatalf("write legacy marker: %v", err)
 	}
 
-	got, err := manifest.CleanCandidates(context.Background(), dir)
+	got, err := manifest.cleanCandidates(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("CleanCandidates() error = %v", err)
 	}
@@ -290,7 +290,7 @@ func TestCleanCandidatesDoesNotFollowSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := cleanTestManifest().CleanCandidates(context.Background(), dir)
+	got, err := cleanTestManifest().cleanCandidates(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("CleanCandidates() error = %v", err)
 	}
@@ -302,8 +302,8 @@ func TestCleanCandidatesDoesNotFollowSymlinks(t *testing.T) {
 	if got[0].Size >= 4096 {
 		t.Errorf("symlink candidate size = %d, must not count the linked-to target", got[0].Size)
 	}
-	if got[0].IsDir() {
-		t.Error("symlink candidate must not be reported as a directory")
+	if got[0].Kind != CleanKindFile {
+		t.Errorf("symlink candidate kind = %q, must not be reported as a directory", got[0].Kind)
 	}
 }
 
@@ -385,7 +385,7 @@ func TestCleanCandidateSizes(t *testing.T) {
 		}
 	}
 
-	got, err := cleanTestManifest().CleanCandidates(context.Background(), dir)
+	got, err := cleanTestManifest().cleanCandidates(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("CleanCandidates() error = %v", err)
 	}
@@ -394,7 +394,7 @@ func TestCleanCandidateSizes(t *testing.T) {
 	for _, c := range got {
 		rel, _ := filepath.Rel(dir, c.Path)
 		sizes[rel] = c.Size
-		dirs[rel] = c.IsDir()
+		dirs[rel] = c.Kind == CleanKindDir
 	}
 	if sizes["stale.onnx"] != 4 {
 		t.Errorf("stale.onnx size = %d, want 4", sizes["stale.onnx"])
