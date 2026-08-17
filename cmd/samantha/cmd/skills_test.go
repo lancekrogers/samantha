@@ -257,6 +257,125 @@ func TestSkillsListActiveFalseForUnsupportedProvider(t *testing.T) {
 	}
 }
 
+// TestSkillsDisableEnableConfigRoundTrip covers the DoD's core requirement:
+// disable/enable persist through config.SetAndSave (not ValidateAndSet, which
+// would reject a list) and round-trip through a real config.Load(); both
+// verbs are idempotent; disable refuses an undiscovered name with the roots.
+func TestSkillsDisableEnableConfigRoundTrip(t *testing.T) {
+	config.SetConfigDirForTest(t, t.TempDir())
+	fakeHome := t.TempDir()
+	restore := skills.SetUserHomeDirForTest(func() (string, error) { return fakeHome, nil })
+	t.Cleanup(restore)
+
+	workDir := t.TempDir()
+	writeSkillFixture(t, filepath.Join(workDir, ".agents", "skills", "calibre"), "calibre", "desc")
+
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(workDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+
+	// Each invocation reloads from disk, exactly like a fresh CLI process
+	// would — this is what makes the round trip real rather than in-memory.
+	loadConfig := config.Load
+
+	run := func(args ...string) (skillsToggleResult, error) {
+		cmd := newSkillsCmd(loadConfig)
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			return skillsToggleResult{}, err
+		}
+		var result skillsToggleResult
+		if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+			t.Fatalf("decode result: %v\noutput: %s", err, out.String())
+		}
+		return result, nil
+	}
+
+	// Unknown name: disable refuses with the roots, exits non-zero.
+	_, err = run("disable", "nope", "--json")
+	if err == nil {
+		t.Fatal("disable of an undiscovered name must fail")
+	}
+	if !strings.Contains(err.Error(), `no skill named "nope" was discovered (roots:`) {
+		t.Fatalf("error = %q, want the roots-listing refusal", err)
+	}
+
+	// Disable a real, discovered skill.
+	result, err := run("disable", "calibre", "--json")
+	if err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if result.Name != "calibre" || !result.Disabled || result.Active || !result.RestartRequired {
+		t.Fatalf("disable result = %+v", result)
+	}
+	if len(result.SkillsDisabled) != 1 || result.SkillsDisabled[0] != "calibre" {
+		t.Fatalf("skills_disabled = %v, want [calibre]", result.SkillsDisabled)
+	}
+
+	// Round trip: a fresh config.Load() sees the persisted key.
+	reloaded, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.SkillsDisabled) != 1 || reloaded.SkillsDisabled[0] != "calibre" {
+		t.Fatalf("reloaded SkillsDisabled = %v, want [calibre]", reloaded.SkillsDisabled)
+	}
+
+	// Idempotent: disabling an already-disabled skill succeeds, no duplicate.
+	result, err = run("disable", "Calibre", "--json")
+	if err != nil {
+		t.Fatalf("idempotent disable: %v", err)
+	}
+	if len(result.SkillsDisabled) != 1 {
+		t.Fatalf("re-disable duplicated the entry: %v", result.SkillsDisabled)
+	}
+
+	// Enable removes it; round-trips back to empty.
+	result, err = run("enable", "calibre", "--json")
+	if err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if result.Disabled || !result.Active {
+		t.Fatalf("enable result = %+v, want disabled=false active=true", result)
+	}
+	if len(result.SkillsDisabled) != 0 {
+		t.Fatalf("skills_disabled after enable = %v, want empty", result.SkillsDisabled)
+	}
+	reloaded, err = config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.SkillsDisabled) != 0 {
+		t.Fatalf("reloaded after enable = %v, want empty", reloaded.SkillsDisabled)
+	}
+
+	// Idempotent: enabling a name that was never disabled is a no-op success,
+	// even though its folder is real — and also for a name whose folder is
+	// gone entirely.
+	result, err = run("enable", "calibre", "--json")
+	if err != nil {
+		t.Fatalf("enable no-op: %v", err)
+	}
+	if result.Disabled || len(result.SkillsDisabled) != 0 {
+		t.Fatalf("no-op enable result = %+v", result)
+	}
+	result, err = run("enable", "ghost-folder-gone", "--json")
+	if err != nil {
+		t.Fatalf("enable of a name with no folder must still succeed: %v", err)
+	}
+	if result.Disabled {
+		t.Fatalf("enable result = %+v, want disabled=false", result)
+	}
+}
+
 func runSkillsList(t *testing.T, cfg *config.Config, workDir string) skillsListEnvelope {
 	t.Helper()
 	cmd := newSkillsCmd(skillsTestConfig(cfg))
