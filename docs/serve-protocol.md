@@ -169,6 +169,7 @@ streams. Other devices and the primary token remain active.
 |--------|------|------|---------|
 | `GET` | `/v1/status` | yes | `turn_active`, `providers`, `uptime_seconds`, `fingerprint` |
 | `GET` | `/v1/sessions` | yes | Session summaries |
+| `GET` | `/v1/personas` | yes | Persona list for `set_persona` (see below) |
 | `POST` | `/v1/sessions/{id}/resume` | yes | Load history into the live pipeline |
 | `POST` | `/v1/pair` | no | Exchange pairing code for token (optional `device_name`) |
 | `GET` | `/v1/devices` | yes | List paired devices (D2) |
@@ -400,3 +401,37 @@ path.
 An unknown name returns an error envelope naming the personas that do exist.
 Per-connection personas are out of scope — the pipeline is single-brained, so
 this is per-instance.
+
+
+## `GET /v1/personas`
+
+The read side of `set_persona`: which personas this serve can switch to, and
+which one it is using right now.
+
+```json
+{"personas": [
+  {"id": "samantha", "display_name": "Samantha", "active": false, "builtin": true,
+   "brain": {"provider": "ollama", "model": "qwen2.5:14b"},
+   "tts": {"provider": "kokoro", "voice": "af_heart", "tier": ""}},
+  {"id": "uncle-fu", "display_name": "Uncle Fu", "active": true, "builtin": false,
+   "brain": {"provider": "ollama", "model": "qwen2.5:14b"},
+   "tts": {"provider": "qwen3-tts", "voice": "Uncle_Fu", "tier": "1.7b"}}
+]}
+```
+
+`brain` and `tts` are the **effective** stack: a persona leaves a field empty to
+inherit the app default, and this route resolves that inheritance so a client
+never has to. `tier` is empty for providers that do not select a model tier.
+
+`active` is the **runtime** persona. A `set_persona` deliberately does not write
+`config.yaml`, so this field can name a persona the persisted config does not —
+that is correct, and a client that reads the config file instead will be wrong
+for the rest of the session.
+
+`builtin` marks the shipped persona, which cannot be deleted. It is additive
+beyond ADR-004; decode it as optional.
+
+The route is **absent (404)** on a serve that did not wire persona resolution,
+the same way `/v1/meeting/*` is absent without meeting capture. Feature-detect
+by status rather than by `protocol_version`, which does not change for additive
+routes.

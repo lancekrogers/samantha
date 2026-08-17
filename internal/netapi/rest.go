@@ -15,6 +15,38 @@ type SessionSummary struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// PersonaSummary is one row of GET /v1/personas.
+//
+// Its brain/tts values are the persona's *effective* stack — a profile's empty
+// field means "inherit the app default", and a list showing blanks would tell
+// a user nothing about what the agent will sound like.
+type PersonaSummary struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	// Active is the runtime persona, which a set_persona can move without
+	// anything being persisted.
+	Active bool `json:"active"`
+	// Builtin is additive beyond the ADR-004 shape: a list UI needs it to lock
+	// Delete on the shipped persona. Clients decode it as optional.
+	Builtin bool         `json:"builtin"`
+	Brain   PersonaBrain `json:"brain"`
+	TTS     PersonaTTS   `json:"tts"`
+}
+
+// PersonaBrain is a persona's effective model routing.
+type PersonaBrain struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+// PersonaTTS is a persona's effective speech settings. Tier is empty for
+// providers that do not select a model tier.
+type PersonaTTS struct {
+	Provider string `json:"provider"`
+	Voice    string `json:"voice"`
+	Tier     string `json:"tier"`
+}
+
 // Providers names the configured providers for GET /v1/status. Values are
 // provider names only — never secrets.
 type Providers struct {
@@ -42,6 +74,20 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		sessions = s.listSessions()
 	}
 	writeJSON(w, http.StatusOK, sessions)
+}
+
+// handlePersonas lists the personas this serve can switch to. Read-only: it
+// mutates nothing, and the route is absent unless serve supplied the resolver.
+func (s *Server) handlePersonas(w http.ResponseWriter, r *http.Request) {
+	personas, err := s.opts.ListPersonas()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if personas == nil {
+		personas = []PersonaSummary{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"personas": personas})
 }
 
 func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
