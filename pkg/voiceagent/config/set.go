@@ -7,8 +7,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
-	"gopkg.in/yaml.v3"
 )
 
 // Error codes reported by the single-key writer. They are wire values: the CLI
@@ -179,7 +177,6 @@ func writeKeyToFile(spec KeySpec, value any) (SetResult, error) {
 	if err != nil {
 		return SetResult{}, &SetError{Code: CodeParseFailed, Key: spec.Key, Message: err.Error(), cause: err}
 	}
-	preserveBlankLines(doc, data)
 	mapping := doc.Content[0]
 
 	segments := strings.Split(spec.Key, ".")
@@ -202,17 +199,23 @@ func writeKeyToFile(spec KeySpec, value any) (SetResult, error) {
 		return result, nil
 	}
 
-	backupPath, err := patchAndReplace(doc, mapping, segments, value, path, existed, spec.Key)
+	patched, err := patchConfigSource(data, doc, segments, value)
+	if err != nil {
+		return SetResult{}, writeFailed(spec.Key, "updating config", err)
+	}
+	// Refresh the in-process value from the patched text rather than from the Go
+	// value: a later Get in this process then sees exactly what a fresh Load
+	// would, including for structured keys whose Go type has no JSON tags. It is
+	// also the writer's own check that the edit it made still parses and still
+	// holds what it was asked to write — a text edit that did not land is
+	// refused here instead of being saved over the user's config.
+	refreshed, err := verifyPatched(patched, segments, value)
+	if err != nil {
+		return SetResult{}, writeFailed(spec.Key, "updating config", err)
+	}
+	backupPath, err := backupAndReplace(path, patched, existed, spec.Key)
 	if err != nil {
 		return SetResult{}, err
-	}
-
-	// Refresh the in-process value from the patched document rather than from
-	// the Go value: a later Get in this process then sees exactly what a fresh
-	// Load would, including for structured keys whose Go type has no JSON tags.
-	refreshed := value
-	if roundTripped, ok := yamlValueAt(mapping, segments); ok {
-		refreshed = roundTripped
 	}
 	Set(spec.Key, refreshed)
 	result.BackupPath = backupPath
@@ -220,26 +223,35 @@ func writeKeyToFile(spec KeySpec, value any) (SetResult, error) {
 	return result, nil
 }
 
-// patchAndReplace writes the patched document over path, keeping a backup of
+// verifyPatched re-reads the patched text and returns the value it now holds at
+// the path. A patch that no longer parses, or that did not land the value, is
+// an error rather than something to write over a working config.
+func verifyPatched(patched []byte, segments []string, value any) (any, error) {
+	doc, err := migrationYAMLDocument(patched)
+	if err != nil {
+		return nil, err
+	}
+	got, ok := yamlValueAt(doc.Content[0], segments)
+	if !ok || !sameValue(got, value) {
+		return nil, fmt.Errorf("the edited config does not hold %s", strings.Join(segments, "."))
+	}
+	return got, nil
+}
+
+// backupAndReplace writes the patched document over path, keeping a backup of
 // what was there. The replacement is atomic, so a crash mid-write leaves the
 // old file intact rather than a truncated one.
-func patchAndReplace(doc, mapping *yaml.Node, segments []string, value any, path string, existed bool, key string) (string, error) {
-	if err := setYAMLValue(mapping, segments, value); err != nil {
-		return "", writeFailed(key, "updating config", err)
-	}
-	out, err := encodeYAMLDocument(doc)
-	if err != nil {
-		return "", writeFailed(key, "encoding config", err)
-	}
+func backupAndReplace(path string, patched []byte, existed bool, key string) (string, error) {
 	var backupPath string
 	if existed {
+		var err error
 		backupPath, err = backupFile(path)
 		if err != nil {
 			return "", writeFailed(key, "backing up config", err)
 		}
 		pruneBackups(path, keptBackups)
 	}
-	if err := writeFileAtomic(path, out); err != nil {
+	if err := writeFileAtomic(path, patched); err != nil {
 		return "", writeFailed(key, "replacing config", err)
 	}
 	return backupPath, nil

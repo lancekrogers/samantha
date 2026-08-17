@@ -226,9 +226,16 @@ func setYAMLScalar(mapping *yaml.Node, key, value string) {
 }
 
 func encodeYAMLDocument(doc *yaml.Node) ([]byte, error) {
+	return encodeYAMLDocumentIndent(doc, 2)
+}
+
+// encodeYAMLDocumentIndent renders a document at a chosen nesting width. The
+// config writer renders one entry at a time and passes the width it read out of
+// the file being edited, so a 4-space file does not come back 2-space.
+func encodeYAMLDocumentIndent(doc *yaml.Node, indent int) ([]byte, error) {
 	var b strings.Builder
 	enc := yaml.NewEncoder(&b)
-	enc.SetIndent(2)
+	enc.SetIndent(indent)
 	if err := enc.Encode(doc); err != nil {
 		return nil, fmt.Errorf("encoding config: %w", err)
 	}
