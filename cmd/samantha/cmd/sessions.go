@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lancekrogers/samantha/internal/netapi"
+	"github.com/lancekrogers/samantha/internal/netapi/wire"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/session"
 )
@@ -46,14 +46,14 @@ func newSessionsListCmd() *cobra.Command {
 }
 
 // sessionSummaries returns the same rows GET /v1/sessions returns
-// (netapi.SessionSummary), so the CLI and the wire route can be diffed:
-// session.List() is the one source both listSessionSummaries (serve.go) and
-// this command read from.
-func sessionSummaries() []netapi.SessionSummary {
+// (wire.SessionSummary, which netapi.SessionSummary aliases), so the CLI and
+// the wire route can be diffed: session.List() is the one source both
+// listSessionSummaries (serve.go) and this command read from.
+func sessionSummaries() []wire.SessionSummary {
 	sessions := session.List()
-	out := make([]netapi.SessionSummary, 0, len(sessions))
+	out := make([]wire.SessionSummary, 0, len(sessions))
 	for _, s := range sessions {
-		out = append(out, netapi.SessionSummary{
+		out = append(out, wire.SessionSummary{
 			ID: s.ID, Summary: s.Summary, Turns: len(s.Turns), UpdatedAt: s.UpdatedAt,
 		})
 	}

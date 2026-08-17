@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lancekrogers/samantha/internal/netapi"
+	"github.com/lancekrogers/samantha/internal/netapi/wire"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/brain"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/session"
@@ -76,7 +76,7 @@ func TestSessionsListJSONOrderedMostRecentFirst(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sessions list --json error = %v (out %s)", err, out)
 	}
-	var got []netapi.SessionSummary
+	var got []wire.SessionSummary
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("decoding %q: %v", out, err)
 	}
@@ -98,7 +98,7 @@ func TestSessionsListJSONEmptyIsEmptyArray(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sessions list --json error = %v (out %s)", err, out)
 	}
-	var got []netapi.SessionSummary
+	var got []wire.SessionSummary
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("decoding %q: %v", out, err)
 	}
