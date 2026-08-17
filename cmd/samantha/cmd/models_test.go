@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -399,8 +400,11 @@ func TestModelsCleanDryRunReportsOnlyExtras(t *testing.T) {
 			t.Errorf("clean output missing %q:\n%s", want, out)
 		}
 	}
-	if contains(out, "silero_vad.onnx") {
-		t.Errorf("clean output must not list the required asset:\n%s", out)
+	if contains(candidateSection(out), "silero_vad.onnx") {
+		t.Errorf("clean must not offer the required asset for deletion:\n%s", out)
+	}
+	if !contains(keptSection(out), "silero_vad.onnx") {
+		t.Errorf("clean must show the required asset as kept, with a reason:\n%s", out)
 	}
 	if data, err := os.ReadFile(filepath.Join(dir, "stale.bin")); err != nil || len(data) != 4 {
 		t.Errorf("dry run must not touch candidates: %v", err)
@@ -422,8 +426,55 @@ func TestModelsCleanDryRunReportsNoCandidates(t *testing.T) {
 
 func TestModelsCleanJSONIsMachineReadable(t *testing.T) {
 	stubPersonas(t, nil, nil)
+	cfg := &config.Config{STTProvider: "none", TTSProvider: "none", VADEnabled: true}
+	dir := t.TempDir()
+	for _, name := range []string{"stale.bin", "silero_vad.onnx"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("data"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out, err := runClean(t, cfg, dir, true, true, false, true)
+	if err != nil {
+		t.Fatalf("runModelsClean() error = %v", err)
+	}
+	var plan config.CleanPlan
+	if err := json.Unmarshal([]byte(out), &plan); err != nil {
+		t.Fatalf("--json output is not valid JSON: %v\n%s", err, out)
+	}
+	if plan.SchemaVersion != config.CleanPlanSchemaVersion {
+		t.Errorf("schema_version = %d, want %d", plan.SchemaVersion, config.CleanPlanSchemaVersion)
+	}
+	if plan.ModelsDir != dir {
+		t.Errorf("models_dir = %q, want %q", plan.ModelsDir, dir)
+	}
+	if len(plan.Candidates) != 1 || plan.Candidates[0].Path != filepath.Join(dir, "stale.bin") || plan.Candidates[0].Size != 4 {
+		t.Fatalf("json candidates = %+v, want one 4-byte stale.bin", plan.Candidates)
+	}
+	if plan.Candidates[0].Rel != "stale.bin" || plan.Candidates[0].Category != config.CleanCategoryAsset || plan.Candidates[0].Kind != config.CleanKindFile {
+		t.Errorf("candidate = %+v, want rel/category/kind filled in", plan.Candidates[0])
+	}
+	if plan.TotalBytes != 4 {
+		t.Errorf("total_bytes = %d, want 4", plan.TotalBytes)
+	}
+	if plan.PlanID != config.CleanPlanID(plan.Candidates) {
+		t.Errorf("plan_id = %q, want the sha256 of the sorted candidate paths", plan.PlanID)
+	}
+	if len(plan.Protected) == 0 {
+		t.Error("dry run must report what it keeps, not just what it would delete")
+	}
+}
+
+func TestModelsCleanDryRunJSONClassifiesJunk(t *testing.T) {
+	stubPersonas(t, nil, nil)
 	cfg := &config.Config{STTProvider: "none", TTSProvider: "none", VADEnabled: false}
 	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".extract-1234"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".archive-99.tar.bz2.part"), []byte("half"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "stale.bin"), []byte("data"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -432,13 +483,42 @@ func TestModelsCleanJSONIsMachineReadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runModelsClean() error = %v", err)
 	}
-	var candidates []config.CleanCandidate
-	if err := json.Unmarshal([]byte(out), &candidates); err != nil {
+	var plan config.CleanPlan
+	if err := json.Unmarshal([]byte(out), &plan); err != nil {
 		t.Fatalf("--json output is not valid JSON: %v\n%s", err, out)
 	}
-	if len(candidates) != 1 || candidates[0].Path != filepath.Join(dir, "stale.bin") || candidates[0].Size != 4 {
-		t.Fatalf("json candidates = %+v, want one 4-byte stale.bin", candidates)
+	want := map[string]config.CleanCategory{
+		".archive-99.tar.bz2.part": config.CleanCategoryJunk,
+		".extract-1234":            config.CleanCategoryJunk,
+		"stale.bin":                config.CleanCategoryAsset,
 	}
+	if len(plan.Candidates) != len(want) {
+		t.Fatalf("candidates = %+v, want %d", plan.Candidates, len(want))
+	}
+	for _, c := range plan.Candidates {
+		if want[c.Rel] != c.Category {
+			t.Errorf("candidate %q category = %q, want %q", c.Rel, c.Category, want[c.Rel])
+		}
+	}
+	if plan.Candidates[0].Rel > plan.Candidates[len(plan.Candidates)-1].Rel {
+		t.Errorf("candidates must be sorted by rel for a stable plan id: %+v", plan.Candidates)
+	}
+}
+
+// candidateSection is the part of the human output that offers deletions.
+func candidateSection(out string) string {
+	if i := strings.Index(out, "\n  Kept ("); i >= 0 {
+		return out[:i]
+	}
+	return out
+}
+
+// keptSection is the part that explains what was preserved and why.
+func keptSection(out string) string {
+	if i := strings.Index(out, "\n  Kept ("); i >= 0 {
+		return out[i:]
+	}
+	return ""
 }
 
 func TestModelsCleanYesDeletesOnlyExtras(t *testing.T) {
@@ -562,10 +642,66 @@ func TestModelsCleanKeepsPersonaPinnedQwenPackage(t *testing.T) {
 	if _, statErr := os.Stat(worker); statErr != nil {
 		t.Fatalf("persona-pinned qwen package was deleted: %v", statErr)
 	}
-	if contains(out, "qwen3-tts") {
+	if contains(candidateSection(out), "qwen3-tts") {
 		t.Errorf("qwen package must never be offered as a candidate:\n%s", out)
+	}
+	if !contains(keptSection(out), "persona veronica: qwen3-tts tier 0.6b") {
+		t.Errorf("kept list must name the persona that speaks through the package:\n%s", out)
 	}
 	if _, statErr := os.Stat(stale); !os.IsNotExist(statErr) {
 		t.Errorf("clean --yes should still remove real leftovers")
+	}
+}
+
+// TestModelsCleanFixtureRoundTrips pins the wire contract the Obey Voice Mac
+// app decodes. The fixture is captured from the real binary by
+// testdata/capture-models-clean-fixture.sh; re-run that script if this fails
+// because the payload legitimately changed.
+func TestModelsCleanFixtureRoundTrips(t *testing.T) {
+	raw := readFixture(t, "models-clean-dry-run.json")
+
+	var plan config.CleanPlan
+	if err := json.Unmarshal([]byte(raw), &plan); err != nil {
+		t.Fatalf("fixture is not valid JSON: %v", err)
+	}
+	if plan.SchemaVersion != config.CleanPlanSchemaVersion {
+		t.Errorf("schema_version = %d, want %d", plan.SchemaVersion, config.CleanPlanSchemaVersion)
+	}
+	wantCategories := map[string]config.CleanCategory{
+		".archive-8c1d.tar.bz2.part": config.CleanCategoryJunk,
+		".extract-9f2a":              config.CleanCategoryJunk,
+		"kokoro-v0.19":               config.CleanCategoryAsset,
+	}
+	if len(plan.Candidates) != len(wantCategories) {
+		t.Fatalf("candidates = %+v, want %d", plan.Candidates, len(wantCategories))
+	}
+	var total int64
+	for _, c := range plan.Candidates {
+		if want, ok := wantCategories[c.Rel]; !ok || want != c.Category {
+			t.Errorf("candidate %q category = %q, want %q", c.Rel, c.Category, want)
+		}
+		total += c.Size
+	}
+	if total != plan.TotalBytes {
+		t.Errorf("total_bytes = %d, want %d", plan.TotalBytes, total)
+	}
+	if plan.PlanID != config.CleanPlanID(plan.Candidates) {
+		t.Errorf("plan_id = %q does not match its candidate list", plan.PlanID)
+	}
+	// The whole point of the fixture: the persona-pinned native package is
+	// kept, and the payload says which persona keeps it.
+	if !contains(raw, "persona veronica: qwen3-tts tier 0.6b") {
+		t.Errorf("fixture must show the qwen package kept for its persona:\n%s", raw)
+	}
+	if !contains(raw, "config sherpa_streaming_model") {
+		t.Errorf("fixture must show the configured streaming model kept in offline mode:\n%s", raw)
+	}
+
+	encoded, err := json.MarshalIndent(plan, "", "  ")
+	if err != nil {
+		t.Fatalf("re-encoding the plan: %v", err)
+	}
+	if string(encoded)+"\n" != raw {
+		t.Errorf("CleanPlan does not round-trip the captured payload:\ngot:\n%s\nwant:\n%s", encoded, raw)
 	}
 }

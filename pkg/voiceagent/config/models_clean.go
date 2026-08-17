@@ -2,26 +2,112 @@ package config
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+)
+
+// CleanCategory classifies what a candidate is, so a caller can tell a
+// leftover from a real model before it offers to delete anything.
+type CleanCategory string
+
+const (
+	// CleanCategoryJunk is an interrupted download or extraction the
+	// installer left behind — removing it costs nothing.
+	CleanCategoryJunk CleanCategory = "junk"
+	// CleanCategoryAsset is a real model file or directory that nothing
+	// currently references. Removing it means a re-download.
+	CleanCategoryAsset CleanCategory = "asset"
+)
+
+// CleanKind distinguishes a file candidate from a whole directory.
+type CleanKind string
+
+const (
+	CleanKindFile CleanKind = "file"
+	CleanKindDir  CleanKind = "dir"
 )
 
 // CleanCandidate is one path under the models dir that no required asset
 // claims. Size is best-effort (bytes; recursive for directories, 0 when
 // unknown) and never follows symlinks.
 type CleanCandidate struct {
-	Path  string `json:"path"`
-	Size  int64  `json:"size"`
-	IsDir bool   `json:"dir,omitempty"`
+	Path     string        `json:"path"`
+	Rel      string        `json:"rel"`
+	Size     int64         `json:"size_bytes"`
+	Category CleanCategory `json:"category"`
+	Kind     CleanKind     `json:"kind"`
 }
+
+// IsDir reports whether the candidate is a directory.
+func (c CleanCandidate) IsDir() bool { return c.Kind == CleanKindDir }
 
 // CleanApplyResult reports the candidates removed by an apply-mode cleanup.
 type CleanApplyResult struct {
 	Deleted []CleanCandidate `json:"deleted"`
 	Bytes   int64            `json:"bytes"`
+}
+
+// CleanPlanSchemaVersion is the version of the dry-run payload. Version 2
+// added per-candidate size/category, the protected list with reasons, and the
+// plan id that apply is gated on; version 1 was a bare candidate array.
+const CleanPlanSchemaVersion = 2
+
+// CleanPlan is the exact removal list a caller was shown, and the only thing
+// an apply is allowed to act on. PlanID pins the candidate set: if the set
+// changes between the dry run and the apply — a config edit, another instance,
+// a finished download — the ids differ and the apply refuses.
+type CleanPlan struct {
+	SchemaVersion int              `json:"schema_version"`
+	ModelsDir     string           `json:"models_dir"`
+	Candidates    []CleanCandidate `json:"candidates"`
+	Protected     []ProtectedPath  `json:"protected"`
+	TotalBytes    int64            `json:"total_bytes"`
+	PlanID        string           `json:"plan_id"`
+}
+
+// CleanPlan resolves the current candidates and packages them with the kept
+// list and a plan id.
+func (rs RequiredSet) CleanPlan(ctx context.Context) (CleanPlan, error) {
+	candidates, err := rs.CleanCandidates(ctx)
+	if err != nil {
+		return CleanPlan{}, err
+	}
+	protected := rs.Protected
+	if protected == nil {
+		protected = []ProtectedPath{}
+	}
+	var total int64
+	for _, c := range candidates {
+		total += c.Size
+	}
+	return CleanPlan{
+		SchemaVersion: CleanPlanSchemaVersion,
+		ModelsDir:     rs.ModelsDir,
+		Candidates:    candidates,
+		Protected:     protected,
+		TotalBytes:    total,
+		PlanID:        CleanPlanID(candidates),
+	}, nil
+}
+
+// CleanPlanID is the sha256 of the sorted models-dir-relative candidate paths.
+// Relative paths keep the id stable when the same install is inspected through
+// a different absolute root (and keep a captured fixture self-consistent);
+// what the id pins is which entries under the models dir would be deleted.
+func CleanPlanID(candidates []CleanCandidate) string {
+	rels := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		rels = append(rels, c.Rel)
+	}
+	sort.Strings(rels)
+	sum := sha256.Sum256([]byte(strings.Join(rels, "\n")))
+	return hex.EncodeToString(sum[:])
 }
 
 // CleanCandidates lists the paths under modelsDir that are not claimed by any
@@ -177,7 +263,7 @@ func (a Asset) ownedPaths(modelsDir string) (paths []string, suppressRoot bool) 
 // everything else is appended as a candidate. suppressRoot applies to this level
 // only (the models-dir root): when set, unclaimed entries here are not reported,
 // but required-holding directories are still descended.
-func collectCandidates(ctx context.Context, dir string, own ownership, suppressRoot bool, out *[]CleanCandidate) error {
+func collectCandidates(ctx context.Context, modelsDir, dir string, own ownership, suppressRoot bool, out *[]CleanCandidate) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -196,7 +282,7 @@ func collectCandidates(ctx context.Context, dir string, own ownership, suppressR
 		// e.IsDir() is false for symlinks, so a symlinked directory is never
 		// descended — it can only be a candidate itself.
 		if own.parents[p] && e.IsDir() {
-			if err := collectCandidates(ctx, p, own, false, out); err != nil {
+			if err := collectCandidates(ctx, modelsDir, p, own, false, out); err != nil {
 				return err
 			}
 			continue
@@ -204,9 +290,42 @@ func collectCandidates(ctx context.Context, dir string, own ownership, suppressR
 		if suppressRoot {
 			continue
 		}
-		*out = append(*out, CleanCandidate{Path: p, Size: entrySize(p, e), IsDir: e.IsDir()})
+		*out = append(*out, newCleanCandidate(modelsDir, p, entrySize(p, e), e.IsDir()))
 	}
 	return nil
+}
+
+// newCleanCandidate describes one unclaimed path relative to the models dir.
+func newCleanCandidate(modelsDir, path string, size int64, isDir bool) CleanCandidate {
+	kind := CleanKindFile
+	if isDir {
+		kind = CleanKindDir
+	}
+	rel, err := filepath.Rel(modelsDir, path)
+	if err != nil {
+		rel = filepath.Base(path)
+	}
+	return CleanCandidate{
+		Path:     path,
+		Rel:      rel,
+		Size:     size,
+		Category: cleanCategory(filepath.Base(path)),
+		Kind:     kind,
+	}
+}
+
+// cleanCategory classifies a candidate by name: the installer's interrupted
+// downloads (.archive-*.part) and extractions (.extract-*) are junk, and
+// everything else is a real asset the caller must look at before deleting.
+func cleanCategory(name string) CleanCategory {
+	switch {
+	case strings.HasPrefix(name, ".extract-"),
+		strings.HasPrefix(name, ".archive-") && strings.HasSuffix(name, ".part"),
+		strings.HasSuffix(name, ".part"):
+		return CleanCategoryJunk
+	default:
+		return CleanCategoryAsset
+	}
 }
 
 // entrySize returns the best-effort size in bytes of a candidate: the lstat

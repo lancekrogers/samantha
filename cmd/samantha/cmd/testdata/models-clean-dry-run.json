@@ -1,0 +1,47 @@
+{
+  "schema_version": 2,
+  "models_dir": "/Users/lance/.cache/festival-voice/models",
+  "candidates": [
+    {
+      "path": "/Users/lance/.cache/festival-voice/models/.archive-8c1d.tar.bz2.part",
+      "rel": ".archive-8c1d.tar.bz2.part",
+      "size_bytes": 8,
+      "category": "junk",
+      "kind": "file"
+    },
+    {
+      "path": "/Users/lance/.cache/festival-voice/models/.extract-9f2a",
+      "rel": ".extract-9f2a",
+      "size_bytes": 8,
+      "category": "junk",
+      "kind": "dir"
+    },
+    {
+      "path": "/Users/lance/.cache/festival-voice/models/kokoro-v0.19",
+      "rel": "kokoro-v0.19",
+      "size_bytes": 8,
+      "category": "asset",
+      "kind": "dir"
+    }
+  ],
+  "protected": [
+    {
+      "path": "/Users/lance/.cache/festival-voice/models/qwen3-tts",
+      "reason": "persona veronica: qwen3-tts tier 0.6b"
+    },
+    {
+      "path": "/Users/lance/.cache/festival-voice/models/sherpa-onnx-streaming-zipformer-en-2023-06-26",
+      "reason": "config sherpa_streaming_model"
+    },
+    {
+      "path": "/Users/lance/.cache/festival-voice/models/silero_vad.onnx",
+      "reason": "global vad_enabled"
+    },
+    {
+      "path": "/Users/lance/.cache/festival-voice/models/speaker/nemo_en_titanet_small.onnx",
+      "reason": "global speaker.enabled: NeMo TitaNet speaker embedding"
+    }
+  ],
+  "total_bytes": 24,
+  "plan_id": "736e7bbb35fd62946b65c8f4b9bd4dd1201c309eade46eb9cd1dc7602f58e489"
+}

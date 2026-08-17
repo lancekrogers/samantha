@@ -12,7 +12,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lancekrogers/samantha/internal/persona"
 	"github.com/lancekrogers/samantha/pkg/voiceagent/config"
 	managedqwen "github.com/lancekrogers/samantha/pkg/voiceagent/qwen"
 )
@@ -23,10 +22,6 @@ var (
 	modelsEnsureScope scopeFlags
 	modelsEnsureJSON  bool
 	modelsEnsureTier  string
-	modelsCleanUnused bool
-	modelsCleanDryRun bool
-	modelsCleanYes    bool
-	modelsCleanJSON   bool
 )
 
 // scopeFlags narrows a models command to specific asset kinds. Flags combine as
@@ -461,150 +456,13 @@ func qwenPersonaTiers(cfg *config.Config) []string {
 	return tiers
 }
 
-// personaProfilesFn lists persona profiles; tests swap it so no test ever
-// reads the real install root.
-var personaProfilesFn = persona.List
-
-// requiredAssets resolves everything the install references — the global
-// config, every persona, and every config-referenced asset — as the set clean
-// must never touch.
-//
-// It fails closed: a persona that cannot be listed or resolved aborts the
-// clean rather than shrinking the required set. Before this existed, "required"
-// meant the global manifest alone, so personas pinned to a provider the global
-// config did not select had their models classified as unused.
-func requiredAssets(ctx context.Context, cfg *config.Config, modelsDir string) (config.RequiredSet, error) {
-	personas, err := cleanPersonaSources(cfg)
-	if err != nil {
-		return config.RequiredSet{}, err
-	}
-	return config.RequiredAssetPaths(ctx, cfg, modelsDir, personas)
-}
-
-// cleanPersonaSources derives each persona's effective config through
-// persona.Apply, the same overlay the running agent uses, so the assets a
-// persona speaks through are exactly the ones protected.
-//
-// Each persona gets its own copy of cfg. Apply only writes scalar fields, so
-// the shallow copy never mutates the caller's config.
-func cleanPersonaSources(cfg *config.Config) ([]config.PersonaAssets, error) {
-	profiles, err := personaProfilesFn()
-	if err != nil {
-		return nil, err
-	}
-	sources := make([]config.PersonaAssets, 0, len(profiles))
-	for _, profile := range profiles {
-		if profile == nil {
-			return nil, fmt.Errorf("persona profile could not be resolved")
-		}
-		derived := *cfg
-		persona.Apply(&derived, profile)
-		sources = append(sources, config.PersonaAssets{ID: profile.ID, Cfg: &derived})
-	}
-	return sources, nil
-}
-
-var modelsCleanCmd = &cobra.Command{
-	Use:   "clean",
-	Short: "Clean model assets not required by the current configuration",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.Load()
-		if err != nil {
-			return err
-		}
-		return runModelsClean(cmd, cfg, config.ModelsDir(), modelsCleanUnused, modelsCleanDryRun, modelsCleanYes, modelsCleanJSON)
-	},
-}
-
-// runModelsClean lists the paths under modelsDir that the currently required
-// manifest (the full default request for cfg) does not claim, or deletes them
-// when --yes is explicitly set.
-func runModelsClean(cmd *cobra.Command, cfg *config.Config, modelsDir string, unused, dryRun, yes, asJSON bool) error {
-	if !unused {
-		return fmt.Errorf("models clean: --unused is required (only unused-asset cleanup is supported)")
-	}
-	if dryRun == yes {
-		return fmt.Errorf("models clean: choose exactly one of --dry-run or --yes")
-	}
-
-	required, err := requiredAssets(cmd.Context(), cfg, modelsDir)
-	if err != nil {
-		return fmt.Errorf("clean: cannot determine required assets: %w", err)
-	}
-	candidates, err := required.CleanCandidates(cmd.Context())
-	if err != nil {
-		return err
-	}
-
-	out := cmd.OutOrStdout()
-	if asJSON {
-		enc := json.NewEncoder(out)
-		enc.SetIndent("", "  ")
-		if dryRun {
-			return enc.Encode(candidates)
-		}
-		result, err := config.DeleteCleanCandidates(cmd.Context(), modelsDir, candidates)
-		if err != nil {
-			return err
-		}
-		return enc.Encode(result)
-	}
-
-	mode := "dry run"
-	if yes {
-		mode = "apply"
-	}
-	fmt.Fprintf(out, "\n  Unused model assets (models dir: %s) — %s\n\n", modelsDir, mode)
-	if len(candidates) == 0 {
-		fmt.Fprintln(out, "  No removable assets.")
-		fmt.Fprintln(out)
-		return nil
-	}
-
-	var total int64
-	for _, c := range candidates {
-		fmt.Fprintf(out, "  %s (%s)\n", c.Path, formatBytes(c.Size))
-		total += c.Size
-	}
-	if dryRun {
-		fmt.Fprintf(out, "\n  %d candidate(s), %s total. Nothing was deleted.\n\n", len(candidates), formatBytes(total))
-		return nil
-	}
-
-	result, err := config.DeleteCleanCandidates(cmd.Context(), modelsDir, candidates)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "\n  Deleted %d candidate(s), %s total.\n\n", len(result.Deleted), formatBytes(result.Bytes))
-	return nil
-}
-
-// formatBytes renders a byte count with a binary unit suffix.
-func formatBytes(n int64) string {
-	const unit = 1024
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
-	}
-	div, exp := int64(unit), 0
-	for m := n / unit; m >= unit; m /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
-}
-
 func init() {
 	modelsStatusCmd.Flags().BoolVar(&modelsStatusJSON, "json", false, "Output machine-readable JSON")
 	modelsStatusScope.register(modelsStatusCmd)
 	modelsEnsureScope.register(modelsEnsureCmd)
 	modelsEnsureCmd.Flags().BoolVar(&modelsEnsureJSON, "json", false, "Stream NDJSON progress on stdout, one terminal summary line")
 	modelsEnsureCmd.Flags().StringVar(&modelsEnsureTier, "tier", "", "Install a Qwen3-TTS model tier (0.6b|1.7b) without writing config; requires --tts")
-	modelsCleanCmd.Flags().BoolVar(&modelsCleanUnused, "unused", false, "Select assets not required by the current configuration")
-	modelsCleanCmd.Flags().BoolVar(&modelsCleanDryRun, "dry-run", false, "Preview removable assets without deleting anything")
-	modelsCleanCmd.Flags().BoolVar(&modelsCleanYes, "yes", false, "Delete unused model assets without prompting")
-	modelsCleanCmd.Flags().BoolVar(&modelsCleanJSON, "json", false, "Output machine-readable JSON")
 	modelsCmd.AddCommand(modelsStatusCmd)
 	modelsCmd.AddCommand(modelsEnsureCmd)
-	modelsCmd.AddCommand(modelsCleanCmd)
 	rootCmd.AddCommand(modelsCmd)
 }

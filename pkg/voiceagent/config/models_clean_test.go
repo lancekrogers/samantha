@@ -302,7 +302,7 @@ func TestCleanCandidatesDoesNotFollowSymlinks(t *testing.T) {
 	if got[0].Size >= 4096 {
 		t.Errorf("symlink candidate size = %d, must not count the linked-to target", got[0].Size)
 	}
-	if got[0].IsDir {
+	if got[0].IsDir() {
 		t.Error("symlink candidate must not be reported as a directory")
 	}
 }
@@ -331,7 +331,7 @@ func TestDeleteCleanCandidatesRemovesCandidatesOnly(t *testing.T) {
 
 	result, err := DeleteCleanCandidates(context.Background(), dir, []CleanCandidate{
 		{Path: file, Size: 4},
-		{Path: oldDir, Size: 6, IsDir: true},
+		{Path: oldDir, Size: 6, Kind: CleanKindDir},
 		{Path: link, Size: 7},
 	})
 	if err != nil {
@@ -392,7 +392,7 @@ func TestCleanCandidateSizes(t *testing.T) {
 	for _, c := range got {
 		rel, _ := filepath.Rel(dir, c.Path)
 		sizes[rel] = c.Size
-		dirs[rel] = c.IsDir
+		dirs[rel] = c.IsDir()
 	}
 	if sizes["stale.onnx"] != 4 {
 		t.Errorf("stale.onnx size = %d, want 4", sizes["stale.onnx"])

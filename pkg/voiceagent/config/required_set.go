@@ -110,11 +110,14 @@ func RequiredAssetPaths(ctx context.Context, cfg *Config, modelsDir string, pers
 // CleanCandidates lists the paths under the models dir that no required asset
 // claims. It only reads the filesystem — it never deletes, never follows
 // symlinks, and never reports a path outside the models dir.
+// Candidates are sorted by models-dir-relative path so output, fixtures, and
+// the plan id are stable across runs.
 func (rs RequiredSet) CleanCandidates(ctx context.Context) ([]CleanCandidate, error) {
 	candidates := []CleanCandidate{}
-	if err := collectCandidates(ctx, rs.ModelsDir, rs.own, rs.own.suppressRoot, &candidates); err != nil {
+	if err := collectCandidates(ctx, rs.ModelsDir, rs.ModelsDir, rs.own, rs.own.suppressRoot, &candidates); err != nil {
 		return nil, err
 	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Rel < candidates[j].Rel })
 	return candidates, nil
 }
 
@@ -136,10 +139,14 @@ func (rs *RequiredSet) addManifest(m AssetManifest, reasonPrefix string) {
 // become Protected rows. A path already protected by an earlier source is not
 // repeated unless the claim asks for it, so every persona sharing the global
 // STT model does not produce a row each.
+//
+// Ownership covers referenced paths whether or not they exist — an asset
+// mid-download must not become deletable — but only paths actually on disk are
+// listed as kept, because "Kept (N)" answers what this machine still has.
 func (rs *RequiredSet) add(c assetClaim) {
 	shown := map[string]bool{}
 	for _, p := range c.show {
-		if !rs.underModelsDir(p) {
+		if !rs.underModelsDir(p) || !pathExists(p) {
 			continue
 		}
 		if rs.own.required[p] && !c.alwaysShow {

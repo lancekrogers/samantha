@@ -284,3 +284,30 @@ func assertProtected(t *testing.T, set RequiredSet, path, want string) {
 	}
 	t.Errorf("protected list has no %q with reason %q:\n%+v", path, want, set.Protected)
 }
+
+func TestRequiredAssetPathsShowsOnlyInstalledPathsButProtectsAll(t *testing.T) {
+	dir := t.TempDir()
+	touchFile(t, filepath.Join(dir, "silero_vad.onnx"))
+
+	set, err := RequiredAssetPaths(context.Background(), liveCfg(), dir, nil)
+	if err != nil {
+		t.Fatalf("RequiredAssetPaths() error = %v", err)
+	}
+	for _, p := range set.Protected {
+		if !pathExists(p.Path) {
+			t.Errorf("kept list names %q, which is not on disk", p.Path)
+		}
+	}
+	assertProtected(t, set, filepath.Join(dir, "silero_vad.onnx"), "vad")
+
+	// A referenced asset that lands after the set was resolved (a download
+	// finishing, a restore from a tarball) is still protected, not a candidate.
+	touchFile(t, filepath.Join(dir, "model.onnx"))
+	candidates, err := set.CleanCandidates(context.Background())
+	if err != nil {
+		t.Fatalf("CleanCandidates() error = %v", err)
+	}
+	if got := candidatePaths(t, dir, candidates); len(got) != 0 {
+		t.Errorf("candidates = %v, want none: every path present is referenced", got)
+	}
+}
