@@ -61,23 +61,28 @@ func Groups() []string {
 // control for it, and for `config set` to validate a value without knowing
 // anything about the key.
 type KeySpec struct {
-	Key                string    `json:"key"`
-	Type               ValueType `json:"type"`
-	Default            any       `json:"default"`
-	Enum               []string  `json:"enum,omitempty"`
-	Group              string    `json:"group"`
-	Title              string    `json:"title"`
-	Help               string    `json:"help"`
-	Unit               string    `json:"unit,omitempty"`
-	Min                *float64  `json:"min,omitempty"`
-	Max                *float64  `json:"max,omitempty"`
-	RestartRequired    bool      `json:"restart_required"`
-	RestartVerified    bool      `json:"restart_verified"`
-	PersonaOverridable bool      `json:"persona_overridable"`
-	Env                string    `json:"env,omitempty"`
-	Editable           bool      `json:"editable"`
-	ManagedBy          string    `json:"managed_by,omitempty"`
-	Secret             bool      `json:"secret,omitempty"`
+	Key     string    `json:"key"`
+	Type    ValueType `json:"type"`
+	Default any       `json:"default"`
+	Enum    []string  `json:"enum,omitempty"`
+	// AllowsEmpty reports that "" is a value this key can hold and means
+	// "unset — use the built-in behaviour". A front end renders an
+	// "(App default)" choice for such a key and `config set <key> ""`
+	// is accepted for it; for every other key an empty value is an error.
+	AllowsEmpty        bool     `json:"allows_empty"`
+	Group              string   `json:"group"`
+	Title              string   `json:"title"`
+	Help               string   `json:"help"`
+	Unit               string   `json:"unit,omitempty"`
+	Min                *float64 `json:"min,omitempty"`
+	Max                *float64 `json:"max,omitempty"`
+	RestartRequired    bool     `json:"restart_required"`
+	RestartVerified    bool     `json:"restart_verified"`
+	PersonaOverridable bool     `json:"persona_overridable"`
+	Env                string   `json:"env,omitempty"`
+	Editable           bool     `json:"editable"`
+	ManagedBy          string   `json:"managed_by,omitempty"`
+	Secret             bool     `json:"secret,omitempty"`
 }
 
 // Schema returns every config key's spec in a stable order: group (render
@@ -103,8 +108,19 @@ func derive(spec KeySpec) KeySpec {
 	spec.RestartVerified = RestartVerified(spec.Key)
 	spec.Env = envBindings[spec.Key]
 	spec.Editable = spec.ManagedBy == ""
+	spec.AllowsEmpty = allowsEmpty(spec)
 	spec.Enum = copyStrings(spec.Enum)
 	return spec
+}
+
+// allowsEmpty reads the answer off the schema rather than off a second list:
+// a key whose default is the empty string is one whose unset state *is* the
+// empty string, so writing "" back is how a user returns it to that state.
+// stt_mode is the case that found this — it legitimately holds "" (meaning
+// "whatever the provider defaults to") and could not be cleared.
+func allowsEmpty(spec KeySpec) bool {
+	text, ok := spec.Default.(string)
+	return ok && text == ""
 }
 
 // SchemaFor is Schema with the enums that only a loaded config can fill.

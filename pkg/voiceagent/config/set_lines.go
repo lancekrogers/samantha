@@ -40,6 +40,25 @@ func patchConfigSource(source []byte, doc *yaml.Node, path []string, value any) 
 	return src.insertEntry(target, value)
 }
 
+// deleteConfigKey returns source with the key at the dotted path removed,
+// reporting whether the document held it at all. Only that key's own lines go;
+// a comment above it belongs to whoever wrote it and is left alone.
+func deleteConfigKey(source []byte, doc *yaml.Node, path []string) ([]byte, bool, error) {
+	if len(path) == 0 {
+		return nil, false, fmt.Errorf("empty config key path")
+	}
+	src := newSourceDoc(source, doc)
+	target, err := src.locate(path)
+	if err != nil || target.keyNode == nil || len(target.remaining) > 0 {
+		return source, false, err
+	}
+	start, end := src.entrySpan(target.keyNode, target.valueNode)
+	lines := make([]string, 0, len(src.lines))
+	lines = append(lines, src.lines[:start-1]...)
+	lines = append(lines, src.lines[end:]...)
+	return []byte(strings.Join(lines, "\n")), true, nil
+}
+
 // sourceDoc is config.yaml as text plus the tree parsed from it.
 type sourceDoc struct {
 	lines []string
