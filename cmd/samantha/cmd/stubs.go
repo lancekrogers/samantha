@@ -368,7 +368,27 @@ func ttsImplemented(name string) bool {
 	return false
 }
 
+// ttsVoiceCatalog lists the voice ids a TTS provider publishes without loading
+// its model. `persona edit --voice` runs on every save from the Mac editor, so
+// it validates against this static catalog rather than constructing a provider
+// and paging a few hundred megabytes of weights into memory. Providers whose
+// voices only exist inside a running worker (qwen3-tts) return no names, and
+// the caller then keeps the value as typed.
+func ttsVoiceCatalog(provider string) ([]string, error) {
+	voices, err := tts.StaticVoices(provider, "", "")
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(voices))
+	for _, v := range voices {
+		names = append(names, v.Name)
+	}
+	return names, nil
+}
+
 func init() {
+	personaVoiceCatalogFn = ttsVoiceCatalog
+
 	voicesCmd.Flags().StringVarP(&voiceLocale, "locale", "l", "", "Filter by locale (e.g. en-US)")
 	voicesCmd.Flags().StringVarP(&voiceGender, "gender", "g", "", "Filter by gender (male/female)")
 

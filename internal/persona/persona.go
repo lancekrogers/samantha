@@ -31,15 +31,22 @@ const DefaultID = "samantha"
 var idPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 // Profile is one voice agent persona (not the system-prompt body).
+//
+// The json tags mirror the yaml paths so every machine-readable surface
+// (persona show/edit/create --json, GET /v1/personas) speaks the same
+// snake_case as persona list --json. Without them encoding/json emits Go
+// field names, which no client should have to know. They deliberately carry
+// no omitempty: a stable key set lets a decoder distinguish "inherit the app
+// default" (empty string) from "field absent".
 type Profile struct {
-	Schema      string     `yaml:"schema"`
-	ID          string     `yaml:"id"`
-	DisplayName string     `yaml:"display_name"`
-	Builtin     bool       `yaml:"builtin,omitempty"`
-	Brain       Brain      `yaml:"brain,omitempty"`
-	TTS         TTS        `yaml:"tts"`
-	Prompts     PromptRefs `yaml:"prompts"`
-	Path        string     `yaml:"-"` // absolute path of persona.yaml when loaded
+	Schema      string     `yaml:"schema" json:"schema"`
+	ID          string     `yaml:"id" json:"id"`
+	DisplayName string     `yaml:"display_name" json:"display_name"`
+	Builtin     bool       `yaml:"builtin,omitempty" json:"builtin"`
+	Brain       Brain      `yaml:"brain,omitempty" json:"brain"`
+	TTS         TTS        `yaml:"tts" json:"tts"`
+	Prompts     PromptRefs `yaml:"prompts" json:"prompts"`
+	Path        string     `yaml:"-" json:"path"` // absolute path of persona.yaml when loaded
 }
 
 // Brain holds per-persona model routing.
@@ -51,8 +58,8 @@ type Profile struct {
 // Profiles written before this field existed have the zero value and keep
 // using the app-level brain keys until edited.
 type Brain struct {
-	Provider string `yaml:"provider,omitempty"`
-	Model    string `yaml:"model,omitempty"`
+	Provider string `yaml:"provider,omitempty" json:"provider"`
+	Model    string `yaml:"model,omitempty" json:"model"`
 }
 
 // TTS holds per-persona speech settings. Each persona may choose any supported
@@ -67,13 +74,13 @@ type Brain struct {
 // using the effective provider after Apply. Empty voice leaves voice keys alone.
 type TTS struct {
 	// Provider is the TTS backend (e.g. kokoro, qwen3-tts). Empty = keep app default.
-	Provider string `yaml:"provider,omitempty"`
+	Provider string `yaml:"provider,omitempty" json:"provider"`
 	// Voice is the speaker id for Provider (Kokoro voice name or Qwen preset).
-	Voice string `yaml:"voice,omitempty"`
+	Voice string `yaml:"voice,omitempty" json:"voice"`
 	// Tier selects the native Qwen3-TTS model tier for this persona (0.6b for
 	// latency, 1.7b for quality). Empty inherits the app-level
 	// qwen_tts_model_tier; only qwen3-tts reads it.
-	Tier string `yaml:"tier,omitempty"`
+	Tier string `yaml:"tier,omitempty" json:"tier"`
 }
 
 // PromptRefs names documents in the prompts catalog.
@@ -85,8 +92,8 @@ type TTS struct {
 //	         This is NOT a conversation-turn counter and is independent of the
 //	         TTS voice id (e.g. Uncle_Fu).
 type PromptRefs struct {
-	Persona string `yaml:"persona"`
-	Turn    string `yaml:"turn,omitempty"`
+	Persona string `yaml:"persona" json:"persona"`
+	Turn    string `yaml:"turn,omitempty" json:"turn"`
 }
 
 // Validate checks structural invariants.
@@ -133,6 +140,13 @@ func validateTier(tier string) error {
 		return nil
 	}
 	return fmt.Errorf("tts.tier %q: unknown tier (use 0.6b or 1.7b)", tier)
+}
+
+// ValidateTier reports whether tier is an accepted Qwen3-TTS tier spelling.
+// Exported so callers can reject a bad --tier before any write lands, rather
+// than discovering it inside Write's validation halfway through an edit.
+func ValidateTier(tier string) error {
+	return validateTier(tier)
 }
 
 // ValidateID enforces lowercase kebab-case persona ids.
