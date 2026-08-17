@@ -216,16 +216,26 @@ func parseOlderThan(s string) (time.Duration, error) {
 	if s == "" {
 		return 0, fmt.Errorf("--older-than: empty duration")
 	}
+	var d time.Duration
 	if days, ok := strings.CutSuffix(s, "d"); ok {
 		n, err := strconv.ParseFloat(days, 64)
 		if err != nil {
 			return 0, fmt.Errorf("--older-than %q: %w", s, err)
 		}
-		return time.Duration(n * float64(24*time.Hour)), nil
+		d = time.Duration(n * float64(24*time.Hour))
+	} else {
+		parsed, err := time.ParseDuration(s)
+		if err != nil {
+			return 0, fmt.Errorf("--older-than %q: %w", s, err)
+		}
+		d = parsed
 	}
-	d, err := time.ParseDuration(s)
-	if err != nil {
-		return 0, fmt.Errorf("--older-than %q: %w", s, err)
+	// A non-positive duration would put the cutoff at or after now, matching
+	// almost every session — on a command that deletes with --yes and no
+	// per-id confirmation, a typo'd sign must fail loudly, not delete
+	// everything.
+	if d <= 0 {
+		return 0, fmt.Errorf("--older-than %q: must be positive", s)
 	}
 	return d, nil
 }

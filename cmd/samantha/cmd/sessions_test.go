@@ -373,6 +373,24 @@ func TestSessionsRmIDAndOlderThanConflictErrors(t *testing.T) {
 	}
 }
 
+// A negative --older-than must be rejected before it ever lists a
+// candidate, let alone deletes one with --yes.
+func TestSessionsRmOlderThanNegativeDurationRejected(t *testing.T) {
+	dir := sessionsEnv(t)
+	writeSessionFile(t, dir, session.Session{ID: "20260101-000000-aaaa", UpdatedAt: time.Now()})
+
+	out, err := runSessionsCmd(t, "rm", "--older-than", "-30d", "--yes", "--json")
+	if err == nil {
+		t.Fatalf("sessions rm --older-than -30d --yes --json error = nil, want a rejection (out %s)", out)
+	}
+	if code, _, _ := decodeErrorJSON(t, out); code != codeInvalidID {
+		t.Fatalf("code = %q, want %q", code, codeInvalidID)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "20260101-000000-aaaa.json")); err != nil {
+		t.Fatalf("session file was affected by a rejected --older-than: %v", err)
+	}
+}
+
 func TestSessionsRmOlderThanDryRunDeletesNothing(t *testing.T) {
 	dir := sessionsEnv(t)
 	now := time.Now()
@@ -458,6 +476,13 @@ func TestParseOlderThan(t *testing.T) {
 		{"", 0, true},
 		{"nope", 0, true},
 		{"d", 0, true},
+		// A non-positive duration must be rejected outright: it would put
+		// the cutoff at or after now, matching almost every session on a
+		// command that deletes with --yes and no per-id confirmation.
+		{"-30d", 0, true},
+		{"-12h", 0, true},
+		{"0d", 0, true},
+		{"0h", 0, true},
 	}
 	for _, tc := range cases {
 		got, err := parseOlderThan(tc.in)
