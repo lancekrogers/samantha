@@ -165,6 +165,10 @@ On the client: open the printed URL → enter the pairing code → **Start** →
 ```bash
 samantha config                         # View all config
 samantha config tts_voice af_bella      # Set a config value
+samantha config schema --json           # Describe every key (types, bounds, help)
+samantha config get --json              # Every effective value with its source
+samantha config get tts_voice --json    # One value, its type, and its source
+samantha config set tts_voice af_bella --json   # Change one key, surgically
 samantha config migrate --dry-run       # Preview explicit STT config migration
 samantha config migrate --write         # Apply STT config migration with backup
 samantha persona list                   # List voice agent personas
@@ -602,6 +606,26 @@ Requires a camp build with CI0009 (`import-meeting`, #537/#539) on `PATH`.
 ## Configuration
 
 Config lives at `~/.obey/agents/voice/festival-voice/config.yaml`. Values can also be overridden with environment variables where listed.
+
+`samantha config set <key> <value>` rewrites only that key's line: comments,
+blank lines and key order survive, a timestamped `.bak` is kept (newest five),
+and the replacement is atomic. It is the writer the TUI and the Obey Voice Mac
+app both use, so three front ends cannot clobber each other's edits.
+
+The value is read according to the key's type, which `samantha config schema`
+publishes along with the bounds, accepted values, help text, and whether a
+change needs an agent restart. A `list<string>` value is a JSON array:
+
+```bash
+samantha config set skills_disabled '["pdf-fill","calibre"]'
+samantha config set skills_disabled '[]'
+```
+
+`config schema` and `config get` never write to the install root, and never
+fail on a config the loader would reject. Add `--json` to any of the three for
+a machine-readable payload; `config set` exits 0 on success, 1 when the
+operation fails (with an error `code` in the payload), and 2 when it is called
+with the wrong number of arguments.
 
 Persona **profiles** live under `~/.obey/agents/voice/festival-voice/personas/<id>/persona.yaml`.
 On load, the active profile overlays `agent_name`, the persona prompt name, and per-persona TTS

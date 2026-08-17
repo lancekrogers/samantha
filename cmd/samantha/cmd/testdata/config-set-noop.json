@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "key": "vad_silence_duration",
+  "old_value": 0.9,
+  "value": 0.9,
+  "type": "float",
+  "config_file": "/Users/lance/.obey/agents/voice/festival-voice/config.yaml",
+  "changed": false,
+  "restart_required": true
+}

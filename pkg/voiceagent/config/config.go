@@ -841,6 +841,26 @@ func SetConfigDirForTest(t interface {
 	})
 }
 
+// ResetForTest swaps in a fresh viper for the duration of t, so values another
+// test wrote through Set cannot leak into this one. Packages outside config
+// need it because a config write updates the in-process viper by design.
+func ResetForTest(t interface {
+	Helper()
+	Cleanup(func())
+}) {
+	t.Helper()
+	mu.Lock()
+	orig := v
+	v = viper.New()
+	setDefaults(v)
+	mu.Unlock()
+	t.Cleanup(func() {
+		mu.Lock()
+		v = orig
+		mu.Unlock()
+	})
+}
+
 // PersonasDir returns <configDir>/personas.
 func PersonasDir() string {
 	return filepath.Join(configDir, "personas")

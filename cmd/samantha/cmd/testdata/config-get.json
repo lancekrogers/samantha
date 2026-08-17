@@ -1,0 +1,354 @@
+{
+  "schema_version": 1,
+  "config_file": "/Users/lance/.obey/agents/voice/festival-voice/config.yaml",
+  "values": {
+    "active_persona": {
+      "value": "samantha",
+      "source": "default"
+    },
+    "agent_name": {
+      "value": "Samantha",
+      "source": "default"
+    },
+    "backchannel_enabled": {
+      "value": false,
+      "source": "default"
+    },
+    "barge_in_enabled": {
+      "value": true,
+      "source": "file"
+    },
+    "brain_provider": {
+      "value": "ollama",
+      "source": "default"
+    },
+    "calibre_convert_binary": {
+      "value": "",
+      "source": "default"
+    },
+    "calibre_enabled": {
+      "value": false,
+      "source": "default"
+    },
+    "calibre_library_path": {
+      "value": "",
+      "source": "default"
+    },
+    "calibre_prefer_format": {
+      "value": "epub",
+      "source": "default"
+    },
+    "calibredb_binary": {
+      "value": "",
+      "source": "default"
+    },
+    "claude_max_session_tokens": {
+      "value": 0,
+      "source": "default"
+    },
+    "claude_session_warn_tokens": {
+      "value": 60000,
+      "source": "default"
+    },
+    "compact_prompt": {
+      "value": null,
+      "source": "default"
+    },
+    "environment_context_enabled": {
+      "value": true,
+      "source": "default"
+    },
+    "grok_model": {
+      "value": "",
+      "source": "default"
+    },
+    "input_device": {
+      "value": "",
+      "source": "default"
+    },
+    "language": {
+      "value": "en-US",
+      "source": "default"
+    },
+    "listen_timeout": {
+      "value": 10,
+      "source": "default"
+    },
+    "max_history": {
+      "value": 10,
+      "source": "default"
+    },
+    "meeting.dir": {
+      "value": "",
+      "source": "default"
+    },
+    "meeting.route.body": {
+      "value": "full",
+      "source": "default"
+    },
+    "meeting.route.default": {
+      "value": "",
+      "source": "default"
+    },
+    "meeting.route.destinations": {
+      "value": [],
+      "source": "default"
+    },
+    "meeting.route.mode": {
+      "value": "ask",
+      "source": "default"
+    },
+    "models_dir": {
+      "value": "/var/folders/9d/nyc358s50g7591g74wjx8pn40000gn/T/tmp.KYiicBcHXT/home/.cache/festival-voice/models",
+      "source": "default"
+    },
+    "ollama_embedding_model": {
+      "value": "nomic-embed-text",
+      "source": "default"
+    },
+    "ollama_host": {
+      "value": "http://localhost:11434",
+      "source": "default"
+    },
+    "ollama_keep_alive": {
+      "value": "10m",
+      "source": "default"
+    },
+    "ollama_model": {
+      "value": "qwen2.5:14b",
+      "source": "env"
+    },
+    "ollama_num_ctx": {
+      "value": 8192,
+      "source": "default"
+    },
+    "ollama_think": {
+      "value": "false",
+      "source": "default"
+    },
+    "output_device": {
+      "value": "",
+      "source": "default"
+    },
+    "persona": {
+      "value": "samantha",
+      "source": "default"
+    },
+    "phrase_time_limit": {
+      "value": 30,
+      "source": "default"
+    },
+    "prompts_dir": {
+      "value": "",
+      "source": "default"
+    },
+    "qwen_tts_binary": {
+      "value": "",
+      "source": "default"
+    },
+    "qwen_tts_consent": {
+      "value": false,
+      "source": "default"
+    },
+    "qwen_tts_instruction": {
+      "value": "",
+      "source": "default"
+    },
+    "qwen_tts_language": {
+      "value": "",
+      "source": "default"
+    },
+    "qwen_tts_mode": {
+      "value": "",
+      "source": "default"
+    },
+    "qwen_tts_model": {
+      "value": "",
+      "source": "default"
+    },
+    "qwen_tts_model_tier": {
+      "value": "0.6b",
+      "source": "default"
+    },
+    "qwen_tts_native_sha256": {
+      "value": "",
+      "source": "default"
+    },
+    "qwen_tts_native_url": {
+      "value": "",
+      "source": "default"
+    },
+    "qwen_tts_reference_audio": {
+      "value": "",
+      "source": "default"
+    },
+    "qwen_tts_reference_text": {
+      "value": "",
+      "source": "default"
+    },
+    "qwen_tts_timeout": {
+      "value": 120,
+      "source": "default"
+    },
+    "qwen_tts_voice": {
+      "value": "",
+      "source": "default"
+    },
+    "remote_tools_enabled": {
+      "value": false,
+      "source": "default"
+    },
+    "sherpa_streaming_model": {
+      "value": "en-2023-06-26",
+      "source": "default"
+    },
+    "skills_dir": {
+      "value": "",
+      "source": "default"
+    },
+    "skills_disabled": {
+      "value": [],
+      "source": "default"
+    },
+    "skills_enabled": {
+      "value": true,
+      "source": "default"
+    },
+    "skills_similarity_threshold": {
+      "value": 0.55,
+      "source": "default"
+    },
+    "speaker.enabled": {
+      "value": true,
+      "source": "default"
+    },
+    "speaker.enrollment_dir": {
+      "value": "",
+      "source": "default"
+    },
+    "speaker.live.enabled": {
+      "value": true,
+      "source": "default"
+    },
+    "speaker.live.mode": {
+      "value": "indicator",
+      "source": "default"
+    },
+    "speaker.live.threshold": {
+      "value": 0,
+      "source": "default"
+    },
+    "speaker.live.window_ms": {
+      "value": 1500,
+      "source": "file"
+    },
+    "speaker.meeting.enabled": {
+      "value": true,
+      "source": "default"
+    },
+    "speaker.meeting.live": {
+      "value": true,
+      "source": "default"
+    },
+    "speaker.meeting.num_speakers": {
+      "value": 0,
+      "source": "default"
+    },
+    "speaker.meeting.record_audio": {
+      "value": false,
+      "source": "default"
+    },
+    "speaker.models.embedding": {
+      "value": "",
+      "source": "default"
+    },
+    "speaker.models.segmentation": {
+      "value": "",
+      "source": "default"
+    },
+    "speaker.threshold": {
+      "value": 0.6,
+      "source": "default"
+    },
+    "speech_speed": {
+      "value": 0.95,
+      "source": "default"
+    },
+    "stt_mode": {
+      "value": "",
+      "source": "default"
+    },
+    "stt_provider": {
+      "value": "sherpa",
+      "source": "default"
+    },
+    "tool_command_timeout": {
+      "value": 30,
+      "source": "default"
+    },
+    "tts_provider": {
+      "value": "kokoro",
+      "source": "file"
+    },
+    "tts_voice": {
+      "value": "af_heart",
+      "source": "default"
+    },
+    "tui_mouse_enabled": {
+      "value": false,
+      "source": "default"
+    },
+    "vad_enabled": {
+      "value": true,
+      "source": "default"
+    },
+    "vad_min_speech_duration": {
+      "value": 0.25,
+      "source": "default"
+    },
+    "vad_pre_roll_ms": {
+      "value": 300,
+      "source": "default"
+    },
+    "vad_silence_duration": {
+      "value": 0.8,
+      "source": "file"
+    },
+    "vad_threshold": {
+      "value": 0.6,
+      "source": "default"
+    },
+    "voice_fallback_provider": {
+      "value": "kokoro",
+      "source": "default"
+    },
+    "voice_frontend_enabled": {
+      "value": false,
+      "source": "default"
+    },
+    "voice_tools_enabled": {
+      "value": true,
+      "source": "default"
+    },
+    "whisper_model": {
+      "value": "small",
+      "source": "default"
+    },
+    "whisper_quantized": {
+      "value": true,
+      "source": "default"
+    },
+    "whispercpp_binary": {
+      "value": "whisper-cli",
+      "source": "default"
+    },
+    "whispercpp_model": {
+      "value": "base.en",
+      "source": "default"
+    },
+    "whispercpp_model_path": {
+      "value": "/var/folders/9d/nyc358s50g7591g74wjx8pn40000gn/T/tmp.KYiicBcHXT/home/.cache/festival-voice/models/whispercpp/ggml-base.en.bin",
+      "source": "default"
+    }
+  }
+}
