@@ -102,7 +102,12 @@ func TestResolveServeBindHostsAlreadyLoopbackIsNotDuplicated(t *testing.T) {
 		{"ipv4 loopback", "100.64.0.7,127.0.0.1", []string{"100.64.0.7", "127.0.0.1"}},
 		{"other ipv4 loopback", "100.64.0.7,127.0.0.2", []string{"100.64.0.7", "127.0.0.2"}},
 		{"ipv6 loopback", "100.64.0.7,::1", []string{"100.64.0.7", "::1"}},
+		{"bracketed ipv6 loopback", "100.64.0.7,[::1]", []string{"100.64.0.7", "[::1]"}},
 		{"hostname", "100.64.0.7,localhost", []string{"100.64.0.7", "localhost"}},
+		// An unspecified bind already answers on loopback; a second listener
+		// on the same port would fail to bind rather than add reachability.
+		{"unspecified ipv4", "0.0.0.0", []string{"0.0.0.0"}},
+		{"unspecified ipv6", "::", []string{"::"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -154,11 +154,11 @@ func init() {
 // self-signed TOFU path as LAN serve so any device on the tailnet can still
 // reach MagicDNS (browsers accept the warning; samantha connect pins the cert).
 func applyServeTailscaleDefaults(cmd *cobra.Command) error {
+	serveClientSetupURL = ""
 	if !serveTailscale {
 		return nil
 	}
 	serveTLSFallbackNote = ""
-	serveClientSetupURL = ""
 
 	id, err := discoverTailscale()
 	if err != nil {
@@ -800,7 +800,7 @@ func defaultServeBind() string {
 // stays the one remote clients are told to open.
 func resolveServeBindHosts() []string {
 	hosts := explicitOrAutoBindHosts()
-	if serveTailscale && !containsLoopback(hosts) {
+	if serveTailscale && !bindsReachLoopback(hosts) {
 		hosts = append(hosts, "127.0.0.1")
 	}
 	return hosts
@@ -823,21 +823,29 @@ func explicitOrAutoBindHosts() []string {
 		}
 	}
 	hosts := []string{defaultServeBind()}
-	if !containsLoopback(hosts) {
+	if !bindsReachLoopback(hosts) {
 		hosts = append(hosts, "127.0.0.1")
 	}
 	return hosts
 }
 
-// containsLoopback reports whether any host already routes to this machine, so
-// the loopback bind is added once and never duplicated.
-func containsLoopback(hosts []string) bool {
+// bindsReachLoopback reports whether this host list already answers on the
+// machine's own loopback — named explicitly ("127.0.0.1", "::1", "localhost"),
+// or covered by an unspecified bind ("0.0.0.0", "::") that takes every
+// interface. Adding a second loopback listener in either case gains no
+// reachability, and against an unspecified bind it would fail the port is
+// already taken.
+func bindsReachLoopback(hosts []string) bool {
 	for _, h := range hosts {
-		h = strings.TrimSpace(h)
+		h = strings.Trim(strings.TrimSpace(h), "[]")
 		if strings.EqualFold(h, "localhost") {
 			return true
 		}
-		if ip := net.ParseIP(strings.Trim(h, "[]")); ip != nil && ip.IsLoopback() {
+		ip := net.ParseIP(h)
+		if ip == nil {
+			continue
+		}
+		if ip.IsLoopback() || ip.IsUnspecified() {
 			return true
 		}
 	}
