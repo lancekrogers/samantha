@@ -2,6 +2,7 @@ package netapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -101,6 +102,25 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"resumed": id})
+}
+
+// handleSessionDelete is only registered when Options.DeleteSession is set
+// (see ListenAndServe), so it never has to nil-check the callback itself.
+func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing session id"})
+		return
+	}
+	err := s.opts.DeleteSession(id)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, map[string]string{"deleted": id})
+	case errors.Is(err, ErrSessionActive):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "session is active"})
+	default:
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	}
 }
 
 // handlePair exchanges a short-lived pairing code for a long-lived bearer

@@ -163,6 +163,33 @@ Authorization: Bearer <any-valid-token>
 Deleting a device invalidates that bearer only and closes its WebSocket
 streams. Other devices and the primary token remain active.
 
+### Sessions
+
+```http
+DELETE /v1/sessions/{id}
+Authorization: Bearer <any-valid-token>
+```
+
+```json
+{"deleted":"<id>"}
+```
+
+Registered only when serve was built with a `DeleteSession` implementation
+(the same gate `/v1/personas` and `/v1/meeting/*` use) — an older or limited
+serve answers `404` rather than pretending. Errors:
+
+| Status | Body | When |
+|--------|------|------|
+| `400` | `{"error":"missing session id"}` | empty `{id}` |
+| `404` | `{"error":"…"}` | no session with that id (or the route is unregistered) |
+| `409` | `{"error":"session is active"}` | `id` is the session the pipeline is currently writing into |
+
+The **409** case is the live-session guard: deleting the file a running serve
+rewrites on every turn would just make it reappear, so the route refuses
+instead. The CLI (`samantha sessions rm`) has no way to see another process's
+live session id, so it never tries to guess — this route is the one place
+that can and does refuse.
+
 ## REST
 
 | Method | Path | Auth | Purpose |
@@ -171,6 +198,7 @@ streams. Other devices and the primary token remain active.
 | `GET` | `/v1/sessions` | yes | Session summaries |
 | `GET` | `/v1/personas` | yes | Persona list for `set_persona` (see below) |
 | `POST` | `/v1/sessions/{id}/resume` | yes | Load history into the live pipeline |
+| `DELETE` | `/v1/sessions/{id}` | yes | Delete a saved conversation; `409` if it is the live session |
 | `POST` | `/v1/pair` | no | Exchange pairing code for token (optional `device_name`) |
 | `GET` | `/v1/devices` | yes | List paired devices (D2) |
 | `DELETE` | `/v1/devices/{id}` | yes | Revoke one device token + streams (D2) |

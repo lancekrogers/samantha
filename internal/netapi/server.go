@@ -58,7 +58,14 @@ type Options struct {
 	Bus          *events.Bus
 	Dispatcher   *Dispatcher
 	ListSessions func() []SessionSummary
-	Providers    Providers
+	// DeleteSession, when set, enables DELETE /v1/sessions/{id}. nil leaves
+	// the route unregistered, so an older or limited serve 404s rather than
+	// pretending — the same gate Meetings uses. The implementation must
+	// return ErrSessionActive (never a plain string-matched error) when id
+	// is the session the pipeline is currently writing into; any other
+	// non-nil error is reported as 404 (not found).
+	DeleteSession func(id string) error
+	Providers     Providers
 	// Audio, when set, is attached to the server hub so Phase 3 stream
 	// clients receive TTS audio_chunk envelopes from the pipeline player.
 	Audio *AudioFanout
@@ -88,6 +95,12 @@ type Options struct {
 // Implementations gate on camp CI0009 support (meeting.SupportsImportMeeting)
 // before filing when capture resolves to the meetings importer.
 type RouteMeetingFunc func(ctx context.Context, summary meetinglog.Summary, campaign, capture string) (remote.RouteReceipt, error)
+
+// ErrSessionActive is the sentinel Options.DeleteSession must return when
+// asked to delete the session the pipeline is currently writing into.
+// handleSessionDelete maps it to 409; every other non-nil error is reported
+// as 404, so this package never has to know the caller's own error types.
+var ErrSessionActive = errors.New("session is active")
 
 // Server is the LAN-facing HTTPS + WebSocket surface around one pipeline.
 // PersonaAck describes the persona a set_persona request selected.
@@ -199,6 +212,12 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		mux.HandleFunc("GET /v1/personas", s.handlePersonas)
 	}
 	mux.HandleFunc("POST /v1/sessions/{id}/resume", s.handleResume)
+	// Registered only when serve supplied DeleteSession, so a build without
+	// it 404s instead of a limited serve pretending to support deletion
+	// (the same gate ListPersonas/Meetings use).
+	if s.opts.DeleteSession != nil {
+		mux.HandleFunc("DELETE /v1/sessions/{id}", s.handleSessionDelete)
+	}
 	// Phase 2: public pairing exchange (short code → long-lived token).
 	mux.HandleFunc("POST /v1/pair", s.handlePair)
 	// PROTOCOL_DELTAS D2: per-device token list / revoke.
