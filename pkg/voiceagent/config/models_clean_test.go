@@ -95,7 +95,7 @@ func TestCleanCandidatesContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := cleanTestManifest().CleanCandidates(ctx, t.TempDir())
+	_, err := cleanTestManifest().cleanCandidates(ctx, t.TempDir())
 	if err == nil {
 		t.Fatal("CleanCandidates() with cancelled context should error")
 	}
@@ -144,7 +144,7 @@ func TestCleanCandidates(t *testing.T) {
 			dir := t.TempDir()
 			tc.setup(t, dir)
 
-			got, err := cleanTestManifest().CleanCandidates(context.Background(), dir)
+			got, err := cleanTestManifest().cleanCandidates(context.Background(), dir)
 			if err != nil {
 				t.Fatalf("CleanCandidates() error = %v", err)
 			}
@@ -174,7 +174,7 @@ func TestCleanCandidatesNeverReportsArchiveOwnedFiles(t *testing.T) {
 	// is not vacuously true.
 	touchFile(t, filepath.Join(dir, "stale.onnx"))
 
-	got, err := cleanTestManifest().CleanCandidates(context.Background(), dir)
+	got, err := cleanTestManifest().cleanCandidates(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("CleanCandidates() error = %v", err)
 	}
@@ -222,7 +222,7 @@ func TestCleanCandidatesQuantizationSwitch(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ManifestFor(quantized=%v) error = %v", quantized, err)
 		}
-		got, err := manifest.CleanCandidates(context.Background(), dir)
+		got, err := manifest.cleanCandidates(context.Background(), dir)
 		if err != nil {
 			t.Fatalf("CleanCandidates(quantized=%v) error = %v", quantized, err)
 		}
@@ -268,7 +268,7 @@ func TestCleanCandidatesLegacyMarkerSuppressesRoot(t *testing.T) {
 		t.Fatalf("write legacy marker: %v", err)
 	}
 
-	got, err := manifest.CleanCandidates(context.Background(), dir)
+	got, err := manifest.cleanCandidates(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("CleanCandidates() error = %v", err)
 	}
@@ -290,7 +290,7 @@ func TestCleanCandidatesDoesNotFollowSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := cleanTestManifest().CleanCandidates(context.Background(), dir)
+	got, err := cleanTestManifest().cleanCandidates(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("CleanCandidates() error = %v", err)
 	}
@@ -302,12 +302,12 @@ func TestCleanCandidatesDoesNotFollowSymlinks(t *testing.T) {
 	if got[0].Size >= 4096 {
 		t.Errorf("symlink candidate size = %d, must not count the linked-to target", got[0].Size)
 	}
-	if got[0].IsDir {
-		t.Error("symlink candidate must not be reported as a directory")
+	if got[0].Kind != CleanKindFile {
+		t.Errorf("symlink candidate kind = %q, must not be reported as a directory", got[0].Kind)
 	}
 }
 
-func TestDeleteCleanCandidatesRemovesCandidatesOnly(t *testing.T) {
+func TestDeleteCleanPlanRemovesPlannedCandidatesOnly(t *testing.T) {
 	outside := t.TempDir()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outside, "target.bin"), []byte("outside"), 0o644); err != nil {
@@ -329,16 +329,17 @@ func TestDeleteCleanCandidatesRemovesCandidatesOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := DeleteCleanCandidates(context.Background(), dir, []CleanCandidate{
+	planned := []CleanCandidate{
 		{Path: file, Size: 4},
-		{Path: oldDir, Size: 6, IsDir: true},
+		{Path: oldDir, Size: 6, Kind: CleanKindDir},
 		{Path: link, Size: 7},
-	})
-	if err != nil {
-		t.Fatalf("DeleteCleanCandidates() error = %v", err)
 	}
-	if len(result.Deleted) != 3 || result.Bytes != 17 {
-		t.Fatalf("result = %+v, want 3 deleted and 17 bytes", result)
+	result, err := DeleteCleanPlan(context.Background(), dir, planned, planned)
+	if err != nil {
+		t.Fatalf("DeleteCleanPlan() error = %v", err)
+	}
+	if len(result.Deleted) != 3 || result.BytesFreed != 17 || len(result.Skipped) != 0 {
+		t.Fatalf("result = %+v, want 3 deleted, 17 bytes freed, nothing skipped", result)
 	}
 	for _, p := range []string{file, oldDir, link} {
 		if _, err := os.Lstat(p); !os.IsNotExist(err) {
@@ -350,16 +351,17 @@ func TestDeleteCleanCandidatesRemovesCandidatesOnly(t *testing.T) {
 	}
 }
 
-func TestDeleteCleanCandidatesRejectsOutsidePath(t *testing.T) {
+func TestDeleteCleanPlanRejectsOutsidePath(t *testing.T) {
 	dir := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.bin")
 	if err := os.WriteFile(outside, []byte("data"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := DeleteCleanCandidates(context.Background(), dir, []CleanCandidate{{Path: outside}})
+	planned := []CleanCandidate{{Path: outside}}
+	_, err := DeleteCleanPlan(context.Background(), dir, planned, planned)
 	if err == nil {
-		t.Fatal("DeleteCleanCandidates() error = nil, want outside path rejection")
+		t.Fatal("DeleteCleanPlan() error = nil, want outside path rejection")
 	}
 	if !strings.Contains(err.Error(), "outside models dir") {
 		t.Fatalf("error = %q, want outside models dir", err)
@@ -383,7 +385,7 @@ func TestCleanCandidateSizes(t *testing.T) {
 		}
 	}
 
-	got, err := cleanTestManifest().CleanCandidates(context.Background(), dir)
+	got, err := cleanTestManifest().cleanCandidates(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("CleanCandidates() error = %v", err)
 	}
@@ -392,7 +394,7 @@ func TestCleanCandidateSizes(t *testing.T) {
 	for _, c := range got {
 		rel, _ := filepath.Rel(dir, c.Path)
 		sizes[rel] = c.Size
-		dirs[rel] = c.IsDir
+		dirs[rel] = c.Kind == CleanKindDir
 	}
 	if sizes["stale.onnx"] != 4 {
 		t.Errorf("stale.onnx size = %d, want 4", sizes["stale.onnx"])

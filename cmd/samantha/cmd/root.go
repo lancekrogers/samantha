@@ -140,6 +140,13 @@ func stdinIsTerminal() bool {
 	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
 }
 
+// stdoutIsTerminal reports whether a human is watching stdout. Destructive
+// commands use it to refuse a confirmation nobody could have read.
+func stdoutIsTerminal() bool {
+	fd := os.Stdout.Fd()
+	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
+}
+
 func modelName(cfg *config.Config) string {
 	switch cfg.BrainProvider {
 	case "claude":

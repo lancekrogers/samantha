@@ -155,13 +155,7 @@ func ManifestFor(cfg *Config, req AssetRequest) (AssetManifest, error) {
 	m := AssetManifest{Schema: AssetSchema}
 
 	if req.NeedVAD {
-		m.Assets = append(m.Assets, Asset{
-			ID:       "vad.silero.v1",
-			Provider: "sherpa",
-			Kind:     AssetKindVAD,
-			Name:     "silero_vad.onnx",
-			Files:    []AssetFile{{Path: "silero_vad.onnx", URL: sileroVADURL, SHA256: sileroVADSHA256, Size: sileroVADSize}},
-		})
+		m.Assets = append(m.Assets, VADAsset())
 	}
 
 	if req.NeedSTT {
@@ -181,14 +175,7 @@ func ManifestFor(cfg *Config, req AssetRequest) (AssetManifest, error) {
 	}
 
 	if req.NeedTTS && cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), "kokoro") {
-		m.Assets = append(m.Assets, Asset{
-			ID:         "tts.kokoro.multi-lang-v1_0",
-			Provider:   "kokoro",
-			Kind:       AssetKindTTS,
-			Name:       "kokoro-tts",
-			Archive:    &AssetArchive{URL: kokoroArchiveURL, SHA256: kokoroArchiveSHA256},
-			CheckFiles: kokoroCheckFiles,
-		})
+		m.Assets = append(m.Assets, KokoroTTSAsset())
 	}
 
 	// Speaker assets: meeting needs segmentation + embedding; live needs embedding only.
@@ -197,32 +184,70 @@ func ManifestFor(cfg *Config, req AssetRequest) (AssetManifest, error) {
 		needLive := cfg.Speaker.Live.Enabled
 		if needMeeting || needLive {
 			if needMeeting && strings.TrimSpace(cfg.Speaker.Models.Segmentation) == "" {
-				m.Assets = append(m.Assets, Asset{
-					ID:         "speaker.segmentation.pyannote-3.0",
-					Provider:   "sherpa",
-					Kind:       AssetKindSpeaker,
-					Name:       "pyannote speaker segmentation",
-					TargetDir:  "speaker/pyannote-segmentation-3.0",
-					Archive:    &AssetArchive{URL: speakerSegmentationURL, SHA256: speakerSegmentationSHA256},
-					CheckFiles: []string{"model.int8.onnx"},
-				})
+				m.Assets = append(m.Assets, SpeakerSegmentationAsset())
 			}
 			if strings.TrimSpace(cfg.Speaker.Models.Embedding) == "" {
-				m.Assets = append(m.Assets, Asset{
-					ID:       "speaker.embedding.nemo-titanet-small",
-					Provider: "sherpa",
-					Kind:     AssetKindSpeaker,
-					Name:     "NeMo TitaNet speaker embedding",
-					Files: []AssetFile{{
-						Path: "speaker/nemo_en_titanet_small.onnx", URL: speakerEmbeddingURL,
-						SHA256: speakerEmbeddingSHA256, Size: speakerEmbeddingSize,
-					}},
-				})
+				m.Assets = append(m.Assets, SpeakerEmbeddingAsset())
 			}
 		}
 	}
 
 	return m, nil
+}
+
+// VADAsset is the Silero VAD download. Exported because the required-set
+// computation protects the VAD model whether or not the current config enables
+// it — a disabled toggle must not make the model "unused".
+func VADAsset() Asset {
+	return Asset{
+		ID:       "vad.silero.v1",
+		Provider: "sherpa",
+		Kind:     AssetKindVAD,
+		Name:     "silero_vad.onnx",
+		Files:    []AssetFile{{Path: "silero_vad.onnx", URL: sileroVADURL, SHA256: sileroVADSHA256, Size: sileroVADSize}},
+	}
+}
+
+// KokoroTTSAsset is the Kokoro multi-lang voice pack, extracted at the models
+// dir root.
+func KokoroTTSAsset() Asset {
+	return Asset{
+		ID:         "tts.kokoro.multi-lang-v1_0",
+		Provider:   "kokoro",
+		Kind:       AssetKindTTS,
+		Name:       "kokoro-tts",
+		Archive:    &AssetArchive{URL: kokoroArchiveURL, SHA256: kokoroArchiveSHA256},
+		CheckFiles: kokoroCheckFiles,
+	}
+}
+
+// SpeakerSegmentationAsset is the pyannote segmentation model meeting
+// diarization needs.
+func SpeakerSegmentationAsset() Asset {
+	return Asset{
+		ID:         "speaker.segmentation.pyannote-3.0",
+		Provider:   "sherpa",
+		Kind:       AssetKindSpeaker,
+		Name:       "pyannote speaker segmentation",
+		TargetDir:  "speaker/pyannote-segmentation-3.0",
+		Archive:    &AssetArchive{URL: speakerSegmentationURL, SHA256: speakerSegmentationSHA256},
+		CheckFiles: []string{"model.int8.onnx"},
+	}
+}
+
+// SpeakerEmbeddingAsset is the TitaNet embedding model live and meeting
+// speaker identification share.
+func SpeakerEmbeddingAsset() Asset {
+	return Asset{
+		ID:       "speaker.embedding.nemo-titanet-small",
+		Provider: "sherpa",
+		Kind:     AssetKindSpeaker,
+		Name:     "NeMo TitaNet speaker embedding",
+		Files: []AssetFile{{
+			Path: "speaker/nemo_en_titanet_small.onnx", URL: speakerEmbeddingURL,
+			SHA256: speakerEmbeddingSHA256, Size: speakerEmbeddingSize,
+		}},
+	}
 }
 
 // sttAsset resolves the single STT asset for a normalized provider/mode, or nil
