@@ -169,6 +169,18 @@ func (c Client) calibredbName() string {
 	return "calibredb"
 }
 
+// supportedFormats are the book formats the reader can open, directly or after
+// conversion, in the order it falls back through them. It is the source of
+// truth for the calibre_prefer_format setting.
+var supportedFormats = []string{"epub", "pdf", "mobi", "azw3", "azw", "prc"}
+
+// SupportedFormats returns the book formats calibre_prefer_format may name.
+func SupportedFormats() []string {
+	out := make([]string, len(supportedFormats))
+	copy(out, supportedFormats)
+	return out
+}
+
 func (c Client) preferFormat() string {
 	p := strings.ToLower(strings.TrimSpace(c.Prefer))
 	if p == "" {
@@ -311,7 +323,7 @@ func (c Client) BestFormatPathContext(ctx context.Context, b Book) (path, format
 	}
 	prefer := c.preferFormat()
 	order := []string{prefer}
-	for _, f := range []string{"epub", "pdf", "mobi", "azw3", "azw", "prc"} {
+	for _, f := range supportedFormats {
 		if f != prefer {
 			order = append(order, f)
 		}

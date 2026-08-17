@@ -178,14 +178,14 @@ func InspectNative(modelsDir, preferredTier string) NativeStatus {
 	st.RepoCommit = install.RepoCommit
 
 	// Discover tiers from install.json and/or on-disk GGUF names.
-	known := []string{DefaultModelTier, Tier1_7B}
+	known := ModelTiers()
 	if len(install.Models) > 0 {
 		known = known[:0]
 		for tier := range install.Models {
 			known = append(known, normalizeTier(tier))
 		}
 		if len(known) == 0 {
-			known = []string{DefaultModelTier, Tier1_7B}
+			known = ModelTiers()
 		}
 		sort.Strings(known)
 	}
@@ -455,6 +455,11 @@ func requirePathWithinNative(root, target, original string) error {
 	}
 	return nil
 }
+
+// ModelTiers returns the model tiers a native package can carry, smallest
+// first. It is the source of truth for the qwen_tts_model_tier setting: a new
+// tier constant is invisible to Settings until it is listed here.
+func ModelTiers() []string { return []string{DefaultModelTier, Tier1_7B} }
 
 // NormalizeModelTier canonicalizes tier names for config and worker env
 // (0.6B → 0.6b, 1.7 → 1.7b). Empty input returns DefaultModelTier.

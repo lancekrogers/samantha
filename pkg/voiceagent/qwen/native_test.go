@@ -443,7 +443,7 @@ func writeFakeNativeTarTiers(t *testing.T, dir string, tiers ...string) (path, s
 			"cli":           "bin/qwen3-tts-cli",
 			"cli_sha256":    sha256Text(files["bin/qwen3-tts-cli"]),
 		},
-		"models": modelEntries,
+		"models":         modelEntries,
 		"presets":        "models/presets/presets.json",
 		"presets_sha256": sha256Text(files["models/presets/presets.json"]),
 	}
