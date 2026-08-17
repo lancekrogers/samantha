@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -130,6 +131,15 @@ func (s *Session) Control(ctx context.Context, req ControlRequest, now time.Time
 	kind, ok := controlActions[req.Action]
 	if !ok {
 		return fmt.Errorf("%w %q", ErrBadControl, req.Action)
+	}
+	// A note is its text; an empty one would bump the counter and write a
+	// bare marker nobody can read back. A note carries no label either — the
+	// document renders one as a shouted prefix meant for bookmarks.
+	if kind == meetinglog.TypeNote {
+		if strings.TrimSpace(req.Text) == "" {
+			return ErrNoteText
+		}
+		req.Label = ""
 	}
 	s.mu.Lock()
 	writer := s.writer

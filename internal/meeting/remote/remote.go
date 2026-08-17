@@ -87,6 +87,11 @@ var (
 	ErrBadSegment = errors.New("meeting: malformed audio segment")
 	// ErrBadControl is an unsupported control action.
 	ErrBadControl = errors.New("meeting: unsupported control action")
+	// ErrNoteText is a note control with no text. An empty note would still
+	// bump the bundle's note counter and leave a blank marker in the
+	// document, so it is refused instead of quietly recorded. Kept distinct
+	// from ErrBadControl so the client reads why, not just that.
+	ErrNoteText = errors.New("meeting: note requires text")
 	// ErrBadStart is a start request with an unknown capture source.
 	ErrBadStart = errors.New("meeting: unknown capture source")
 	// ErrPipelineUnavailable means serve has no transcription pipeline
@@ -117,6 +122,8 @@ type StartResponse struct {
 // ControlRequest is the client's POST /v1/meeting/{id}/control body. OffsetMs
 // is meeting-relative and authoritative: the client knows when the moment
 // happened, the server only learns of it a network hop later.
+// Text is required for the note action and optional everywhere else; Label is
+// ignored for note.
 type ControlRequest struct {
 	Action   string `json:"action"`
 	OffsetMs int64  `json:"offset_ms"`
@@ -204,6 +211,7 @@ var controlActions = map[string]string{
 	"pause":      meetinglog.TypePause,
 	"resume":     meetinglog.TypeResume,
 	"bookmark":   meetinglog.TypeBookmark,
+	"note":       meetinglog.TypeNote,
 	"idea_start": meetinglog.TypeIdeaStart,
 	"idea_end":   meetinglog.TypeIdeaEnd,
 }

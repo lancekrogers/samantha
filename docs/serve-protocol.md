@@ -240,9 +240,27 @@ POST /v1/meeting/{id}/control
 {"action":"bookmark","offset_ms":91500,"text":"decision"}
 ```
 
-`action` is one of `pause`, `resume`, `bookmark`, `idea_start`, `idea_end`.
-Each becomes an event in the bundle's `.samantha/events.jsonl` using the same
-schema a desktop recording writes.
+Each control becomes an event in the bundle's `.samantha/events.jsonl` using
+the same schema a desktop recording writes.
+
+| `action` | `text` | `label` | Bundle event |
+|---|---|---|---|
+| `pause` | ignored | ignored | `pause` |
+| `resume` | ignored | ignored | `resume` |
+| `bookmark` | optional caption | optional (`important` when absent) | `bookmark`, counted in `Summary.bookmarks` |
+| `note` | **required** | ignored | `note`, counted in `Summary.notes` |
+| `idea_start` | optional | span id | `idea_start` |
+| `idea_end` | optional | span id | `idea_end` |
+
+```http
+POST /v1/meeting/{id}/control
+{"action":"note","offset_ms":184300,"text":"decide the pricing tier next week"}
+```
+
+A `note` is a timestamped line in `meeting.md` (`[HH:MM:SS] 📝 note: …`),
+identical to one typed in the TUI recorder. Empty or whitespace-only `text` is
+a `400` `{"error":"meeting: note requires text"}` — an empty note would bump
+the counter and leave a marker with nothing in it.
 
 ```http
 POST /v1/meeting/{id}/stop
