@@ -459,3 +459,26 @@ func TestVoicesPreviewRejectsZeroSampleRate(t *testing.T) {
 		t.Fatalf("error = %q, want it to name the sample rate", msg)
 	}
 }
+
+// The human table keeps its shape and its download-on-demand behaviour: only
+// the --json path refuses to install.
+func TestVoicesTableStillEnsuresAssets(t *testing.T) {
+	personaEnv(t)
+	ensured := stubVoiceStack(t, kokoroFake(), []string{"Kokoro model"})
+
+	out, err := runVoicesCmd(t)
+	if err != nil {
+		t.Fatalf("voices error = %v (out %s)", err, out)
+	}
+	if *ensured != 1 {
+		t.Fatalf("ensureAssets called %d times, want 1 on the human path", *ensured)
+	}
+	for _, want := range []string{"Voices for:", "af_heart", "2 voices found."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output = %q, want it to contain %q", out, want)
+		}
+	}
+	if strings.Contains(out, "\"voices\"") {
+		t.Fatalf("output = %q, want no JSON without --json", out)
+	}
+}

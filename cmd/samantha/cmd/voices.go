@@ -179,7 +179,8 @@ func runVoicesTable(cmd *cobra.Command) error {
 		return err
 	}
 
-	fmt.Printf("\n  %s %s\n\n", titleStyle.Render("Voices for:"), sectionStyle.Render(cfg.TTSProvider))
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "\n  %s %s\n\n", titleStyle.Render("Voices for:"), sectionStyle.Render(cfg.TTSProvider))
 
 	if err := voiceStack.ensureAssets(cmd.Context(), cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
 		return err
@@ -197,7 +198,7 @@ func runVoicesTable(cmd *cobra.Command) error {
 	gender, _ := cmd.Flags().GetString("gender")
 	voices := provider.ListVoices(locale, gender)
 	if len(voices) == 0 {
-		fmt.Println(dimStyle.Render("  No voices found."))
+		fmt.Fprintln(out, dimStyle.Render("  No voices found."))
 		return nil
 	}
 
@@ -207,8 +208,8 @@ func runVoicesTable(cmd *cobra.Command) error {
 		if strings.EqualFold(v.Name, activeVoice) {
 			active = " " + activeStyle.Render("●")
 		}
-		fmt.Printf("  %s %s  %s\n", keyStyle.Render(fmt.Sprintf("%-16s", v.Name)), v.FriendlyName, dimStyle.Render(fmt.Sprintf("%s / %s", v.Gender, v.Locale))+active)
+		fmt.Fprintf(out, "  %s %s  %s\n", keyStyle.Render(fmt.Sprintf("%-16s", v.Name)), v.FriendlyName, dimStyle.Render(fmt.Sprintf("%s / %s", v.Gender, v.Locale))+active)
 	}
-	fmt.Printf("\n  %s\n\n", dimStyle.Render(fmt.Sprintf("%d voices found.", len(voices))))
+	fmt.Fprintf(out, "\n  %s\n\n", dimStyle.Render(fmt.Sprintf("%d voices found.", len(voices))))
 	return nil
 }
