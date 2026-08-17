@@ -67,7 +67,10 @@ OLLAMA_MODEL=qwen2.5:14b "$bin" config get --json | normalize >"$here/config-get
 { "$bin" config set vad_silence_duration fast --json 2>/dev/null || true; } | normalize >"$here/config-set-error.json"
 
 # The backup path carries a capture timestamp; pin it so re-running the script
-# does not churn the fixture.
-sed -i '' 's#config\.yaml\.bak\.[0-9TZ.]*#config.yaml.bak.20260817T031500.000000000Z#' "$here/config-set-ok.json"
+# does not churn the fixture. Written through a temp file rather than sed -i,
+# whose in-place flag differs between BSD and GNU.
+sed 's#config\.yaml\.bak\.[0-9TZ.]*#config.yaml.bak.20260817T031500.000000000Z#' \
+	"$here/config-set-ok.json" >"$work/pinned.json"
+mv "$work/pinned.json" "$here/config-set-ok.json"
 
 echo "captured into $here"

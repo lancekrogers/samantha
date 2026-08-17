@@ -90,7 +90,7 @@ func runConfigGetKey(cmd *cobra.Command, key string, asJSON bool) error {
 		Type:                valueType,
 		Source:              value.Source,
 		RestartRequired:     spec.RestartRequired,
-		OverriddenByPersona: personaOverridesKey(spec.Key),
+		OverriddenByPersona: overlayOverrides(personaOverlay(), spec.Key),
 	}
 	if asJSON {
 		return writeJSON(cmd, payload)

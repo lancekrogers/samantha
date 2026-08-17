@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Error codes reported by the single-key writer. They are wire values: the CLI
@@ -184,28 +186,40 @@ func writeKeyToFile(spec KeySpec, value any) (SetResult, error) {
 		return result, nil
 	}
 
-	if err := setYAMLValue(mapping, segments, value); err != nil {
-		return SetResult{}, writeFailed(spec.Key, "updating config", err)
-	}
-	out, err := encodeYAMLDocument(doc)
+	backupPath, err := patchAndReplace(doc, mapping, segments, value, path, existed, spec.Key)
 	if err != nil {
-		return SetResult{}, writeFailed(spec.Key, "encoding config", err)
-	}
-	if existed {
-		backupPath, backupErr := backupFile(path)
-		if backupErr != nil {
-			return SetResult{}, writeFailed(spec.Key, "backing up config", backupErr)
-		}
-		result.BackupPath = backupPath
-		pruneBackups(path, keptBackups)
-	}
-	if err := writeFileAtomic(path, out); err != nil {
-		return SetResult{}, writeFailed(spec.Key, "replacing config", err)
+		return SetResult{}, err
 	}
 
 	Set(spec.Key, value)
+	result.BackupPath = backupPath
 	result.Changed = true
 	return result, nil
+}
+
+// patchAndReplace writes the patched document over path, keeping a backup of
+// what was there. The replacement is atomic, so a crash mid-write leaves the
+// old file intact rather than a truncated one.
+func patchAndReplace(doc, mapping *yaml.Node, segments []string, value any, path string, existed bool, key string) (string, error) {
+	if err := setYAMLValue(mapping, segments, value); err != nil {
+		return "", writeFailed(key, "updating config", err)
+	}
+	out, err := encodeYAMLDocument(doc)
+	if err != nil {
+		return "", writeFailed(key, "encoding config", err)
+	}
+	var backupPath string
+	if existed {
+		backupPath, err = backupFile(path)
+		if err != nil {
+			return "", writeFailed(key, "backing up config", err)
+		}
+		pruneBackups(path, keptBackups)
+	}
+	if err := writeFileAtomic(path, out); err != nil {
+		return "", writeFailed(key, "replacing config", err)
+	}
+	return backupPath, nil
 }
 
 func writeFailed(key, what string, cause error) error {

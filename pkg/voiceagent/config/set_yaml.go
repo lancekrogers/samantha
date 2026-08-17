@@ -74,6 +74,15 @@ func yamlValueAt(mapping *yaml.Node, path []string) (any, bool) {
 // user config.
 func childMapping(parent *yaml.Node, key string) (*yaml.Node, error) {
 	if existing := mappingValue(parent, key); existing != nil {
+		// `speaker:` with nothing under it parses as null, not as a mapping.
+		// That is an empty section, so fill it in rather than refusing.
+		if existing.Tag == "!!null" && len(existing.Content) == 0 {
+			existing.Kind = yaml.MappingNode
+			existing.Tag = "!!map"
+			existing.Value = ""
+			existing.Style = 0
+			return existing, nil
+		}
 		if existing.Kind != yaml.MappingNode {
 			return nil, fmt.Errorf("config key %q is not a section", key)
 		}
@@ -159,6 +168,12 @@ func preserveBlankLines(node *yaml.Node, source []byte) {
 		if n.Kind == yaml.DocumentNode {
 			for _, child := range n.Content {
 				walk(child)
+			}
+			return
+		}
+		if n.Kind == yaml.SequenceNode {
+			for _, item := range n.Content {
+				walk(item)
 			}
 			return
 		}

@@ -595,3 +595,20 @@ func TestSetKeyFileChangesExactlyOneLine(t *testing.T) {
 		t.Errorf("changed line = %q, want %q", after[differing[0]], want)
 	}
 }
+
+func TestSetKeyFileFillsAnEmptySection(t *testing.T) {
+	// `speaker:` with nothing under it parses as null. Writing into it must
+	// fill the section, not refuse and not replace the user's line.
+	newInstall(t, "tts_provider: kokoro\nspeaker:\n")
+
+	if _, err := SetKeyFile("speaker.live.window_ms", "2000"); err != nil {
+		t.Fatalf("writing into an empty section: %v", err)
+	}
+	cfg, err := LoadRaw()
+	if err != nil {
+		t.Fatalf("LoadRaw: %v", err)
+	}
+	if cfg.Speaker.Live.WindowMS != 2000 {
+		t.Errorf("speaker.live.window_ms = %d, want 2000", cfg.Speaker.Live.WindowMS)
+	}
+}

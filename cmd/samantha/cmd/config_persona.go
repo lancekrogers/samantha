@@ -47,9 +47,8 @@ func personaOverlay() *configPersonaPayload {
 	return &configPersonaPayload{ID: profile.ID, DisplayName: name, Overrides: overrides}
 }
 
-// personaOverridesKey reports whether the active persona overrides one key.
-func personaOverridesKey(key string) bool {
-	overlay := personaOverlay()
+// overlayOverrides reports whether an already-resolved overlay claims one key.
+func overlayOverrides(overlay *configPersonaPayload, key string) bool {
 	if overlay == nil {
 		return false
 	}

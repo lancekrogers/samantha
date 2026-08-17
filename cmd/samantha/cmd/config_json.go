@@ -64,7 +64,10 @@ func failConfig(cmd *cobra.Command, asJSON bool, err error) error {
 	if !asJSON {
 		return &ExitCodeError{Code: exitOperationFailed, Err: err}
 	}
-	body := configErrorBody{Code: config.CodeInvalidValue, Message: err.Error()}
+	// Every failure the config surface produces is a *config.SetError; the
+	// fallback exists so an unforeseen one still arrives with a code a front end
+	// can branch on rather than as a bare message.
+	body := configErrorBody{Code: config.CodeWriteFailed, Message: err.Error()}
 	var setErr *config.SetError
 	if errors.As(err, &setErr) {
 		body = configErrorBody{
