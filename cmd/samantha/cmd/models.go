@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
