@@ -113,23 +113,87 @@ type AssetRequest struct {
 	NeedSpeaker bool
 }
 
-// EnsureRuntimeAssets downloads any missing model files and archives needed for
-// this run. The required asset set is resolved once from the asset manifest
-// (ManifestFor), so URLs, file names, and extraction targets have a single
-// source of truth; this function only performs the downloads. ctx cancels
-// in-flight downloads (Ctrl-C during startup or render asset setup).
-func EnsureRuntimeAssets(ctx context.Context, cfg *Config, req AssetRequest, onProgress func(name string, pct float64)) error {
+// AssetProgress is one progress tick for a single asset, reported by
+// EnsureRuntimeAssetsProgress. Bytes/Total are 0 when unknown (no
+// Content-Length, or a phase that has no byte count of its own); Pct is
+// always clamped to [0,100] regardless of how the emitting phase computed it.
+type AssetProgress struct {
+	Asset string  `json:"asset"`
+	Phase string  `json:"phase"` // start|download|verify|extract|install|done|skipped
+	Bytes int64   `json:"bytes"`
+	Total int64   `json:"total"`
+	Pct   float64 `json:"pct"`
+}
+
+const (
+	assetPhaseStart    = "start"
+	assetPhaseDownload = "download"
+	assetPhaseVerify   = "verify"
+	assetPhaseExtract  = "extract"
+	assetPhaseInstall  = "install"
+	assetPhaseDone     = "done"
+	assetPhaseSkipped  = "skipped"
+)
+
+// clampPct is the single place asset progress percentages are bounded to
+// [0,100]. Every emitter (manifest downloads, qwen native installs, the
+// already-installed shortcuts) routes its percentage through this or
+// through newAssetProgress, so a bad Content-Length or an over-eager caller
+// can never produce an out-of-range tick.
+func clampPct(pct float64) float64 {
+	if pct < 0 {
+		return 0
+	}
+	if pct > 100 {
+		return 100
+	}
+	return pct
+}
+
+// pctOfBytes computes a clamped percentage from a byte count and a total.
+// It returns 0 when total is unknown (<=0).
+func pctOfBytes(bytes, total int64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return clampPct(float64(bytes) / float64(total) * 100)
+}
+
+// newAssetProgress builds an AssetProgress tick, deriving Pct from bytes/total
+// and forcing it to 100 for the done/skipped phases (which report completion
+// even when total is unknown). A negative total (net/http's convention for
+// "no Content-Length") is normalised to 0 here, so Total is always either the
+// real byte count or 0 — never a sentinel.
+func newAssetProgress(asset, phase string, bytes, total int64) AssetProgress {
+	if total < 0 {
+		total = 0
+	}
+	pct := pctOfBytes(bytes, total)
+	if phase == assetPhaseDone || phase == assetPhaseSkipped {
+		pct = 100
+	}
+	return AssetProgress{Asset: asset, Phase: phase, Bytes: bytes, Total: total, Pct: pct}
+}
+
+// EnsureRuntimeAssetsProgress downloads any missing model files and archives
+// needed for this run, reporting fine-grained per-asset progress (phase, byte
+// counts, and a clamped percentage). The required asset set is resolved once
+// from the asset manifest (ManifestFor), so URLs, file names, and extraction
+// targets have a single source of truth; this function only performs the
+// downloads. ctx cancels in-flight downloads (Ctrl-C during startup or render
+// asset setup).
+func EnsureRuntimeAssetsProgress(ctx context.Context, cfg *Config, req AssetRequest, onProgress func(AssetProgress)) error {
 	manifest, err := ManifestFor(cfg, req)
 	if err != nil {
 		return err
 	}
 	dir := ModelsDirFrom(cfg)
-	if err := ensureManifest(ctx, manifest, dir, onProgress); err != nil {
+	if err := ensureManifestProgress(ctx, manifest, dir, onProgress); err != nil {
 		return err
 	}
 	if req.NeedTTS && cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), qwen.ProviderName) {
 		if qwen.UseManaged(cfg.QwenTTSBinary, cfg.QwenTTSModel) {
-			return ensureQwenTTSAssets(ctx, cfg, onProgress)
+			return ensureQwenTTSAssetsProgress(ctx, cfg, onProgress)
 		}
 		return nil
 	}
@@ -139,19 +203,55 @@ func EnsureRuntimeAssets(ctx context.Context, cfg *Config, req AssetRequest, onP
 		}
 		// Best-effort: install thewh1teagle Kokoro v1.0 English weights
 		// (same ONNX as Python samantha-cli) into models_dir/kokoro-v1.0-en.
-		// Needs python3+numpy+onnx; multi-lang pack remains the fallback.
-		TryEnsureKokoroV1EnglishPack(ctx, onProgress)
+		// Needs python3+numpy+onnx; multi-lang pack remains the fallback. This
+		// seam only ever reports a percentage (no byte counts), so Bytes/Total
+		// stay 0 and Pct is clamped as usual.
+		TryEnsureKokoroV1EnglishPack(ctx, func(name string, pct float64) {
+			if onProgress != nil {
+				onProgress(AssetProgress{Asset: name, Phase: assetPhaseDownload, Pct: clampPct(pct)})
+			}
+		})
 	}
 	return nil
 }
 
-// ensureManifest downloads every missing file and archive in the manifest into
-// dir. It is the parameterized core of EnsureRuntimeAssets, so it can be tested
-// against a temp dir and a fake HTTP server. Already-present files and
-// already-extracted archives are skipped (no re-download).
+// EnsureRuntimeAssets is the coarse (name, pct) form kept for the existing
+// callers (speaker enroll, onboarding install, render/narrate paths): a thin
+// adapter over EnsureRuntimeAssetsProgress so they see the same values as
+// before without taking on the richer AssetProgress shape.
+func EnsureRuntimeAssets(ctx context.Context, cfg *Config, req AssetRequest, onProgress func(name string, pct float64)) error {
+	return EnsureRuntimeAssetsProgress(ctx, cfg, req, func(p AssetProgress) {
+		if onProgress != nil {
+			onProgress(p.Asset, p.Pct)
+		}
+	})
+}
+
+// ensureManifest is the legacy (name, pct) core, kept as a thin adapter over
+// ensureManifestProgress for its direct callers/tests.
 func ensureManifest(ctx context.Context, manifest AssetManifest, dir string, onProgress func(name string, pct float64)) error {
+	return ensureManifestProgress(ctx, manifest, dir, func(p AssetProgress) {
+		if onProgress != nil {
+			onProgress(p.Asset, p.Pct)
+		}
+	})
+}
+
+// ensureManifestProgress downloads every missing file and archive in the
+// manifest into dir, emitting one AssetProgress tick per phase transition.
+// It is the parameterized core of EnsureRuntimeAssetsProgress, so it can be
+// tested against a temp dir and a fake HTTP server. Already-present files and
+// already-extracted archives are skipped (no re-download) but still emit a
+// single "skipped" tick, so a no-op run still reports what it checked.
+func ensureManifestProgress(ctx context.Context, manifest AssetManifest, dir string, onProgress func(AssetProgress)) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create models dir: %w", err)
+	}
+
+	emit := func(asset, phase string, bytes, total int64) {
+		if onProgress != nil {
+			onProgress(newAssetProgress(asset, phase, bytes, total))
+		}
 	}
 
 	// Individual file downloads.
@@ -161,20 +261,23 @@ func ensureManifest(ctx context.Context, manifest AssetManifest, dir string, onP
 		}
 		path := filepath.Join(dir, m.Name)
 		if fileVerified(path, m.Size, m.SHA256) {
+			emit(m.Name, assetPhaseSkipped, 0, 0)
 			continue
 		}
 
-		if onProgress != nil {
-			onProgress(m.Name, 0)
-		}
+		emit(m.Name, assetPhaseStart, 0, 0)
 
-		if err := downloadFile(ctx, path, m.URL, m.Name, m.Size, m.SHA256, func(pct float64) {
-			if onProgress != nil {
-				onProgress(m.Name, pct)
-			}
+		var lastBytes, lastTotal int64
+		if err := downloadFile(ctx, path, m.URL, m.Name, m.Size, m.SHA256, func(bytes, total int64) {
+			lastBytes, lastTotal = bytes, total
+			emit(m.Name, assetPhaseDownload, bytes, total)
 		}); err != nil {
 			return err
 		}
+		// downloadFile only returns once copyBodyVerified's checksum/size
+		// check has already passed, so verify is reported after the fact.
+		emit(m.Name, assetPhaseVerify, lastBytes, lastTotal)
+		emit(m.Name, assetPhaseDone, lastBytes, lastTotal)
 	}
 
 	// Archive downloads with extraction.
@@ -192,20 +295,26 @@ func ensureManifest(ctx context.Context, manifest AssetManifest, dir string, onP
 			return err
 		}
 		if installed {
+			emit(a.Name, assetPhaseSkipped, 0, 0)
 			continue
 		}
 
-		if onProgress != nil {
-			onProgress(a.Name, 0)
-		}
+		emit(a.Name, assetPhaseStart, 0, 0)
 
-		if err := downloadAndExtractArchive(ctx, targetDir, a.ID, a.URL, a.Name, a.CheckFiles, a.SHA256, func(pct float64) {
-			if onProgress != nil {
-				onProgress(a.Name, pct)
-			}
+		var lastBytes, lastTotal int64
+		if err := downloadAndExtractArchive(ctx, targetDir, a.ID, a.URL, a.Name, a.CheckFiles, a.SHA256, func(bytes, total int64) {
+			lastBytes, lastTotal = bytes, total
+			emit(a.Name, assetPhaseDownload, bytes, total)
 		}); err != nil {
 			return err
 		}
+		// downloadAndExtractArchive verifies the checksum, extracts, and
+		// promotes the result before returning, so verify/extract/install
+		// are reported in order after the fact, same as verify above.
+		emit(a.Name, assetPhaseVerify, lastBytes, lastTotal)
+		emit(a.Name, assetPhaseExtract, lastBytes, lastTotal)
+		emit(a.Name, assetPhaseInstall, lastBytes, lastTotal)
+		emit(a.Name, assetPhaseDone, lastBytes, lastTotal)
 	}
 
 	return nil
@@ -220,6 +329,16 @@ func EnsureModels(ctx context.Context, cfg *Config, onProgress func(name string,
 // ready, regardless of the active TTS provider — personas other than the
 // active one may route speech through qwen. Empty tier uses the configured one.
 func EnsureQwenTTSTier(ctx context.Context, cfg *Config, tier string, onProgress func(name string, pct float64)) error {
+	return EnsureQwenTTSTierProgress(ctx, cfg, tier, func(p AssetProgress) {
+		if onProgress != nil {
+			onProgress(p.Asset, p.Pct)
+		}
+	})
+}
+
+// EnsureQwenTTSTierProgress is EnsureQwenTTSTier with per-phase AssetProgress
+// reporting, for callers (models ensure --json) that need it.
+func EnsureQwenTTSTierProgress(ctx context.Context, cfg *Config, tier string, onProgress func(AssetProgress)) error {
 	if cfg == nil {
 		return nil
 	}
@@ -227,11 +346,19 @@ func EnsureQwenTTSTier(ctx context.Context, cfg *Config, tier string, onProgress
 	if strings.TrimSpace(tier) != "" {
 		cfgCopy.QwenTTSModelTier = tier
 	}
-	return ensureQwenTTSAssets(ctx, &cfgCopy, onProgress)
+	return ensureQwenTTSAssetsProgress(ctx, &cfgCopy, onProgress)
 }
 
-// ensureQwenTTSAssets installs the native multi-tier package only (no Python/uv).
-func ensureQwenTTSAssets(ctx context.Context, cfg *Config, onProgress func(name string, pct float64)) error {
+// qwenNativeAssetName is the stable AssetProgress.Asset identifier for every
+// tick emitted while installing the native Qwen3-TTS package — the dynamic
+// part of the qwen installer's own progress reporting (its "stage" string)
+// carries the Phase field instead, so a client can group every tick from one
+// install under a single asset key.
+const qwenNativeAssetName = "Qwen3-TTS native package"
+
+// ensureQwenTTSAssetsProgress installs the native multi-tier package only (no
+// Python/uv), reporting AssetProgress ticks.
+func ensureQwenTTSAssetsProgress(ctx context.Context, cfg *Config, onProgress func(AssetProgress)) error {
 	modelsDir := ModelsDirFrom(cfg)
 	tier := ""
 	url := ""
@@ -243,14 +370,22 @@ func ensureQwenTTSAssets(ctx context.Context, cfg *Config, onProgress func(name 
 
 	if qwen.InspectNative(modelsDir, tier).Installed {
 		if onProgress != nil {
-			onProgress("native Qwen3-TTS", 100)
+			onProgress(newAssetProgress(qwenNativeAssetName, assetPhaseSkipped, 0, 0))
 		}
 		return nil
 	}
 
+	if onProgress != nil {
+		onProgress(newAssetProgress(qwenNativeAssetName, assetPhaseStart, 0, 0))
+	}
+
 	_, err := qwen.EnsureNative(ctx, modelsDir, qwen.NativeEnsureOptions{
 		URL: url, SHA256: sha, Tier: tier,
-	}, qwen.ProgressFunc(onProgress))
+	}, func(stage string, pct float64) {
+		if onProgress != nil {
+			onProgress(AssetProgress{Asset: qwenNativeAssetName, Phase: stage, Pct: clampPct(pct)})
+		}
+	})
 	return err
 }
 
@@ -325,7 +460,7 @@ func sanitizeKokoroLexicon(path string) error {
 // extracts into a temp dir, verifies the check files, then atomically promotes
 // the result — so a partial or malicious archive never lands at dir. name labels
 // the asset in error messages.
-func downloadAndExtractArchive(ctx context.Context, dir, id, url, name string, checkFiles []string, sha256Hex string, onProgress func(float64)) error {
+func downloadAndExtractArchive(ctx context.Context, dir, id, url, name string, checkFiles []string, sha256Hex string, onProgress func(bytes, total int64)) error {
 	resp, err := openDownload(ctx, url, name)
 	if err != nil {
 		return err
@@ -708,10 +843,12 @@ func fileSHA256(path string) (string, error) {
 }
 
 // copyBodyVerified streams body into dst (hashing when sha256Hex is set),
-// reporting progress against total, and verifies the checksum after the copy.
-// It returns the byte count written. name labels the asset in error messages.
-// It is the single copy/verify core shared by file and archive downloads.
-func copyBodyVerified(dst io.Writer, body io.Reader, total int64, name, sha256Hex string, onProgress func(float64)) (int64, error) {
+// reporting the raw bytes-written/total against total (percentage is derived
+// once, by the caller, so it can be clamped in one place), and verifies the
+// checksum after the copy. It returns the byte count written. name labels the
+// asset in error messages. It is the single copy/verify core shared by file
+// and archive downloads.
+func copyBodyVerified(dst io.Writer, body io.Reader, total int64, name, sha256Hex string, onProgress func(bytes, total int64)) (int64, error) {
 	hasher := sha256.New()
 	sink := dst
 	if sha256Hex != "" {
@@ -727,8 +864,8 @@ func copyBodyVerified(dst io.Writer, body io.Reader, total int64, name, sha256He
 				return written, fmt.Errorf("download %s: %w", name, werr)
 			}
 			written += int64(n)
-			if total > 0 && onProgress != nil {
-				onProgress(float64(written) / float64(total) * 100)
+			if onProgress != nil {
+				onProgress(written, total)
 			}
 		}
 		if readErr == io.EOF {
@@ -753,7 +890,7 @@ func copyBodyVerified(dst io.Writer, body io.Reader, total int64, name, sha256He
 // renames into place on success. The temp file is removed on any failure, so a
 // partial or corrupt download never lands at path. file names the asset in
 // error messages.
-func downloadFile(ctx context.Context, path, url, file string, size int64, sha256Hex string, onProgress func(float64)) error {
+func downloadFile(ctx context.Context, path, url, file string, size int64, sha256Hex string, onProgress func(bytes, total int64)) error {
 	resp, err := openDownload(ctx, url, file)
 	if err != nil {
 		return err

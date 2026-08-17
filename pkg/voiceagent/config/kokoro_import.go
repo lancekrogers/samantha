@@ -146,9 +146,9 @@ func fetchOrReuse(ctx context.Context, url, dest, name, localPath string, onProg
 			return nil
 		}
 	}
-	var fileProg func(float64)
+	var fileProg func(bytes, total int64)
 	if onProgress != nil {
-		fileProg = func(p float64) { onProgress(name, p) }
+		fileProg = func(bytes, total int64) { onProgress(name, pctOfBytes(bytes, total)) }
 	}
 	return downloadFile(ctx, dest, url, name, 0, "", fileProg)
 }
