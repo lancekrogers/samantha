@@ -843,16 +843,27 @@ func ConfigDir() string {
 // SetConfigDirForTest redirects ConfigDir (and the default config file path)
 // for the duration of t. Used by persona and other packages that write under
 // the install root.
+//
+// It also swaps in a fresh viper instance. Values written by SetAndSave live
+// as in-memory overrides that outlive a config file, so without this a test
+// that saves active_persona would carry that id into every later test in the
+// package and fail it against a different temp install.
 func SetConfigDirForTest(t interface {
 	Helper()
 	Cleanup(func())
 }, dir string) {
 	t.Helper()
-	origDir, origFile := configDir, configFile
+	mu.Lock()
+	origDir, origFile, origViper := configDir, configFile, v
 	configDir = dir
 	configFile = filepath.Join(dir, "config.yaml")
+	v = viper.New()
+	setDefaults(v)
+	mu.Unlock()
 	t.Cleanup(func() {
-		configDir, configFile = origDir, origFile
+		mu.Lock()
+		defer mu.Unlock()
+		configDir, configFile, v = origDir, origFile, origViper
 	})
 }
 

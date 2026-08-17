@@ -326,6 +326,7 @@ func runServe(cfg *config.Config) error {
 
 	server := netapi.New(netapi.Options{
 		SetPersona:   serveSetPersona(cfg, p, liveTTS, ref),
+		ListPersonas: servePersonaList(cfg),
 		Bind:         addr,
 		ExtraBinds:   extraBinds,
 		AllowPublic:  serveAllowPublic,
@@ -397,6 +398,50 @@ func runServe(cfg *config.Config) error {
 //
 // Fanout always owns the local player (if any) so cleanup is single-owner —
 // no double Close between serve and buildPipeline.
+// servePersonaList backs GET /v1/personas.
+//
+// It closes over the same *config.Config that servePersonaSwitcher.apply
+// overwrites, so `active` reports the persona a runtime set_persona selected
+// even though nothing was persisted — a client that saw config.yaml's answer
+// would show the wrong persona for the rest of the session.
+//
+// Each row's stack is resolved through persona.ResolveBinding, the same call
+// that binds a conversation, so the list reports what a turn would actually
+// run with rather than a profile's inherit-me blanks.
+func servePersonaList(cfg *config.Config) func() ([]netapi.PersonaSummary, error) {
+	return func() ([]netapi.PersonaSummary, error) {
+		profiles, err := persona.List()
+		if err != nil {
+			return nil, err
+		}
+		active := persona.ActiveID(cfg)
+		out := make([]netapi.PersonaSummary, 0, len(profiles))
+		for _, p := range profiles {
+			binding, err := persona.ResolveBinding(cfg, p.ID)
+			if err != nil {
+				return nil, err
+			}
+			snap := binding.Config()
+			out = append(out, netapi.PersonaSummary{
+				ID:          binding.PersonaID,
+				DisplayName: binding.DisplayName,
+				Active:      binding.PersonaID == active,
+				Builtin:     p.Builtin,
+				Brain: netapi.PersonaBrain{
+					Provider: binding.BrainProvider,
+					Model:    binding.BrainModel,
+				},
+				TTS: netapi.PersonaTTS{
+					Provider: snap.TTSProvider,
+					Voice:    activeVoiceFor(snap),
+					Tier:     activeTierFor(snap),
+				},
+			})
+		}
+		return out, nil
+	}
+}
+
 // serveSetPersona backs the set_persona control message.
 //
 // It validates and resolves the persona, then constructs the complete runtime
@@ -430,6 +475,14 @@ func (s *servePersonaSwitcher) apply(id string) (netapi.PersonaAck, error) {
 	if err != nil {
 		return netapi.PersonaAck{}, err
 	}
+	// The ack carries the hash of the identity text the next turn will see, so
+	// a client that just edited a prompt can tell whether the model picked it
+	// up. An unresolvable document leaves it empty rather than failing a switch
+	// whose brain and voice did install — the ack's other fields are still true.
+	promptHash, hashErr := persona.PromptHashFor(binding.PromptRef)
+	if hashErr != nil {
+		promptHash = ""
+	}
 	nextCfg := binding.Config()
 	nextBrain, err := s.newBrain(nextCfg)
 	if err != nil {
@@ -461,7 +514,7 @@ func (s *servePersonaSwitcher) apply(id string) (netapi.PersonaAck, error) {
 	return netapi.PersonaAck{
 		ID:          binding.PersonaID,
 		DisplayName: binding.DisplayName,
-		PromptHash:  binding.PromptRef,
+		PromptHash:  promptHash,
 	}, nil
 }
 

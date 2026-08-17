@@ -19,11 +19,6 @@ import (
 	"github.com/lancekrogers/samantha/pkg/voiceagent/tts"
 )
 
-var (
-	voiceLocale string
-	voiceGender string
-)
-
 var testCmd = &cobra.Command{
 	Use:   "test",
 	Short: "Test microphone and speaker",
@@ -97,51 +92,6 @@ func runSpeakerTest(ctx context.Context, cfg *config.Config) error {
 		return result.Err
 	}
 	return nil
-}
-
-var voicesCmd = &cobra.Command{
-	Use:   "voices",
-	Short: "List available TTS voices",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.Load()
-		if err != nil {
-			return err
-		}
-
-		fmt.Printf("\n  %s %s\n\n", titleStyle.Render("Voices for:"), sectionStyle.Render(cfg.TTSProvider))
-
-		if err := config.EnsureRuntimeAssets(cmd.Context(), cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
-			return err
-		}
-
-		ttsProvider, cleanup, err := tts.NewProvider(cfg)
-		if err != nil {
-			return fmt.Errorf("init TTS: %w", err)
-		}
-		if cleanup != nil {
-			defer cleanup()
-		}
-
-		voices := ttsProvider.ListVoices(voiceLocale, voiceGender)
-		if len(voices) == 0 {
-			fmt.Println(dimStyle.Render("  No voices found."))
-			return nil
-		}
-
-		for _, v := range voices {
-			active := ""
-			activeVoice := cfg.TTSVoice
-			if strings.EqualFold(strings.TrimSpace(cfg.TTSProvider), "qwen3-tts") {
-				activeVoice = cfg.QwenTTSVoice
-			}
-			if strings.EqualFold(v.Name, activeVoice) {
-				active = " " + activeStyle.Render("●")
-			}
-			fmt.Printf("  %s %s  %s\n", keyStyle.Render(fmt.Sprintf("%-16s", v.Name)), v.FriendlyName, dimStyle.Render(fmt.Sprintf("%s / %s", v.Gender, v.Locale))+active)
-		}
-		fmt.Printf("\n  %s\n\n", dimStyle.Render(fmt.Sprintf("%d voices found.", len(voices))))
-		return nil
-	},
 }
 
 var providersCmd = &cobra.Command{
@@ -368,12 +318,29 @@ func ttsImplemented(name string) bool {
 	return false
 }
 
+// ttsVoiceCatalog lists the voice ids a TTS provider publishes without loading
+// its model. `persona edit --voice` runs on every save from the Mac editor, so
+// it validates against this static catalog rather than constructing a provider
+// and paging a few hundred megabytes of weights into memory. Providers whose
+// voices only exist inside a running worker (qwen3-tts) return no names, and
+// the caller then keeps the value as typed.
+func ttsVoiceCatalog(provider string) ([]string, error) {
+	voices, err := tts.StaticVoices(provider, "", "")
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(voices))
+	for _, v := range voices {
+		names = append(names, v.Name)
+	}
+	return names, nil
+}
+
 func init() {
-	voicesCmd.Flags().StringVarP(&voiceLocale, "locale", "l", "", "Filter by locale (e.g. en-US)")
-	voicesCmd.Flags().StringVarP(&voiceGender, "gender", "g", "", "Filter by gender (male/female)")
+	personaVoiceCatalogFn = ttsVoiceCatalog
 
 	rootCmd.AddCommand(testCmd)
-	rootCmd.AddCommand(voicesCmd)
+	rootCmd.AddCommand(newVoicesCmd())
 	rootCmd.AddCommand(providersCmd)
 	rootCmd.AddCommand(resumeCmd)
 	rootCmd.AddCommand(continueCmd)

@@ -42,6 +42,18 @@ type Options struct {
 	// would be a lie the client acts on.
 	SetPersona func(id string) (PersonaAck, error)
 
+	// ListPersonas, when set, enables GET /v1/personas. It is a callback for
+	// the same reason SetPersona is: netapi must not own persona resolution.
+	// nil leaves the route unregistered so a serve without it answers 404
+	// rather than an empty list — a client feature-detects by status, the way
+	// Meetings gates /v1/meeting/*.
+	//
+	// The implementation must report the persona the runtime is using, not the
+	// persisted one: a set_persona changes the live config without writing
+	// config.yaml, and a list that disagreed with the running agent would be
+	// worse than no list.
+	ListPersonas func() ([]PersonaSummary, error)
+
 	Credentials  *Credentials
 	Bus          *events.Bus
 	Dispatcher   *Dispatcher
@@ -84,6 +96,12 @@ type PersonaAck struct {
 	DisplayName string
 	// PromptHash identifies the assembled prompt, so a client can tell whether
 	// the model is seeing the document it expects.
+	//
+	// It is the first 12 hex characters of the sha256 of the assembled prompt
+	// text — a value that changes when the document changes. A document *name*
+	// here would be useless: it stays the same across every edit, which is
+	// exactly the question this field exists to answer. Empty means serve
+	// could not resolve the document.
 	PromptHash string
 }
 
@@ -171,6 +189,11 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	mux.HandleFunc("GET /v1/stream", s.handleStream)
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("GET /v1/sessions", s.handleSessions)
+	// ADR-004: read-only persona list. Registered only when serve supplied the
+	// resolver, so a build without it 404s instead of lying with [].
+	if s.opts.ListPersonas != nil {
+		mux.HandleFunc("GET /v1/personas", s.handlePersonas)
+	}
 	mux.HandleFunc("POST /v1/sessions/{id}/resume", s.handleResume)
 	// Phase 2: public pairing exchange (short code → long-lived token).
 	mux.HandleFunc("POST /v1/pair", s.handlePair)
