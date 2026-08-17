@@ -34,6 +34,9 @@ func patchConfigSource(source []byte, doc *yaml.Node, path []string, value any) 
 	if src.root == nil || len(src.root.Content) == 0 && src.root.Line == 0 {
 		return src.appendEntry(path, value)
 	}
+	if err := refuseFlowSection(src.root, "the document"); err != nil {
+		return nil, err
+	}
 	target, err := src.locate(path)
 	if err != nil {
 		return nil, err
@@ -61,6 +64,23 @@ func deleteConfigKey(source []byte, doc *yaml.Node, path []string) ([]byte, bool
 	lines = append(lines, src.lines[:start-1]...)
 	lines = append(lines, src.lines[end:]...)
 	return src.join(lines), true, nil
+}
+
+// refuseFlowSection rejects an edit that would have to reach inside a flow
+// mapping (`speaker: {live: {window_ms: 1500}}`).
+//
+// A flow collection is one line: there is no line belonging to the key inside
+// it, so there is nothing to edit line by line. The only way to write such a key
+// is to re-encode the document — which is exactly what this writer exists to
+// stop doing, and would reformat every other line of the user's file to change
+// one value. Refusing, with the fix named, is the honest answer: the file is
+// left alone and the user is told what to change. A flow *value* is fine —
+// `skills_disabled: []` is replaced whole like any other value.
+func refuseFlowSection(mapping *yaml.Node, name string) error {
+	if mapping == nil || mapping.Style&yaml.FlowStyle == 0 {
+		return nil
+	}
+	return fmt.Errorf("config key %q is written in flow style ({...}); rewrite that section in block style to edit keys under it", name)
 }
 
 // sourceDoc is config.yaml as text plus the tree parsed from it.
@@ -122,6 +142,9 @@ func (s *sourceDoc) locate(path []string) (entryTarget, error) {
 		}
 		if value.Kind != yaml.MappingNode {
 			return entryTarget{}, fmt.Errorf("config key %q is not a section", segment)
+		}
+		if err := refuseFlowSection(value, segment); err != nil {
+			return entryTarget{}, err
 		}
 		mapping, mappingKey = value, key
 	}
@@ -297,22 +320,32 @@ func renderEntry(key string, nested []string, value any, indent string, step int
 // detectIndentStep reads the file's own nesting width, so a new section is
 // created in the style of the file it joins. Two spaces is the fallback and
 // the narrowest step wins when a file mixes widths.
+//
+// Only a child that starts on a line of its own counts. A flow collection lives
+// on one line, so the column its keys happen to sit at is a function of the text
+// before them, not of indentation: `speaker: {live: {window_ms: 1500}}` reads as
+// a 7-space step and would have written every new list and section 7 spaces in.
 func detectIndentStep(root *yaml.Node) int {
 	step := 0
-	var walk func(mapping *yaml.Node, column int)
-	walk = func(mapping *yaml.Node, column int) {
+	var walk func(mapping, parentKey *yaml.Node)
+	walk = func(mapping, parentKey *yaml.Node) {
+		if mapping.Style&yaml.FlowStyle != 0 {
+			return
+		}
 		for i := 0; i+1 < len(mapping.Content); i += 2 {
 			key, value := mapping.Content[i], mapping.Content[i+1]
-			if delta := key.Column - column; column > 0 && delta > 0 && (step == 0 || delta < step) {
-				step = delta
+			if parentKey != nil && key.Line > parentKey.Line {
+				if delta := key.Column - parentKey.Column; delta > 0 && (step == 0 || delta < step) {
+					step = delta
+				}
 			}
 			if value.Kind == yaml.MappingNode {
-				walk(value, key.Column)
+				walk(value, key)
 			}
 		}
 	}
 	if root != nil && root.Kind == yaml.MappingNode {
-		walk(root, 0)
+		walk(root, nil)
 	}
 	if step < 1 || step > 9 {
 		return 2

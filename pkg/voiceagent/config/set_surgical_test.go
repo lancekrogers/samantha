@@ -292,3 +292,53 @@ func TestSetKeyFileKeepsTheFilesLineEndings(t *testing.T) {
 		t.Fatalf("CRLF document not preserved:\n%s", diffReport(want, got))
 	}
 }
+
+// A flow collection lives on one line, so there is no line belonging to a key
+// inside it and nothing for a line-by-line writer to edit. Refusing — naming
+// the section and the fix — is the honest answer: the alternative is
+// re-encoding the document, which is the thing this writer exists to stop.
+// A flow *value* is not a flow section and must still be written.
+func TestSetKeyFileAndFlowStyle(t *testing.T) {
+	const flowConfig = "tts_provider: kokoro\nspeaker: {live: {window_ms: 1500}}\nskills_disabled: []\n"
+
+	t.Run("a key inside a flow section is refused and nothing is rewritten", func(t *testing.T) {
+		path := newInstall(t, flowConfig)
+
+		_, err := SetKeyFile("speaker.live.window_ms", "2000")
+		setErr := setError(t, err)
+		if setErr.Code != CodeWriteFailed {
+			t.Fatalf("code = %q, want %q", setErr.Code, CodeWriteFailed)
+		}
+		if !strings.Contains(setErr.Message, "flow style") || !strings.Contains(setErr.Message, "block style") {
+			t.Errorf("message %q does not name the problem and the fix", setErr.Message)
+		}
+		if got := readConfig(t, path); got != flowConfig {
+			t.Errorf("a refused write rewrote the file:\n%s", got)
+		}
+	})
+
+	t.Run("a flow value is replaced like any other value", func(t *testing.T) {
+		path := newInstall(t, flowConfig)
+
+		mustSet(t, "skills_disabled", `["pdf-fill","calibre"]`)
+
+		want := strings.Replace(flowConfig, "skills_disabled: []\n", "skills_disabled:\n  - pdf-fill\n  - calibre\n", 1)
+		if got := readConfig(t, path); got != want {
+			t.Fatalf("flow value not replaced cleanly:\n%s", diffReport(want, got))
+		}
+	})
+
+	t.Run("a flow section does not set the file's indent width", func(t *testing.T) {
+		// `speaker: {live: {window_ms: 1500}}` puts window_ms at column 18 and
+		// live at column 11, which reads as a 7-space step if columns on one
+		// line are trusted. Every new list and section would have been written
+		// 7 spaces in.
+		path := newInstall(t, "tts_provider: kokoro\nspeaker: {live: {window_ms: 1500}}\n")
+
+		mustSet(t, "skills_disabled", `["pdf-fill"]`)
+
+		if got := readConfig(t, path); !strings.Contains(got, "\n  - pdf-fill\n") {
+			t.Errorf("indent step taken from a flow collection:\n%q", got)
+		}
+	})
+}
