@@ -19,11 +19,11 @@ import (
 
 // voicePreviewJSON is the body of `voices preview --json`.
 type voicePreviewJSON struct {
-	Provider   string `json:"provider"`
-	Voice      string `json:"voice"`
-	Tier       string `json:"tier"`
-	Text       string `json:"text"`
-	Path       string `json:"path"`
+	Provider string `json:"provider"`
+	Voice    string `json:"voice"`
+	Tier     string `json:"tier"`
+	Text     string `json:"text"`
+	Path     string `json:"path"`
 	// SampleRate is whatever Synthesize reported. A player that assumes a rate
 	// instead of reading this one plays the clip at the wrong speed.
 	SampleRate int   `json:"sample_rate"`
@@ -101,9 +101,6 @@ func renderVoicePreview(cmd *cobra.Command) (*voicePreviewJSON, error) {
 	if out == "" {
 		return nil, fmt.Errorf("--out is required")
 	}
-	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
-		return nil, fmt.Errorf("creating output dir for %s: %w", out, err)
-	}
 
 	if ensure, _ := cmd.Flags().GetBool("ensure"); ensure {
 		if err := voiceStack.ensureAssets(cmd.Context(), cfg, config.AssetRequest{NeedTTS: true}, nil); err != nil {
@@ -111,6 +108,12 @@ func renderVoicePreview(cmd *cobra.Command) (*voicePreviewJSON, error) {
 		}
 	} else if err := requireTTSAssets(cfg); err != nil {
 		return nil, err
+	}
+
+	// Only now that the audition is going to happen: a refused preview must
+	// leave nothing behind, not even an empty directory.
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+		return nil, fmt.Errorf("creating output dir for %s: %w", out, err)
 	}
 
 	text, _ := cmd.Flags().GetString("text")
@@ -135,6 +138,9 @@ func renderVoicePreview(cmd *cobra.Command) (*voicePreviewJSON, error) {
 	}
 	if len(samples) == 0 {
 		return nil, fmt.Errorf("%s produced no audio for voice %q", cfg.TTSProvider, voice)
+	}
+	if rate <= 0 {
+		return nil, fmt.Errorf("%s reported sample rate %d for voice %q", cfg.TTSProvider, rate, voice)
 	}
 	if err := audio.WriteWAVFloat32(out, rate, samples); err != nil {
 		return nil, fmt.Errorf("writing %s: %w", out, err)

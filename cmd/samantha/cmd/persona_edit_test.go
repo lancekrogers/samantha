@@ -431,3 +431,67 @@ func TestPersonaShowActiveFlag(t *testing.T) {
 		t.Fatal("active = true for a non-active persona")
 	}
 }
+
+// Writing a body binds the profile to its own document. The shared one the
+// persona used to reference stays on disk, and changed[] names the ref that
+// actually moved.
+func TestPersonaEditPromptRepointsSharedRef(t *testing.T) {
+	personaEnv(t)
+	if err := persona.WriteSystemPrompt("house-style", "You are a house-style agent."); err != nil {
+		t.Fatal(err)
+	}
+	writePersona(t, &persona.Profile{
+		Schema: persona.Schema, ID: "borrower", DisplayName: "Borrower",
+		TTS:     persona.TTS{Provider: "kokoro", Voice: "af_heart"},
+		Prompts: persona.PromptRefs{Persona: "house-style"},
+	})
+	shared := filepath.Join(config.PromptsDir(), "persona", "house-style.yaml")
+	before, err := os.ReadFile(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runPersona(t, "edit", "borrower", "--prompt", "You are Borrower.", "--json")
+	if err != nil {
+		t.Fatalf("persona edit error = %v (out %s)", err, out)
+	}
+	got := decodePersonaResult(t, out)
+	want := []string{"prompt", "prompts.persona"}
+	if strings.Join(got.Changed, ",") != strings.Join(want, ",") {
+		t.Fatalf("changed = %v, want %v", got.Changed, want)
+	}
+	if got.Persona.Prompts.Persona != "borrower" {
+		t.Fatalf("prompts.persona = %q, want borrower", got.Persona.Prompts.Persona)
+	}
+	after, err := os.ReadFile(shared)
+	if err != nil {
+		t.Fatalf("shared document gone: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("shared document rewritten:\n%s", after)
+	}
+}
+
+// An edit that passes no stack flag reports no stack change, even when the
+// profile on disk carries stray whitespace UpdateStack would trim.
+func TestPersonaEditIgnoresWhitespaceOnlyStackDrift(t *testing.T) {
+	personaEnv(t)
+	writePersona(t, &persona.Profile{
+		Schema: persona.Schema, ID: "uncle-fu", DisplayName: "Uncle Fu",
+		Brain:   persona.Brain{Provider: "ollama ", Model: " qwen2.5:14b"},
+		TTS:     persona.TTS{Provider: "kokoro", Voice: "af_heart "},
+		Prompts: persona.PromptRefs{Persona: "uncle-fu"},
+	})
+	if err := persona.WriteSystemPrompt("uncle-fu", "You are Uncle Fu."); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runPersona(t, "edit", "uncle-fu", "--display-name", "Uncle Fu Senior", "--json")
+	if err != nil {
+		t.Fatalf("persona edit error = %v (out %s)", err, out)
+	}
+	got := decodePersonaResult(t, out)
+	if len(got.Changed) != 1 || got.Changed[0] != "display_name" {
+		t.Fatalf("changed = %v, want only [display_name]", got.Changed)
+	}
+}

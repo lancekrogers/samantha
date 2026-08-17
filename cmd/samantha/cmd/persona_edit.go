@@ -145,6 +145,12 @@ func applyPersonaEdit(cmd *cobra.Command, id string) (*personaResultJSON, error)
 			return nil, withChanged(err, changed)
 		}
 		changed = append(changed, "prompt")
+		// Writing a body also binds the profile to its own document. When the
+		// persona was riding a shared ref, that ref moved — and the shared
+		// document was deliberately left intact — so say so.
+		if strings.TrimSpace(p.Prompts.Persona) != p.ID {
+			changed = append(changed, "prompts.persona")
+		}
 	}
 
 	// Re-read so the reported profile is what a later load will see, not what
@@ -199,7 +205,19 @@ func loadPersonaForCLI(id string) (*persona.Profile, error) {
 // other than a full merge here would silently clear the fields left untouched.
 func mergePersonaStack(cmd *cobra.Command, cfg *config.Config, p *persona.Profile) (persona.Brain, persona.TTS, []string, error) {
 	flags := cmd.Flags()
-	brain, tts := p.Brain, p.TTS
+	// Trim the base as well as the flags. UpdateStack trims what it writes, so
+	// comparing a raw on-disk value against a trimmed one would report a field
+	// as changed for an edit that never touched it.
+	base := persona.Brain{
+		Provider: strings.TrimSpace(p.Brain.Provider),
+		Model:    strings.TrimSpace(p.Brain.Model),
+	}
+	baseTTS := persona.TTS{
+		Provider: strings.TrimSpace(p.TTS.Provider),
+		Voice:    strings.TrimSpace(p.TTS.Voice),
+		Tier:     strings.TrimSpace(p.TTS.Tier),
+	}
+	brain, tts := base, baseTTS
 
 	stringFlag := func(name string) (string, bool) {
 		if !flags.Changed(name) {
@@ -240,19 +258,19 @@ func mergePersonaStack(cmd *cobra.Command, cfg *config.Config, p *persona.Profil
 	}
 
 	var paths []string
-	if brain.Provider != strings.TrimSpace(p.Brain.Provider) {
+	if brain.Provider != base.Provider {
 		paths = append(paths, "brain.provider")
 	}
-	if brain.Model != strings.TrimSpace(p.Brain.Model) {
+	if brain.Model != base.Model {
 		paths = append(paths, "brain.model")
 	}
-	if tts.Provider != strings.TrimSpace(p.TTS.Provider) {
+	if tts.Provider != baseTTS.Provider {
 		paths = append(paths, "tts.provider")
 	}
-	if tts.Voice != strings.TrimSpace(p.TTS.Voice) {
+	if tts.Voice != baseTTS.Voice {
 		paths = append(paths, "tts.voice")
 	}
-	if tts.Tier != strings.TrimSpace(p.TTS.Tier) {
+	if tts.Tier != baseTTS.Tier {
 		paths = append(paths, "tts.tier")
 	}
 	return brain, tts, paths, nil

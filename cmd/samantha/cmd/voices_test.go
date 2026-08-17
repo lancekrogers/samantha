@@ -425,3 +425,37 @@ func TestVoicesCommandTree(t *testing.T) {
 		}
 	}
 }
+
+// A refused preview leaves nothing behind — not even the directory it would
+// have written into.
+func TestVoicesPreviewRefusalCreatesNoDirectory(t *testing.T) {
+	dir := personaEnv(t)
+	stubVoiceStack(t, kokoroFake(), []string{"Kokoro model"})
+	outDir := filepath.Join(dir, "previews")
+	out := filepath.Join(outDir, "af_heart.wav")
+
+	if _, err := runVoicesCmd(t, "preview", "--voice", "af_heart", "--out", out, "--json"); err == nil {
+		t.Fatal("voices preview error = nil, want assets_missing")
+	}
+	if _, err := os.Stat(outDir); !os.IsNotExist(err) {
+		t.Fatalf("created %s on a refused preview: %v", outDir, err)
+	}
+}
+
+// A provider that reports no sample rate must produce a clear error, not a
+// divide-by-zero on duration_ms.
+func TestVoicesPreviewRejectsZeroSampleRate(t *testing.T) {
+	dir := personaEnv(t)
+	fake := kokoroFake()
+	fake.sampleRate = 0
+	stubVoiceStack(t, fake, nil)
+	out := filepath.Join(dir, "preview.wav")
+
+	stdout, err := runVoicesCmd(t, "preview", "--voice", "af_heart", "--out", out, "--json")
+	if err == nil {
+		t.Fatalf("voices preview error = nil, want a sample-rate failure (out %s)", stdout)
+	}
+	if _, msg, _ := decodeErrorJSON(t, stdout); !strings.Contains(msg, "sample rate") {
+		t.Fatalf("error = %q, want it to name the sample rate", msg)
+	}
+}

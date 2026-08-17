@@ -53,11 +53,13 @@ func deletePersona(cmd *cobra.Command, id string) (*personaDeleteJSON, error) {
 	if err != nil {
 		return nil, err
 	}
-	if yes, _ := cmd.Flags().GetBool("yes"); !yes {
-		return nil, codedError(codeConfirmRequired, "deleting persona %q is not reversible: pass --yes to confirm", id)
-	}
+	// Existence first: asking someone to confirm deleting a persona that is not
+	// there tells them the wrong thing about their install.
 	if _, err := loadPersonaForCLI(id); err != nil {
 		return nil, err
+	}
+	if yes, _ := cmd.Flags().GetBool("yes"); !yes {
+		return nil, codedError(codeConfirmRequired, "deleting persona %q is not reversible: pass --yes to confirm", id)
 	}
 	res, err := persona.Delete(cfg, id)
 	if err != nil {

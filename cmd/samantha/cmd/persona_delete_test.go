@@ -218,3 +218,19 @@ func TestPersonaDeleteInactiveKeepsActive(t *testing.T) {
 		t.Fatalf("active_persona = %q, want samantha", got.ActivePersona)
 	}
 }
+
+// Confirmation is about a real persona: an unknown id is not_found even
+// without --yes, so a UI never asks the user to confirm a no-op.
+func TestPersonaDeleteUnknownBeatsConfirmation(t *testing.T) {
+	personaEnv(t)
+	seedUncleFu(t)
+
+	out, err := runPersona(t, "delete", "ghost", "--json")
+	if err == nil {
+		t.Fatalf("persona delete error = nil, want not_found (out %s)", out)
+	}
+	code, msg, _ := decodeErrorJSON(t, out)
+	if code != codeNotFound {
+		t.Fatalf("code = %q, want %q (error %q)", code, codeNotFound, msg)
+	}
+}

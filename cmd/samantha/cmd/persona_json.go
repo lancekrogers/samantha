@@ -67,9 +67,10 @@ func emitJSONError(cmd *cobra.Command, err error) error {
 	if coded != nil {
 		body.Changed = coded.Changed
 	}
-	if encErr := encodeJSON(cmd, body); encErr != nil {
-		return encErr
-	}
+	// A failure to encode the envelope must not replace the reason the command
+	// failed: the caller still needs the original error, and stderr still gets
+	// it even when stdout could not be written.
+	_ = encodeJSON(cmd, body)
 	return err
 }
 
