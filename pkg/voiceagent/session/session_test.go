@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -202,5 +203,109 @@ func TestSaveBackupWritesSiblingWithoutMutatingSession(t *testing.T) {
 	sessions := listIn(dir)
 	if len(sessions) != 1 || sessions[0].ID != s.ID {
 		t.Fatalf("listIn = %d sessions, want only the live session", len(sessions))
+	}
+}
+
+// --- Store.Delete (SES-A1) ---
+
+func TestStoreDeleteRemovesSessionAndBackup(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	s := New("claude", "sonnet")
+	if err := store.Save(s, []brain.Turn{{Role: "user", Content: "hi"}}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if err := s.saveBackupTo(dir, []brain.Turn{{Role: "user", Content: "old"}}); err != nil {
+		t.Fatalf("saveBackupTo() error = %v", err)
+	}
+
+	if err := store.Delete(s.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, s.ID+".json")); !os.IsNotExist(err) {
+		t.Fatalf("session file still exists after Delete: err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, s.ID+".pre-compact.json")); !os.IsNotExist(err) {
+		t.Fatalf("pre-compact backup still exists after Delete: err=%v", err)
+	}
+}
+
+func TestStoreDeleteWithoutBackupSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	s := New("claude", "sonnet")
+	if err := store.Save(s, nil); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	// No .pre-compact.json was ever written for this session; its absence
+	// during the backup-removal step must not turn into an error.
+	if err := store.Delete(s.ID); err != nil {
+		t.Fatalf("Delete() error = %v, want nil (missing backup is fine)", err)
+	}
+}
+
+func TestStoreDeleteUnknownIDReturnsSentinel(t *testing.T) {
+	store := NewStore(t.TempDir())
+	err := store.Delete("20260101-000000-dead")
+	if !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("Delete() error = %v, want ErrSessionNotFound", err)
+	}
+}
+
+func TestStoreDeleteRejectsPathEscape(t *testing.T) {
+	dir := t.TempDir()
+	// A file just outside dir that a naive join could otherwise reach.
+	outside := filepath.Join(filepath.Dir(dir), "outside-victim.json")
+	if err := os.WriteFile(outside, []byte("do-not-touch"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(outside) })
+
+	store := NewStore(dir)
+	cases := []string{
+		"../outside-victim",
+		"..",
+		"foo/../../outside-victim",
+		"/etc/passwd",
+		"a/b",
+		`a\b`,
+		"",
+	}
+	for _, id := range cases {
+		err := store.Delete(id)
+		if err == nil {
+			t.Errorf("Delete(%q) error = nil, want a rejection", id)
+		}
+		if errors.Is(err, ErrSessionNotFound) {
+			// A rejected id must be its own error, not indistinguishable
+			// from "well-formed id, nothing there".
+			t.Errorf("Delete(%q) returned ErrSessionNotFound, want a distinct invalid-id error", id)
+		}
+	}
+
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("file outside the store directory was affected: %v", err)
+	}
+}
+
+func TestStoreDeleteIsomorphicWithListedID(t *testing.T) {
+	// Guards the id shape delete callers actually pass: a real generated id
+	// round-trips through Save -> List -> Delete cleanly.
+	dir := t.TempDir()
+	store := NewStore(dir)
+	s := New("ollama", "qwen3:8b")
+	if err := store.Save(s, []brain.Turn{{Role: "user", Content: "hi"}}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if !regexp.MustCompile(`^\d{8}-\d{6}-[0-9a-f]{4}$`).MatchString(s.ID) {
+		t.Fatalf("generated id %q does not match the documented id shape", s.ID)
+	}
+	if err := store.Delete(s.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if got := store.List(); len(got) != 0 {
+		t.Fatalf("List() = %+v after Delete, want empty", got)
 	}
 }
