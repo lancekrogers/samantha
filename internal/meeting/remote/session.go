@@ -27,6 +27,11 @@ type Session struct {
 	pipeline       Pipeline
 	now            func() time.Time
 	processTimeout time.Duration
+	// plan is the start-time filing intent, already on disk as a route_plan
+	// event; deliverPlanFn files it once the meeting is ready. A nil func
+	// leaves delivery to `meeting sweep`.
+	plan          routePlan
+	deliverPlanFn RoutePlanFunc
 
 	mu     sync.Mutex
 	writer *meetinglog.Writer
@@ -395,7 +400,9 @@ func (s *Session) recordGaps(gaps []Gap) {
 }
 
 // publish closes the bundle (when this was a real stop) and records the
-// terminal state the client will poll.
+// terminal state the client will poll, then files the start-time route plan.
+// Delivery runs after the bundle is closed because the note is rendered from
+// the finished event stream — session_end included.
 func (s *Session) publish(pipelineErr error) {
 	s.mu.Lock()
 	writer, interrupted := s.writer, s.interrupted
@@ -407,6 +414,13 @@ func (s *Session) publish(pipelineErr error) {
 		summary, closeErr = writer.Close()
 	}
 
+	if s.recordOutcome(summary, closeErr, pipelineErr, interrupted) == StateReady {
+		s.deliverPlan(summary)
+	}
+}
+
+// recordOutcome commits the terminal state and returns it.
+func (s *Session) recordOutcome(summary meetinglog.Summary, closeErr, pipelineErr error, interrupted bool) State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.writer = nil
@@ -423,6 +437,31 @@ func (s *Session) publish(pipelineErr error) {
 	default:
 		s.state = StateReady
 	}
+	return s.state
+}
+
+// deliverPlan files the meeting where its start request planned, exactly once,
+// through the same RouteOnce gate a manual route takes — so a user tapping
+// "File notes" while the plan is in flight shares that receipt instead of
+// filing the notes twice.
+//
+// A delivery failure is deliberately not raised on Status: the durable record
+// is the route_failed event RouteByID appends, which is what makes the bundle
+// visibly failed in the meeting index and retryable by `meeting sweep`. An
+// earlier failure (nothing rendered, nothing attempted) leaves the plan
+// undelivered, which the same sweep picks up.
+func (s *Session) deliverPlan(summary meetinglog.Summary) {
+	s.mu.Lock()
+	plan, deliver := s.plan, s.deliverPlanFn
+	s.mu.Unlock()
+	if plan.destID == "" || deliver == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), routePlanTimeout)
+	defer cancel()
+	_, _ = s.RouteOnce(plan.key(), func() (RouteReceipt, error) {
+		return deliver(ctx, summary, plan.destID, plan.body)
+	})
 }
 
 // fail records a pre-pipeline failure without discarding anything on disk.

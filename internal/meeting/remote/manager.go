@@ -45,6 +45,10 @@ type Options struct {
 	// Pipeline runs transcription and diarization after a meeting stops.
 	// A nil Pipeline still records audio; results are reported as failed.
 	Pipeline Pipeline
+	// RoutePlan delivers a start-time route_plan once the meeting is ready.
+	// Nil is not an error: the plan is still written to the bundle, and
+	// `meeting sweep` delivers it later.
+	RoutePlan RoutePlanFunc
 	// STTLabel is recorded in the bundle header, matching what the desktop
 	// recorder writes.
 	STTLabel string
@@ -134,6 +138,12 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (*Session, error)
 	if err != nil {
 		return nil, err
 	}
+	// Validate the plan before anything exists on disk: a malformed request
+	// must not leave an orphan bundle behind.
+	plan, err := normalizeRoutePlan(req.RoutePlan)
+	if err != nil {
+		return nil, err
+	}
 	id, err := newMeetingID()
 	if err != nil {
 		return nil, err
@@ -141,6 +151,15 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (*Session, error)
 	bundlePath, writer, err := createBundle(m.opts.Root, title, m.opts.STTLabel, source, id, now)
 	if err != nil {
 		return nil, err
+	}
+	// Before the first segment, so a meeting that dies mid-recording still
+	// leaves a plan the sweep can deliver — the crash-safe ordering the
+	// desktop recorder already has.
+	if plan.destID != "" {
+		if err := writer.WriteRoutePlan(plan.destID, plan.body); err != nil {
+			_, _ = writer.Close()
+			return nil, err
+		}
 	}
 	segments, err := newSegmentStore(bundlePath, m.opts.SegmentSeconds)
 	if err != nil {
@@ -152,6 +171,7 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (*Session, error)
 		startedAt: writer.StartedAt(), segments: segments, pipeline: m.opts.Pipeline,
 		now: m.opts.Now, processTimeout: m.opts.ProcessTimeout,
 		writer: writer, state: StateRecording, lastActivity: now, lastSeq: -1,
+		plan: plan, deliverPlanFn: m.opts.RoutePlan,
 	}
 	m.sessions[id] = session
 	return session, nil

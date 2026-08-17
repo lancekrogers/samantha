@@ -158,8 +158,10 @@ func (s *Server) handleMeetingRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	// Key by normalized capture + campaign: retries of the same route share
 	// one execution and one receipt, while a different capture mode for the
-	// same campaign is a genuinely new route.
-	key := meeting.NormalizeCampaignCapture(req.Capture) + "\x00" + campaign
+	// same campaign is a genuinely new route. A start-time route_plan naming
+	// camp:<campaign> keys the same way, so plan delivery and a manual route
+	// of one meeting can never both file it.
+	key := remote.CampaignRouteKey(req.Capture, campaign)
 	receipt, err := session.RouteOnce(key, func() (remote.RouteReceipt, error) {
 		return s.routeMeeting(r.Context(), summary, campaign, req.Capture)
 	})
@@ -214,7 +216,8 @@ func writeMeetingError(w http.ResponseWriter, err error) {
 		errors.Is(err, remote.ErrNotRecording), errors.Is(err, remote.ErrNotRoutable):
 		writeMeetingProblem(w, http.StatusConflict, err)
 	case errors.Is(err, remote.ErrBadSegment), errors.Is(err, remote.ErrBadControl),
-		errors.Is(err, remote.ErrBadStart), errors.Is(err, remote.ErrNoteText):
+		errors.Is(err, remote.ErrBadStart), errors.Is(err, remote.ErrNoteText),
+		errors.Is(err, remote.ErrRoutePlanDestination), errors.Is(err, remote.ErrRoutePlanBody):
 		writeMeetingProblem(w, http.StatusBadRequest, err)
 	case errors.Is(err, meeting.ErrImportMeetingUnsupported):
 		// 412: the phone's request was fine; the Mac's camp predates CI0009.

@@ -205,7 +205,8 @@ touches the audio queues.
 
 ```http
 POST /v1/meeting/start
-{"title":"Standup","campaign":"mytools","source":"watch"}
+{"title":"Standup","campaign":"mytools","source":"watch",
+ "route_plan":{"destination_id":"camp:mytools","body":"full"}}
 ```
 
 ```json
@@ -216,6 +217,30 @@ POST /v1/meeting/start
 `watch` — and is recorded in the bundle's `session_start` event and as a
 `# Source:` header in `meeting.md`, so diarized exports say where the mic
 was. An unknown value is a `400`.
+
+`route_plan` (optional) chooses where the notes get filed **before** the
+recording starts. It is written to the bundle as a `route_plan` event
+immediately after creation — before the first segment — so a meeting that dies
+mid-capture still leaves a durable filing intent that `samantha meeting sweep`
+delivers later.
+
+- `destination_id` — a configured `meeting.route.destinations[]` id or
+  `camp:<campaign>`; the same vocabulary as `meeting route --to`. Required
+  when `route_plan` is present; empty is `400`
+  `{"error":"meeting: route_plan requires destination_id"}`.
+- `body` — `notes`, `full`, or absent for the configured `meeting.route.body`.
+  Anything else is `400`
+  `{"error":"meeting: route_plan body must be notes or full"}`. Both scopes
+  embed the full transcript.
+
+Whether the destination *exists* is not checked at start: discovery costs a
+subprocess on the request path, and an unresolvable id must fail loudly at
+delivery (a durable `route_failed` event the sweep retries) rather than block a
+recording. Delivery runs once when the meeting reaches `ready`, through the
+same single-flight gate as `POST /v1/meeting/{id}/route`, so a plan and a
+manual route of the same meeting can never both file it. `campaign` still
+names the phone's post-stop route target; when both are present `route_plan`
+owns the durable plan.
 
 Segment uploads are **idempotent per `(meeting_id, seq)`** and tolerate
 out-of-order arrival, so a client may retry freely. `seq` is monotonic from 0.
